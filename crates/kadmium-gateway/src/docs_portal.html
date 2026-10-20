@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kadmium (Cd-48) — Official Application Documentation</title>
+  <style>
+    :root {
+      --bg: #0b0e14;
+      --panel: #111622;
+      --panel-hover: #171e2e;
+      --border: #232c40;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #f59e0b;
+      --accent-soft: rgba(245, 158, 11, 0.14);
+      --cyan: #38bdf8;
+      --green: #10b981;
+      --code-bg: #070a0f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+    header {
+      height: 60px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(17, 22, 34, 0.92);
+      backdrop-filter: blur(8px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      font-size: 16px;
+      letter-spacing: 0.02em;
+    }
+    .cd-badge {
+      background: linear-gradient(135deg, #f59e0b, #ea580c);
+      color: #0b0e14;
+      font-weight: 800;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .nav-links a {
+      color: var(--text);
+      text-decoration: none;
+      font-size: 13px;
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      transition: all 0.15s ease;
+    }
+    .nav-links a:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 290px 1fr;
+      flex: 1;
+      max-width: 1480px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    aside {
+      border-right: 1px solid var(--border);
+      padding: 20px 16px;
+      background: var(--panel);
+      height: calc(100vh - 60px);
+      position: sticky;
+      top: 60px;
+      overflow-y: auto;
+    }
+    .search-input {
+      width: 100%;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--code-bg);
+      color: var(--text);
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    .cat-header {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin: 16px 8px 8px;
+      font-weight: 700;
+    }
+    .doc-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      background: transparent;
+      border: 1px solid transparent;
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      margin-bottom: 4px;
+      transition: all 0.12s ease;
+    }
+    .doc-item:hover {
+      background: var(--panel-hover);
+    }
+    .doc-item.active {
+      background: var(--accent-soft);
+      border-color: rgba(245, 158, 11, 0.45);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .doc-item small {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-top: 2px;
+    }
+    main {
+      padding: 36px 48px 80px;
+      max-width: 960px;
+      line-height: 1.65;
+    }
+    .doc-meta-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+      margin-bottom: 24px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .doc-content h1 { font-size: 28px; margin-top: 0; color: #fff; }
+    .doc-content h2 { font-size: 20px; margin-top: 32px; padding-bottom: 6px; border-bottom: 1px solid var(--border); color: var(--cyan); }
+    .doc-content h3 { font-size: 16px; margin-top: 24px; color: var(--accent); }
+    .doc-content pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      padding: 14px 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #d1d5db;
+    }
+    .doc-content code {
+      font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+      background: rgba(255,255,255,0.07);
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-size: 0.9em;
+    }
+    .doc-content pre code {
+      background: transparent;
+      padding: 0;
+    }
+    .doc-content table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 13px;
+    }
+    .doc-content th, .doc-content td {
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .doc-content th {
+      background: var(--panel);
+      color: var(--accent);
+    }
+    .doc-content hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 28px 0;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="cd-badge">Cd 48</span>
+      <span>KADMIUM.AI — Official Documentation Portal</span>
+    </div>
+    <div class="nav-links">
+      <a href="/">← Back to Live Cluster Control Dashboard</a>
+      <a href="/api/v1/docs" target="_blank">Raw JSON API (/api/v1/docs)</a>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside>
+      <input type="text" id="docSearch" class="search-input" placeholder="Search documentation..." oninput="filterDocs()" />
+      <div id="sidebarList"></div>
+    </aside>
+    <main>
+      <div class="doc-meta-bar">
+        <span id="currentPath">docs/README.md</span>
+        <span id="currentCat">Overview</span>
+      </div>
+      <div id="docBody" class="doc-content">Loading documentation...</div>
+    </main>
+  </div>
+
+  <script>
+    let allDocs = [];
+    let activeSlug = "overview";
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function renderMarkdown(md) {
+      // Lightweight zero-dependency Markdown renderer for headings, code blocks, tables, bold, inline code, and lists
+      let blocks = [];
+      md = md.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        const idx = blocks.length;
+        blocks.push(`<pre><code class="lang-${lang}">${escapeHtml(code.trim())}</code></pre>`);
+        return `@@CODEBLOCK_${idx}@@`;
+      });
+
+      const lines = md.split("\n");
+      let html = "";
+      let inTable = false;
+      let inList = false;
+
+      for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+
+        if (line.trim().startsWith("|") && line.trim().endsWith("|")) {
+          if (line.includes("---")) continue;
+          const cells = line.trim().slice(1, -1).split("|").map(c => formatInline(c.trim()));
+          if (!inTable) {
+            html += "<table><thead><tr>" + cells.map(c => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
+            inTable = true;
+          } else {
+            html += "<tr>" + cells.map(c => `<td>${c}</td>`).join("") + "</tr>";
+          }
+          continue;
+        } else if (inTable) {
+          html += "</tbody></table>";
+          inTable = false;
+        }
+
+        if (/^(\s*[-*]|\s*\d+\.)\s+/.test(line)) {
+          if (!inList) { html += "<ul>"; inList = true; }
+          html += "<li>" + formatInline(line.replace(/^(\s*[-*]|\s*\d+\.)\s+/, "")) + "</li>";
+          continue;
+        } else if (inList) {
+          html += "</ul>";
+          inList = false;
+        }
+
+        if (line.startsWith("### ")) html += `<h3>${formatInline(line.slice(4))}</h3>`;
+        else if (line.startsWith("## ")) html += `<h2>${formatInline(line.slice(3))}</h2>`;
+        else if (line.startsWith("# ")) html += `<h1>${formatInline(line.slice(2))}</h1>`;
+        else if (line.trim() === "---") html += "<hr />";
+        else if (line.trim().startsWith("@@CODEBLOCK_")) html += line.trim();
+        else if (line.trim().length > 0) html += `<p>${formatInline(line)}</p>`;
+      }
+      if (inTable) html += "</tbody></table>";
+      if (inList) html += "</ul>";
+
+      blocks.forEach((b, idx) => {
+        html = html.replace(`@@CODEBLOCK_${idx}@@`, b);
+      });
+      return html;
+    }
+
+    function formatInline(text) {
+      return text
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => {
+          const slugMap = {
+            "./getting-started.md": "getting-started",
+            "./cli-reference.md": "cli-reference",
+            "./api-reference.md": "api-reference",
+            "./ARCHITECTURE.md": "architecture",
+            "./guides/hardware-and-sharding.md": "hardware-and-sharding",
+            "./guides/training-and-dream-rsi.md": "training-and-dream-rsi",
+            "./guides/subclusters-and-cloud-shield.md": "subclusters-and-cloud-shield"
+          };
+          if (slugMap[href]) {
+            return `<a href="#" onclick="selectDoc('${slugMap[href]}'); return false;" style="color:var(--accent)">${label}</a>`;
+          }
+          return `<a href="${href}" target="_blank" style="color:var(--cyan)">${label}</a>`;
+        });
+    }
+
+    function renderSidebar(filterText = "") {
+      const q = filterText.toLowerCase();
+      const container = document.getElementById("sidebarList");
+      const categories = [...new Set(allDocs.map(d => d.category))];
+      let html = "";
+
+      for (const cat of categories) {
+        const items = allDocs.filter(d => d.category === cat && (
+          d.title.toLowerCase().includes(q) ||
+          d.summary.toLowerCase().includes(q) ||
+          d.markdown.toLowerCase().includes(q)
+        ));
+        if (items.length === 0) continue;
+        html += `<div class="cat-header">${cat}</div>`;
+        for (const doc of items) {
+          const active = doc.slug === activeSlug ? "active" : "";
+          html += `<button class="doc-item ${active}" onclick="selectDoc('${doc.slug}')">
+            ${doc.title}
+            <small>${doc.file_path}</small>
+          </button>`;
+        }
+      }
+      container.innerHTML = html;
+    }
+
+    function selectDoc(slug) {
+      activeSlug = slug;
+      const doc = allDocs.find(d => d.slug === slug) || allDocs[0];
+      if (!doc) return;
+      document.getElementById("currentPath").textContent = doc.file_path;
+      document.getElementById("currentCat").textContent = doc.category;
+      document.getElementById("docBody").innerHTML = renderMarkdown(doc.markdown);
+      renderSidebar(document.getElementById("docSearch").value);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function filterDocs() {
+      renderSidebar(document.getElementById("docSearch").value);
+    }
+
+    async function initDocs() {
+      const res = await fetch("/api/v1/docs");
+      allDocs = await res.json();
+      selectDoc("overview");
+    }
+
+    initDocs();
+  </script>
+</body>
+</html>

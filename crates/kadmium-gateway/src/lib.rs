@@ -1,0 +1,624 @@
+//! # `kadmium-gateway`
+//!
+//! Unified Control Dashboard & Strata-inspired OpenAI/Anthropic compatible HTTP Gateway
+//! for **Kadmium (`Cd`)**.
+
+use axum::{
+    Json, Router,
+    extract::State,
+    response::Html,
+    routing::{get, post},
+};
+use kadmium_core::{
+    HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteState, WorkloadKind,
+    sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
+};
+use kadmium_data::{Fts3TransferScheduler, ThirdPartyTransferJob};
+use kadmium_network::{
+    CoordinatorFailoverQuorum, JoinTicket, PeerLinkMetrics, build_mesh_link_matrix,
+};
+use kadmium_rl::{
+    DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, RlEnvironmentSuiteSpec,
+    RlTopologyPlanner,
+};
+use kadmium_runtime::{
+    BoincWorkunit, Pipeline1F1BSchedule, Pipeline1F1BScheduler, TrainingJobTelemetry,
+    sample_boinc_workunits,
+};
+use kadmium_sharding::{
+    ClusterPoolSliceLayout, ClusterShardPlan, DataflowComparisonReport, DataflowStreamPlanner,
+    FailoverShieldSimulation, HybridCloudArbitragePlanner, MultiProviderArbitragePlan,
+    ResponsibilityShiftPlan, ShardPlanner, ShiftTriggerReason, SubClusterPartitioner,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+
+const DASHBOARD_HTML: &str = include_str!("dashboard.html");
+const DOCS_PORTAL_HTML: &str = include_str!("docs_portal.html");
+
+const DOC_OVERVIEW_MD: &str = include_str!("../../../docs/README.md");
+const DOC_GETTING_STARTED_MD: &str = include_str!("../../../docs/getting-started.md");
+const DOC_CLI_REFERENCE_MD: &str = include_str!("../../../docs/cli-reference.md");
+const DOC_API_REFERENCE_MD: &str = include_str!("../../../docs/api-reference.md");
+const DOC_HARDWARE_SHARDING_MD: &str =
+    include_str!("../../../docs/guides/hardware-and-sharding.md");
+const DOC_TRAINING_DREAM_RSI_MD: &str =
+    include_str!("../../../docs/guides/training-and-dream-rsi.md");
+const DOC_SUBCLUSTERS_CLOUD_MD: &str =
+    include_str!("../../../docs/guides/subclusters-and-cloud-shield.md");
+const DOC_ARCHITECTURE_MD: &str = include_str!("../../../docs/ARCHITECTURE.md");
+
+/// Structured entry for a public documentation page served from `docs/` via `/api/v1/docs` and `/docs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentationPage {
+    pub slug: String,
+    pub title: String,
+    pub category: String,
+    pub file_path: String,
+    pub summary: String,
+    pub markdown: String,
+}
+
+/// Returns the complete catalog of official Kadmium documentation pages compiled from `docs/`.
+pub fn build_documentation_catalog() -> Vec<DocumentationPage> {
+    vec![
+        DocumentationPage {
+            slug: "overview".into(),
+            title: "Kadmium Documentation Overview".into(),
+            category: "1. Getting Started & Core Reference".into(),
+            file_path: "docs/README.md".into(),
+            summary: "Sitemap, architecture diagram, and Open-Source vs. kadmium.ai Cloud overview.".into(),
+            markdown: DOC_OVERVIEW_MD.into(),
+        },
+        DocumentationPage {
+            slug: "getting-started".into(),
+            title: "Quickstart & Installation".into(),
+            category: "1. Getting Started & Core Reference".into(),
+            file_path: "docs/getting-started.md".into(),
+            summary: "Install kadmium, probe local hardware, launch the coordinator, and connect LAN/WAN peers.".into(),
+            markdown: DOC_GETTING_STARTED_MD.into(),
+        },
+        DocumentationPage {
+            slug: "cli-reference".into(),
+            title: "CLI Command Reference".into(),
+            category: "1. Getting Started & Core Reference".into(),
+            file_path: "docs/cli-reference.md".into(),
+            summary: "Complete reference for probe, serve, plan, simulate, slice, dataflow, dream, and cloud-shield.".into(),
+            markdown: DOC_CLI_REFERENCE_MD.into(),
+        },
+        DocumentationPage {
+            slug: "api-reference".into(),
+            title: "HTTP & AI Gateway API Reference".into(),
+            category: "1. Getting Started & Core Reference".into(),
+            file_path: "docs/api-reference.md".into(),
+            summary: "OpenAI /v1/chat/completions, Anthropic /v1/messages, and Control Plane + Companion REST APIs.".into(),
+            markdown: DOC_API_REFERENCE_MD.into(),
+        },
+        DocumentationPage {
+            slug: "hardware-and-sharding".into(),
+            title: "Hardware Setup, Sharding & Polite Governance".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/hardware-and-sharding.md".into(),
+            summary: "5-tier memory hierarchy, 64 KiB .ktb transcoding, CERN FTS3 P2P staging, <200ms Gaming Auto-Yield, and 3-Tier Trust.".into(),
+            markdown: DOC_HARDWARE_SHARDING_MD.into(),
+        },
+        DocumentationPage {
+            slug: "training-and-dream-rsi".into(),
+            title: "Distributed Training, RL & Dream-RSI".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/training-and-dream-rsi.md".into(),
+            summary: "Sharded-Island DiLoCo + DeMo DCT compression, Disaggregated RL, Dream-RSI offline replay, and TPU/CIM dataflows.".into(),
+            markdown: DOC_TRAINING_DREAM_RSI_MD.into(),
+        },
+        DocumentationPage {
+            slug: "subclusters-and-cloud-shield".into(),
+            title: "Sub-Cluster Slicing, Companion App & CloudShield".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/subclusters-and-cloud-shield.md".into(),
+            summary: "Partitioning 100-node pools into isolated sub-clusters, Desktop Companion OSS/Cloud switching, and <400ms Bidirectional Failover.".into(),
+            markdown: DOC_SUBCLUSTERS_CLOUD_MD.into(),
+        },
+        DocumentationPage {
+            slug: "architecture".into(),
+            title: "Deep Technical Architecture Spec".into(),
+            category: "3. Deep Specifications".into(),
+            file_path: "docs/ARCHITECTURE.md".into(),
+            summary: "Full mathematical and systems specification across all 8 Rust workspace crates.".into(),
+            markdown: DOC_ARCHITECTURE_MD.into(),
+        },
+    ]
+}
+
+/// Complete cluster state snapshot returned by `/api/v1/cluster/overview` and `/api/v1/cluster/shift`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClusterOverviewResponse {
+    pub coordinator_quorum: CoordinatorFailoverQuorum,
+    pub nodes: Vec<HardwareNode>,
+    pub inference_plan: ClusterShardPlan,
+    pub training_plan: ClusterShardPlan,
+    pub rl_plan: DisaggregatedRlPlan,
+    pub training_telemetry: TrainingJobTelemetry,
+    pub fts3_transfers: Vec<ThirdPartyTransferJob>,
+    pub boinc_workunits: Vec<BoincWorkunit>,
+    pub mesh_links: Vec<PeerLinkMetrics>,
+    pub last_shift: Option<ResponsibilityShiftPlan>,
+}
+
+/// Response payload for `/api/v1/rl/dream-rsi`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DreamRsiApiResponse {
+    pub discovery_tree: DiscoveryTree,
+    pub evolution_report: Option<DreamRsiEvolutionReport>,
+    pub rl_plan: DisaggregatedRlPlan,
+}
+
+/// Response payload for `/api/v1/cloud-shield`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudShieldApiResponse {
+    pub arbitrage_plan: MultiProviderArbitragePlan,
+    pub failover_simulations: Vec<FailoverShieldSimulation>,
+}
+
+/// Response payload for `/api/v1/host/probe`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostProbeApiResponse {
+    pub local_node: HardwareNode,
+    pub q_star_ratio: f64,
+    pub join_ticket_token: String,
+}
+
+/// Dual operating mode for the **Kadmium Desktop Companion App**:
+/// works 100% free/offline with the open-source self-hosted mesh, or links to `kadmium.ai`
+/// for managed WAN relays, Bidirectional Downtime Protection, and Spot Arbitrage bursting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CompanionConnectionMode {
+    /// 100% Open-Source Self-Hosted Mode (Local LAN / personal cluster, zero cloud account required).
+    SelfHostedOpenSource { local_coordinator_url: String },
+    /// Linked to `kadmium.ai` Managed Hybrid Cloud + Failover Shield.
+    KadmiumCloudManaged {
+        workspace_slug: String,
+        cloud_endpoint: String,
+        downtime_shield_enabled: bool,
+        spot_arbitrage_burst_enabled: bool,
+        max_hourly_spend_cap_usd: f64,
+    },
+}
+
+/// System-tray and companion window state returned by `/api/v1/companion/status`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompanionAppStatus {
+    pub app_version: String,
+    pub mode: CompanionConnectionMode,
+    pub local_host_polite_state: PoliteState,
+    pub gaming_auto_yield_active: bool,
+    pub active_cluster_nodes: usize,
+    pub active_coordinator_leader: String,
+    pub current_hourly_cloud_burn_usd: f64,
+}
+
+/// Shared mutable state for the gateway coordinator.
+pub struct GatewayState {
+    pub epoch: u64,
+    pub companion_mode: CompanionConnectionMode,
+    pub coordinator_quorum: CoordinatorFailoverQuorum,
+    pub nodes: Vec<HardwareNode>,
+    pub inference_model: ModelSpec,
+    pub training_model: ModelSpec,
+    pub inference_plan: ClusterShardPlan,
+    pub training_plan: ClusterShardPlan,
+    pub fts3_transfers: Vec<ThirdPartyTransferJob>,
+    pub last_shift: Option<ResponsibilityShiftPlan>,
+}
+
+impl Default for GatewayState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GatewayState {
+    pub fn new() -> Self {
+        let nodes = sample_personal_cluster();
+        let coordinator_quorum = CoordinatorFailoverQuorum::from_cluster(&nodes);
+        let inference_model = ModelSpec::deepseek_v3_671b_moe();
+        let training_model = ModelSpec::llama_3_70b_lora();
+
+        let inference_plan =
+            ShardPlanner::compute_plan(1, &inference_model, WorkloadKind::Inference, &nodes);
+        let training_plan = ShardPlanner::compute_plan(
+            1,
+            &training_model,
+            WorkloadKind::DistributedTraining,
+            &nodes,
+        );
+        let fts3_transfers = Fts3TransferScheduler::plan_initial_staging(&inference_plan, &nodes);
+
+        Self {
+            epoch: 1,
+            companion_mode: CompanionConnectionMode::SelfHostedOpenSource {
+                local_coordinator_url: "http://127.0.0.1:7848".into(),
+            },
+            coordinator_quorum,
+            nodes,
+            inference_model,
+            training_model,
+            inference_plan,
+            training_plan,
+            fts3_transfers,
+            last_shift: None,
+        }
+    }
+
+    pub fn companion_status(&self) -> CompanionAppStatus {
+        let local_polite = self
+            .nodes
+            .first()
+            .map(|n| n.polite_state)
+            .unwrap_or(PoliteState::IdleDedicated);
+        let burn_usd = match &self.companion_mode {
+            CompanionConnectionMode::SelfHostedOpenSource { .. } => 0.0,
+            CompanionConnectionMode::KadmiumCloudManaged {
+                spot_arbitrage_burst_enabled,
+                ..
+            } => {
+                if *spot_arbitrage_burst_enabled {
+                    0.69
+                } else {
+                    0.0
+                }
+            }
+        };
+
+        CompanionAppStatus {
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            mode: self.companion_mode.clone(),
+            local_host_polite_state: local_polite,
+            gaming_auto_yield_active: true,
+            active_cluster_nodes: self.nodes.len(),
+            active_coordinator_leader: self.coordinator_quorum.active_leader.0.clone(),
+            current_hourly_cloud_burn_usd: burn_usd,
+        }
+    }
+
+    pub fn snapshot(&self) -> ClusterOverviewResponse {
+        let training_telemetry = TrainingJobTelemetry::sample_for_plan(&self.training_plan);
+        let boinc_workunits = sample_boinc_workunits();
+        let mesh_links = build_mesh_link_matrix(&self.nodes);
+        let rl_env_suite = RlEnvironmentSuiteSpec::dream_rsi_evolving_world();
+        let rl_plan = RlTopologyPlanner::compute_rl_plan(
+            self.epoch,
+            &self.training_model,
+            &rl_env_suite,
+            &self.nodes,
+        );
+
+        ClusterOverviewResponse {
+            coordinator_quorum: self.coordinator_quorum.clone(),
+            nodes: self.nodes.clone(),
+            inference_plan: self.inference_plan.clone(),
+            training_plan: self.training_plan.clone(),
+            rl_plan,
+            training_telemetry,
+            fts3_transfers: self.fts3_transfers.clone(),
+            boinc_workunits,
+            mesh_links,
+            last_shift: self.last_shift.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ShiftRequest {
+    pub scenario: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ChatCompletionRequest {
+    pub model: Option<String>,
+    pub messages: Vec<serde_json::Value>,
+}
+
+/// Builds the Axum router serving both the Unified Dashboard and all Backend REST/AI Gateway APIs.
+pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
+    Router::new()
+        .route("/", get(serve_dashboard))
+        .route("/docs", get(serve_docs_portal))
+        .route("/api/v1/docs", get(get_documentation_catalog))
+        .route("/api/v1/cluster/overview", get(get_cluster_overview))
+        .route("/api/v1/cluster/shift", post(post_cluster_shift))
+        .route("/api/v1/slices", get(get_pool_slices))
+        .route("/api/v1/dataflow", get(get_dataflow_comparison))
+        .route("/api/v1/training/schedule", get(get_training_1f1b_schedule))
+        .route("/api/v1/rl/dream-rsi", get(get_dream_rsi_status))
+        .route("/api/v1/cloud-shield", get(get_cloud_shield_status))
+        .route("/api/v1/host/probe", get(get_local_host_probe))
+        .route("/api/v1/companion/status", get(get_companion_status))
+        .route("/api/v1/companion/mode", post(post_companion_mode))
+        .route("/v1/chat/completions", post(openai_chat_completions))
+        .route("/v1/messages", post(anthropic_messages))
+        .with_state(state)
+}
+
+async fn serve_dashboard() -> Html<&'static str> {
+    Html(DASHBOARD_HTML)
+}
+
+async fn serve_docs_portal() -> Html<&'static str> {
+    Html(DOCS_PORTAL_HTML)
+}
+
+async fn get_documentation_catalog() -> Json<Vec<DocumentationPage>> {
+    Json(build_documentation_catalog())
+}
+
+async fn get_cluster_overview(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<ClusterOverviewResponse> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(guard.snapshot())
+}
+
+async fn get_pool_slices() -> Json<ClusterPoolSliceLayout> {
+    let pool = sample_node_pool(100);
+    let model = ModelSpec::deepseek_v3_671b_moe();
+    Json(SubClusterPartitioner::partition_pool(&pool, 5, &model))
+}
+
+async fn get_dataflow_comparison(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<DataflowComparisonReport> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(DataflowStreamPlanner::evaluate_dataflows(
+        &guard.inference_model,
+        &guard.nodes,
+        512,
+    ))
+}
+
+async fn get_training_1f1b_schedule(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<Pipeline1F1BSchedule> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(Pipeline1F1BScheduler::build_schedule(
+        &guard.training_plan,
+        12,
+    ))
+}
+
+async fn get_dream_rsi_status(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<DreamRsiApiResponse> {
+    let guard = state.lock().expect("gateway state lock");
+    let tree = DiscoveryTree::sample_gpu_kernel_discovery_tree();
+    let env_suite = RlEnvironmentSuiteSpec::dream_rsi_evolving_world();
+    let rl_plan = RlTopologyPlanner::compute_rl_plan(
+        guard.epoch,
+        &guard.training_model,
+        &env_suite,
+        &guard.nodes,
+    );
+    Json(DreamRsiApiResponse {
+        discovery_tree: tree,
+        evolution_report: rl_plan.dream_rsi_report.clone(),
+        rl_plan,
+    })
+}
+
+async fn get_cloud_shield_status(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<CloudShieldApiResponse> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(CloudShieldApiResponse {
+        arbitrage_plan: HybridCloudArbitragePlanner::compute_arbitrage_plan(&guard.inference_model),
+        failover_simulations: HybridCloudArbitragePlanner::simulate_bidirectional_failover_shield(),
+    })
+}
+
+async fn get_local_host_probe() -> Json<HostProbeApiResponse> {
+    let local_node = LiveHardwareProfiler::probe_local_host();
+    let q_star_ratio = local_node.compute_q_star_ratio();
+    let ticket = JoinTicket::generate(
+        local_node.id.clone(),
+        vec!["127.0.0.1:7848".into(), "relay.kadmium.ai:4433".into()],
+        Some("slice-01-prod-deploy".into()),
+        NodeTrustTier::VerifiedPeerMiddleLayersOnly,
+    );
+    Json(HostProbeApiResponse {
+        local_node,
+        q_star_ratio,
+        join_ticket_token: ticket.encode_token(),
+    })
+}
+
+async fn get_companion_status(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<CompanionAppStatus> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(guard.companion_status())
+}
+
+async fn post_companion_mode(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(new_mode): Json<CompanionConnectionMode>,
+) -> Json<CompanionAppStatus> {
+    let mut guard = state.lock().expect("gateway state lock");
+    guard.companion_mode = new_mode;
+    Json(guard.companion_status())
+}
+
+async fn post_cluster_shift(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(req): Json<ShiftRequest>,
+) -> Json<ClusterOverviewResponse> {
+    let mut guard = state.lock().expect("gateway state lock");
+    guard.epoch += 1;
+
+    match req.scenario.as_str() {
+        "gaming_mode" => {
+            if let Some(pc) = guard.nodes.first_mut() {
+                pc.polite_state = PoliteState::GamingOrHeavyApp;
+            }
+            let trigger = ShiftTriggerReason::HostEnteredGamingMode {
+                node_id: guard.nodes[0].id.clone(),
+            };
+            let shift = ShardPlanner::plan_responsibility_shift(
+                &guard.inference_plan,
+                &guard.inference_model,
+                &guard.nodes,
+                trigger,
+            );
+            guard.fts3_transfers =
+                Fts3TransferScheduler::plan_live_shift_transfers(&shift, &guard.nodes);
+            guard.inference_plan = shift.new_plan.clone();
+            guard.training_plan = ShardPlanner::compute_plan(
+                guard.epoch,
+                &guard.training_model,
+                WorkloadKind::DistributedTraining,
+                &guard.nodes,
+            );
+            guard.last_shift = Some(shift);
+        }
+        "cloud_burst" => {
+            let burst = sample_cloud_burst_gpu_node();
+            if !guard.nodes.iter().any(|n| n.id == burst.id) {
+                guard.nodes.push(burst.clone());
+            }
+            let trigger = ShiftTriggerReason::CloudBurstNodeJoined { node_id: burst.id };
+            let shift = ShardPlanner::plan_responsibility_shift(
+                &guard.inference_plan,
+                &guard.inference_model,
+                &guard.nodes,
+                trigger,
+            );
+            guard.fts3_transfers =
+                Fts3TransferScheduler::plan_live_shift_transfers(&shift, &guard.nodes);
+            guard.inference_plan = shift.new_plan.clone();
+            guard.training_plan = ShardPlanner::compute_plan(
+                guard.epoch,
+                &guard.training_model,
+                WorkloadKind::DistributedTraining,
+                &guard.nodes,
+            );
+            guard.last_shift = Some(shift);
+        }
+        "coordinator_failover" => {
+            let current_leader = guard.coordinator_quorum.active_leader.clone();
+            guard.coordinator_quorum.trigger_failover(&current_leader);
+        }
+        _ => {
+            *guard = GatewayState::new();
+        }
+    }
+
+    Json(guard.snapshot())
+}
+
+async fn openai_chat_completions(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(req): Json<ChatCompletionRequest>,
+) -> Json<serde_json::Value> {
+    let guard = state.lock().expect("gateway state lock");
+    let model_name = req
+        .model
+        .unwrap_or_else(|| guard.inference_plan.model_id.clone());
+    let active_stages: Vec<String> = guard
+        .inference_plan
+        .assignments
+        .iter()
+        .filter(|a| a.layer_count > 0)
+        .map(|a| {
+            format!(
+                "{}[L{}..L{}]",
+                a.hostname,
+                a.start_layer.unwrap_or(0),
+                a.end_layer.unwrap_or(0)
+            )
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "id": format!("chatcmpl-kadmium-e{}", guard.epoch),
+        "object": "chat.completion",
+        "model": model_name,
+        "kadmium_fabric": {
+            "epoch": guard.epoch,
+            "pipeline_route": active_stages,
+            "estimated_tokens_per_sec": guard.inference_plan.estimated_throughput,
+            "speculative_draft_node": "rk3588-sbc-bramble"
+        },
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Executed across the Kadmium heterogeneous mesh (Asymmetric Sharding + FreeToken q* + Colibri NVMe MoE Streaming)."
+            },
+            "finish_reason": "stop"
+        }]
+    }))
+}
+
+async fn anthropic_messages(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(req): Json<ChatCompletionRequest>,
+) -> Json<serde_json::Value> {
+    let guard = state.lock().expect("gateway state lock");
+    let model_name = req
+        .model
+        .unwrap_or_else(|| guard.inference_plan.model_id.clone());
+
+    Json(serde_json::json!({
+        "id": format!("msg_kadmium_e{}", guard.epoch),
+        "type": "message",
+        "role": "assistant",
+        "model": model_name,
+        "content": [{
+            "type": "text",
+            "text": "Executed via Kadmium's Strata-compatible Anthropic /v1/messages gateway across your distributed home/lab cluster."
+        }],
+        "stop_reason": "end_turn"
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_gateway_state_snapshot_and_coordinator_quorum() {
+        let mut state = GatewayState::new();
+        let snap = state.snapshot();
+        assert_eq!(snap.nodes.len(), 7);
+        assert_eq!(snap.coordinator_quorum.term, 1);
+        assert!(snap.rl_plan.dream_rsi_report.is_some());
+
+        // Verify Desktop Companion App dual-mode switching (Open-Source <-> Kadmium Cloud)
+        let oss_status = state.companion_status();
+        assert_eq!(oss_status.current_hourly_cloud_burn_usd, 0.0);
+        assert!(matches!(
+            oss_status.mode,
+            CompanionConnectionMode::SelfHostedOpenSource { .. }
+        ));
+
+        state.companion_mode = CompanionConnectionMode::KadmiumCloudManaged {
+            workspace_slug: "cameron-lab".into(),
+            cloud_endpoint: "https://api.kadmium.ai".into(),
+            downtime_shield_enabled: true,
+            spot_arbitrage_burst_enabled: true,
+            max_hourly_spend_cap_usd: 2.50,
+        };
+        let cloud_status = state.companion_status();
+        assert!(cloud_status.current_hourly_cloud_burn_usd > 0.0);
+        assert!(matches!(
+            cloud_status.mode,
+            CompanionConnectionMode::KadmiumCloudManaged {
+                downtime_shield_enabled: true,
+                ..
+            }
+        ));
+
+        // Verify embedded public documentation catalog from `docs/`
+        let docs = build_documentation_catalog();
+        assert_eq!(docs.len(), 8);
+        assert!(docs.iter().all(|d| !d.markdown.is_empty()));
+    }
+}

@@ -1,0 +1,13 @@
+[package]
+name = "kadmium-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CERN FTS3 & Davix inspired third-party P2P transfer scheduler and Kadmium Tensor Bank (KTB) format"
+
+[dependencies]
+kadmium-core.workspace = true
+kadmium-sharding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

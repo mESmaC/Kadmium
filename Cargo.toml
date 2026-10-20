@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kadmium-core",
+    "crates/kadmium-sharding",
+    "crates/kadmium-data",
+    "crates/kadmium-runtime",
+    "crates/kadmium-rl",
+    "crates/kadmium-network",
+    "crates/kadmium-gateway",
+    "crates/kadmium-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+homepage = "https://kadmium.ai"
+repository = "https://github.com/kadmium-ai/kadmium"
+authors = ["Cameron & Contributors"]
+description = "Consolidated, Aggregate, and Distributed AI/ML Compute Fabric in Pure Rust"
+
+[workspace.dependencies]
+kadmium-core = { path = "crates/kadmium-core" }
+kadmium-sharding = { path = "crates/kadmium-sharding" }
+kadmium-data = { path = "crates/kadmium-data" }
+kadmium-runtime = { path = "crates/kadmium-runtime" }
+kadmium-rl = { path = "crates/kadmium-rl" }
+kadmium-network = { path = "crates/kadmium-network" }
+kadmium-gateway = { path = "crates/kadmium-gateway" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+axum = { version = "0.8", features = ["json"] }
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

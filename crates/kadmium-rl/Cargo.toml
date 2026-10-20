@@ -1,0 +1,13 @@
+[package]
+name = "kadmium-rl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "First-class distributed Reinforcement Learning (RL) environment fabric, vectorized sandbox pool, and disaggregated Actor-Env-Learner orchestrator for Kadmium"
+
+[dependencies]
+kadmium-core.workspace = true
+kadmium-sharding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

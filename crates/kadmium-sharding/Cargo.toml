@@ -1,0 +1,12 @@
+[package]
+name = "kadmium-sharding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Asymmetric topology-aware model sharding, MoE tier placement, and dynamic compute responsibility shifting"
+
+[dependencies]
+kadmium-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

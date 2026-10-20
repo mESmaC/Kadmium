@@ -1,0 +1,14 @@
+[package]
+name = "kadmium-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unified execution runtime for asymmetric pipeline inference, 1F1B/QLoRA/DiLoCo distributed training, and BOINC workunit verification"
+
+[dependencies]
+kadmium-core.workspace = true
+kadmium-sharding.workspace = true
+kadmium-data.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

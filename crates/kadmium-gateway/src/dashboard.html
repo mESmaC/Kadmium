@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Kadmium (Cd-48) — Distributed AI/ML Compute Fabric</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #131a27;
+      --panel-alt: #182132;
+      --border: #25324a;
+      --text: #e6edf7;
+      --muted: #8ea0bc;
+      --accent: #38bdf8;
+      --emerald: #34d399;
+      --amber: #fbbf24;
+      --purple: #a78bfa;
+      --rose: #fb7185;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, monospace;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 20px 28px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 22px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .element-badge {
+      width: 52px;
+      height: 52px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #0284c7, #6366f1);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      box-shadow: 0 4px 16px rgba(56, 189, 248, 0.25);
+    }
+    .element-badge span.num { font-size: 10px; opacity: 0.85; }
+    .element-badge span.sym { font-size: 20px; line-height: 1; }
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    button {
+      background: var(--panel-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 9px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      transition: all 0.15s ease;
+    }
+    button:hover { border-color: var(--accent); background: #1e293b; }
+    button.btn-warn { border-color: #b45309; color: var(--amber); }
+    button.btn-burst { border-color: #6d28d9; color: var(--purple); }
+    button.btn-reset { border-color: #059669; color: var(--emerald); }
+
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .card h3 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .card .val {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .card .sub {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .section-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin-bottom: 22px;
+    }
+    @media (max-width: 1100px) {
+      .section-grid { grid-template-columns: 1fr; }
+    }
+    h2 {
+      font-size: 15px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--accent);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      text-align: left;
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+    .tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--panel-alt);
+      border: 1px solid var(--border);
+    }
+    .tag.ok { color: var(--emerald); border-color: rgba(52, 211, 153, 0.4); }
+    .tag.warn { color: var(--amber); border-color: rgba(251, 191, 36, 0.4); }
+    .tag.burst { color: var(--purple); border-color: rgba(167, 139, 250, 0.4); }
+    .bar-wrap {
+      display: flex;
+      height: 10px;
+      border-radius: 5px;
+      overflow: hidden;
+      background: #090d14;
+      margin-top: 5px;
+    }
+    .bar-hot { background: #38bdf8; }
+    .bar-warm { background: #fbbf24; }
+    .bar-cold { background: #a78bfa; }
+    .shift-banner {
+      background: rgba(56, 189, 248, 0.08);
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 20px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="element-badge">
+        <span class="num">48</span>
+        <span class="sym">Cd</span>
+      </div>
+      <div>
+        <h1 style="font-size: 20px;">Kadmium Distributed AI/ML Compute Fabric <span style="font-size:13px; color: var(--accent); font-weight:500;">(kadmium.ai)</span></h1>
+        <p style="font-size: 13px; color: var(--muted);">
+          Asymmetric Sharding • FreeToken $q^*$ + Colibri NVMe Streaming • CERN FTS3 P2P Staging • BOINC Polite Mesh
+        </p>
+      </div>
+    </div>
+    <div class="controls">
+      <button onclick="window.location.href='/docs'" style="border-color: var(--accent); color: var(--accent);">📖 Application Docs (/docs)</button>
+      <button class="btn-warn" onclick="triggerShift('gaming_mode')">🎮 Simulate Main PC Gaming Mode</button>
+      <button class="btn-burst" onclick="triggerShift('cloud_burst')">☁️ Attach Burst Cloud H100 GPU</button>
+      <button class="btn-reset" onclick="triggerShift('reset_idle')">🔄 Restore Idle Personal Cluster</button>
+    </div>
+  </header>
+
+  <div id="shift-banner" class="shift-banner"></div>
+
+  <div class="kpi-grid" id="kpi-grid"></div>
+
+  <div class="section-grid">
+    <div class="card">
+      <h2>
+        <span>🧠 Inference Shard Plan: DeepSeek-V3 671B MoE</span>
+        <span id="inf-tp" class="tag ok"></span>
+      </h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Polite State</th>
+            <th>Layers</th>
+            <th>Share</th>
+            <th>Hot / Warm / Cold NVMe (GiB)</th>
+            <th>q* Ratio</th>
+          </tr>
+        </thead>
+        <tbody id="inf-table"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>
+        <span>🔥 Distributed Training Plan: Llama-3.3-70B (1F1B + QLoRA)</span>
+        <span id="train-tp" class="tag burst"></span>
+      </h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Node</th>
+            <th>Stage</th>
+            <th>Layers</th>
+            <th>Activation Policy</th>
+            <th>Auxiliary / Edge Roles</th>
+          </tr>
+        </thead>
+        <tbody id="train-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section-grid">
+    <div class="card">
+      <h2>
+        <span>⚡ CERN FTS3 / Davix Third-Party P2P Transfers</span>
+        <span class="tag">Direct QUIC Mesh</span>
+      </h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Transfer ID</th>
+            <th>Source Peer</th>
+            <th>Dest Peer</th>
+            <th>Layers</th>
+            <th>Payload</th>
+            <th>Volume</th>
+            <th>BW</th>
+          </tr>
+        </thead>
+        <tbody id="fts-table"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>
+        <span>🛰️ BOINC Polite Workunits & Canary Verification</span>
+        <span class="tag ok">Deterministic Spot-Check</span>
+      </h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Workunit</th>
+            <th>Task</th>
+            <th>Node</th>
+            <th>Canary Cosine</th>
+            <th>Progress</th>
+          </tr>
+        </thead>
+        <tbody id="boinc-table"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    async function loadOverview() {
+      const res = await fetch('/api/v1/cluster/overview');
+      const data = await res.json();
+      renderDashboard(data);
+    }
+
+    async function triggerShift(scenario) {
+      const res = await fetch('/api/v1/cluster/shift', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scenario })
+      });
+      const data = await res.json();
+      const banner = document.getElementById('shift-banner');
+      if (data.last_shift) {
+        const s = data.last_shift;
+        banner.style.display = 'block';
+        banner.innerHTML = `
+          <strong>⚡ Live Compute Responsibility Shift Executed (Epoch ${s.previous_epoch} → ${s.new_epoch})</strong><br/>
+          <span style="font-size:13px; color: var(--muted);">
+            Migrated <b>${s.migrations.length}</b> contiguous shard range(s) |
+            Background FTS3 Pre-Stage from NAS: <b>${s.total_background_prestage_gb} GiB</b> |
+            Atomic Boundary Delta Handoff: <b>${s.total_live_boundary_delta_gb} GiB</b> |
+            Switchover Pause: <b>${s.estimated_switchover_pause_ms} ms</b>
+          </span>
+        `;
+      } else {
+        banner.style.display = 'none';
+      }
+      renderDashboard(data);
+    }
+
+    function renderDashboard(data) {
+      const nodes = data.nodes;
+      const inf = data.inference_plan;
+      const trn = data.training_plan;
+      const tlm = data.training_telemetry;
+
+      const totalTflops = nodes.reduce((acc, n) => acc + n.fp16_tflops, 0).toFixed(1);
+      const totalFastMem = nodes.reduce((acc, n) => acc + n.memory.vram_gb + n.memory.unified_mem_gb, 0).toFixed(0);
+      const totalRam = nodes.reduce((acc, n) => acc + n.memory.system_ram_gb, 0).toFixed(0);
+
+      document.getElementById('kpi-grid').innerHTML = `
+        <div class="card">
+          <h3>Active Mesh Nodes</h3>
+          <div class="val">${nodes.length} Nodes</div>
+          <div class="sub">Epoch #${inf.epoch} • 100% Pure Rust Mesh</div>
+        </div>
+        <div class="card">
+          <h3>Aggregate Peak FP16</h3>
+          <div class="val">${totalTflops} TFLOPs</div>
+          <div class="sub">CUDA + Apple Metal + AVX + ARM NPU</div>
+        </div>
+        <div class="card">
+          <h3>Tiered Memory Pool</h3>
+          <div class="val">${totalFastMem} GiB Fast</div>
+          <div class="sub">+ ${totalRam} GiB System RAM + 5.8 TiB NVMe/NAS</div>
+        </div>
+        <div class="card">
+          <h3>1F1B Training Step</h3>
+          <div class="val">Step #${tlm.current_step}</div>
+          <div class="sub">Loss: ${tlm.loss} • Bubble: ${tlm.pipeline_bubble_pct}% • DiLoCo: ${tlm.diloco_inner_step_interval} steps</div>
+        </div>
+      `;
+
+      document.getElementById('inf-tp').textContent = `${inf.estimated_throughput} ${inf.throughput_unit}`;
+      document.getElementById('inf-table').innerHTML = inf.assignments.map(a => {
+        const range = a.start_layer !== null ? `L${a.start_layer}–L${a.end_layer} (${a.layer_count})` : 'Edge / Utility';
+        const stateCls = a.polite_state === 'IdleDedicated' ? 'ok' : 'warn';
+        const m = a.tiered_memory;
+        return `
+          <tr>
+            <td><b>${a.hostname}</b><br/><span style="font-size:11px;color:var(--muted)">${a.device_kind}</span></td>
+            <td><span class="tag ${stateCls}">${a.polite_state}</span></td>
+            <td>${range}</td>
+            <td>${a.compute_share_pct}%</td>
+            <td>
+              <span style="color:#38bdf8">${m.hot_vram_or_unified_gb}</span> /
+              <span style="color:#fbbf24">${m.warm_system_ram_gb}</span> /
+              <span style="color:#a78bfa">${m.cold_nvme_stream_gb}</span>
+            </td>
+            <td>${m.q_star_accel_ratio}</td>
+          </tr>
+        `;
+      }).join('');
+
+      document.getElementById('train-tp').textContent = `${trn.estimated_throughput} ${trn.throughput_unit}`;
+      document.getElementById('train-table').innerHTML = trn.assignments.map(a => {
+        const range = a.start_layer !== null ? `L${a.start_layer}–L${a.end_layer} (${a.layer_count})` : '—';
+        const stage = a.pipeline_stage_index !== null ? `Stage #${a.pipeline_stage_index}` : 'Aux';
+        const aux = a.auxiliary_tasks.length ? a.auxiliary_tasks.join(', ') : 'Pipeline Compute';
+        return `
+          <tr>
+            <td><b>${a.hostname}</b></td>
+            <td><span class="tag">${stage}</span></td>
+            <td>${range}</td>
+            <td>${a.training_checkpoint_policy}</td>
+            <td style="font-size:12px;color:var(--muted)">${aux}</td>
+          </tr>
+        `;
+      }).join('');
+
+      document.getElementById('fts-table').innerHTML = data.fts3_transfers.map(t => `
+        <tr>
+          <td><code>${t.transfer_id}</code></td>
+          <td>${t.source_node}</td>
+          <td>${t.destination_node}</td>
+          <td>L${t.start_layer}–L${t.end_layer}</td>
+          <td><span class="tag">${t.payload_kind}</span></td>
+          <td>${t.volume_gb} GiB</td>
+          <td>${t.allocated_bandwidth_gbps} Gbps</td>
+        </tr>
+      `).join('');
+
+      document.getElementById('boinc-table').innerHTML = data.boinc_workunits.map(w => `
+        <tr>
+          <td><code>${w.workunit_id}</code></td>
+          <td>${w.title}</td>
+          <td>${w.assigned_node}</td>
+          <td><span class="tag ok">${w.canary_cosine_similarity}</span></td>
+          <td>${w.progress_pct}%</td>
+        </tr>
+      `).join('');
+    }
+
+    loadOverview();
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+[package]
+name = "kadmium-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unified Web Dashboard and Strata-inspired OpenAI/Anthropic compatible API gateway for Kadmium"
+
+[dependencies]
+kadmium-core.workspace = true
+kadmium-sharding.workspace = true
+kadmium-data.workspace = true
+kadmium-runtime.workspace = true
+kadmium-rl.workspace = true
+kadmium-network.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
