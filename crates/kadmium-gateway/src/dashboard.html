@@ -8,7 +8,8 @@
   <link rel="stylesheet" href="/tokens.css">
   <link rel="stylesheet" href="/components/bundle.css">
   <style>
-    html, body { margin: 0; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; overflow-x: hidden; }
     body {
       background: var(--graphite-0);
       color: var(--ink);
@@ -19,10 +20,11 @@
       display: flex;
       align-items: center;
       gap: var(--space-3);
-      min-height: 56px;
-      padding: var(--space-2) var(--space-6);
+      min-height: 60px;
+      padding: var(--space-2) clamp(16px, 3vw, 40px);
       border-bottom: 1px solid var(--line);
-      background: var(--graphite-1);
+      background: color-mix(in srgb, var(--graphite-1) 92%, transparent);
+      backdrop-filter: blur(12px);
       flex-wrap: wrap;
       position: sticky;
       top: 0;
@@ -38,17 +40,20 @@
     }
     .top .spacer { flex: 1; }
     .page {
-      max-width: 1280px;
+      max-width: 1440px;
       margin: 0 auto;
-      padding: var(--space-8) var(--space-6) var(--space-16);
+      padding: var(--space-8) clamp(16px, 3.5vw, 48px) var(--space-16);
       display: grid;
       gap: var(--space-8);
     }
+    .page > *, .hero > *, .two > * {
+      min-width: 0;
+    }
     .hero {
       display: grid;
-      grid-template-columns: 1.15fr 1fr;
+      grid-template-columns: 1.1fr 1fr;
       gap: var(--space-8);
-      align-items: start;
+      align-items: center;
     }
     .hero h1 { margin: 0 0 var(--space-3); }
     .hero p { margin: 0 0 var(--space-5); color: var(--ink-muted); max-width: 58ch; }
@@ -67,20 +72,22 @@
       border-radius: var(--radius-md);
       padding: var(--space-5);
       box-shadow: var(--shadow-sm);
+      min-width: 0;
     }
     .stat-strip {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: var(--space-4);
     }
     .stat-card {
       background: var(--graphite-1);
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      padding: var(--space-4);
+      padding: var(--space-4) var(--space-5);
       box-shadow: var(--shadow-sm);
       display: grid;
       gap: var(--space-1);
+      min-width: 0;
     }
     .stat-card .metric {
       font-variant-numeric: tabular-nums;
@@ -92,16 +99,23 @@
     }
     .two {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: var(--space-4);
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-5);
     }
     .plans {
-      display: flex;
-      gap: var(--space-4);
-      flex-wrap: wrap;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--space-5);
+      align-items: stretch;
+    }
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
     }
     .mono-table {
       width: 100%;
+      min-width: 600px;
       border-collapse: collapse;
       font-family: var(--font-mono);
       font-size: 12px;
@@ -118,6 +132,7 @@
       background: var(--graphite-2);
       padding: var(--space-2) var(--space-3);
       border-bottom: 1px solid var(--line);
+      white-space: nowrap;
     }
     .mono-table td {
       padding: var(--space-2) var(--space-3);
@@ -138,8 +153,13 @@
       gap: var(--space-4);
       flex-wrap: wrap;
     }
-    @media (max-width: 920px) {
+    @media (max-width: 1040px) {
       .hero, .two { grid-template-columns: 1fr; }
+      .plans { grid-template-columns: 1fr; }
+      .stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 560px) {
+      .stat-strip { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -250,6 +270,8 @@
     var mcpManifestState = React.useState(null), mcpManifest = mcpManifestState[0], setMcpManifest = mcpManifestState[1];
     var mcpReplyState = React.useState(null), mcpReply = mcpReplyState[0], setMcpReply = mcpReplyState[1];
     var gatewayReplyState = React.useState(null), gatewayReply = gatewayReplyState[0], setGatewayReply = gatewayReplyState[1];
+    var gaState = React.useState(null), ga = gaState[0], setGa = gaState[1];
+    var kernelsState = React.useState(null), kernels = kernelsState[0], setKernels = kernelsState[1];
 
     React.useEffect(function () {
       document.documentElement.setAttribute('data-theme', theme);
@@ -265,6 +287,8 @@
       fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setCompanion);
       fetch('/api/v1/integrations').then(function (r) { return r.json(); }).then(setIntegrations);
       fetch('/api/v1/mcp').then(function (r) { return r.json(); }).then(setMcpManifest);
+      fetch('/api/v1/ga/governance').then(function (r) { return r.json(); }).then(setGa);
+      fetch('/api/v1/runtime/kernels').then(function (r) { return r.json(); }).then(setKernels);
     }, []);
 
     function triggerScenario(scenario) {
@@ -405,6 +429,7 @@
             items: [
               { id: 'nodes', label: 'Nodes', count: nodes.length },
               { id: 'shards', label: 'Shard plan' },
+              { id: 'ga', label: 'v1.0 GA & Kernels', count: ga ? ga.spot_orderbook.length : 5 },
               { id: 'integrations', label: 'HF, GitHub & MCP', count: integrations ? integrations.connectors.length + 1 : 6 },
               { id: 'dream', label: 'Dream-RSI & RL' },
               { id: 'slices', label: 'Sub-cluster slices', count: slices ? slices.slices.length : 5 },
@@ -442,25 +467,118 @@
                 h(K.ShardRail, { label: 'Training shard plan', depth: 112, pitch: 56, nodes: trainRailNodes }))),
             h('div', { className: 'panel' },
               h('p', { className: 'eyebrow' }, 'CERN FTS3 third-party P2P .ktb transfers · seed: home-nas-vault'),
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'JOB ID'),
-                  h('th', null, 'SOURCE SEED'),
-                  h('th', null, 'DEST WORKER'),
-                  h('th', null, 'ARTIFACT'),
-                  h('th', null, 'SIZE'),
-                  h('th', null, 'THROUGHPUT'),
-                  h('th', null, 'STATE'))),
-                h('tbody', null, (overview.fts3_transfers || []).map(function (t) {
-                  return h('tr', { key: t.job_id },
-                    h('td', null, t.job_id),
-                    h('td', null, t.source_seed_node),
-                    h('td', null, t.destination_worker_node),
-                    h('td', null, t.artifact_description),
-                    h('td', null, t.total_size_gb + ' GB'),
-                    h('td', null, t.estimated_bandwidth_gbps + ' Gbps'),
-                    h('td', null, h(K.Badge, { tone: 'ok', dot: true }, 'resident')));
-                }))))) : null,
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'JOB ID'),
+                    h('th', null, 'SOURCE SEED'),
+                    h('th', null, 'DEST WORKER'),
+                    h('th', null, 'ARTIFACT'),
+                    h('th', null, 'SIZE'),
+                    h('th', null, 'THROUGHPUT'),
+                    h('th', null, 'STATE'))),
+                  h('tbody', null, (overview.fts3_transfers || []).map(function (t) {
+                    return h('tr', { key: t.job_id },
+                      h('td', null, t.job_id),
+                      h('td', null, t.source_seed_node),
+                      h('td', null, t.destination_worker_node),
+                      h('td', null, t.artifact_description),
+                      h('td', null, t.total_size_gb + ' GB'),
+                      h('td', null, t.estimated_bandwidth_gbps + ' Gbps'),
+                      h('td', null, h(K.Badge, { tone: 'ok', dot: true }, 'resident')));
+                  })))))) : null,
+
+          tab === 'ga' ? h('div', { className: 'kd-stack' },
+            kernels ? h('div', { className: 'panel' },
+              h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
+                h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Fused hardware kernel dispatch · RMSNorm+RoPE → Paged GQA → Q4_K SwiGLU'),
+                h(K.Badge, { tone: kernels.cross_silicon_bit_identical ? 'ok' : 'warn', dot: true },
+                  'Verde RepOps parity: 0x' + kernels.canonical_repops_digest_fnv1a.toString(16))),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'NODE'),
+                    h('th', null, 'KERNEL TARGET'),
+                    h('th', null, 'INTRINSIC SIGNATURE'),
+                    h('th', null, 'THROUGHPUT'),
+                    h('th', null, 'MEM BW UTIL'),
+                    h('th', null, 'REPOPS DIGEST'))),
+                  h('tbody', null, kernels.node_profiles.map(function (np) {
+                    return h('tr', { key: np.hostname },
+                      h('td', null, np.hostname),
+                      h('td', null, h(K.Badge, { tone: 'local' }, np.kernel_target)),
+                      h('td', null, np.intrinsic_signature),
+                      h('td', null, np.achieved_gflops.toFixed(1) + ' GFLOP/s'),
+                      h('td', null, np.memory_bw_utilization_pct.toFixed(1) + ' %'),
+                      h('td', null, '0x' + np.repops_digest_fnv1a.toString(16)));
+                  }))))) : null,
+
+            ga ? h('div', { className: 'two' },
+              h('div', { className: 'panel' },
+                h('p', { className: 'eyebrow' }, 'Live multi-provider spot orderbook · SpotOrderbookBidEngine'),
+                h('div', { className: 'table-wrap' },
+                  h('table', { className: 'mono-table' },
+                    h('thead', null, h('tr', null,
+                      h('th', null, 'PROVIDER'),
+                      h('th', null, 'GPU'),
+                      h('th', null, 'SPOT RATE'),
+                      h('th', null, 'UTILITY'))),
+                    h('tbody', null, ga.spot_orderbook.map(function (q) {
+                      var selected = ga.provisioned_spot_container && ga.provisioned_spot_container.selected_quote.quote_id === q.quote_id;
+                      return h('tr', { key: q.quote_id },
+                        h('td', null, q.provider + ' (' + q.region + ')'),
+                        h('td', null, q.gpu_model),
+                        h('td', { style: { color: 'var(--cherenkov)' } }, '$' + q.spot_usd_per_hr.toFixed(2) + '/hr'),
+                        h('td', null, h(K.Badge, { tone: selected ? 'cloud' : 'neutral', dot: selected }, q.risk_adjusted_tflops_per_usd.toFixed(1) + ' TFLOP/$')));
+                    }))))),
+              h('div', { className: 'panel' },
+                h('p', { className: 'eyebrow' }, 'Verde O(log₂ L) optimistic fraud-proof certificate · VerdeFraudProofEngine'),
+                ga.sample_fraud_proof ? h('div', { className: 'kd-stack' },
+                  h('div', { className: 'kd-row' },
+                    h(K.Badge, { tone: 'danger', dot: true }, 'faulty layer L' + ga.sample_fraud_proof.faulty_layer_index + ' / ' + ga.sample_fraud_proof.total_layers_in_pipeline),
+                    h(K.Badge, { tone: 'local' }, ga.sample_fraud_proof.referee_evaluations_used + ' bisection steps'),
+                    h(K.Badge, { tone: 'warn' }, '$' + ga.sample_fraud_proof.withheld_settlement_usd.toFixed(2) + ' slashed')),
+                  h('div', { className: 'table-wrap' },
+                    h('table', { className: 'mono-table' },
+                      h('tbody', null,
+                        h('tr', null, h('th', null, 'CERTIFICATE ID'), h('td', null, ga.sample_fraud_proof.certificate_id)),
+                        h('tr', null, h('th', null, 'DISPUTED WORKER'), h('td', null, ga.sample_fraud_proof.disputed_worker_hostname)),
+                        h('tr', null, h('th', null, 'MAX L∞ DIVERGENCE'), h('td', null, ga.sample_fraud_proof.max_abs_divergence.toFixed(4))),
+                        h('tr', null, h('th', null, 'PROOF MAC (FNV64)'), h('td', null, '0x' + ga.sample_fraud_proof.proof_mac_fnv64.toString(16))))))) : null)) : null,
+
+            ga ? h('div', { className: 'two' },
+              h('div', { className: 'panel' },
+                h('p', { className: 'eyebrow' }, 'Multi-tenant RBAC & slice quotas · SubClusterRbacEngine'),
+                h('div', { className: 'table-wrap' },
+                  h('table', { className: 'mono-table' },
+                    h('thead', null, h('tr', null,
+                      h('th', null, 'PRINCIPAL'),
+                      h('th', null, 'ROLE'),
+                      h('th', null, 'SLICE'),
+                      h('th', null, 'SCOPED KEY'))),
+                    h('tbody', null, ga.scoped_api_keys.map(function (k) {
+                      return h('tr', { key: k.key_id },
+                        h('td', null, k.principal_name),
+                        h('td', null, h(K.Badge, { tone: k.role === 'BlindSupplyProvider' ? 'warn' : 'local' }, k.role)),
+                        h('td', null, k.bound_slice_id),
+                        h('td', null, k.token_string.slice(0, 26) + '…'));
+                    }))))),
+              h('div', { className: 'panel' },
+                h('p', { className: 'eyebrow' }, 'Public Dream-RSI world registry · DreamRsiWorldRegistry'),
+                h('div', { className: 'table-wrap' },
+                  h('table', { className: 'mono-table' },
+                    h('thead', null, h('tr', null,
+                      h('th', null, 'WORLD SLUG'),
+                      h('th', null, 'GITHUB URI'),
+                      h('th', null, 'PEAK GAIN'),
+                      h('th', null, 'GPU SAVED'))),
+                    h('tbody', null, ga.dream_rsi_world_registry.map(function (w) {
+                      return h('tr', { key: w.world_slug },
+                        h('td', null, w.world_slug),
+                        h('td', null, w.github_uri),
+                        h('td', null, w.peak_speedup_or_score + '×'),
+                        h('td', null, h(K.Badge, { tone: 'ok' }, w.online_gpu_rollout_savings_pct + ' %')));
+                    })))))) : null) : null,
 
           tab === 'integrations' && integrations ? h('div', { className: 'kd-stack' },
             h('div', { className: 'kd-grid' },
@@ -477,23 +595,24 @@
               })),
             h('div', { className: 'panel' },
               h('p', { className: 'eyebrow' }, 'Hugging Face Hub selective layer-range pull · ' + integrations.sample_hf_pull_plan.hf_ref.repo_id),
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'WORKER NODE'),
-                  h('th', null, 'LAYERS'),
-                  h('th', null, 'REQUIRED SAFETENSORS SHARDS'),
-                  h('th', null, 'SELECTIVE PULL'),
-                  h('th', null, 'AVOIDED DOWNLOAD'),
-                  h('th', null, 'COMPILED .KTB BANK'))),
-                h('tbody', null, integrations.sample_hf_pull_plan.node_pulls.map(function (np) {
-                  return h('tr', { key: np.hostname },
-                    h('td', null, np.hostname),
-                    h('td', null, np.start_layer + '–' + np.end_layer),
-                    h('td', null, np.required_safetensors_files.join(', ')),
-                    h('td', null, np.selective_download_gb + ' GB'),
-                    h('td', null, h(K.Badge, { tone: 'ok' }, np.full_repo_avoided_gb + ' GB saved')),
-                    h('td', null, np.output_ktb_bank_path));
-                })))),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'WORKER NODE'),
+                    h('th', null, 'LAYERS'),
+                    h('th', null, 'REQUIRED SAFETENSORS SHARDS'),
+                    h('th', null, 'SELECTIVE PULL'),
+                    h('th', null, 'AVOIDED DOWNLOAD'),
+                    h('th', null, 'COMPILED .KTB BANK'))),
+                  h('tbody', null, integrations.sample_hf_pull_plan.node_pulls.map(function (np) {
+                    return h('tr', { key: np.hostname },
+                      h('td', null, np.hostname),
+                      h('td', null, np.start_layer + '–' + np.end_layer),
+                      h('td', null, np.required_safetensors_files.join(', ')),
+                      h('td', null, np.selective_download_gb + ' GB'),
+                      h('td', null, h(K.Badge, { tone: 'ok' }, np.full_repo_avoided_gb + ' GB saved')),
+                      h('td', null, np.output_ktb_bank_path));
+                  }))))),
             h('div', { className: 'panel' },
               h('p', { className: 'eyebrow' }, 'GitHub commit-pinned RL & Slice-on-PR evaluation · gh://' + integrations.sample_github_ci_run.gh_ref.owner + '/' + integrations.sample_github_ci_run.gh_ref.repo),
               h('div', { className: 'kd-row' },
@@ -504,15 +623,16 @@
             mcpManifest ? h('div', { className: 'two' },
               h('div', { className: 'panel' },
                 h('p', { className: 'eyebrow' }, 'Model Context Protocol (' + mcpManifest.server_name + ' · ' + mcpManifest.protocol_version + ')'),
-                h('table', { className: 'mono-table' },
-                  h('thead', null, h('tr', null,
-                    h('th', null, 'MCP TOOL'),
-                    h('th', null, 'DESCRIPTION'))),
-                  h('tbody', null, mcpManifest.tools.map(function (t) {
-                    return h('tr', { key: t.name },
-                      h('td', null, h(K.Badge, { tone: 'local' }, t.name)),
-                      h('td', null, t.description));
-                  }))),
+                h('div', { className: 'table-wrap' },
+                  h('table', { className: 'mono-table' },
+                    h('thead', null, h('tr', null,
+                      h('th', null, 'MCP TOOL'),
+                      h('th', null, 'DESCRIPTION'))),
+                    h('tbody', null, mcpManifest.tools.map(function (t) {
+                      return h('tr', { key: t.name },
+                        h('td', null, h(K.Badge, { tone: 'local' }, t.name)),
+                        h('td', null, t.description));
+                    })))),
                 h('div', { className: 'kd-row', style: { marginTop: 'var(--space-4)' } },
                   h(K.Button, { variant: 'primary', size: 'sm', icon: 'rods', onClick: function () { invokeMcpTool('kadmium_cluster_status', {}); } }, 'Call kadmium_cluster_status'),
                   h(K.Button, { size: 'sm', onClick: function () { invokeMcpTool('kadmium_verify_rl_sandbox', { candidate_code: 'fn fused_moe_gate() { /* simd */ }' }); } }, 'Call kadmium_verify_rl_sandbox'))),
@@ -533,23 +653,24 @@
               h('p', { className: 'eyebrow' }, 'Dream-RSI · Recursive Self-Improvement through Evolving Worlds (arXiv:2609.14858)'),
               h('p', { className: 'body', style: { margin: '0 0 var(--space-4)', color: 'var(--ink-muted)' } },
                 'Offline causal replay executes on low-power ARM SBCs (rk3588-sbc-bramble), legacy laptops and NAS CPU threads over recorded discovery trees at 0 GPU-hours.'),
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'POLICY ID'),
-                  h('th', null, 'STRATEGY'),
-                  h('th', null, 'NODES VISITED'),
-                  h('th', null, 'PRUNED'),
-                  h('th', null, 'PEAK SCORE'),
-                  h('th', null, 'SAVINGS'))),
-                h('tbody', null, (dream.evolution_report ? dream.evolution_report.evaluated_policies : []).map(function (ev) {
-                  return h('tr', { key: ev.policy.policy_id },
-                    h('td', null, ev.policy.policy_id),
-                    h('td', null, ev.policy.description),
-                    h('td', null, ev.visited_node_ids.length),
-                    h('td', null, ev.pruned_branches_count),
-                    h('td', null, ev.peak_score_achieved + ' GB/s'),
-                    h('td', null, h(K.Badge, { tone: ev.compute_savings_pct >= 60 ? 'local' : 'neutral' }, ev.compute_savings_pct.toFixed(1) + ' %')));
-                })))),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'POLICY ID'),
+                    h('th', null, 'STRATEGY'),
+                    h('th', null, 'NODES VISITED'),
+                    h('th', null, 'PRUNED'),
+                    h('th', null, 'PEAK SCORE'),
+                    h('th', null, 'SAVINGS'))),
+                  h('tbody', null, (dream.evolution_report ? dream.evolution_report.evaluated_policies : []).map(function (ev) {
+                    return h('tr', { key: ev.policy.policy_id },
+                      h('td', null, ev.policy.policy_id),
+                      h('td', null, ev.policy.description),
+                      h('td', null, ev.visited_node_ids.length),
+                      h('td', null, ev.pruned_branches_count),
+                      h('td', null, ev.peak_score_achieved + ' GB/s'),
+                      h('td', null, h(K.Badge, { tone: ev.compute_savings_pct >= 60 ? 'local' : 'neutral' }, ev.compute_savings_pct.toFixed(1) + ' %')));
+                  }))))),
             dream.evolution_report ? h(K.CodeBlock, {
               title: 'synthesized meta-policy prompt (injected into next online RL epoch)',
               language: 'text',
@@ -559,56 +680,57 @@
           tab === 'slices' && slices ? h('div', { className: 'kd-stack' },
             h('div', { className: 'panel' },
               h('p', { className: 'eyebrow' }, 'Sub-cluster pool partitioner · ' + slices.total_pool_nodes + ' nodes → ' + slices.slices.length + ' isolated slices'),
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'SLICE ID'),
-                  h('th', null, 'PURPOSE'),
-                  h('th', null, 'NODES'),
-                  h('th', null, 'VRAM + UMA'),
-                  h('th', null, 'TFLOPS'),
-                  h('th', null, 'THROUGHPUT'))),
-                h('tbody', null, slices.slices.map(function (s) {
-                  return h('tr', { key: s.slice_id },
-                    h('td', null, s.slice_id),
-                    h('td', null, h(K.Badge, { tone: 'local' }, s.purpose)),
-                    h('td', null, s.node_count),
-                    h('td', null, s.aggregate_vram_and_unified_gb + ' GB'),
-                    h('td', null, s.aggregate_tflops + ' TFLOPs'),
-                    h('td', null, s.shard_plan.estimated_throughput + ' tok/s'));
-                })))),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'SLICE ID'),
+                    h('th', null, 'PURPOSE'),
+                    h('th', null, 'NODES'),
+                    h('th', null, 'VRAM + UMA'),
+                    h('th', null, 'TFLOPS'),
+                    h('th', null, 'THROUGHPUT'))),
+                  h('tbody', null, slices.slices.map(function (s) {
+                    return h('tr', { key: s.slice_id },
+                      h('td', null, s.slice_id),
+                      h('td', null, h(K.Badge, { tone: 'local' }, s.purpose)),
+                      h('td', null, s.node_count),
+                      h('td', null, s.aggregate_vram_and_unified_gb + ' GB'),
+                      h('td', null, s.aggregate_tflops + ' TFLOPs'),
+                      h('td', null, s.shard_plan.estimated_throughput + ' tok/s'));
+                  }))))),
             dataflow ? h('div', { className: 'panel' },
               h('p', { className: 'eyebrow' }, 'TPU / Compute-in-Memory (CIM) dataflow evaluation · ' + dataflow.recommended_mode),
               h('p', { className: 'body', style: { margin: '0 0 var(--space-3)', color: 'var(--ink-muted)' } }, dataflow.recommendation_rationale),
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'DATAFLOW MODE'),
-                  h('th', null, 'WEIGHT STREAM'),
-                  h('th', null, 'TOKEN STREAM'),
-                  h('th', null, 'LATENCY'),
-                  h('th', null, 'THROUGHPUT'))),
-                h('tbody', null, [dataflow.weight_stationary_token_stream, dataflow.token_stationary_weight_stream, dataflow.hybrid_cim_adaptive].map(function (df) {
-                  return h('tr', { key: df.mode },
-                    h('td', null, df.mode),
-                    h('td', null, df.total_weight_bytes_streamed_gb_per_sec + ' GB/s'),
-                    h('td', null, df.total_token_activation_stream_mb_per_sec + ' MB/s'),
-                    h('td', null, df.estimated_step_latency_ms + ' ms'),
-                    h('td', null, h(K.Badge, { tone: df.mode === dataflow.recommended_mode ? 'ok' : 'neutral' }, df.estimated_tokens_per_sec + ' tok/s')));
-                })))) : null) : null,
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'DATAFLOW MODE'),
+                    h('th', null, 'WEIGHT STREAM'),
+                    h('th', null, 'TOKEN STREAM'),
+                    h('th', null, 'LATENCY'),
+                    h('th', null, 'THROUGHPUT'))),
+                  h('tbody', null, [dataflow.weight_stationary_token_stream, dataflow.token_stationary_weight_stream, dataflow.hybrid_cim_adaptive].map(function (df) {
+                    return h('tr', { key: df.mode },
+                      h('td', null, df.mode),
+                      h('td', null, df.total_weight_bytes_streamed_gb_per_sec + ' GB/s'),
+                      h('td', null, df.total_token_activation_stream_mb_per_sec + ' MB/s'),
+                      h('td', null, df.estimated_step_latency_ms + ' ms'),
+                      h('td', null, h(K.Badge, { tone: df.mode === dataflow.recommended_mode ? 'ok' : 'neutral' }, df.estimated_tokens_per_sec + ' tok/s')));
+                  }))))) : null) : null,
 
           tab === 'cloud' ? h('div', { className: 'kd-stack' },
             h('div', { className: 'plans' },
               h(K.PlanCard, {
                 product: 'self-hosted',
-                name: 'Kadmium',
+                name: 'Kadmium Local',
                 price: '$0',
-                period: 'forever',
-                summary: 'The whole fabric, on hardware you already own.',
+                period: 'forever · MIT / Apache-2.0',
+                summary: 'Pool every machine you own into one private cluster.',
                 features: [
-                  'One Rust binary, every OS',
-                  'Asymmetric sharding and live rebalancing',
-                  'DiLoCo + DeMo training over home internet',
-                  'Dream-RSI offline replay on SBCs and laptops',
-                  'MIT / Apache-2.0'
+                  'Single native Rust binary for Linux, macOS & Windows',
+                  'Asymmetric sharding + < 200 ms polite gaming yield',
+                  'DiLoCo + DeMo training & Dream-RSI offline replay',
+                  'OpenAI, Anthropic & MCP gateway on 127.0.0.1:7848'
                 ],
                 cta: isCloudCompanion ? 'Switch companion to self-hosted' : 'Active: Self-hosted mode',
                 onSelect: function () { toggleCompanionMode(false); }
@@ -616,36 +738,51 @@
               h(K.PlanCard, {
                 product: 'cloud',
                 name: 'Kadmium Cloud',
-                price: '$0.89',
-                period: '/ GPU-hour, from',
-                summary: 'A managed control plane, multi-provider spot arbitrage, and a failover shield for your local lab.',
+                price: '$0.55',
+                period: '/ GPU-hr from · burst & shield',
+                summary: 'Overflow into verified community rigs and surplus spot slots.',
                 features: [
-                  'Burst GPUs attached to your cluster in minutes',
-                  'Pre-warmed .ktb vault for zero-downtime failover',
-                  'Multi-datacenter spot arbitrage (~62 % savings)',
-                  'Bidirectional Local ↔ Cloud downtime shield',
-                  'Usage billing, no minimum'
+                  'Attach middle-layer GPUs in seconds — prompts stay local',
+                  'CloudShield < 400 ms automatic failover on local outage',
+                  'Multi-provider spot arbitrage (~62 % below hyperscalers)',
+                  'Per-second billing with hard hourly spend caps'
                 ],
                 cta: isCloudCompanion ? 'Active: Kadmium Cloud linked' : 'Link companion to Kadmium Cloud',
                 onSelect: function () { toggleCompanionMode(true); }
+              }),
+              h(K.PlanCard, {
+                product: 'self-hosted',
+                name: 'Supply Grid Host',
+                price: '+$1.15',
+                period: '/ hr avg · 1.25× in Cloud credits',
+                summary: 'Rent your idle GPU or Mac to verified researchers overnight.',
+                features: [
+                  'Blind middle-layer shards only — zero raw user text',
+                  'Sandboxed WASI RL verifiers with strict CPU/RAM caps',
+                  'Instant < 200 ms auto-evict the moment you touch your PC',
+                  'Direct USD payout or 1.25× Kadmium Cloud compute credits'
+                ],
+                cta: 'Configure Supply Grid in Companion',
+                onSelect: function () { window.location.href = '/companion'; }
               })),
             cloud ? h('div', { className: 'panel' },
               h('p', { className: 'eyebrow' }, 'Bidirectional downtime protection · CloudShield'),
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'DIRECTION'),
-                  h('th', null, 'OUTAGE TRIGGER'),
-                  h('th', null, 'STANDBY SYNC'),
-                  h('th', null, 'CUTOVER TIME'),
-                  h('th', null, 'DROPPED REQUESTS'))),
-                h('tbody', null, cloud.failover_simulations.map(function (sim, idx) {
-                  return h('tr', { key: idx },
-                    h('td', null, h(K.Badge, { tone: sim.direction === 'LocalToCloud' ? 'cloud' : 'local' }, sim.direction)),
-                    h('td', null, sim.outage_trigger),
-                    h('td', null, sim.hot_standby_sync_mb_per_min + ' MB/min'),
-                    h('td', null, sim.failover_cutover_latency_ms + ' ms'),
-                    h('td', null, h(K.Badge, { tone: 'ok' }, String(sim.dropped_requests))));
-                })))) : null) : null,
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'DIRECTION'),
+                    h('th', null, 'OUTAGE TRIGGER'),
+                    h('th', null, 'STANDBY SYNC'),
+                    h('th', null, 'CUTOVER TIME'),
+                    h('th', null, 'DROPPED REQUESTS'))),
+                  h('tbody', null, cloud.failover_simulations.map(function (sim, idx) {
+                    return h('tr', { key: idx },
+                      h('td', null, h(K.Badge, { tone: sim.direction === 'LocalToCloud' ? 'cloud' : 'local' }, sim.direction)),
+                      h('td', null, sim.outage_trigger),
+                      h('td', null, sim.hot_standby_sync_mb_per_min + ' MB/min'),
+                      h('td', null, sim.failover_cutover_latency_ms + ' ms'),
+                      h('td', null, h(K.Badge, { tone: 'ok' }, String(sim.dropped_requests))));
+                  }))))) : null) : null,
 
           tab === 'gateway' ? h('div', { className: 'two' },
             h('div', { className: 'panel' },

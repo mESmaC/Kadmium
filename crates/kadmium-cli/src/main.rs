@@ -17,7 +17,9 @@ use kadmium_sharding::{
 };
 use std::sync::{Arc, Mutex};
 
+mod grid_ops;
 mod ops;
+use grid_ops::*;
 use ops::*;
 
 #[derive(Parser)]

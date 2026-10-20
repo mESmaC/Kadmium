@@ -8,7 +8,8 @@
   <link rel="stylesheet" href="/tokens.css">
   <link rel="stylesheet" href="/components/bundle.css">
   <style>
-    html, body { margin: 0; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; overflow-x: hidden; }
     body {
       background: var(--graphite-0);
       color: var(--ink);
@@ -19,10 +20,11 @@
       display: flex;
       align-items: center;
       gap: var(--space-3);
-      min-height: 56px;
-      padding: var(--space-2) var(--space-6);
+      min-height: 60px;
+      padding: var(--space-2) clamp(16px, 3vw, 40px);
       border-bottom: 1px solid var(--line);
-      background: var(--graphite-1);
+      background: color-mix(in srgb, var(--graphite-1) 92%, transparent);
+      backdrop-filter: blur(12px);
       position: sticky;
       top: 0;
       z-index: 20;
@@ -38,11 +40,14 @@
     }
     .top .spacer { flex: 1; }
     .shell {
-      max-width: 960px;
+      max-width: 1180px;
       margin: 0 auto;
-      padding: var(--space-8) var(--space-6) var(--space-16);
+      padding: var(--space-8) clamp(16px, 3.5vw, 40px) var(--space-16);
       display: grid;
       gap: var(--space-6);
+    }
+    .shell > *, .two > * {
+      min-width: 0;
     }
     .eyebrow {
       font-family: var(--font-mono);
@@ -59,20 +64,26 @@
       border-radius: var(--radius-md);
       padding: var(--space-5);
       box-shadow: var(--shadow-sm);
+      min-width: 0;
     }
     .two {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: var(--space-4);
-      align-items: start;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-5);
+      align-items: stretch;
     }
     .mode-card {
       background: var(--graphite-2);
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      padding: var(--space-4);
-      display: grid;
+      padding: var(--space-5);
+      display: flex;
+      flex-direction: column;
       gap: var(--space-3);
+      min-width: 0;
+    }
+    .mode-card .kd-btn {
+      margin-top: auto;
     }
     .mode-card.active-local {
       border-color: var(--cadmium-edge);
@@ -80,8 +91,14 @@
     .mode-card.active-cloud {
       border-color: var(--cherenkov);
     }
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
     .mono-table {
       width: 100%;
+      min-width: 560px;
       border-collapse: collapse;
       font-family: var(--font-mono);
       font-size: 12px;
@@ -98,13 +115,14 @@
       background: var(--graphite-2);
       padding: var(--space-2) var(--space-3);
       border-bottom: 1px solid var(--line);
+      white-space: nowrap;
     }
     .mono-table td {
       padding: var(--space-2) var(--space-3);
       border-bottom: 1px solid var(--line);
       color: var(--ink);
     }
-    @media (max-width: 780px) {
+    @media (max-width: 860px) {
       .two { grid-template-columns: 1fr; }
     }
   </style>
@@ -304,21 +322,22 @@
                 size: 'sm',
                 onClick: function () { updateSupplyPolicy(true, supply.policy.daily_lease_hours, false); }
               }, 'Direct USD ($' + supply.total_projected_monthly_usd.toFixed(0) + '/mo)'))),
-          h('table', { className: 'mono-table' },
-            h('thead', null, h('tr', null,
-              h('th', null, 'LOCAL NODE'),
-              h('th', null, 'HARDWARE'),
-              h('th', null, 'USD / HR'),
-              h('th', null, '1.25× CREDITS / HR'),
-              h('th', null, 'PROJECTED MONTHLY (1.25×)'))),
-            h('tbody', null, supply.node_quotes.map(function (q) {
-              return h('tr', { key: q.node_id },
-                h('td', null, q.hostname),
-                h('td', null, q.hardware_summary),
-                h('td', null, '$' + q.usd_rate_per_hour.toFixed(2)),
-                h('td', { style: { color: 'var(--cadmium-text)' } }, '$' + q.cloud_credit_rate_per_hour_usd.toFixed(2)),
-                h('td', null, '$' + q.projected_monthly_cloud_credits_usd.toFixed(2)));
-            })))) : null,
+          h('div', { className: 'table-wrap' },
+            h('table', { className: 'mono-table' },
+              h('thead', null, h('tr', null,
+                h('th', null, 'LOCAL NODE'),
+                h('th', null, 'HARDWARE'),
+                h('th', null, 'USD / HR'),
+                h('th', null, '1.25× CREDITS / HR'),
+                h('th', null, 'PROJECTED MONTHLY (1.25×)'))),
+              h('tbody', null, supply.node_quotes.map(function (q) {
+                return h('tr', { key: q.node_id },
+                  h('td', null, q.hostname),
+                  h('td', null, q.hardware_summary),
+                  h('td', null, '$' + q.usd_rate_per_hour.toFixed(2)),
+                  h('td', { style: { color: 'var(--cadmium-text)' } }, '$' + q.cloud_credit_rate_per_hour_usd.toFixed(2)),
+                  h('td', null, '$' + q.projected_monthly_cloud_credits_usd.toFixed(2)));
+              }))))) : null,
 
         execReport ? h('section', { className: 'panel' },
           h('p', { className: 'eyebrow' }, 'Live pipeline execution trace · Top-4 MoE router + Speculative draft verification'),
@@ -326,77 +345,80 @@
             h(K.Badge, { tone: 'local' }, execReport.effective_tokens_per_sec + ' tok/s effective'),
             h(K.Badge, { tone: 'ok', dot: true }, execReport.speculative_verification.accepted_draft_tokens + ' / ' + execReport.speculative_verification.proposed_draft_tokens + ' draft tokens accepted (' + execReport.speculative_verification.effective_speedup_multiplier + '× speedup)'),
             h(K.Badge, { tone: 'neutral' }, execReport.total_pipeline_latency_ms + ' ms forward pass')),
-          h('table', { className: 'mono-table' },
-            h('thead', null, h('tr', null,
-              h('th', null, 'STAGE NODE'),
-              h('th', null, 'LAYERS'),
-              h('th', null, 'TOP-4 ROUTED EXPERTS (SOFTMAX)'),
-              h('th', null, 'COLD NVMe'),
-              h('th', null, 'INT8 BOUNDARY'),
-              h('th', null, 'LATENCY'))),
-            h('tbody', null, execReport.stages.map(function (st) {
-              var expText = st.routed_experts_sample.map(function (e) {
-                return 'E' + e.expert_id + '(' + e.gating_weight.toFixed(2) + ')';
-              }).join(' ');
-              return h('tr', { key: st.node_id },
-                h('td', null, st.hostname),
-                h('td', null, st.start_layer + '–' + st.end_layer),
-                h('td', null, expText),
-                h('td', null, st.cold_nvme_expert_fetches + ' .ktb pages'),
-                h('td', null, st.boundary_int8_payload_bytes + ' B'),
-                h('td', null, st.stage_latency_ms + ' ms'));
-            })))) : null,
+          h('div', { className: 'table-wrap' },
+            h('table', { className: 'mono-table' },
+              h('thead', null, h('tr', null,
+                h('th', null, 'STAGE NODE'),
+                h('th', null, 'LAYERS'),
+                h('th', null, 'TOP-4 ROUTED EXPERTS (SOFTMAX)'),
+                h('th', null, 'COLD NVMe'),
+                h('th', null, 'INT8 BOUNDARY'),
+                h('th', null, 'LATENCY'))),
+              h('tbody', null, execReport.stages.map(function (st) {
+                var expText = st.routed_experts_sample.map(function (e) {
+                  return 'E' + e.expert_id + '(' + e.gating_weight.toFixed(2) + ')';
+                }).join(' ');
+                return h('tr', { key: st.node_id },
+                  h('td', null, st.hostname),
+                  h('td', null, st.start_layer + '–' + st.end_layer),
+                  h('td', null, expText),
+                  h('td', null, st.cold_nvme_expert_fetches + ' .ktb pages'),
+                  h('td', null, st.boundary_int8_payload_bytes + ' B'),
+                  h('td', null, st.stage_latency_ms + ' ms'));
+              }))))) : null,
 
         pairing ? h('section', { className: 'two' },
           h('div', { className: 'panel' },
             h('p', { className: 'eyebrow' }, 'Zero-click LAN pairing · UDP KDMD beacon queue'),
             h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Approve discovered local peers via 6-digit SAS code'),
-            h('table', { className: 'mono-table' },
-              h('thead', null, h('tr', null,
-                h('th', null, 'DISCOVERED PEER'),
-                h('th', null, 'SAS CODE'),
-                h('th', null, 'STATUS'),
-                h('th', null, 'ACTION'))),
-              h('tbody', null, pairing.lan_candidates.map(function (c) {
-                var approved = c.status !== 'PendingTrayApproval';
-                return h('tr', { key: c.candidate_id },
-                  h('td', null,
-                    h('div', { style: { color: 'var(--ink)' } }, c.hostname),
-                    h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, c.hardware_summary)),
-                  h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, c.short_auth_code),
-                  h('td', null,
-                    h(K.Badge, { tone: approved ? 'ok' : 'warn', dot: true },
-                      c.status === 'ApprovedTrustedCore' ? 'trusted core' : c.status === 'ApprovedVerifiedMiddleOnly' ? 'middle only' : 'pending tray')),
-                  h('td', null,
-                    h('div', { className: 'kd-row' },
-                      h(K.Button, {
-                        variant: c.status === 'ApprovedTrustedCore' ? 'primary' : 'quiet',
-                        size: 'sm',
-                        onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedTrustedCore'); }
-                      }, 'TrustedCore'),
-                      h(K.Button, {
-                        variant: c.status === 'ApprovedVerifiedMiddleOnly' ? 'primary' : 'quiet',
-                        size: 'sm',
-                        onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedVerifiedMiddleOnly'); }
-                      }, 'Middle-only'))));
-              })))),
+            h('div', { className: 'table-wrap' },
+              h('table', { className: 'mono-table' },
+                h('thead', null, h('tr', null,
+                  h('th', null, 'DISCOVERED PEER'),
+                  h('th', null, 'SAS CODE'),
+                  h('th', null, 'STATUS'),
+                  h('th', null, 'ACTION'))),
+                h('tbody', null, pairing.lan_candidates.map(function (c) {
+                  var approved = c.status !== 'PendingTrayApproval';
+                  return h('tr', { key: c.candidate_id },
+                    h('td', null,
+                      h('div', { style: { color: 'var(--ink)' } }, c.hostname),
+                      h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, c.hardware_summary)),
+                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, c.short_auth_code),
+                    h('td', null,
+                      h(K.Badge, { tone: approved ? 'ok' : 'warn', dot: true },
+                        c.status === 'ApprovedTrustedCore' ? 'trusted core' : c.status === 'ApprovedVerifiedMiddleOnly' ? 'middle only' : 'pending tray')),
+                    h('td', null,
+                      h('div', { className: 'kd-row' },
+                        h(K.Button, {
+                          variant: c.status === 'ApprovedTrustedCore' ? 'primary' : 'quiet',
+                          size: 'sm',
+                          onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedTrustedCore'); }
+                        }, 'TrustedCore'),
+                        h(K.Button, {
+                          variant: c.status === 'ApprovedVerifiedMiddleOnly' ? 'primary' : 'quiet',
+                          size: 'sm',
+                          onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedVerifiedMiddleOnly'); }
+                        }, 'Middle-only'))));
+                })))))),
 
           h('div', { className: 'panel' },
             h('p', { className: 'eyebrow' }, 'OS swapchain & thermal hooks · ' + pairing.os_hysteresis.hook_backend),
             h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Fast-yield (' + pairing.os_hysteresis.fast_yield_sla_ms + ' ms) & 15 s anti-thrash hysteresis'),
-            h('table', { className: 'mono-table' },
-              h('thead', null, h('tr', null,
-                h('th', null, 'T (MS)'),
-                h('th', null, 'OS HOOK EVENT'),
-                h('th', null, 'STATE'),
-                h('th', null, 'VRAM CAP'))),
-              h('tbody', null, pairing.os_hysteresis.timeline.map(function (step) {
-                return h('tr', { key: step.timestamp_ms },
-                  h('td', null, step.timestamp_ms + ' ms'),
-                  h('td', null, step.event_label),
-                  h('td', null, h(K.Badge, { tone: step.new_state === 'GamingOrHeavyApp' ? 'warn' : 'local' }, step.new_state)),
-                  h('td', { style: { color: 'var(--cadmium-text)' } }, step.allocated_vram_gb.toFixed(1) + ' GB'));
-              }))))) : null,
+            h('div', { className: 'table-wrap' },
+              h('table', { className: 'mono-table' },
+                h('thead', null, h('tr', null,
+                  h('th', null, 'T (MS)'),
+                  h('th', null, 'OS HOOK EVENT'),
+                  h('th', null, 'STATE'),
+                  h('th', null, 'VRAM CAP'))),
+                h('tbody', null, pairing.os_hysteresis.timeline.map(function (step) {
+                  return h('tr', { key: step.timestamp_ms },
+                    h('td', null, step.timestamp_ms + ' ms'),
+                    h('td', null, step.event_label),
+                    h('td', null, h(K.Badge, { tone: step.new_state === 'GamingOrHeavyApp' ? 'warn' : 'local' }, step.new_state)),
+                    h('td', { style: { color: 'var(--cadmium-text)' } }, step.allocated_vram_gb.toFixed(1) + ' GB'));
+                })))))) : null,
 
         watcher ? h('section', { className: 'panel' },
           h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
@@ -406,24 +428,25 @@
             h('div', { className: 'kd-row' },
               h(K.Badge, { tone: 'cloud', dot: true }, watcher.measured_cutover_rto_ms + ' ms cutover · 0 dropped requests'),
               h(K.Badge, { tone: 'local' }, '18-min outage prorated cost: $' + watcher.total_prorated_incident_cost_usd.toFixed(2)))),
-          h('table', { className: 'mono-table' },
-            h('thead', null, h('tr', null,
-              h('th', null, 'T (SEC)'),
-              h('th', null, 'HEARTBEAT / INCIDENT EVENT'),
-              h('th', null, 'SHIELD STATE'),
-              h('th', null, 'ACTIVE HOST'),
-              h('th', null, 'BURN RATE'),
-              h('th', null, 'PRORATED TOTAL'))),
-            h('tbody', null, watcher.steps.map(function (st) {
-              var isCloudStep = st.state === 'CloudFailoverActive' || st.state === 'DrainingBackToLocal';
-              return h('tr', { key: st.timestamp_sec },
-                h('td', null, st.timestamp_sec + ' s'),
-                h('td', null, st.event_description),
-                h('td', null, h(K.Badge, { tone: isCloudStep ? 'cloud' : 'local', dot: true }, st.state)),
-                h('td', null, st.active_middle_shard_host),
-                h('td', { style: { color: isCloudStep ? 'var(--cherenkov)' : 'var(--cadmium-text)' } }, '$' + st.instantaneous_hourly_burn_usd.toFixed(2) + ' / hr'),
-                h('td', null, '$' + st.cumulative_incident_cost_usd.toFixed(2)));
-            })))) : null));
+          h('div', { className: 'table-wrap' },
+            h('table', { className: 'mono-table' },
+              h('thead', null, h('tr', null,
+                h('th', null, 'T (SEC)'),
+                h('th', null, 'HEARTBEAT / INCIDENT EVENT'),
+                h('th', null, 'SHIELD STATE'),
+                h('th', null, 'ACTIVE HOST'),
+                h('th', null, 'BURN RATE'),
+                h('th', null, 'PRORATED TOTAL'))),
+              h('tbody', null, watcher.steps.map(function (st) {
+                var isCloudStep = st.state === 'CloudFailoverActive' || st.state === 'DrainingBackToLocal';
+                return h('tr', { key: st.timestamp_sec },
+                  h('td', null, st.timestamp_sec + ' s'),
+                  h('td', null, st.event_description),
+                  h('td', null, h(K.Badge, { tone: isCloudStep ? 'cloud' : 'local', dot: true }, st.state)),
+                  h('td', null, st.active_middle_shard_host),
+                  h('td', { style: { color: isCloudStep ? 'var(--cherenkov)' : 'var(--cadmium-text)' } }, '$' + st.instantaneous_hourly_burn_usd.toFixed(2) + ' / hr'),
+                  h('td', null, '$' + st.cumulative_incident_cost_usd.toFixed(2)));
+              }))))) : null));
   }
 
   ReactDOM.createRoot(document.getElementById('app')).render(h(CompanionApp));
