@@ -1,0 +1,16 @@
+<!-- @dsCard group="Forms" height=124 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Input — preview</title></head>
+<body class="kd-preview">
+<div id="root" class="kd-grid" style="max-width:980px"></div>
+<script>
+  var K = window.Kadmium, h = React.createElement;
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null,
+    h(K.Input, { label: 'Coordinator', mono: true, prefix: 'quic://', defaultValue: '10.0.0.14:7848', hint: 'Reachable from every node on the LAN.' }),
+    h(K.Input, { label: 'Node name', placeholder: 'e.g. Gaming laptop (Ava)' }),
+    h(K.Input, { label: 'Spot budget', mono: true, prefix: '$', defaultValue: '12', error: 'Must be at least $1 per hour.' })));
+</script>
+</body>
+</html>

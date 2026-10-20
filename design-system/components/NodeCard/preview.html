@@ -1,0 +1,19 @@
+<!-- @dsCard group="Cluster" height=236 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>NodeCard — preview</title></head>
+<body class="kd-preview">
+<div id="root" class="kd-grid" style="max-width:900px"></div>
+<script>
+  var K = window.Kadmium, h = React.createElement;
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null,
+    h(K.NodeCard, { name: 'M4 Mac Mini', hardware: 'm4 · 64 gb unified · metal', kind: 'compact', placement: 'local', status: 'resident', shards: 'layers 12–31',
+      meters: [{ label: 'UMA', value: 46, max: 64, unit: 'GB' }, { label: 'NVMe', value: 1.8, max: 2, unit: 'TB' }] }),
+    h(K.NodeCard, { name: 'Main desktop', hardware: 'rtx 5070 · 12 gb · nvme 7 gb/s', kind: 'desktop', placement: 'local', status: 'yielded', shards: 'layers 0–11 → handoff',
+      meters: [{ label: 'VRAM', value: 0.6, max: 12, unit: 'GB' }, { label: 'RAM', value: 21, max: 64, unit: 'GB' }] }),
+    h(K.NodeCard, { name: 'RunPod A100', hardware: 'a100 80 gb · 3h lease · us-east', kind: 'gpu', placement: 'cloud', status: 'prefetching', shards: 'layers 0–11',
+      meters: [{ label: 'VRAM', value: 30, max: 80, unit: 'GB' }, { label: 'link', value: 410, max: 1000, unit: 'Mbps' }] })));
+</script>
+</body>
+</html>

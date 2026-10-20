@@ -1,0 +1,119 @@
+/* Kadmium — generated from tokens.json. Dark is the first theme and the fallback: set data-theme="dark" or "light" on <html>. */
+@font-face { font-family: "Archivo"; src: url("fonts/Archivo-Variable.woff2") format("woff2"); font-weight: 100 900; font-style: normal; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("fonts/JetBrainsMono-Variable.woff2") format("woff2"); font-weight: 100 800; font-style: normal; font-display: swap; }
+:root, [data-theme="dark"] {
+  --graphite-0: #0f1114;
+  --graphite-1: #16191e;
+  --graphite-2: #1d2127;
+  --graphite-3: #272c34;
+  --line: #2b3038;
+  --line-strong: #5f6875;
+  --ink: #eceff3;
+  --ink-muted: #9aa3ae;
+  --ink-faint: #6b7482;
+  --cadmium: #f3c020;
+  --cadmium-hover: #ffd03a;
+  --cadmium-text: #f3c020;
+  --on-cadmium: #141414;
+  --cadmium-soft: #2d2509;
+  --cadmium-edge: #f3c020;
+  --cherenkov: #5cc8ff;
+  --cherenkov-hover: #86d7ff;
+  --cherenkov-text: #5cc8ff;
+  --on-cherenkov: #0b1620;
+  --cherenkov-soft: #0e2231;
+  --ok: #3fd4c4;
+  --ok-soft: #0e2a2a;
+  --warn: #ff7a45;
+  --warn-soft: #33200f;
+  --danger: #ff6b5e;
+  --danger-soft: #3a1613;
+  --tier-hot: #f3c020;
+  --tier-warm: #a88a2a;
+  --tier-cold: #4a4430;
+  --code-keyword: var(--cadmium-text);
+  --code-string: var(--ok);
+  --code-number: var(--cherenkov-text);
+  --code-comment: var(--ink-muted);
+  --shadow-sm: 0 1px 2px #00000080;
+  --shadow-lg: 0 12px 32px -4px #000000b3, 0 0 0 1px #2b3038;
+  --focus-ring: 0 0 0 2px #0f1114, 0 0 0 4px #f3c020;
+}
+[data-theme="dark"] { color-scheme: dark; }
+[data-theme="light"] {
+  --graphite-0: #f5f6f8;
+  --graphite-1: #ffffff;
+  --graphite-2: #eceff3;
+  --graphite-3: #dfe3e9;
+  --line: #d6dbe2;
+  --line-strong: #7d8793;
+  --ink: #15181c;
+  --ink-muted: #5b6572;
+  --ink-faint: #808a96;
+  --cadmium: #f3c020;
+  --cadmium-hover: #e0b012;
+  --cadmium-text: #7a5a00;
+  --on-cadmium: #141414;
+  --cadmium-soft: #fff3c4;
+  --cadmium-edge: #b08600;
+  --cherenkov: #0369a1;
+  --cherenkov-hover: #075985;
+  --cherenkov-text: #075985;
+  --on-cherenkov: #ffffff;
+  --cherenkov-soft: #e0f2fe;
+  --ok: #0e6b6b;
+  --ok-soft: #d3f4f1;
+  --warn: #9a3412;
+  --warn-soft: #ffedd5;
+  --danger: #b42318;
+  --danger-soft: #fde2df;
+  --tier-hot: #f3c020;
+  --tier-warm: #e6d690;
+  --tier-cold: #f3eed6;
+  --code-keyword: var(--cadmium-text);
+  --code-string: var(--ok);
+  --code-number: var(--cherenkov-text);
+  --code-comment: var(--ink-muted);
+  --shadow-sm: 0 1px 2px #15181c14, 0 1px 3px #15181c1f;
+  --shadow-lg: 0 8px 24px -4px #15181c2e, 0 0 0 1px #d6dbe2;
+  --focus-ring: 0 0 0 2px #ffffff, 0 0 0 4px #7a5a00;
+}
+[data-theme="light"] { color-scheme: light; }
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --radius-xs: 3px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-tile: 22%;
+  --radius-full: 9999px;
+  --control-sm: 28px;
+  --control-md: 36px;
+  --control-lg: 44px;
+  --icon-sm: 16px;
+  --icon-md: 20px;
+  --icon-lg: 24px;
+  --font-sans: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.display-xl { font-family: var(--font-sans); font-size: 56px; line-height: 60px; font-weight: 650; letter-spacing: -0.035em; }
+.display { font-family: var(--font-sans); font-size: 40px; line-height: 44px; font-weight: 650; letter-spacing: -0.03em; }
+.headline { font-family: var(--font-sans); font-size: 28px; line-height: 34px; font-weight: 600; letter-spacing: -0.02em; }
+.title { font-family: var(--font-sans); font-size: 20px; line-height: 26px; font-weight: 600; letter-spacing: -0.01em; }
+.body-lg { font-family: var(--font-sans); font-size: 17px; line-height: 26px; font-weight: 400; }
+.body { font-family: var(--font-sans); font-size: 15px; line-height: 22px; font-weight: 400; }
+.body-strong { font-family: var(--font-sans); font-size: 15px; line-height: 22px; font-weight: 600; }
+.caption { font-family: var(--font-sans); font-size: 13px; line-height: 18px; font-weight: 400; }
+.label { font-family: var(--font-mono); font-size: 11px; line-height: 16px; font-weight: 500; letter-spacing: 0.08em; }
+.metric { font-family: var(--font-mono); font-size: 28px; line-height: 32px; font-weight: 500; letter-spacing: -0.02em; }
+.code { font-family: var(--font-mono); font-size: 13px; line-height: 20px; font-weight: 400; }
+.code-sm { font-family: var(--font-mono); font-size: 12px; line-height: 18px; font-weight: 400; }

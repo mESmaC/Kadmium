@@ -1,179 +1,187 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-theme="dark">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Kadmium (Cd-48) — Official Application Documentation</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kadmium — Documentation</title>
+  <link rel="icon" href="/assets/Logos/kadmium-favicon.svg" />
+  <link rel="stylesheet" href="/tokens.css" />
+  <link rel="stylesheet" href="/components/bundle.css" />
   <style>
-    :root {
-      --bg: #0b0e14;
-      --panel: #111622;
-      --panel-hover: #171e2e;
-      --border: #232c40;
-      --text: #e6edf3;
-      --muted: #8b949e;
-      --accent: #f59e0b;
-      --accent-soft: rgba(245, 158, 11, 0.14);
-      --cyan: #38bdf8;
-      --green: #10b981;
-      --code-bg: #070a0f;
-    }
-    * { box-sizing: border-box; }
+    html, body { margin: 0; }
     body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
-      background: var(--bg);
-      color: var(--text);
+      background: var(--graphite-0);
+      color: var(--ink);
+      font-family: var(--font-sans);
       display: flex;
       flex-direction: column;
       min-height: 100vh;
     }
     header {
-      height: 60px;
-      border-bottom: 1px solid var(--border);
-      background: rgba(17, 22, 34, 0.92);
-      backdrop-filter: blur(8px);
+      height: 56px;
+      border-bottom: 1px solid var(--line);
+      background: var(--graphite-1);
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 0 24px;
+      gap: var(--space-3);
+      padding: 0 var(--space-6);
       position: sticky;
       top: 0;
       z-index: 20;
     }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      font-weight: 700;
-      font-size: 16px;
-      letter-spacing: 0.02em;
+    header img { height: 24px; display: block; }
+    header .cd {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      color: var(--ink-muted);
+      text-transform: uppercase;
     }
-    .cd-badge {
-      background: linear-gradient(135deg, #f59e0b, #ea580c);
-      color: #0b0e14;
-      font-weight: 800;
-      padding: 4px 8px;
-      border-radius: 6px;
-      font-size: 13px;
-    }
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-    .nav-links a {
-      color: var(--text);
-      text-decoration: none;
-      font-size: 13px;
-      padding: 6px 12px;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: var(--panel);
-      transition: all 0.15s ease;
-    }
-    .nav-links a:hover {
-      border-color: var(--accent);
-      color: var(--accent);
-    }
+    header .spacer { flex: 1; }
     .layout {
       display: grid;
       grid-template-columns: 290px 1fr;
       flex: 1;
-      max-width: 1480px;
+      max-width: 1380px;
       width: 100%;
       margin: 0 auto;
     }
     aside {
-      border-right: 1px solid var(--border);
-      padding: 20px 16px;
-      background: var(--panel);
-      height: calc(100vh - 60px);
+      border-right: 1px solid var(--line);
+      padding: var(--space-5) var(--space-4);
+      background: var(--graphite-1);
+      height: calc(100vh - 56px);
       position: sticky;
-      top: 60px;
+      top: 56px;
       overflow-y: auto;
     }
     .search-input {
       width: 100%;
-      padding: 8px 12px;
-      border-radius: 6px;
-      border: 1px solid var(--border);
-      background: var(--code-bg);
-      color: var(--text);
-      font-size: 13px;
-      margin-bottom: 16px;
+      height: var(--control-md);
+      padding: 0 var(--space-3);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--line-strong);
+      background: var(--graphite-0);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      font-size: 14px;
+      margin-bottom: var(--space-4);
+      outline: none;
+    }
+    .search-input:focus {
+      border-color: var(--cadmium-text);
+      box-shadow: var(--focus-ring);
     }
     .cat-header {
+      font-family: var(--font-mono);
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      color: var(--muted);
-      margin: 16px 8px 8px;
-      font-weight: 700;
+      color: var(--ink-muted);
+      margin: var(--space-4) var(--space-2) var(--space-2);
+      font-weight: 500;
     }
     .doc-item {
       display: block;
       width: 100%;
       text-align: left;
       background: transparent;
-      border: 1px solid transparent;
-      color: var(--text);
-      padding: 8px 10px;
-      border-radius: 6px;
-      font-size: 13px;
+      border: 0;
+      border-left: 3px solid transparent;
+      color: var(--ink-muted);
+      padding: var(--space-2) var(--space-3);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      font-family: var(--font-sans);
+      font-size: 14px;
       cursor: pointer;
-      margin-bottom: 4px;
-      transition: all 0.12s ease;
+      margin-bottom: 2px;
+      transition: background-color 0.12s ease, color 0.12s ease;
     }
     .doc-item:hover {
-      background: var(--panel-hover);
+      background: var(--graphite-2);
+      color: var(--ink);
     }
     .doc-item.active {
-      background: var(--accent-soft);
-      border-color: rgba(245, 158, 11, 0.45);
-      color: var(--accent);
+      background: var(--cadmium-soft);
+      border-left-color: var(--cadmium);
+      color: var(--ink);
       font-weight: 600;
     }
     .doc-item small {
       display: block;
-      color: var(--muted);
+      color: var(--ink-muted);
+      font-family: var(--font-mono);
       font-size: 11px;
       margin-top: 2px;
     }
     main {
-      padding: 36px 48px 80px;
-      max-width: 960px;
-      line-height: 1.65;
+      padding: var(--space-8) var(--space-10) var(--space-16);
+      max-width: 920px;
+      line-height: 1.6;
     }
     .doc-meta-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 12px;
-      margin-bottom: 24px;
-      font-size: 12px;
-      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+      padding-bottom: var(--space-3);
+      margin-bottom: var(--space-6);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-muted);
     }
-    .doc-content h1 { font-size: 28px; margin-top: 0; color: #fff; }
-    .doc-content h2 { font-size: 20px; margin-top: 32px; padding-bottom: 6px; border-bottom: 1px solid var(--border); color: var(--cyan); }
-    .doc-content h3 { font-size: 16px; margin-top: 24px; color: var(--accent); }
+    .doc-content h1 {
+      font-family: var(--font-sans);
+      font-size: 40px;
+      line-height: 44px;
+      font-weight: 650;
+      letter-spacing: -0.03em;
+      margin-top: 0;
+      color: var(--ink);
+    }
+    .doc-content h2 {
+      font-family: var(--font-sans);
+      font-size: 24px;
+      line-height: 30px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin-top: var(--space-8);
+      padding-bottom: var(--space-2);
+      border-bottom: 1px solid var(--line);
+      color: var(--ink);
+    }
+    .doc-content h3 {
+      font-family: var(--font-sans);
+      font-size: 18px;
+      line-height: 24px;
+      font-weight: 600;
+      margin-top: var(--space-6);
+      color: var(--cadmium-text);
+    }
+    .doc-content p, .doc-content li {
+      font-size: 15px;
+      line-height: 24px;
+      color: var(--ink);
+    }
     .doc-content pre {
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      padding: 14px 16px;
-      border-radius: 8px;
+      background: var(--graphite-2);
+      border: 1px solid var(--line);
+      padding: var(--space-3) var(--space-4);
+      border-radius: var(--radius-md);
       overflow-x: auto;
+      font-family: var(--font-mono);
       font-size: 13px;
-      line-height: 1.5;
-      color: #d1d5db;
+      line-height: 20px;
+      color: var(--ink);
     }
     .doc-content code {
-      font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
-      background: rgba(255,255,255,0.07);
-      padding: 2px 5px;
-      border-radius: 4px;
-      font-size: 0.9em;
+      font-family: var(--font-mono);
+      background: var(--graphite-2);
+      padding: 2px 6px;
+      border-radius: var(--radius-xs);
+      font-size: 12px;
     }
     .doc-content pre code {
       background: transparent;
@@ -182,46 +190,62 @@
     .doc-content table {
       width: 100%;
       border-collapse: collapse;
-      margin: 16px 0;
-      font-size: 13px;
+      margin: var(--space-4) 0;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 18px;
     }
     .doc-content th, .doc-content td {
-      border: 1px solid var(--border);
-      padding: 8px 12px;
+      border: 1px solid var(--line);
+      padding: var(--space-2) var(--space-3);
       text-align: left;
     }
     .doc-content th {
-      background: var(--panel);
-      color: var(--accent);
+      background: var(--graphite-2);
+      color: var(--ink-muted);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
     .doc-content hr {
       border: none;
-      border-top: 1px solid var(--border);
-      margin: 28px 0;
+      border-top: 1px solid var(--line);
+      margin: var(--space-8) 0;
+    }
+    .doc-content a {
+      color: var(--cadmium-text);
+      text-decoration: none;
+    }
+    .doc-content a:hover {
+      text-decoration: underline;
+    }
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { height: auto; position: static; border-right: 0; border-bottom: 1px solid var(--line); }
+      main { padding: var(--space-6); }
     }
   </style>
 </head>
 <body>
   <header>
-    <div class="brand">
-      <span class="cd-badge">Cd 48</span>
-      <span>KADMIUM.AI — Official Documentation Portal</span>
-    </div>
-    <div class="nav-links">
-      <a href="/">← Back to Live Cluster Control Dashboard</a>
-      <a href="/api/v1/docs" target="_blank">Raw JSON API (/api/v1/docs)</a>
-    </div>
+    <img id="brandWordmark" src="/assets/Logos/kadmium-wordmark-dark.svg" alt="Kadmium" />
+    <span class="cd">Cd‑48 · Docs</span>
+    <span class="spacer"></span>
+    <a class="kd-btn kd-btn-sm" href="/">Control room</a>
+    <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/design-system">Design system</a>
+    <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/api/v1/docs" target="_blank">JSON API</a>
+    <button class="kd-btn kd-btn-ghost kd-btn-sm" id="themeBtn" onclick="toggleTheme()">Light theme</button>
   </header>
 
   <div class="layout">
     <aside>
-      <input type="text" id="docSearch" class="search-input" placeholder="Search documentation..." oninput="filterDocs()" />
+      <input type="text" id="docSearch" class="search-input" placeholder="Filter documentation..." oninput="filterDocs()" />
       <div id="sidebarList"></div>
     </aside>
     <main>
       <div class="doc-meta-bar">
         <span id="currentPath">docs/README.md</span>
-        <span id="currentCat">Overview</span>
+        <span id="currentCat">1. Getting Started & Core Reference</span>
       </div>
       <div id="docBody" class="doc-content">Loading documentation...</div>
     </main>
@@ -230,13 +254,22 @@
   <script>
     let allDocs = [];
     let activeSlug = "overview";
+    let currentTheme = "dark";
+
+    function toggleTheme() {
+      currentTheme = currentTheme === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", currentTheme);
+      document.getElementById("brandWordmark").src = currentTheme === "dark"
+        ? "/assets/Logos/kadmium-wordmark-dark.svg"
+        : "/assets/Logos/kadmium-wordmark-light.svg";
+      document.getElementById("themeBtn").textContent = currentTheme === "dark" ? "Light theme" : "Dark theme";
+    }
 
     function escapeHtml(str) {
       return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     }
 
     function renderMarkdown(md) {
-      // Lightweight zero-dependency Markdown renderer for headings, code blocks, tables, bold, inline code, and lists
       let blocks = [];
       md = md.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
         const idx = blocks.length;
@@ -308,9 +341,9 @@
             "./guides/subclusters-and-cloud-shield.md": "subclusters-and-cloud-shield"
           };
           if (slugMap[href]) {
-            return `<a href="#" onclick="selectDoc('${slugMap[href]}'); return false;" style="color:var(--accent)">${label}</a>`;
+            return `<a href="#" onclick="selectDoc('${slugMap[href]}'); return false;">${label}</a>`;
           }
-          return `<a href="${href}" target="_blank" style="color:var(--cyan)">${label}</a>`;
+          return `<a href="${href}" target="_blank">${label}</a>`;
         });
     }
 

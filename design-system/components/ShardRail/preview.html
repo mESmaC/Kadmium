@@ -1,0 +1,16 @@
+<!-- @dsCard group="Cluster" height=192 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>ShardRail — preview</title></head>
+<body class="kd-preview">
+<div id="root"></div>
+<script>
+  var K = window.Kadmium, h = React.createElement;
+
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    h(K.ShardRail, { label: 'Shard plan for deepseek-v3-671b, inference', nodes: [
+      { name: 'mac', share: 0.34 }, { name: 'pc', share: 0.22 }, { name: 'lap-1', share: 0.12 }, { name: 'lap-2', share: 0.09 },
+      { name: 'old', share: 0.05 }, { name: 'pi', share: 0.02 }, { name: 'nas', share: 0 }, { name: 'a100', share: 0.16, placement: 'cloud' } ] }));
+</script>
+</body>
+</html>

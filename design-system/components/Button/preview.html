@@ -1,0 +1,21 @@
+<!-- @dsCard group="Actions" height=80 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Button — preview</title></head>
+<body class="kd-preview">
+<div id="root" class="kd-row"></div>
+<script>
+  var K = window.Kadmium, h = React.createElement;
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null,
+    h(K.Button, { variant: 'primary', icon: 'rods' }, 'Start node'),
+    h(K.Button, null, 'Shard plan'),
+    h(K.Button, { variant: 'cloud', icon: 'cloud' }, 'Attach burst GPU'),
+    h(K.Button, { variant: 'ghost' }, 'Logs'),
+    h(K.Button, { variant: 'danger' }, 'Evict'),
+    h(K.Button, { size: 'sm' }, 'Small'),
+    h(K.Button, { variant: 'primary', size: 'lg' }, 'Deploy cluster'),
+    h(K.Button, { disabled: true }, 'Disabled')));
+</script>
+</body>
+</html>

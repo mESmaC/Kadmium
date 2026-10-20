@@ -1,0 +1,18 @@
+<!-- @dsCard group="Brand" height=88 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Mark — preview</title></head>
+<body class="kd-preview">
+<div id="root" class="kd-row" style="gap:var(--space-6)"></div>
+<script>
+  var K = window.Kadmium, h = React.createElement;
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null,
+    h(K.Mark, { size: 56 }),
+    h(K.Mark, { size: 32 }),
+    h(K.Mark, { size: 20 }),
+    h('span', { style: { color: 'var(--ink-muted)', display: 'inline-flex', alignItems: 'center', gap: '8px' } }, h(K.Mark, { size: 32, tone: 'mono' }), h('span', { style: { fontFamily: 'var(--font-mono)', fontSize: '12px' } }, 'tone="mono" inherits color')),
+    h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: '10px', fontWeight: 650, fontSize: '22px', letterSpacing: '-0.03em' } }, h(K.Mark, { size: 26 }), 'Kadmium')));
+</script>
+</body>
+</html>

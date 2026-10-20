@@ -1,0 +1,67 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kadmium</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { padding: 0; background: var(--graphite-0); color: var(--ink); font-family: var(--font-sans); overflow: hidden; }
+  .cover { position: relative; width: 960px; height: 288px; overflow: hidden; }
+  /* the composition: a 480-wide box on the right half of the 960 layout, clear of the name */
+  .art { position: absolute; top: 0; left: 480px; width: 480px; height: 288px; overflow: hidden; }
+  .art svg { display: block; width: 520px; height: 288px; overflow: visible; }
+  .slab { fill: var(--cadmium); }
+  .tint { fill: var(--cadmium-soft); }
+  .deep { fill: var(--graphite-3); }
+  .blk { rx: var(--radius-md); }
+  .rail { stroke: var(--ink); stroke-width: 4; stroke-linecap: round; fill: none; }
+  .rod { stroke: var(--cadmium); stroke-width: 8; stroke-linecap: round; fill: none; }
+  .rod.cut { stroke: var(--on-cadmium); }
+  .rod.cloud { stroke: var(--cherenkov); }
+  /* name and tagline, bottom-left on the ground */
+  .words { position: absolute; left: var(--space-6); bottom: var(--space-6); max-width: 440px; }
+  .name { margin: 0; font-size: 96px; line-height: .92; font-weight: 650; letter-spacing: -.035em; color: var(--ink); }
+  .tag { margin: var(--space-3) 0 0 var(--space-1); font-size: 14px; line-height: 20px; color: var(--ink-muted); }
+</style>
+</head>
+<body>
+<div class="cover">
+<div class="art" aria-hidden="true">
+<svg viewBox="0 0 520 288" width="520" height="288">
+<!--
+  blocks      cadmium 176×256 bled off the top (the brand, largest) · cadmium-soft 120×144 (the tint, relief) · graphite-3 176×192 bleeding off the right edge (the dark surface) — ≈31% of 960×288
+  arrangement three unequal slabs on one baseline (y = 240, two steps above the edge), space-4 gutters; the tall cadmium slab first, the dark slab last
+  pattern     the rod lattice — from "the rod lattice is the one pattern" and "unequal depth = asymmetric shards": one rail at y = 36 across all three slabs, 17 rods at a space-6 pitch hanging to plan-like depths; cut in on-cadmium through the cadmium slab, cadmium over the tint and the dark slab, one cherenkov rod for the burst node
+  scales      pitch space-6 (24); rod stroke space-2 (8), rail 4; gutters space-4 (16); block sides in space-4 multiples; corners radius-md (10); rod ends radius-full
+-->
+<rect class="slab blk" x="16" y="-16" width="176" height="256" rx="10"/>
+<rect class="tint blk" x="208" y="96" width="120" height="144" rx="10"/>
+<rect class="deep blk" x="344" y="48" width="192" height="192" rx="10"/>
+<line class="rail" x1="16" y1="36" x2="536" y2="36"/>
+<line class="rod cut" x1="40" y1="28" x2="40" y2="120"/>
+<line class="rod cut" x1="64" y1="28" x2="64" y2="184"/>
+<line class="rod cut" x1="88" y1="28" x2="88" y2="96"/>
+<line class="rod cut" x1="112" y1="28" x2="112" y2="152"/>
+<line class="rod cut" x1="136" y1="28" x2="136" y2="212"/>
+<line class="rod cut" x1="160" y1="28" x2="160" y2="128"/>
+<line class="rod" x1="232" y1="28" x2="232" y2="72"/>
+<line class="rod" x1="256" y1="28" x2="256" y2="160"/>
+<line class="rod" x1="280" y1="28" x2="280" y2="112"/>
+<line class="rod" x1="304" y1="28" x2="304" y2="200"/>
+<line class="rod" x1="368" y1="28" x2="368" y2="144"/>
+<line class="rod" x1="392" y1="28" x2="392" y2="88"/>
+<line class="rod" x1="416" y1="28" x2="416" y2="208"/>
+<line class="rod" x1="440" y1="28" x2="440" y2="120"/>
+<line class="rod cloud" x1="464" y1="28" x2="464" y2="168"/>
+<line class="rod" x1="488" y1="28" x2="488" y2="100"/>
+<line class="rod" x1="512" y1="28" x2="512" y2="152"/>
+</svg>
+</div>
+<div class="words">
+<h1 class="name">Kadmium</h1>
+<p class="tag">Every machine you own, as one reactor.</p>
+</div>
+</div>
+</body>
+</html>

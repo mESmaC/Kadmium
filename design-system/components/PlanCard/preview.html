@@ -1,0 +1,17 @@
+<!-- @dsCard group="Commerce" height=484 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>PlanCard — preview</title></head>
+<body class="kd-preview">
+<div id="root" class="kd-row" style="align-items:stretch"></div>
+<script>
+  var K = window.Kadmium, h = React.createElement;
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null,
+    h(K.PlanCard, { product: 'self-hosted', name: 'Kadmium', price: '$0', period: 'forever', summary: 'The whole fabric, on hardware you already own.',
+      features: ['One Rust binary, every OS', 'Asymmetric sharding and live rebalancing', 'DiLoCo + DeMo training over home internet', 'OpenAI- and Anthropic-compatible gateway', 'MIT / Apache-2.0'], cta: 'Install' }),
+    h(K.PlanCard, { product: 'cloud', name: 'Kadmium Cloud', price: '$0.89', period: '/ GPU-hour, from', summary: 'A managed control plane, multi-provider spot arbitrage, and a failover shield for your local lab.',
+      features: ['Burst GPUs attached to your cluster in minutes', 'Pre-warmed .ktb vault for zero-downtime failover', 'Spot eviction handled for you', 'Usage billing, no minimum'], cta: 'Start a cluster' })));
+</script>
+</body>
+</html>

@@ -6,7 +6,8 @@
 use axum::{
     Json, Router,
     extract::State,
-    response::Html,
+    http::header,
+    response::{Html, IntoResponse},
     routing::{get, post},
 };
 use kadmium_core::{
@@ -35,6 +36,36 @@ use std::sync::{Arc, Mutex};
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 const DOCS_PORTAL_HTML: &str = include_str!("docs_portal.html");
+const DESIGN_SYSTEM_DEMO_HTML: &str = include_str!("../../../design-system/demo.html");
+
+const DS_TOKENS_CSS: &str = include_str!("../../../design-system/tokens.css");
+const DS_TOKENS_JSON: &str = include_str!("../../../design-system/tokens.json");
+const DS_BUNDLE_CSS: &str = include_str!("../../../design-system/components/bundle.css");
+const DS_BUNDLE_JS: &str = include_str!("../../../design-system/components/bundle.js");
+const DS_REACT_JS: &str =
+    include_str!("../../../design-system/components/lib/react.production.min.js");
+const DS_REACT_DOM_JS: &str =
+    include_str!("../../../design-system/components/lib/react-dom.production.min.js");
+
+const DS_FONT_ARCHIVO: &[u8] =
+    include_bytes!("../../../design-system/fonts/Archivo-Variable.woff2");
+const DS_FONT_JETBRAINS_MONO: &[u8] =
+    include_bytes!("../../../design-system/fonts/JetBrainsMono-Variable.woff2");
+
+const DS_LOGO_FAVICON: &str =
+    include_str!("../../../design-system/assets/Logos/kadmium-favicon.svg");
+const DS_LOGO_WORDMARK_DARK: &str =
+    include_str!("../../../design-system/assets/Logos/kadmium-wordmark-dark.svg");
+const DS_LOGO_WORDMARK_LIGHT: &str =
+    include_str!("../../../design-system/assets/Logos/kadmium-wordmark-light.svg");
+const DS_LOGO_MARK_DARK: &str =
+    include_str!("../../../design-system/assets/Logos/kadmium-mark-dark.svg");
+const DS_LOGO_MARK_LIGHT: &str =
+    include_str!("../../../design-system/assets/Logos/kadmium-mark-light.svg");
+const DS_LOGO_TILE_GRAPHITE: &str =
+    include_str!("../../../design-system/assets/Logos/kadmium-tile-graphite.svg");
+const DS_LOGO_TILE_CADMIUM: &str =
+    include_str!("../../../design-system/assets/Logos/kadmium-tile-cadmium.svg");
 
 const DOC_OVERVIEW_MD: &str = include_str!("../../../docs/README.md");
 const DOC_GETTING_STARTED_MD: &str = include_str!("../../../docs/getting-started.md");
@@ -323,6 +354,49 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
     Router::new()
         .route("/", get(serve_dashboard))
         .route("/docs", get(serve_docs_portal))
+        .route("/design-system", get(serve_design_system_demo))
+        .route("/tokens.css", get(serve_tokens_css))
+        .route("/tokens.json", get(serve_tokens_json))
+        .route("/components/bundle.css", get(serve_bundle_css))
+        .route("/components/bundle.js", get(serve_bundle_js))
+        .route(
+            "/components/lib/react.production.min.js",
+            get(serve_react_js),
+        )
+        .route(
+            "/components/lib/react-dom.production.min.js",
+            get(serve_react_dom_js),
+        )
+        .route("/fonts/Archivo-Variable.woff2", get(serve_font_archivo))
+        .route(
+            "/fonts/JetBrainsMono-Variable.woff2",
+            get(serve_font_jetbrains),
+        )
+        .route("/assets/Logos/kadmium-favicon.svg", get(serve_logo_favicon))
+        .route(
+            "/assets/Logos/kadmium-wordmark-dark.svg",
+            get(serve_logo_wordmark_dark),
+        )
+        .route(
+            "/assets/Logos/kadmium-wordmark-light.svg",
+            get(serve_logo_wordmark_light),
+        )
+        .route(
+            "/assets/Logos/kadmium-mark-dark.svg",
+            get(serve_logo_mark_dark),
+        )
+        .route(
+            "/assets/Logos/kadmium-mark-light.svg",
+            get(serve_logo_mark_light),
+        )
+        .route(
+            "/assets/Logos/kadmium-tile-graphite.svg",
+            get(serve_logo_tile_graphite),
+        )
+        .route(
+            "/assets/Logos/kadmium-tile-cadmium.svg",
+            get(serve_logo_tile_cadmium),
+        )
         .route("/api/v1/docs", get(get_documentation_catalog))
         .route("/api/v1/cluster/overview", get(get_cluster_overview))
         .route("/api/v1/cluster/shift", post(post_cluster_shift))
@@ -345,6 +419,121 @@ async fn serve_dashboard() -> Html<&'static str> {
 
 async fn serve_docs_portal() -> Html<&'static str> {
     Html(DOCS_PORTAL_HTML)
+}
+
+async fn serve_design_system_demo() -> Html<&'static str> {
+    Html(DESIGN_SYSTEM_DEMO_HTML)
+}
+
+async fn serve_tokens_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        DS_TOKENS_CSS,
+    )
+}
+
+async fn serve_tokens_json() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+        DS_TOKENS_JSON,
+    )
+}
+
+async fn serve_bundle_css() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        DS_BUNDLE_CSS,
+    )
+}
+
+async fn serve_bundle_js() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        DS_BUNDLE_JS,
+    )
+}
+
+async fn serve_react_js() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        DS_REACT_JS,
+    )
+}
+
+async fn serve_react_dom_js() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        DS_REACT_DOM_JS,
+    )
+}
+
+async fn serve_font_archivo() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "font/woff2")], DS_FONT_ARCHIVO)
+}
+
+async fn serve_font_jetbrains() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "font/woff2")],
+        DS_FONT_JETBRAINS_MONO,
+    )
+}
+
+async fn serve_logo_favicon() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        DS_LOGO_FAVICON,
+    )
+}
+
+async fn serve_logo_wordmark_dark() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        DS_LOGO_WORDMARK_DARK,
+    )
+}
+
+async fn serve_logo_wordmark_light() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        DS_LOGO_WORDMARK_LIGHT,
+    )
+}
+
+async fn serve_logo_mark_dark() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        DS_LOGO_MARK_DARK,
+    )
+}
+
+async fn serve_logo_mark_light() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        DS_LOGO_MARK_LIGHT,
+    )
+}
+
+async fn serve_logo_tile_graphite() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        DS_LOGO_TILE_GRAPHITE,
+    )
+}
+
+async fn serve_logo_tile_cadmium() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")],
+        DS_LOGO_TILE_CADMIUM,
+    )
 }
 
 async fn get_documentation_catalog() -> Json<Vec<DocumentationPage>> {

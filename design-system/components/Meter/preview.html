@@ -1,0 +1,17 @@
+<!-- @dsCard group="Status" height=132 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Meter — preview</title></head>
+<body class="kd-preview">
+<div id="root" class="kd-stack" style="max-width:420px"></div>
+<script>
+  var K = window.Kadmium, h = React.createElement;
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null,
+    h(K.Meter, { label: 'UMA', value: 46, max: 64, unit: 'GB' }),
+    h(K.Meter, { label: 'VRAM', value: 30, max: 80, unit: 'GB', tone: 'cloud' }),
+    h(K.Meter, { label: 'VRAM', value: 11.8, max: 12, unit: 'GB', criticalAt: 0.95 }),
+    h(K.Meter, { label: 'link', value: 2.3, max: 10, unit: 'Gbps', format: function (v, m) { return v + ' / ' + m + ' Gbps'; } })));
+</script>
+</body>
+</html>

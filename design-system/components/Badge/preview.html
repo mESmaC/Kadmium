@@ -1,0 +1,20 @@
+<!-- @dsCard group="Status" height=64 -->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Badge — preview</title></head>
+<body class="kd-preview">
+<div id="root" class="kd-row"></div>
+<script>
+  var K = window.Kadmium, h = React.createElement;
+
+  ReactDOM.createRoot(document.getElementById('root')).render(h(React.Fragment, null,
+    h(K.Badge, { tone: 'local' }, 'local'),
+    h(K.Badge, { tone: 'cloud' }, 'cloud'),
+    h(K.Badge, { tone: 'ok', dot: true }, 'resident'),
+    h(K.Badge, { tone: 'warn', dot: true }, 'yielded'),
+    h(K.Badge, { tone: 'danger', dot: true }, 'offline'),
+    h(K.Badge, null, 'deepseek-v3-671b'),
+    h(K.Badge, null, 'quic')));
+</script>
+</body>
+</html>
