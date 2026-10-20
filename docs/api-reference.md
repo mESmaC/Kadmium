@@ -170,3 +170,26 @@ curl -X POST http://127.0.0.1:7848/api/v1/companion/mode \
     }
   }'
 ```
+
+---
+
+## 4. Model Context Protocol (`POST /mcp` & `GET /api/v1/mcp`)
+
+### `POST /mcp`
+Streamable HTTP JSON-RPC 2.0 endpoint implementing the **Model Context Protocol (`2025-03-26`)** (`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`).
+
+### `GET /api/v1/mcp`
+Returns [`KadmiumMcpManifest`](../crates/kadmium-gateway/src/mcp.rs), including all 6 MCP tool JSON Schemas, 5 resources, 2 prompts, and the `.mcp.json` configuration snippet.
+
+---
+
+## 5. Ecosystem Integrations & Observability (`/api/v1/integrations`, `/metrics`, `/api/v1/telemetry/wandb`)
+
+### `GET /api/v1/integrations`
+Returns [`EcosystemIntegrationsOverview`](../crates/kadmium-data/src/lib.rs) covering `hf://` selective layer-range pulls, `gh://` slice check runs, `oci://`, `s3://`, and `wandb://`.
+
+### `GET /metrics`
+Exports live cluster gauges (`kadmium_cluster_epoch`, `kadmium_inference_throughput_tokens_per_sec`, `kadmium_diloco_demo_compression_ratio`, `kadmium_cloud_shield_hourly_burn_usd`, `kadmium_node_fast_memory_gb`) in standard **Prometheus / OpenMetrics (`text/plain; version=0.0.4`)** exposition format.
+
+### `GET /api/v1/telemetry/wandb`
+Returns a structured **Weights & Biases (`wandb://`) / OpenTelemetry** run summary JSON object for distributed training, GRPO, and Dream-RSI runs.

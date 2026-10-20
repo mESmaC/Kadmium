@@ -1072,6 +1072,72 @@ providers = ["runpod", "vast", "lambda", "prime_intellect"]
             self.cloud_hourly_cap_usd,
         )
     }
+
+    /// Parses a `kadmium.toml` configuration manifest into a `KadmiumWorkspaceConfig`.
+    pub fn parse_kadmium_toml(toml_text: &str) -> Result<Self, String> {
+        let mut cfg = Self::from_local_probe(LiveHardwareProfiler::probe_local_host());
+        let mut current_section = "";
+
+        for raw_line in toml_text.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                current_section = &line[1..line.len() - 1];
+                continue;
+            }
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
+            let key = k.trim();
+            let val = v.trim().trim_matches('"');
+
+            match (current_section, key) {
+                ("cluster", "name") => cfg.cluster_name = val.to_string(),
+                ("cluster", "coordinator_bind") => cfg.coordinator_bind = val.to_string(),
+                ("cluster", "ktb_cache_dir") => cfg.ktb_cache_dir = val.to_string(),
+                ("cluster", "default_model") => cfg.default_model = val.to_string(),
+                ("host", "node_id") => cfg.local_node.id = NodeId(val.to_string()),
+                ("host", "hostname") => cfg.local_node.hostname = val.to_string(),
+                ("host", "fp16_tflops") => {
+                    if let Ok(f) = val.parse::<f64>() {
+                        cfg.local_node.fp16_tflops = f;
+                    }
+                }
+                ("host", "vram_gb") => {
+                    if let Ok(f) = val.parse::<f64>() {
+                        cfg.local_node.memory.vram_gb = f;
+                    }
+                }
+                ("governance", "polite_gaming_auto_yield") => {
+                    cfg.polite_gaming_auto_yield = val == "true";
+                }
+                ("governance", "yield_target_ms") => {
+                    if let Ok(ms) = val.parse::<u32>() {
+                        cfg.yield_target_ms = ms;
+                    }
+                }
+                ("integrations", "huggingface_selective_pull") => {
+                    cfg.hf_cache_enabled = val == "true";
+                }
+                ("integrations", "github_sandbox_slice") => {
+                    cfg.github_sandbox_slice = val.to_string();
+                }
+                ("cloud_shield", "enabled") => {
+                    cfg.cloud_shield_enabled = val == "true";
+                }
+                ("cloud_shield", "max_hourly_spend_cap_usd") => {
+                    if let Ok(cap) = val.parse::<f64>() {
+                        cfg.cloud_hourly_cap_usd = cap;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(cfg)
+    }
 }
 
 #[cfg(test)]

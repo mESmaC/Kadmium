@@ -137,3 +137,56 @@ Evaluates the **`kadmium.ai` Managed Hybrid Cloud** features:
 ```bash
 kadmium cloud-shield
 ```
+
+---
+
+## 9. `kadmium init`
+
+Probes the local host hardware (`VRAM`, `RAM`, `NVMe BW`, $q^*$) and generates a `kadmium.toml` workspace configuration manifest:
+
+```bash
+kadmium init --out kadmium.toml
+```
+
+---
+
+## 10. `kadmium compile` & `kadmium inspect`
+
+Compiles a contiguous layer range into a 64 KiB page-aligned `.ktb` (Kadmium Tensor Bank) binary archive, computes its `KtbMerkleTree` root digest, and inspects/verifies every 64 KiB page:
+
+```bash
+kadmium compile --model deepseek-v3-671b-moe --start-layer 0 --end-layer 3 --out shard.ktb
+kadmium inspect shard.ktb
+```
+
+---
+
+## 11. `kadmium pull`
+
+Stages selective layer-range shards from Hugging Face Hub (`hf://`) or mounts commit-pinned RL / Dream-RSI repositories from GitHub (`gh://`):
+
+```bash
+kadmium pull hf://deepseek-ai/DeepSeek-V3@main
+kadmium pull gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt
+```
+
+---
+
+## 12. `kadmium join`
+
+Verifies an HMAC-SHA256 `kdm1_...` Join Ticket, broadcasts a UDP LAN discovery beacon (`KDMD`), and attaches the local host to a cluster slice:
+
+```bash
+kadmium join --ticket kdm1_...
+```
+
+---
+
+## 13. `kadmium mcp`
+
+Starts the **Kadmium Model Context Protocol (`kadmium-mcp`) Server** over `stdio` for AI coding agents (Claude Code, Cursor, Antigravity, Windsurf, Zed), or prints the full MCP tool/resource/prompt catalog with `--inspect`:
+
+```bash
+kadmium mcp --inspect
+kadmium mcp
+```

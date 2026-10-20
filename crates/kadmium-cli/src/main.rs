@@ -78,6 +78,9 @@ enum Commands {
         /// Port to bind the HTTP dashboard and API gateway
         #[arg(short, long, default_value_t = 7848)]
         port: u16,
+        /// Optional path to `kadmium.toml` workspace configuration
+        #[arg(short, long)]
+        config: Option<String>,
     },
     /// Verify a kdm1_... Join Ticket, broadcast a UDP LAN beacon (KDMD), and join a cluster slice
     Join {
@@ -118,6 +121,11 @@ enum Commands {
         #[arg(short, long)]
         out: Option<String>,
     },
+    /// Inspect a `.ktb` (Kadmium Tensor Bank) archive and verify its 64 KiB page Merkle proofs
+    Inspect {
+        /// Optional path to a `.ktb` file on disk (compiles an in-memory archive if omitted)
+        path: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -141,7 +149,7 @@ async fn main() {
         Commands::CloudShield => run_cloud_shield(),
         Commands::Probe => run_probe(),
         Commands::Plan { model, workload } => run_plan(&model, &workload),
-        Commands::Serve { port } => run_server(port).await,
+        Commands::Serve { port, config } => run_server(port, config.as_deref()).await,
         Commands::Join { ticket } => run_join(ticket).await,
         Commands::Pull { uri } => run_pull(&uri),
         Commands::Mcp { inspect } => run_mcp(inspect),
@@ -152,6 +160,7 @@ async fn main() {
             end_layer,
             out,
         } => run_compile(&model, start_layer, end_layer, out.as_deref()),
+        Commands::Inspect { path } => run_inspect(path.as_deref()),
     }
 }
 
@@ -951,8 +960,29 @@ fn run_simulation() {
     );
 }
 
-async fn run_server(port: u16) {
-    let state = Arc::new(Mutex::new(GatewayState::new()));
+async fn run_server(port: u16, config_path: Option<&str>) {
+    let mut gw_state = GatewayState::new();
+    if let Some(cfg_file) = config_path
+        && let Ok(raw_toml) = std::fs::read_to_string(cfg_file)
+        && let Ok(parsed_cfg) = KadmiumWorkspaceConfig::parse_kadmium_toml(&raw_toml)
+    {
+        if parsed_cfg.cloud_shield_enabled {
+            gw_state.companion_mode =
+                kadmium_gateway::CompanionConnectionMode::KadmiumCloudManaged {
+                    workspace_slug: parsed_cfg.cluster_name.clone(),
+                    cloud_endpoint: "https://api.kadmium.ai".into(),
+                    downtime_shield_enabled: true,
+                    spot_arbitrage_burst_enabled: true,
+                    max_hourly_spend_cap_usd: parsed_cfg.cloud_hourly_cap_usd,
+                };
+        }
+        println!(
+            "  [Config] Loaded workspace '{}' from {}",
+            parsed_cfg.cluster_name, cfg_file
+        );
+    }
+
+    let state = Arc::new(Mutex::new(gw_state));
     let app = build_router(state);
     let addr = format!("0.0.0.0:{}", port);
     println!(
@@ -985,6 +1015,14 @@ async fn run_server(port: u16) {
     );
     println!(
         "    - Anthropic Endpoint:     http://127.0.0.1:{}/v1/messages",
+        port
+    );
+    println!(
+        "    - MCP JSON-RPC Endpoint:  http://127.0.0.1:{}/mcp",
+        port
+    );
+    println!(
+        "    - Prometheus Metrics:     http://127.0.0.1:{}/metrics",
         port
     );
     println!(
@@ -1251,5 +1289,86 @@ fn run_compile(model: &str, start_layer: u32, end_layer: u32, out_path: Option<&
     if let Some(path) = out_path {
         std::fs::write(path, &ktb_bytes).expect("Failed to write .ktb bank to disk");
         println!("  * Saved .ktb Archive To:  {path}");
+    }
+}
+
+fn run_inspect(path: Option<&str>) {
+    let (source_label, ktb_bytes) = if let Some(p) = path {
+        let bytes = std::fs::read(p).expect("Failed to read .ktb file from disk");
+        (p.to_string(), bytes)
+    } else {
+        let mut packer = KtbBankPacker::new("deepseek-v3-671b-moe");
+        packer.add_tensor_bank(
+            "layers.0.attn.qkv_proj",
+            0,
+            None,
+            TensorEncoding::Fp8E4M3,
+            vec![0xA5; 32_768],
+        );
+        packer.add_tensor_bank(
+            "layers.0.moe.experts.0.gate_up_proj",
+            0,
+            Some(0),
+            TensorEncoding::Q4KBlock,
+            vec![0x42; 65_536],
+        );
+        (
+            "in-memory sample (.ktb)".to_string(),
+            packer.pack_to_bytes(),
+        )
+    };
+
+    let reader = KtbBankReader::from_slice(&ktb_bytes).expect("Invalid .ktb binary header");
+    let merkle = KtbMerkleTree::from_ktb_bytes(&ktb_bytes);
+    let page_size = reader.header.page_alignment_bytes as usize;
+
+    let mut verified_pages = 0usize;
+    for (idx, chunk) in ktb_bytes.chunks(page_size).enumerate() {
+        if let Some(proof) = merkle.prove_page(idx)
+            && KtbMerkleTree::verify_page(chunk, &proof, merkle.root_hash)
+        {
+            verified_pages += 1;
+        }
+    }
+
+    println!(
+        "===================================================================================="
+    );
+    println!(" Kadmium (Cd-48) — `.ktb` Tensor Bank Inspector & Merkle Verifier");
+    println!(
+        "===================================================================================="
+    );
+    println!("  * Source Archive:         {source_label}");
+    println!(
+        "  * Model ID & Version:     {} (v{})",
+        reader.header.model_id, reader.header.format_version
+    );
+    println!(
+        "  * Page Alignment:         {} bytes (64 KiB)",
+        reader.header.page_alignment_bytes
+    );
+    println!(
+        "  * Merkle Tree Audit:      {}/{} pages verified (Root: {:#018x})",
+        verified_pages,
+        merkle.leaf_hashes.len(),
+        merkle.root_hash
+    );
+    println!(
+        "\n{:<38} {:<8} {:<10} {:<12} {:<12} {:<18}",
+        "TENSOR NAME", "LAYER", "EXPERT", "ENCODING", "PAGE OFFSET", "FNV-1A CHECKSUM"
+    );
+    println!("{}", "-".repeat(102));
+    for e in &reader.header.entries {
+        println!(
+            "{:<38} L{:02}      {:<10} {:<12} {:#010x}   {:#018x}",
+            e.tensor_name,
+            e.layer_index,
+            e.expert_index
+                .map(|x| format!("exp #{x:02}"))
+                .unwrap_or_else(|| "dense".into()),
+            format!("{:?}", e.encoding),
+            e.page_offset_bytes,
+            e.checksum_fnv64
+        );
     }
 }
