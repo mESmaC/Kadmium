@@ -9,6 +9,9 @@ use kadmium_core::{HardwareNode, NodeId, NodeRole, NodeTrustTier, PoliteState};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+pub mod nat_traversal;
+pub use nat_traversal::*;
+
 /// Transport path classification between two peers in the Kadmium mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransportKind {
@@ -656,5 +659,21 @@ mod tests {
         let frame = ab.to_wire_frame(9);
         let decoded = ClusterStateCrdt::from_wire_frame(&frame).expect("decode CRDT frame");
         assert_eq!(decoded, ab);
+    }
+
+    #[tokio::test]
+    async fn test_nat_traversal_holepunch_and_derp_fallback() {
+        let cluster = sample_personal_cluster();
+        let matrix = NatTraversalCoordinator::probe_cluster_nat_mesh(&cluster);
+        assert!(matrix.len() >= 7);
+        assert!(matrix.iter().any(|r| r.selected_path == CandidateEndpointKind::LanDirect));
+        assert!(matrix.iter().any(|r| r.selected_path == CandidateEndpointKind::StunPublicReflexive));
+        assert!(matrix.iter().any(|r| r.selected_path == CandidateEndpointKind::DerpRelayFallback));
+
+        let (from_a, to_b, nonce) = NatTraversalCoordinator::execute_udp_holepunch_loopback()
+            .await
+            .expect("udp hole-punch loopback");
+        assert_ne!(from_a.port(), to_b.port());
+        assert_eq!(nonce, 0xCD48_2026_F5B7_0001);
     }
 }

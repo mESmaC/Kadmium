@@ -8,13 +8,14 @@ use kadmium_core::{
     WorkloadKind, sample_personal_cluster,
 };
 use kadmium_data::{
-    GitHubConnector, HuggingFaceHubConnector, KtbBankPacker, KtbBankReader, KtbMerkleTree,
-    SafetensorsToKtbTranscoder, TensorEncoding,
+    GitHubConnector, HfByteRangeSlicer, HuggingFaceHubConnector, KtbBankPacker, KtbBankReader,
+    KtbMerkleTree, SafetensorsToKtbTranscoder, TensorEncoding,
 };
 use kadmium_gateway::{GatewayState, KadmiumMcpServer, McpJsonRpcRequest};
-use kadmium_network::{ClusterStateCrdt, JoinTicket, LanDiscoveryBeacon};
+use kadmium_network::{ClusterStateCrdt, JoinTicket, LanDiscoveryBeacon, NatTraversalCoordinator};
 use kadmium_runtime::{
-    ColibriNvmeDoubleBuffer, DeMoDctCompressor, Q4KBlockTensor, VerdeVerificationEngine,
+    ColibriNvmeDoubleBuffer, DeMoDctCompressor, HardwareKernelDispatcher, Q4KBlockTensor,
+    VerdeVerificationEngine,
 };
 use kadmium_sharding::{HybridCloudArbitragePlanner, ShardPlanner};
 
@@ -721,4 +722,107 @@ pub fn run_lease(hours: f64, payout: &str) {
         snap.total_projected_monthly_cloud_credits_usd,
         snap.equivalent_l40s_burst_hours_per_month
     );
+}
+
+pub async fn run_bench() {
+    let nodes = sample_personal_cluster();
+    let kernel_report = HardwareKernelDispatcher::run_cluster_kernel_benchmark(&nodes);
+
+    println!(
+        "==================================================================================================================="
+    );
+    println!(
+        " KADMIUM (Cd-48) PHASE 2 BENCHMARK — FUSED KERNEL DISPATCH, HTTP BYTE-RANGE SLICER & STUN/DERP NAT TRAVERSAL"
+    );
+    println!(
+        "==================================================================================================================="
+    );
+    println!(
+        "\n[1/3] Fused Transformer / MoE Operator Suite (RMSNorm+RoPE -> Flash-GQA PagedAttention -> Q4_K SwiGLU)"
+    );
+    println!(
+        "      Canonical Verde RepOps Digest: {:#018x} | Cross-Silicon Bit-Identical: {} | Output L2 Norm: {:.3}",
+        kernel_report.canonical_repops_digest_fnv1a,
+        kernel_report.cross_silicon_bit_identical,
+        kernel_report.sample_output_norm
+    );
+    println!(
+        "\n{:<22} {:<24} {:>12} {:>10} {:<48}",
+        "HOSTNAME", "KERNEL TARGET", "GFLOP/S", "BW UTIL", "INTRINSIC / SHADER SIGNATURE"
+    );
+    println!("{}", "-".repeat(122));
+    for p in &kernel_report.node_profiles {
+        println!(
+            "{:<22} {:<24} {:>10.1}   {:>8.1}%  {}",
+            p.hostname,
+            format!("{:?}", p.kernel_target),
+            p.achieved_gflops,
+            p.memory_bw_utilization_pct,
+            p.intrinsic_signature
+        );
+    }
+
+    // 2. HTTP Byte-Range Safetensors Slicer
+    let raw_st = SafetensorsToKtbTranscoder::build_safetensors_bytes(&[
+        (
+            "model.layers.0.self_attn.q_proj.weight",
+            "BF16",
+            vec![32, 32],
+            &vec![0x11; 2048],
+        ),
+        (
+            "model.layers.14.mlp.experts.2.up_proj.weight",
+            "F8_E4M3",
+            vec![64, 64],
+            &vec![0x42; 4096],
+        ),
+    ]);
+    let slices = HfByteRangeSlicer::plan_http_range_requests(
+        "deepseek-ai/DeepSeek-V3",
+        "main",
+        "model-00004-of-00016.safetensors",
+        &raw_st,
+        14,
+        14,
+    )
+    .expect("plan HTTP byte range requests");
+    let ktb =
+        HfByteRangeSlicer::assemble_range_slices_to_ktb("deepseek-v3-671b-moe", &raw_st, &slices)
+            .expect("assemble range slices to .ktb");
+    println!(
+        "\n[2/3] HTTP Byte-Range (`Range: bytes=start-end`) Safetensors Slicer -> 64 KiB `.ktb` Compiler"
+    );
+    for s in &slices {
+        println!(
+            "  * GET {} | Header: [Range: {}] ({} bytes) -> Layer {:02} ({:?}) -> Packed {} B .ktb",
+            s.shard_filename,
+            s.http_range_header,
+            s.payload_len_bytes,
+            s.layer_index,
+            s.target_encoding,
+            ktb.len()
+        );
+    }
+
+    // 3. STUN / UDP Hole-Punching & DERP Relay Matrix
+    let nat_matrix = NatTraversalCoordinator::probe_cluster_nat_mesh(&nodes);
+    let (sock_a, sock_b, nonce) = NatTraversalCoordinator::execute_udp_holepunch_loopback()
+        .await
+        .expect("execute UDP hole-punch loopback");
+    println!(
+        "\n[3/3] STUN / UDP Hole-Punching (`KDMP` Probe: {} <-> {}, Nonce {:#018x}) & DERP Fallback",
+        sock_a, sock_b, nonce
+    );
+    for r in &nat_matrix {
+        println!(
+            "  * {:<22} ({:?}) <==> {:<24} ({:?}) => {:?} [RTT: {:.2} ms | Direct P2P: {}]",
+            r.node_a,
+            r.nat_a,
+            r.node_b,
+            r.nat_b,
+            r.selected_path,
+            r.negotiated_rtt_ms,
+            r.direct_p2p_achieved
+        );
+    }
 }

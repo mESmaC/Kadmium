@@ -775,9 +775,11 @@ impl Fts3ChunkSlicer {
 
 pub mod integrations;
 pub mod merkle;
+pub mod range_pull;
 
 pub use integrations::*;
 pub use merkle::*;
+pub use range_pull::*;
 
 #[cfg(test)]
 mod tests {
@@ -1001,5 +1003,42 @@ mod tests {
         )
         .expect("patch verified page 3");
         assert_eq!(&worker_buf[3 * page_size..4 * page_size], page_3_slice);
+    }
+
+    #[test]
+    fn test_hf_http_byte_range_slicer_and_index_manifest_parser() {
+        let index_json = r#"{
+            "metadata": { "total_size": 685000000000 },
+            "weight_map": {
+                "model.layers.0.self_attn.q_proj.weight": "model-00001-of-00016.safetensors",
+                "model.layers.14.mlp.experts.2.up_proj.weight": "model-00004-of-00016.safetensors"
+            }
+        }"#;
+        let idx = HfByteRangeSlicer::parse_index_manifest(index_json).expect("parse index json");
+        let files = HfByteRangeSlicer::filter_required_shard_files(&idx, 14, 15);
+        assert_eq!(files, vec!["model-00004-of-00016.safetensors"]);
+
+        let raw_st = SafetensorsToKtbTranscoder::build_safetensors_bytes(&[
+            ("model.layers.0.self_attn.q_proj.weight", "BF16", vec![16, 16], &vec![0x11; 512]),
+            ("model.layers.14.mlp.experts.2.up_proj.weight", "F8_E4M3", vec![32, 32], &vec![0x42; 1024]),
+        ]);
+        let slices = HfByteRangeSlicer::plan_http_range_requests(
+            "deepseek-ai/DeepSeek-V3",
+            "main",
+            "model-00004-of-00016.safetensors",
+            &raw_st,
+            14,
+            14,
+        )
+        .expect("plan range slices");
+        assert_eq!(slices.len(), 1);
+        assert!(slices[0].http_range_header.starts_with("bytes="));
+        assert_eq!(slices[0].payload_len_bytes, 1024);
+
+        let ktb = HfByteRangeSlicer::assemble_range_slices_to_ktb("deepseek-v3-671b-moe", &raw_st, &slices)
+            .expect("assemble ktb from byte ranges");
+        let reader = KtbBankReader::from_slice(&ktb).expect("read ktb");
+        assert_eq!(reader.header.entries.len(), 1);
+        assert_eq!(reader.header.entries[0].layer_index, 14);
     }
 }

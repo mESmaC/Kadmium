@@ -17,7 +17,8 @@ use kadmium_core::{
 };
 use kadmium_data::{EcosystemIntegrationsOverview, Fts3TransferScheduler, ThirdPartyTransferJob};
 use kadmium_network::{
-    CoordinatorFailoverQuorum, JoinTicket, PeerLinkMetrics, build_mesh_link_matrix,
+    CoordinatorFailoverQuorum, HolePunchNegotiationResult, JoinTicket, NatTraversalCoordinator,
+    PeerLinkMetrics, build_mesh_link_matrix,
 };
 use kadmium_rl::{
     DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, GrpoEpochExecutor,
@@ -25,7 +26,8 @@ use kadmium_rl::{
 };
 use kadmium_runtime::{
     BoincWorkunit, DistributedMoEPipelineExecutor, DistributedPipelineExecutionReport,
-    Pipeline1F1BSchedule, Pipeline1F1BScheduler, TrainingJobTelemetry, sample_boinc_workunits,
+    HardwareKernelDispatcher, HardwareKernelSuiteReport, Pipeline1F1BSchedule,
+    Pipeline1F1BScheduler, TrainingJobTelemetry, sample_boinc_workunits,
 };
 use kadmium_sharding::{
     ClusterPoolSliceLayout, ClusterShardPlan, DataflowComparisonReport, DataflowStreamPlanner,
@@ -418,6 +420,8 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/metrics", get(get_prometheus_metrics))
         .route("/api/v1/telemetry/wandb", get(get_wandb_summary))
         .route("/api/v1/pipeline/execute", get(get_pipeline_execution))
+        .route("/api/v1/runtime/kernels", get(get_runtime_kernels))
+        .route("/api/v1/network/nat", get(get_network_nat_matrix))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .with_state(state)
@@ -677,6 +681,22 @@ async fn get_pipeline_execution(
         &guard.inference_plan,
         "Verify asymmetric MoE routing and speculative draft verification across the cluster.",
     ))
+}
+
+async fn get_runtime_kernels(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<HardwareKernelSuiteReport> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(HardwareKernelDispatcher::run_cluster_kernel_benchmark(
+        &guard.nodes,
+    ))
+}
+
+async fn get_network_nat_matrix(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<Vec<HolePunchNegotiationResult>> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(NatTraversalCoordinator::probe_cluster_nat_mesh(&guard.nodes))
 }
 
 async fn get_grpo_verified_step() -> Json<GrpoVerifiedStepReport> {

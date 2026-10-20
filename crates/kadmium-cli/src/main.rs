@@ -130,6 +130,8 @@ enum Commands {
         #[arg(short, long, default_value = "credits")]
         payout: String,
     },
+    /// Benchmark Phase 2 fused Transformer/MoE kernels (RMSNorm+RoPE, Flash-GQA PagedAttention, Q4_K SwiGLU), HTTP Range Slicer, and STUN/DERP NAT traversal
+    Bench,
 }
 
 #[tokio::main]
@@ -166,6 +168,7 @@ async fn main() {
         } => run_compile(&model, start_layer, end_layer, out.as_deref()),
         Commands::Inspect { path } => run_inspect(path.as_deref()),
         Commands::Lease { hours, payout } => run_lease(hours, &payout),
+        Commands::Bench => run_bench().await,
     }
 }
 

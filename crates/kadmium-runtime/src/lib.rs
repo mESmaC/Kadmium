@@ -9,6 +9,9 @@ use kadmium_core::{GradientCompressionCodec, NodeId, TrainingStrategy};
 use kadmium_sharding::{ActivationCheckpointingPolicy, ClusterShardPlan};
 use serde::{Deserialize, Serialize};
 
+pub mod kernels;
+pub use kernels::*;
+
 /// Telemetry snapshot for a running distributed & decentralized training job in Kadmium.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingJobTelemetry {
@@ -871,6 +874,21 @@ mod tests {
         assert!(
             last_loss < initial_loss,
             "QLoRA backward step must reduce loss ({last_loss} < {initial_loss})"
+        );
+    }
+
+    #[test]
+    fn test_fused_transformer_kernels_and_cross_silicon_dispatch() {
+        let cluster = sample_personal_cluster();
+        let report = HardwareKernelDispatcher::run_cluster_kernel_benchmark(&cluster);
+        assert_eq!(report.node_profiles.len(), cluster.len());
+        assert!(report.cross_silicon_bit_identical);
+        assert!(report.sample_output_norm > 0.0);
+        assert!(
+            report
+                .node_profiles
+                .iter()
+                .all(|p| p.repops_digest_fnv1a == report.canonical_repops_digest_fnv1a)
         );
     }
 }
