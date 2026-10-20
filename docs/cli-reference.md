@@ -190,3 +190,48 @@ Starts the **Kadmium Model Context Protocol (`kadmium-mcp`) Server** over `stdio
 kadmium mcp --inspect
 kadmium mcp
 ```
+
+---
+
+## 14. `kadmium lease`
+
+Configures and simulates the **Kadmium Supply Grid** on your local nodes, comparing direct USD payout rates against **1.25× Kadmium Cloud compute credits** while enforcing middle-layer-only privacy ($1 \dots N-2$) and `< 200 ms` gaming auto-eviction:
+
+```bash
+kadmium lease --hours 8 --credits true
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--hours <HOURS>` | `8.0` | Daily idle lease hours to simulate per node. |
+| `--credits <BOOL>` | `true` | Choose `1.25×` Kadmium Cloud credits (`true`) or direct USD payout (`false`). |
+
+---
+
+## 15. `kadmium bench`
+
+Executes the native hardware kernel suite (`FusedRmsNormRopeKernel` $\to$ `PagedGqaAttentionKernel` $\to$ `FusedSwiGluExpertKernel`), prints the active vendor intrinsic target (`CUDA PTX`, `ROCm HIP`, `Metal SIMD-group`, `Vulkan Subgroup`, `AVX-512 FMA`, `ARM NEON DotProd`), verifies deterministic `Verde RepOps` digest parity across nodes, and probes the UDP hole-punch + DERP relay NAT mesh:
+
+```bash
+kadmium bench
+```
+
+---
+
+## 16. `kadmium pairing`
+
+Runs the **Zero-Click LAN Pairing** (`ZeroClickLanPairingEngine` with 6-digit SAS verification codes), **OS Swapchain/Thermal Hysteresis** (`DXGI` / `IOKit` / `DRM` `< 200 ms` fast-yield + `15 s` anti-thrash cooldown), and **Automated `CloudShield` Cutover Watcher** (`380 ms` RTO, `0` dropped requests):
+
+```bash
+kadmium pairing
+```
+
+---
+
+## 17. `kadmium registry`
+
+Inspects the **`v1.0 GA` Multi-Provider Spot Orderbook**, **Sub-Cluster RBAC & Scoped API Keys (`kdm_live_...`)**, **Cryptographic `Verde` $O(\log_2 L)$ Fraud-Proof Certificates**, and the **Public `Dream-RSI` World Registry**:
+
+```bash
+kadmium registry
+```

@@ -193,3 +193,35 @@ Exports live cluster gauges (`kadmium_cluster_epoch`, `kadmium_inference_through
 
 ### `GET /api/v1/telemetry/wandb`
 Returns a structured **Weights & Biases (`wandb://`) / OpenTelemetry** run summary JSON object for distributed training, GRPO, and Dream-RSI runs.
+
+---
+
+## 6. Runtime Kernels, Supply Grid & `v1.0 GA` Governance Endpoints
+
+### `GET /api/v1/pipeline/execute`
+Executes a live forward pass through [`DistributedMoEPipelineExecutor`](../crates/kadmium-runtime/src/lib.rs), returning stage-by-stage Top-4 MoE softmax routing weights, Colibri double-buffered cold NVMe `.ktb` page fetches, Hivemind INT8 boundary payloads, and Leviathan speculative draft acceptance speedup.
+
+### `GET /api/v1/runtime/kernels`
+Runs [`HardwareKernelDispatcher::run_cluster_kernel_benchmark`](../crates/kadmium-runtime/src/kernels.rs) across all cluster nodes (`FusedRmsNormRopeKernel` $\to$ `PagedGqaAttentionKernel` $\to$ `FusedSwiGluExpertKernel`) and verifies bit-identical `Verde RepOps` FNV-1a digests across CUDA, Metal, Vulkan, AVX-512, and ARM NEON backends.
+
+### `GET /api/v1/network/nat`
+Returns the cluster-wide [`NatTraversalCoordinator`](../crates/kadmium-network/src/nat.rs) STUN/QUIC UDP hole-punch matrix and `kadmium.ai` DERP/TURN mTLS fallback routes.
+
+### `GET /api/v1/companion/pairing`
+Returns discovered UDP `KDMD` LAN peers awaiting 6-digit SAS approval (`ZeroClickLanPairingEngine`) and the live OS swapchain/thermal/battery hysteresis timeline (`OsSwapchainHysteresisEngine`).
+
+### `GET /api/v1/cloud-shield/watcher`
+Returns the [`CloudShieldCutoverWatcher`](../crates/kadmium-sharding/src/cloud_watcher.rs) heartbeat monitor simulation (`380 ms` Local $\to$ Cloud cutover RTO, `0` dropped requests, and automatic local failback).
+
+### `GET /api/v1/rl/grpo-step`
+Executes a verified online GRPO training step (`GrpoEpochExecutor`) using the deterministic [`WasiMicroSandbox`](../crates/kadmium-rl/src/wasi_sandbox.rs) and `DreamRsiMctsEngine` PUCT tree search.
+
+### `GET /api/v1/supply/marketplace` & `POST /api/v1/supply/configure`
+Inspects or updates the [`SupplyLeasePolicy`](../crates/kadmium-core/src/governance.rs) for leasing idle local silicon (`1.25×` Kadmium Cloud credits or direct USD payout).
+
+### `GET /api/v1/ga/governance`
+Returns the complete `v1.0 GA` governance bundle:
+- `spot_orderbook` & `provisioned_spot_container`: Live multi-provider spot quotes (`SpotOrderbookBidEngine`) and ephemeral middle-layer container descriptor.
+- `slice_quotas` & `scoped_api_keys`: Multi-tenant sub-cluster resource quotas and MAC-signed `kdm_live_...` API keys (`SubClusterRbacEngine`).
+- `dream_rsi_world_registry`: Public catalog of commit-pinned `gh://` WASI RL worlds (`DreamRsiWorldRegistry`).
+- `sample_fraud_proof`: Self-verifying $O(\log_2 L)$ `VerdeFraudProofCertificate` (`VerdeFraudProofEngine`).

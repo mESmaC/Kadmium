@@ -8,7 +8,8 @@
   <link rel="stylesheet" href="/tokens.css" />
   <link rel="stylesheet" href="/components/bundle.css" />
   <style>
-    html, body { margin: 0; }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; overflow-x: hidden; }
     body {
       background: var(--graphite-0);
       color: var(--ink);
@@ -18,16 +19,18 @@
       min-height: 100vh;
     }
     header {
-      height: 56px;
+      min-height: 60px;
       border-bottom: 1px solid var(--line);
-      background: var(--graphite-1);
+      background: color-mix(in srgb, var(--graphite-1) 92%, transparent);
+      backdrop-filter: blur(12px);
       display: flex;
       align-items: center;
       gap: var(--space-3);
-      padding: 0 var(--space-6);
+      padding: var(--space-2) clamp(16px, 3vw, 40px);
       position: sticky;
       top: 0;
       z-index: 20;
+      flex-wrap: wrap;
     }
     header img { height: 24px; display: block; }
     header .cd {
@@ -40,9 +43,9 @@
     header .spacer { flex: 1; }
     .layout {
       display: grid;
-      grid-template-columns: 290px 1fr;
+      grid-template-columns: 300px minmax(0, 1fr);
       flex: 1;
-      max-width: 1380px;
+      max-width: 1440px;
       width: 100%;
       margin: 0 auto;
     }
@@ -50,9 +53,9 @@
       border-right: 1px solid var(--line);
       padding: var(--space-5) var(--space-4);
       background: var(--graphite-1);
-      height: calc(100vh - 56px);
+      height: calc(100vh - 60px);
       position: sticky;
-      top: 56px;
+      top: 60px;
       overflow-y: auto;
     }
     .search-input {
@@ -115,14 +118,17 @@
       margin-top: 2px;
     }
     main {
-      padding: var(--space-8) var(--space-10) var(--space-16);
-      max-width: 920px;
-      line-height: 1.6;
+      padding: var(--space-8) clamp(20px, 4vw, 56px) var(--space-16);
+      max-width: 1020px;
+      min-width: 0;
+      line-height: 1.65;
     }
     .doc-meta-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-wrap: wrap;
+      gap: var(--space-2);
       border-bottom: 1px solid var(--line);
       padding-bottom: var(--space-3);
       margin-bottom: var(--space-6);
@@ -134,8 +140,8 @@
     }
     .doc-content h1 {
       font-family: var(--font-sans);
-      font-size: 40px;
-      line-height: 44px;
+      font-size: clamp(28px, 3.5vw, 40px);
+      line-height: 1.12;
       font-weight: 650;
       letter-spacing: -0.03em;
       margin-top: 0;
@@ -187,10 +193,16 @@
       background: transparent;
       padding: 0;
     }
+    .table-wrap {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      margin: var(--space-4) 0;
+    }
     .doc-content table {
       width: 100%;
+      min-width: 560px;
       border-collapse: collapse;
-      margin: var(--space-4) 0;
       font-family: var(--font-mono);
       font-size: 12px;
       line-height: 18px;
@@ -206,6 +218,7 @@
       font-size: 11px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
+      white-space: nowrap;
     }
     .doc-content hr {
       border: none;
@@ -219,10 +232,10 @@
     .doc-content a:hover {
       text-decoration: underline;
     }
-    @media (max-width: 860px) {
+    @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
-      aside { height: auto; position: static; border-right: 0; border-bottom: 1px solid var(--line); }
-      main { padding: var(--space-6); }
+      aside { height: auto; max-height: 280px; position: static; border-right: 0; border-bottom: 1px solid var(--line); }
+      main { padding: var(--space-6) clamp(16px, 4vw, 32px); }
     }
   </style>
 </head>
@@ -231,7 +244,9 @@
     <img id="brandWordmark" src="/assets/Logos/kadmium-wordmark-dark.svg" alt="Kadmium" />
     <span class="cd">Cd‑48 · Docs</span>
     <span class="spacer"></span>
+    <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/site">Site</a>
     <a class="kd-btn kd-btn-sm" href="/">Control room</a>
+    <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/companion">Companion</a>
     <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/design-system">Design system</a>
     <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/api/v1/docs" target="_blank">JSON API</a>
     <button class="kd-btn kd-btn-ghost kd-btn-sm" id="themeBtn" onclick="toggleTheme()">Light theme</button>
@@ -289,14 +304,14 @@
           if (line.includes("---")) continue;
           const cells = line.trim().slice(1, -1).split("|").map(c => formatInline(c.trim()));
           if (!inTable) {
-            html += "<table><thead><tr>" + cells.map(c => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
+            html += '<div class="table-wrap"><table><thead><tr>' + cells.map(c => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
             inTable = true;
           } else {
             html += "<tr>" + cells.map(c => `<td>${c}</td>`).join("") + "</tr>";
           }
           continue;
         } else if (inTable) {
-          html += "</tbody></table>";
+          html += "</tbody></table></div>";
           inTable = false;
         }
 
@@ -316,7 +331,7 @@
         else if (line.trim().startsWith("@@CODEBLOCK_")) html += line.trim();
         else if (line.trim().length > 0) html += `<p>${formatInline(line)}</p>`;
       }
-      if (inTable) html += "</tbody></table>";
+      if (inTable) html += "</tbody></table></div>";
       if (inList) html += "</ul>";
 
       blocks.forEach((b, idx) => {
