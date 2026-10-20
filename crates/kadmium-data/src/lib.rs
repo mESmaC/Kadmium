@@ -1019,8 +1019,18 @@ mod tests {
         assert_eq!(files, vec!["model-00004-of-00016.safetensors"]);
 
         let raw_st = SafetensorsToKtbTranscoder::build_safetensors_bytes(&[
-            ("model.layers.0.self_attn.q_proj.weight", "BF16", vec![16, 16], &vec![0x11; 512]),
-            ("model.layers.14.mlp.experts.2.up_proj.weight", "F8_E4M3", vec![32, 32], &vec![0x42; 1024]),
+            (
+                "model.layers.0.self_attn.q_proj.weight",
+                "BF16",
+                vec![16, 16],
+                &vec![0x11; 512],
+            ),
+            (
+                "model.layers.14.mlp.experts.2.up_proj.weight",
+                "F8_E4M3",
+                vec![32, 32],
+                &vec![0x42; 1024],
+            ),
         ]);
         let slices = HfByteRangeSlicer::plan_http_range_requests(
             "deepseek-ai/DeepSeek-V3",
@@ -1035,8 +1045,12 @@ mod tests {
         assert!(slices[0].http_range_header.starts_with("bytes="));
         assert_eq!(slices[0].payload_len_bytes, 1024);
 
-        let ktb = HfByteRangeSlicer::assemble_range_slices_to_ktb("deepseek-v3-671b-moe", &raw_st, &slices)
-            .expect("assemble ktb from byte ranges");
+        let ktb = HfByteRangeSlicer::assemble_range_slices_to_ktb(
+            "deepseek-v3-671b-moe",
+            &raw_st,
+            &slices,
+        )
+        .expect("assemble ktb from byte ranges");
         let reader = KtbBankReader::from_slice(&ktb).expect("read ktb");
         assert_eq!(reader.header.entries.len(), 1);
         assert_eq!(reader.header.entries[0].layer_index, 14);

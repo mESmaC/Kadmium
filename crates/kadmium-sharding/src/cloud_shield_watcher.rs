@@ -82,28 +82,32 @@ impl CloudShieldCutoverWatcher {
             },
             CloudShieldHeartbeatSample {
                 timestamp_sec: 120,
-                event_description: "2 missed QUIC heartbeats (200 ms jitter on cameron-main-rig)".into(),
+                event_description: "2 missed QUIC heartbeats (200 ms jitter on cameron-main-rig)"
+                    .into(),
                 consecutive_missed_heartbeats: 2,
                 spot_preemption_notice_remaining_sec: None,
                 local_node_healthy: false,
             },
             CloudShieldHeartbeatSample {
                 timestamp_sec: 121,
-                event_description: "4 missed QUIC heartbeats (340 ms threshold crossed — home fiber blip)".into(),
+                event_description:
+                    "4 missed QUIC heartbeats (340 ms threshold crossed — home fiber blip)".into(),
                 consecutive_missed_heartbeats: 4,
                 spot_preemption_notice_remaining_sec: None,
                 local_node_healthy: false,
             },
             CloudShieldHeartbeatSample {
                 timestamp_sec: 1_201,
-                event_description: "Home fiber & cameron-main-rig heartbeat restored after 18 minutes".into(),
+                event_description:
+                    "Home fiber & cameron-main-rig heartbeat restored after 18 minutes".into(),
                 consecutive_missed_heartbeats: 0,
                 spot_preemption_notice_remaining_sec: None,
                 local_node_healthy: true,
             },
             CloudShieldHeartbeatSample {
                 timestamp_sec: 1_205,
-                event_description: "Boundary KV handoff complete; spot L40S lease terminated ($0.00/hr)".into(),
+                event_description:
+                    "Boundary KV handoff complete; spot L40S lease terminated ($0.00/hr)".into(),
                 consecutive_missed_heartbeats: 0,
                 spot_preemption_notice_remaining_sec: None,
                 local_node_healthy: true,
@@ -123,7 +127,8 @@ impl CloudShieldCutoverWatcher {
                     "cameron-main-rig (local)".to_string(),
                     0.0,
                     0.0,
-                    "Pre-warm cloud-vault-l40s .ktb mmap pages & stage KV boundary descriptors".to_string(),
+                    "Pre-warm cloud-vault-l40s .ktb mmap pages & stage KV boundary descriptors"
+                        .to_string(),
                 )
             } else if !s.local_node_healthy && s.consecutive_missed_heartbeats >= 3 {
                 if failover_start_sec.is_none() {
@@ -137,7 +142,9 @@ impl CloudShieldCutoverWatcher {
                     "CUTOVER (<400ms): Promote cloud-vault-l40s for middle layers 27..48 (0 dropped requests)".to_string(),
                 )
             } else if s.local_node_healthy && failover_start_sec.is_some() && idx == 3 {
-                let active_secs = s.timestamp_sec.saturating_sub(failover_start_sec.unwrap_or(0));
+                let active_secs = s
+                    .timestamp_sec
+                    .saturating_sub(failover_start_sec.unwrap_or(0));
                 cumulative_cost =
                     (((active_secs as f64) / 3600.0) * spot_hourly_rate * 100.0).round() / 100.0;
                 (
@@ -154,7 +161,8 @@ impl CloudShieldCutoverWatcher {
                     "cameron-main-rig (local)".to_string(),
                     0.0,
                     0.0,
-                    "STEADY LOCAL ($0.00/hr): Middle layers 27..48 resident on local hardware".to_string(),
+                    "STEADY LOCAL ($0.00/hr): Middle layers 27..48 resident on local hardware"
+                        .to_string(),
                 )
             };
 

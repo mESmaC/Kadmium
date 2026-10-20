@@ -5,8 +5,8 @@ use crate::print_shard_plan;
 use kadmium_core::{
     KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, NodeTrustTier,
     OsSwapchainHysteresisEngine, PoliteActivityMonitor, PoliteActivitySample, PoliteState,
-    SupplyLeasePolicy, SupplyPayoutMode, SupplySettlementEngine, WorkloadKind,
-    sample_personal_cluster,
+    SubClusterRbacEngine, SupplyLeasePolicy, SupplyPayoutMode, SupplySettlementEngine,
+    WorkloadKind, sample_personal_cluster,
 };
 use kadmium_data::{
     GitHubConnector, HfByteRangeSlicer, HuggingFaceHubConnector, KtbBankPacker, KtbBankReader,
@@ -17,11 +17,14 @@ use kadmium_network::{
     ClusterStateCrdt, JoinTicket, LanDiscoveryBeacon, NatTraversalCoordinator,
     ZeroClickLanPairingEngine,
 };
+use kadmium_rl::DreamRsiWorldRegistry;
 use kadmium_runtime::{
     ColibriNvmeDoubleBuffer, DeMoDctCompressor, HardwareKernelDispatcher, Q4KBlockTensor,
-    VerdeVerificationEngine,
+    VerdeFraudProofEngine, VerdeVerificationEngine,
 };
-use kadmium_sharding::{CloudShieldCutoverWatcher, HybridCloudArbitragePlanner, ShardPlanner};
+use kadmium_sharding::{
+    CloudShieldCutoverWatcher, HybridCloudArbitragePlanner, ShardPlanner, SpotOrderbookBidEngine,
+};
 
 pub fn run_cloud_shield() {
     let model = ModelSpec::deepseek_v3_671b_moe();
@@ -697,7 +700,8 @@ pub fn run_lease(hours: f64, payout: &str) {
     );
     println!(
         "  * Datacenter Avoidance:       0 L cooling water ({:.1} L/mo saved) · {:.0} kg CO2e embodied silicon avoided",
-        snap.datacenter_avoidance.cooling_water_saved_liters_per_month,
+        snap.datacenter_avoidance
+            .cooling_water_saved_liters_per_month,
         snap.datacenter_avoidance.embodied_carbon_avoided_kg_co2e
     );
     println!(
@@ -895,6 +899,133 @@ pub fn run_pairing() {
             st.active_middle_shard_host,
             st.instantaneous_hourly_burn_usd,
             st.cumulative_incident_cost_usd
+        );
+    }
+}
+
+pub fn run_registry() {
+    let orderbook = SpotOrderbookBidEngine::query_live_orderbook();
+    let provisioned = SpotOrderbookBidEngine::provision_optimal_middle_shard(48.0, 1.50, (26, 48))
+        .expect("provision middle shard");
+    let (rbac_quotas, rbac_keys) = SubClusterRbacEngine::sample_lab_rbac_catalog();
+
+    let referee_fn = |layer: usize, state: &[f64]| -> Vec<f64> {
+        state
+            .iter()
+            .map(|&v| v * 1.01 + (layer as f64) * 0.002)
+            .collect()
+    };
+    let mut ref_states = vec![vec![1.0, 2.0, 3.0]];
+    let mut wrk_states = vec![vec![1.0, 2.0, 3.0]];
+    for l in 0..32 {
+        ref_states.push(referee_fn(l, &ref_states[l]));
+        let mut w = referee_fn(l, &wrk_states[l]);
+        if l == 19 {
+            w[0] += 0.35;
+        }
+        wrk_states.push(w);
+    }
+    let fraud_proof = VerdeFraudProofEngine::generate_fraud_proof(
+        "verde-fp-0048",
+        "untrusted-renter-rtx3090",
+        &wrk_states,
+        &ref_states,
+        referee_fn,
+        1e-6,
+        0.24,
+    )
+    .expect("generate fraud proof");
+
+    let worlds = DreamRsiWorldRegistry::public_catalog();
+
+    println!(
+        "==================================================================================================================="
+    );
+    println!(
+        " KADMIUM (Cd-48) v1.0 GA — SPOT PROVISIONER, MULTI-TENANT RBAC, VERDE FRAUD PROOFS & DREAM-RSI WORLD REGISTRY"
+    );
+    println!(
+        "==================================================================================================================="
+    );
+    println!(
+        "\n[1/4] Live Multi-Provider Spot Orderbook & Ephemeral Container Provisioner (Target: >=48 GB VRAM, <=$1.50/hr)"
+    );
+    println!(
+        "      Selected Bid: {} ({}) @ ${:.2}/hr | Container: {} | Layers L{:02}..L{:02} | Grace: {}s",
+        provisioned.selected_quote.gpu_model,
+        provisioned.selected_quote.provider,
+        provisioned.selected_quote.spot_usd_per_hr,
+        provisioned.container_id,
+        provisioned.pinned_middle_layers.0,
+        provisioned.pinned_middle_layers.1,
+        provisioned.eviction_grace_period_sec
+    );
+    for q in &orderbook {
+        println!(
+            "  * [{:<22}] {:<24} | {:>5.1} GB VRAM | Spot: ${:>4.2}/hr | Preempt: {:>4.1}% | Utility: {:>5.1} TFLOP/$",
+            q.quote_id,
+            q.gpu_model,
+            q.vram_gb,
+            q.spot_usd_per_hr,
+            q.preemption_prob_24h * 100.0,
+            q.risk_adjusted_tflops_per_usd
+        );
+    }
+
+    println!(
+        "\n[2/4] Multi-Tenant Sub-Cluster RBAC Quotas & Scoped API Keys ({} slices, {} keys)",
+        rbac_quotas.len(),
+        rbac_keys.len()
+    );
+    for k in &rbac_keys {
+        println!(
+            "  * {:<38} | Principal: {:<26} | Role: {:<20} | Slice: {}",
+            k.token_string,
+            k.principal_name,
+            format!("{:?}", k.role),
+            k.bound_slice_id
+        );
+    }
+
+    println!(
+        "\n[3/4] Cryptographic `Verde` Optimistic Fraud Proof & Automated Slashing Certificate"
+    );
+    println!(
+        "      Certificate ID: {} | Disputed Worker: {} | Checks Used: {} (of {} layers)",
+        fraud_proof.certificate_id,
+        fraud_proof.disputed_worker_hostname,
+        fraud_proof.referee_evaluations_used,
+        fraud_proof.total_layers_in_pipeline
+    );
+    println!(
+        "      Faulty Layer #{} | Input Hash: {:#018x} | Referee RepOps: {:#018x} != Claimed: {:#018x}",
+        fraud_proof.faulty_layer_index,
+        fraud_proof.input_activation_digest_fnv1a,
+        fraud_proof.referee_repops_output_digest_fnv1a,
+        fraud_proof.worker_claimed_output_digest_fnv1a
+    );
+    println!(
+        "      Withheld Settlement: ${:.2} | Max Divergence: {:.3} | MAC Verified: {}",
+        fraud_proof.withheld_settlement_usd,
+        fraud_proof.max_abs_divergence,
+        VerdeFraudProofEngine::verify_certificate(&fraud_proof)
+    );
+
+    println!(
+        "\n[4/4] Public Dream-RSI World & Benchmark Registry (`gh://` Verified Discovery Trees)"
+    );
+    for w in &worlds {
+        println!(
+            "  * [{:<26}] {:<46} | Peak: {:.2}x | Saved: {:>4.1}% | Nodes: {:>4}",
+            w.world_slug,
+            w.display_name,
+            w.peak_speedup_or_score,
+            w.online_gpu_rollout_savings_pct,
+            w.recorded_discovery_nodes
+        );
+        println!(
+            "      URI: {} (SHA: {} | Policy: `{}`)",
+            w.github_uri, w.pinned_commit_sha, w.promoted_policy_id
         );
     }
 }

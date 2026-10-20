@@ -29,9 +29,11 @@ use serde::{Deserialize, Serialize};
 
 pub mod mcts;
 pub mod sandbox_grpo;
+pub mod world_registry;
 
 pub use mcts::*;
 pub use sandbox_grpo::*;
+pub use world_registry::*;
 
 /// Target discovery domain for a **Dream-RSI** (*Recursive Self-Improvement through Evolving Worlds*) loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -785,6 +787,10 @@ mod tests {
         assert!((report.peak_speedup_achieved - 2.31).abs() < 1e-6);
         // Reaching the 2.31x kernel in 4 steps instead of 9 steps saves >50% of online calls!
         assert!(report.cost_savings_pct >= 50.0);
+
+        let catalog = DreamRsiWorldRegistry::public_catalog();
+        assert_eq!(catalog.len(), 4);
+        assert!(DreamRsiWorldRegistry::lookup_by_slug_or_uri("gpu-kernel-opt-v4").is_some());
     }
 
     #[test]

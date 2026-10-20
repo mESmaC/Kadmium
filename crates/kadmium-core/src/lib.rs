@@ -706,10 +706,12 @@ pub fn sample_node_pool(total_nodes: usize) -> Vec<HardwareNode> {
 
 pub mod governance;
 pub mod os_hooks;
+pub mod rbac;
 pub mod supply;
 
 pub use governance::*;
 pub use os_hooks::*;
+pub use rbac::*;
 pub use supply::*;
 
 #[cfg(test)]
@@ -726,6 +728,29 @@ mod tests {
         assert!(main_pc.compute_q_star_ratio() > 0.70);
         assert!((mac_mini.compute_q_star_ratio() - 0.96).abs() < 1e-6);
         assert_eq!(legacy.compute_q_star_ratio(), 0.0);
+
+        let (quotas, keys) = SubClusterRbacEngine::sample_lab_rbac_catalog();
+        assert!(
+            SubClusterRbacEngine::authorize_slice_request(
+                &keys[0],
+                &quotas[0],
+                WorkloadKind::Inference,
+                1.25,
+                true
+            )
+            .is_ok()
+        );
+        // BlindSupplyProvider must be rejected if requesting Layer 0 / N-1 ingress/egress
+        assert!(
+            SubClusterRbacEngine::authorize_slice_request(
+                &keys[2],
+                &quotas[2],
+                WorkloadKind::Inference,
+                0.0,
+                true
+            )
+            .is_err()
+        );
     }
 
     #[test]

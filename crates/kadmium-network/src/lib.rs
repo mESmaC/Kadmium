@@ -684,9 +684,21 @@ mod tests {
         let cluster = sample_personal_cluster();
         let matrix = NatTraversalCoordinator::probe_cluster_nat_mesh(&cluster);
         assert!(matrix.len() >= 7);
-        assert!(matrix.iter().any(|r| r.selected_path == CandidateEndpointKind::LanDirect));
-        assert!(matrix.iter().any(|r| r.selected_path == CandidateEndpointKind::StunPublicReflexive));
-        assert!(matrix.iter().any(|r| r.selected_path == CandidateEndpointKind::DerpRelayFallback));
+        assert!(
+            matrix
+                .iter()
+                .any(|r| r.selected_path == CandidateEndpointKind::LanDirect)
+        );
+        assert!(
+            matrix
+                .iter()
+                .any(|r| r.selected_path == CandidateEndpointKind::StunPublicReflexive)
+        );
+        assert!(
+            matrix
+                .iter()
+                .any(|r| r.selected_path == CandidateEndpointKind::DerpRelayFallback)
+        );
 
         let (from_a, to_b, nonce) = NatTraversalCoordinator::execute_udp_holepunch_loopback()
             .await

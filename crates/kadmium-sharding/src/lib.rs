@@ -803,10 +803,12 @@ impl SubClusterPartitioner {
 pub mod arbitrage;
 pub mod cloud_shield_watcher;
 pub mod optimizer;
+pub mod spot_provisioner;
 
 pub use arbitrage::*;
 pub use cloud_shield_watcher::*;
 pub use optimizer::*;
+pub use spot_provisioner::*;
 
 #[cfg(test)]
 mod tests {
@@ -937,6 +939,12 @@ mod tests {
             watcher.steps.last().map(|s| s.state),
             Some(CloudShieldState::HealthyLocalZeroBurn)
         );
+
+        let provisioned =
+            SpotOrderbookBidEngine::provision_optimal_middle_shard(48.0, 1.50, (22, 48))
+                .expect("provision optimal spot middle shard");
+        assert!(provisioned.selected_quote.spot_usd_per_hr <= 1.50);
+        assert_eq!(provisioned.pinned_middle_layers, (22, 48));
     }
 
     #[test]

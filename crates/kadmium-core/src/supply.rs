@@ -158,8 +158,8 @@ impl SupplySettlementEngine {
                 _ => (node.fp16_tflops * 0.004).clamp(0.04, 0.45),
             };
 
-            let usd_rate_per_hour = (raw_hourly_usd * (policy.max_vram_lease_fraction / 0.80))
-                .clamp(0.02, 1.50);
+            let usd_rate_per_hour =
+                (raw_hourly_usd * (policy.max_vram_lease_fraction / 0.80)).clamp(0.02, 1.50);
             let cloud_credit_rate_per_hour_usd = usd_rate_per_hour * credit_multiplier;
             let projected_monthly_usd = if policy.enabled {
                 usd_rate_per_hour * monthly_hours

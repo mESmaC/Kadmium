@@ -105,9 +105,8 @@ impl OsSwapchainHysteresisEngine {
 
         for ev in events {
             let prev_state = curr_state;
-            let is_gaming = ev.swapchain_fullscreen
-                || ev.gpu_busy_pct >= 55.0
-                || ev.detected_binary.is_some();
+            let is_gaming =
+                ev.swapchain_fullscreen || ev.gpu_busy_pct >= 55.0 || ev.detected_binary.is_some();
             let is_battery_or_hot = !ev.ac_power_connected || ev.package_temp_c >= 84.0;
 
             let (next_state, action, cooldown_rem) = if is_gaming {
@@ -121,7 +120,8 @@ impl OsSwapchainHysteresisEngine {
                 last_heavy_activity_ms = Some(ev.timestamp_ms);
                 (
                     PoliteState::BatteryOrThermalThrottle,
-                    "THERMAL/BATTERY YIELD: Cap accelerator to 25% & pause background FTS3 staging".to_string(),
+                    "THERMAL/BATTERY YIELD: Cap accelerator to 25% & pause background FTS3 staging"
+                        .to_string(),
                     Self::RECLAIM_COOLDOWN_MS,
                 )
             } else if let Some(last_ms) = last_heavy_activity_ms {
@@ -130,7 +130,9 @@ impl OsSwapchainHysteresisEngine {
                     let rem = Self::RECLAIM_COOLDOWN_MS - elapsed;
                     (
                         prev_state,
-                        format!("HYSTERESIS HOLD ({rem} ms remaining): Suppress shard reclaim during loading screen / alt-tab"),
+                        format!(
+                            "HYSTERESIS HOLD ({rem} ms remaining): Suppress shard reclaim during loading screen / alt-tab"
+                        ),
                         rem,
                     )
                 } else {
@@ -205,7 +207,8 @@ impl OsSwapchainHysteresisEngine {
             },
             SwapchainHookEvent {
                 timestamp_ms: 2_000,
-                event_label: "User launches Cyberpunk 2077 (DX12 fullscreen swapchain opened)".into(),
+                event_label: "User launches Cyberpunk 2077 (DX12 fullscreen swapchain opened)"
+                    .into(),
                 detected_binary: Some("cyberpunk2077.exe".into()),
                 swapchain_fullscreen: true,
                 gpu_busy_pct: 78.0,

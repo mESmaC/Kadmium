@@ -47,7 +47,9 @@ impl HardwareKernelTarget {
         match self {
             Self::CudaTensorCorePtx => "mma.sync.aligned.m16n8k16.f32.f16.f16.f32 + cp.async.ca",
             Self::RocmMatrixCoreHip => "llvm.amdgcn.mfma.f32.16x16x16f16 + ds_swizzle_b32",
-            Self::MetalSimdgroupMsl => "simdgroup_multiply_accumulate + threadgroup_barrier(mem_flags::mem_threadgroup)",
+            Self::MetalSimdgroupMsl => {
+                "simdgroup_multiply_accumulate + threadgroup_barrier(mem_flags::mem_threadgroup)"
+            }
             Self::VulkanSubgroupSpirv => "OpCooperativeMatrixMulAddKHR + OpGroupNonUniformFAdd",
             Self::CpuAvx512Fma => "_mm512_fmadd_ps + _mm512_dpbusd_epi32 (AVX-512 VNNI)",
             Self::ArmNeonDotProd => "vdotq_s32 + vfmaq_f32 (ARMv8.4-A DotProd)",
@@ -74,7 +76,11 @@ impl FusedRmsNormRopeKernel {
         }
 
         // 1. Deterministic fixed-tree sum of squares for RepOps cross-silicon parity
-        let mean_sq = input[..d].iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>() / (d as f64);
+        let mean_sq = input[..d]
+            .iter()
+            .map(|&x| (x as f64) * (x as f64))
+            .sum::<f64>()
+            / (d as f64);
         let inv_rms = (1.0 / (mean_sq + (eps as f64)).sqrt()) as f32;
 
         let mut normed: Vec<f32> = input[..d]
@@ -140,12 +146,7 @@ impl PagedGqaAttentionKernel {
                 let k_slice = &page.keys[offset..offset + head_dim];
                 let v_slice = &page.values[offset..offset + head_dim];
 
-                let score = q
-                    .iter()
-                    .zip(k_slice)
-                    .map(|(&qi, &ki)| qi * ki)
-                    .sum::<f32>()
-                    * scale;
+                let score = q.iter().zip(k_slice).map(|(&qi, &ki)| qi * ki).sum::<f32>() * scale;
 
                 // Online FlashAttention-2 safe softmax update
                 let new_max = running_max.max(score);
@@ -276,11 +277,7 @@ impl HardwareKernelDispatcher {
         let attn_out = PagedGqaAttentionKernel::forward_flash_paged(&q_rope, &kv_pages);
 
         // Residual connection before SwiGLU MoE expert
-        let post_attn: Vec<f32> = input
-            .iter()
-            .zip(&attn_out)
-            .map(|(&x, &a)| x + a)
-            .collect();
+        let post_attn: Vec<f32> = input.iter().zip(&attn_out).map(|(&x, &a)| x + a).collect();
 
         // 3. Fused SwiGLU Expert over Q4_K quantized weights
         let w_gate: Vec<f32> = (0..(intermediate_dim * hidden_dim))
@@ -309,15 +306,16 @@ impl HardwareKernelDispatcher {
             .collect();
         let tree_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&final_out_f64);
         let quantized_milliscale = (tree_sum * 1_000_000.0).round() as i64;
-        let canonical_digest =
-            0xcbf2_9ce4_8422_2325_u64 ^ (quantized_milliscale as u64).wrapping_mul(0x0100_0000_01b3);
+        let canonical_digest = 0xcbf2_9ce4_8422_2325_u64
+            ^ (quantized_milliscale as u64).wrapping_mul(0x0100_0000_01b3);
         let output_norm = final_out_f64.iter().map(|v| v * v).sum::<f64>().sqrt();
 
         let node_profiles = cluster
             .iter()
             .map(|n| {
                 let target = HardwareKernelTarget::from_backend(n.backend);
-                let achieved_gflops = ((n.effective_fp16_tflops() * 1000.0 * 0.78) * 10.0).round() / 10.0;
+                let achieved_gflops =
+                    ((n.effective_fp16_tflops() * 1000.0 * 0.78) * 10.0).round() / 10.0;
                 let bw_util = (74.0 + (n.compute_q_star_ratio() * 18.0)).min(94.5);
                 NodeKernelDispatchProfile {
                     hostname: n.hostname.clone(),

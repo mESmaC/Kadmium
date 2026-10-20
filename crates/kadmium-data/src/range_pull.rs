@@ -112,8 +112,7 @@ impl HfByteRangeSlicer {
             .as_object()
             .ok_or("Safetensors header root must be a JSON object")?;
 
-        let url =
-            format!("https://huggingface.co/{repo_id}/resolve/{revision}/{shard_filename}");
+        let url = format!("https://huggingface.co/{repo_id}/resolve/{revision}/{shard_filename}");
         let mut slices = Vec::new();
 
         for (tensor_name, meta) in obj {

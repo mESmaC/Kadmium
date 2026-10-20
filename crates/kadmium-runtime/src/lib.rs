@@ -9,7 +9,9 @@ use kadmium_core::{GradientCompressionCodec, NodeId, TrainingStrategy};
 use kadmium_sharding::{ActivationCheckpointingPolicy, ClusterShardPlan};
 use serde::{Deserialize, Serialize};
 
+pub mod fraud_proof;
 pub mod kernels;
+pub use fraud_proof::*;
 pub use kernels::*;
 
 /// Telemetry snapshot for a running distributed & decentralized training job in Kadmium.
@@ -757,6 +759,19 @@ mod tests {
         assert_eq!(outcome.faulty_layer_index, faulty_target);
         // Binary search over 64 layers requires at most log2(64) + 1 = 7 checks!
         assert!(outcome.referee_evaluations_used <= 7);
+
+        let cert = VerdeFraudProofEngine::generate_fraud_proof(
+            "fp-cert-0041",
+            "untrusted-supply-node-99",
+            &worker_states,
+            &reference_states,
+            referee_step,
+            1e-6,
+            1.52,
+        )
+        .expect("generate fraud proof certificate");
+        assert_eq!(cert.faulty_layer_index, faulty_target);
+        assert!(VerdeFraudProofEngine::verify_certificate(&cert));
     }
 
     #[test]

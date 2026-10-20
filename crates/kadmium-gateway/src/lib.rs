@@ -12,9 +12,9 @@ use axum::{
 };
 use kadmium_core::{
     HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, OsHookHysteresisReport,
-    OsSwapchainHysteresisEngine, PoliteState, SupplyLeasePolicy, SupplyMarketplaceSnapshot,
-    SupplySettlementEngine, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
-    sample_personal_cluster,
+    OsSwapchainHysteresisEngine, PoliteState, ScopedApiKey, SubClusterQuotaPolicy,
+    SubClusterRbacEngine, SupplyLeasePolicy, SupplyMarketplaceSnapshot, SupplySettlementEngine,
+    WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::{EcosystemIntegrationsOverview, Fts3TransferScheduler, ThirdPartyTransferJob};
 use kadmium_network::{
@@ -22,19 +22,22 @@ use kadmium_network::{
     NatTraversalCoordinator, PeerLinkMetrics, ZeroClickLanPairingEngine, build_mesh_link_matrix,
 };
 use kadmium_rl::{
-    DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, GrpoEpochExecutor,
-    GrpoVerifiedStepReport, RlEnvironmentSuiteSpec, RlTopologyPlanner,
+    DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, DreamRsiWorldRegistry,
+    GrpoEpochExecutor, GrpoVerifiedStepReport, RegisteredDreamRsiWorld, RlEnvironmentSuiteSpec,
+    RlTopologyPlanner,
 };
 use kadmium_runtime::{
     BoincWorkunit, DistributedMoEPipelineExecutor, DistributedPipelineExecutionReport,
     HardwareKernelDispatcher, HardwareKernelSuiteReport, Pipeline1F1BSchedule,
-    Pipeline1F1BScheduler, TrainingJobTelemetry, sample_boinc_workunits,
+    Pipeline1F1BScheduler, TrainingJobTelemetry, VerdeFraudProofCertificate, VerdeFraudProofEngine,
+    sample_boinc_workunits,
 };
 use kadmium_sharding::{
     CloudShieldCutoverWatcher, CloudShieldWatcherReport, ClusterPoolSliceLayout, ClusterShardPlan,
     DataflowComparisonReport, DataflowStreamPlanner, FailoverShieldSimulation,
-    HybridCloudArbitragePlanner, MultiProviderArbitragePlan, ResponsibilityShiftPlan, ShardPlanner,
-    ShiftTriggerReason, SubClusterPartitioner,
+    HybridCloudArbitragePlanner, MultiProviderArbitragePlan, ProvisionedSpotContainer,
+    ResponsibilityShiftPlan, ShardPlanner, ShiftTriggerReason, SpotOrderbookBidEngine,
+    SpotOrderbookQuote, SubClusterPartitioner,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -425,7 +428,11 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/runtime/kernels", get(get_runtime_kernels))
         .route("/api/v1/network/nat", get(get_network_nat_matrix))
         .route("/api/v1/companion/pairing", get(get_companion_pairing))
-        .route("/api/v1/cloud-shield/watcher", get(get_cloud_shield_watcher))
+        .route(
+            "/api/v1/cloud-shield/watcher",
+            get(get_cloud_shield_watcher),
+        )
+        .route("/api/v1/ga/governance", get(get_ga_governance))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .with_state(state)
@@ -700,7 +707,9 @@ async fn get_network_nat_matrix(
     State(state): State<Arc<Mutex<GatewayState>>>,
 ) -> Json<Vec<HolePunchNegotiationResult>> {
     let guard = state.lock().expect("gateway state lock");
-    Json(NatTraversalCoordinator::probe_cluster_nat_mesh(&guard.nodes))
+    Json(NatTraversalCoordinator::probe_cluster_nat_mesh(
+        &guard.nodes,
+    ))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -725,6 +734,58 @@ async fn get_companion_pairing(
 
 async fn get_cloud_shield_watcher() -> Json<CloudShieldWatcherReport> {
     Json(CloudShieldCutoverWatcher::evaluate_incident_timeline())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GaGovernanceApiResponse {
+    pub spot_orderbook: Vec<SpotOrderbookQuote>,
+    pub provisioned_spot_container: Option<ProvisionedSpotContainer>,
+    pub slice_quotas: Vec<SubClusterQuotaPolicy>,
+    pub scoped_api_keys: Vec<ScopedApiKey>,
+    pub dream_rsi_world_registry: Vec<RegisteredDreamRsiWorld>,
+    pub sample_fraud_proof: Option<VerdeFraudProofCertificate>,
+}
+
+async fn get_ga_governance() -> Json<GaGovernanceApiResponse> {
+    let (slice_quotas, scoped_api_keys) = SubClusterRbacEngine::sample_lab_rbac_catalog();
+    let referee_fn = |layer: usize, state: &[f64]| -> Vec<f64> {
+        state
+            .iter()
+            .map(|&v| v * 1.01 + (layer as f64) * 0.002)
+            .collect()
+    };
+    let mut ref_states = vec![vec![1.0, 2.0, 3.0]];
+    let mut wrk_states = vec![vec![1.0, 2.0, 3.0]];
+    for l in 0..32 {
+        ref_states.push(referee_fn(l, &ref_states[l]));
+        let mut w = referee_fn(l, &wrk_states[l]);
+        if l == 19 {
+            w[1] += 0.55;
+        }
+        wrk_states.push(w);
+    }
+    let sample_fraud_proof = VerdeFraudProofEngine::generate_fraud_proof(
+        "fp-cert-cd48-0019",
+        "untrusted-supply-gpu-19",
+        &wrk_states,
+        &ref_states,
+        referee_fn,
+        1e-6,
+        1.52,
+    );
+
+    Json(GaGovernanceApiResponse {
+        spot_orderbook: SpotOrderbookBidEngine::query_live_orderbook(),
+        provisioned_spot_container: SpotOrderbookBidEngine::provision_optimal_middle_shard(
+            48.0,
+            1.50,
+            (22, 48),
+        ),
+        slice_quotas,
+        scoped_api_keys,
+        dream_rsi_world_registry: DreamRsiWorldRegistry::public_catalog(),
+        sample_fraud_proof,
+    })
 }
 
 async fn get_grpo_verified_step() -> Json<GrpoVerifiedStepReport> {

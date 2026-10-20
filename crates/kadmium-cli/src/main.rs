@@ -134,6 +134,8 @@ enum Commands {
     Bench,
     /// Inspect Phase 3/4 Zero-Click LAN Pairing (6-digit SAS), OS Swapchain Hysteresis (<200ms yield / 15s cooldown), and <400ms CloudShield Watcher
     Pairing,
+    /// Inspect v1.0 GA Multi-Provider Spot Orderbook, Multi-Tenant Sub-Cluster RBAC, Verde Fraud Proofs, and the Public Dream-RSI World Registry
+    Registry,
 }
 
 #[tokio::main]
@@ -172,6 +174,7 @@ async fn main() {
         Commands::Lease { hours, payout } => run_lease(hours, &payout),
         Commands::Bench => run_bench().await,
         Commands::Pairing => run_pairing(),
+        Commands::Registry => run_registry(),
     }
 }
 
