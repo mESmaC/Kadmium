@@ -610,10 +610,15 @@
     var hourlyUsdTotal = SUPPLY_NODES.reduce(function (acc, nd) {
       return acc + (enabledSupply[nd.id] ? nd.usdPerHour : 0);
     }, 0);
+    var activeSupplyCount = SUPPLY_NODES.reduce(function (acc, nd) {
+      return acc + (enabledSupply[nd.id] ? 1 : 0);
+    }, 0);
     var hourlyCreditsTotal = hourlyUsdTotal * 1.25;
     var monthlyUsdTotal = hourlyUsdTotal * leaseHours * 30;
     var monthlyCreditsTotal = hourlyCreditsTotal * leaseHours * 30;
     var monthlyBurstHoursL40s = monthlyCreditsTotal / 0.89;
+    var monthlyCoolingWaterSavedLiters = leaseHours * 30 * (activeSupplyCount / 5) * 0.65 * 1.8;
+    var embodiedCarbonAvoidedKg = activeSupplyCount * 340;
 
     React.useEffect(function () {
       document.documentElement.setAttribute('data-theme', theme);
@@ -833,6 +838,34 @@
                 h('td', null, 'CERN FTS3 third-party P2P staging & < 400 ms failover shield'),
                 h('td', null, h(K.Badge, { tone: 'cloud' }, 'hybrid')))))),
 
+        /* 5b. Zero Additional Datacenters Required · Grid & Civic Physics */
+        h('section', { className: 'panel' },
+          h('div', { className: 'two', style: { alignItems: 'start', marginBottom: 'var(--space-5)' } },
+            h('div', null,
+              h('p', { className: 'eyebrow' }, 'Grid & civic physics · an alternative to new datacenter buildouts'),
+              h('h2', { className: 'headline', style: { margin: '0 0 var(--space-3)' } }, 'We don\u2019t need any additional datacenters.'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
+                'New hyperscale datacenters strain municipal power grids, evaporate millions of liters of local watershed cooling water, and pour thousands of tons of concrete while tens of millions of consumer GPUs, Apple Silicon Macs, gaming laptops, and lab servers already sit plugged into wall outlets at under 10 % utilization.')),
+            h('div', { className: 'well' },
+              h('p', { className: 'eyebrow' }, 'Two-tier grid philosophy'),
+              h('p', { className: 'body', style: { color: 'var(--ink)', margin: '0 0 var(--space-3)' } },
+                '1. Harvest dormant local silicon first (\u2014cadmium): Aggregate the air-cooled machines already manufactured and sitting on desks at 0 L additional water and 0 kg new embodied concrete.'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
+                '2. Absorb existing datacenter spot surplus (\u2014cherenkov): Kadmium does not replace existing datacenters\u2014when a workload overflows your local cluster, it rents unutilized spot slots sitting idle inside already-built facilities via 1,000\u00d7 DeMo DCT compression, so no new 500 MW facility needs to be built.'))),
+          h('div', { className: 'stat-strip', style: { gridTemplateColumns: 'repeat(3, 1fr)' } },
+            h('div', { className: 'stat-card' },
+              h('span', { className: 'label' }, 'ADDITIONAL COOLING WATER'),
+              h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } }, '0 L / hr'),
+              h('span', { className: 'meta' }, 'ambient air-cooled local nodes vs. ~1.8 L/kWh evaporative towers')),
+            h('div', { className: 'stat-card' },
+              h('span', { className: 'label' }, 'NEW CONCRETE & SILICON'),
+              h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } }, '0 kg CO\u2082e'),
+              h('span', { className: 'meta' }, '1,700 kg embodied CO\u2082e avoided per 5-node personal cluster')),
+            h('div', { className: 'stat-card' },
+              h('span', { className: 'label' }, 'EXISTING DATACENTER SLOTS'),
+              h('span', { className: 'metric', style: { color: 'var(--cherenkov)' } }, 'Spot surplus'),
+              h('span', { className: 'meta' }, 'soaks up fragmented idle GPUs in already-built datacenters on demand')))),
+
         /* 6. Kadmium Supply Grid: Lease Your Idle Silicon */
         h('section', { className: 'kd-stack' },
           h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'flex-end' } },
@@ -899,7 +932,7 @@
                   h('span', { className: 'label' }, payoutMode === 'credits' ? 'MONTHLY CLOUD CREDITS' : 'MONTHLY DIRECT PAYOUT'),
                   h('span', { className: 'metric' },
                     '$' + (payoutMode === 'credits' ? monthlyCreditsTotal : monthlyUsdTotal).toFixed(2) + ' / mo'),
-                  h('span', { className: 'meta' }, '≈ ' + monthlyBurstHoursL40s.toFixed(1) + ' hrs of L40S 48 GB burst / mo'))),
+                  h('span', { className: 'meta' }, '≈ ' + monthlyBurstHoursL40s.toFixed(1) + ' hrs of L40S 48 GB burst / mo · ' + monthlyCoolingWaterSavedLiters.toFixed(0) + ' L cooling water saved (' + embodiedCarbonAvoidedKg + ' kg CO₂e avoided)'))),
               h(K.CodeBlock, {
                 title: 'terminal · quote & enable polite compute leasing',
                 language: 'shell',

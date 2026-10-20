@@ -20,6 +20,7 @@ Kadmium speaks like the engineer who built it: direct, specific, a little dry, c
 - **Status words are the vocabulary of the fabric** and are used identically in badges, logs and docs: resident, training, prefetching, joining, yielded (a node that stepped back for its owner — gaming mode, battery, thermals), throttled, offline, faulted.
 - **The reactor metaphor is a tagline, not a theme.** One line on the cover or the home page — *Every machine you own, as one reactor.* / *Regulate the reaction.* — then plain engineering. No "core meltdown" errors, no "radiation" loaders, no atom icons.
 - **Open source is stated, not sold.** "Free to self-host, forever. MIT or Apache-2.0, your choice." Kadmium Cloud is described by what it adds, in the same tone — never by implying the self-hosted product is lesser.
+- **"We don't need any additional datacenters."** Position Kadmium as a pragmatic alternative to building new hyperscale datacenters. State the two-part mechanism plainly: first, Kadmium harvests already-manufactured consumer and lab silicon (`--cadmium`) at `0 L / hr` additional evaporative cooling water and `0 kg` new concrete or embodied silicon; second, when a workload overflows a local cluster, Kadmium absorbs unutilized spot slots sitting idle inside *already-built* datacenters (`--cherenkov`) rather than demanding a new facility.
 - **No emoji** in the product, the site or the docs. (The GitHub README may keep its section emoji as a GitHub convention; nothing else inherits them.)
 - **No exclamation marks**, and no questions as headings.
 

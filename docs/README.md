@@ -71,3 +71,6 @@ Kadmium follows a **"Supabase for AI Compute"** philosophy:
    - **Zero-Config WAN Mesh & Managed Coordinator:** Cross-NAT QUIC relays without port forwarding.
    - **Multi-Datacenter Spot Arbitrage:** Burst capacity across RunPod, Vast.ai, Lambda, AWS, and GCP at **~62% lower cost** than single-cloud on-demand GPUs.
    - **Bidirectional Downtime Protection (`CloudShield`):** Seamless `<400ms` failover from Local $\to$ Cloud if your home power/internet drops, or Cloud $\to$ Local if a cloud spot instance is preempted.
+3. **Kadmium Supply Grid & "No Additional Datacenters Required":**
+   - **Harvest Dormant Local Silicon First (`--cadmium`):** Aggregate already-manufactured GPUs, Apple Silicon Macs, laptops, and SBCs sitting at `<10%` utilization (`0 L/hr` additional evaporative cooling water, `0 kg` new concrete or embodied silicon). Lease out your idle local hardware via `kadmium lease` to earn direct USD or `1.25x` Kadmium Cloud burst credits with `<200ms` Polite Auto-Yield and blind middle-shard privacy (`Layer 0` and `Layer N-1` stay on the renter).
+   - **Absorb Existing Datacenter Spot Surplus (`--cherenkov`):** Rather than building new 500 MW hyperscale datacenters that strain municipal power grids and watersheds, Kadmium soaks up fragmented spot slots sitting idle inside *already-built* datacenters only when a workload overflows local hardware.

@@ -28,6 +28,10 @@ The code is strict in both directions. A local node is never blue, even when it 
 
 Use `PlanCard` for both, side by side, same size, free first. Each has a mono eyebrow with a rod bullet in its product colour, the name in `headline`, the price in `metric`, one-sentence summary, four or five features with rod bullets, and one full-width button (`primary` for self-hosted, `cloud` for cloud). No "most popular" ribbons, no greyed-out features on the free card.
 
-## Mixed clusters
+## Mixed clusters and zero additional datacenters
 
 The common case is both at once: a local mesh plus a burst GPU or a failover vault. In the topology view and the `ShardRail`, cloud nodes sit last in flow order and are the only cherenkov elements on the canvas; in a `NodeCard`, `placement="cloud"` sets the badge, the icon tint and the meter colour together. During a handoff the moving shard keeps the colour of its *destination* once the boundary transfer completes — a shard that fails over to the vault turns blue when it lands there, and yellow again when it fails back.
+
+This visual split also encodes Kadmium's grid positioning — **"We don't need any additional datacenters"**:
+1. **Local silicon first (`--cadmium`):** Millions of consumer GPUs, Apple Silicon Macs, gaming laptops, and SBCs already sit plugged into wall outlets at under 10 % utilization, cooled by ambient room air (`0 L / hr` additional evaporative cooling water, `0 kg` new concrete or embodied silicon). Through the **Kadmium Supply Grid**, operators can also lease their idle local machines overnight for direct USD or `1.25×` Kadmium Cloud credits while retaining `< 200 ms` Polite Auto-Yield when they sit down to game or work.
+2. **Existing datacenter spot surplus (`--cherenkov`):** Kadmium does not replace existing datacenters—when a workload overflows local capacity, it rents fragmented spot slots already sitting idle inside existing datacenters via 1,000× DeMo DCT compression, eliminating the need to pour concrete for another 500 MW facility.
