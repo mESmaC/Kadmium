@@ -924,6 +924,150 @@ impl RoundExt for f64 {
     }
 }
 
+/// 4-bit Group-Quantized (`Q4_K` / 32-element block) Tensor for `.ktb` weight banks.
+///
+/// Packs every 2 quantized 4-bit values (`0..=15`) into a single byte (`16 bytes` per 32 weights)
+/// alongside per-block `(scale, min_val)` affine parameters:
+/// $$w_i \approx \text{min\_val}_b + \text{scale}_b \cdot q_i, \quad q_i \in \{0, \dots, 15\}$$
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Q4KBlockTensor {
+    pub rows: usize,
+    pub cols: usize,
+    pub block_size: usize,
+    /// Packed 4-bit nibbles: `low_nibble = byte & 0x0F`, `high_nibble = (byte >> 4) & 0x0F`.
+    pub packed_nibbles: Vec<u8>,
+    pub block_scales: Vec<f32>,
+    pub block_mins: Vec<f32>,
+}
+
+impl Q4KBlockTensor {
+    /// Quantizes a row-major `rows x cols` FP32 matrix into 4-bit 32-element blocks.
+    pub fn quantize_matrix(weights: &[f32], rows: usize, cols: usize) -> Self {
+        assert_eq!(weights.len(), rows * cols);
+        let block_size = 32usize;
+        let num_blocks = weights.len().div_ceil(block_size);
+        let mut packed_nibbles = Vec::with_capacity(weights.len().div_ceil(2));
+        let mut block_scales = Vec::with_capacity(num_blocks);
+        let mut block_mins = Vec::with_capacity(num_blocks);
+
+        for chunk in weights.chunks(block_size) {
+            let min_v = chunk.iter().copied().fold(f32::INFINITY, f32::min);
+            let max_v = chunk.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let range = (max_v - min_v).max(1e-8);
+            let scale = range / 15.0;
+            block_mins.push(min_v);
+            block_scales.push(scale);
+
+            for pair in chunk.chunks(2) {
+                let q0 = (((pair[0] - min_v) / scale).round().clamp(0.0, 15.0)) as u8;
+                let q1 = if pair.len() == 2 {
+                    (((pair[1] - min_v) / scale).round().clamp(0.0, 15.0)) as u8
+                } else {
+                    0
+                };
+                packed_nibbles.push((q0 & 0x0F) | ((q1 & 0x0F) << 4));
+            }
+        }
+
+        Self {
+            rows,
+            cols,
+            block_size,
+            packed_nibbles,
+            block_scales,
+            block_mins,
+        }
+    }
+
+    /// Computes fused on-the-fly 4-bit dequantization + matrix-vector multiplication $y = W x$
+    /// without materializing the full FP32 matrix in memory.
+    pub fn matvec_f32(&self, input: &[f32]) -> Vec<f32> {
+        assert_eq!(input.len(), self.cols);
+        let mut output = vec![0.0f32; self.rows];
+        let mut global_idx = 0usize;
+
+        for out_val in output.iter_mut() {
+            let mut sum = 0.0f32;
+            for &x_val in input.iter() {
+                let block_idx = global_idx / self.block_size;
+                let scale = self.block_scales[block_idx];
+                let min_v = self.block_mins[block_idx];
+                let byte = self.packed_nibbles[global_idx / 2];
+                let q = if global_idx.is_multiple_of(2) {
+                    (byte & 0x0F) as f32
+                } else {
+                    ((byte >> 4) & 0x0F) as f32
+                };
+                let w = min_v + scale * q;
+                sum += w * x_val;
+                global_idx += 1;
+            }
+            *out_val = sum;
+        }
+        output
+    }
+
+    /// Memory compression ratio compared to raw `f32` (`4 bytes` per element).
+    pub fn compression_ratio(&self) -> f64 {
+        let fp32_bytes = (self.rows * self.cols * 4) as f64;
+        let q4_bytes = (self.packed_nibbles.len()
+            + (self.block_scales.len() + self.block_mins.len()) * 4) as f64;
+        ((fp32_bytes / q4_bytes.max(1.0)) * 100.0).round() / 100.0
+    }
+}
+
+/// Telemetry trace for a single double-buffered Colibri NVMe-to-RAM prefetch step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColibriPrefetchStepTrace {
+    pub layer_index: u32,
+    pub active_compute_slot: &'static str,
+    pub background_prefetch_slot: &'static str,
+    pub compute_duration_ms: f64,
+    pub nvme_dma_duration_ms: f64,
+    pub effective_pipeline_stall_ms: f64,
+}
+
+/// Colibri Double-Buffered NVMe-to-RAM Prefetch Pipeline.
+///
+/// Overlaps execution of layer $L$ in `Slot A` with asynchronous 64 KiB page-aligned
+/// DMA prefetching of layer $L+1$'s cold routed experts into `Slot B`.
+pub struct ColibriNvmeDoubleBuffer;
+
+impl ColibriNvmeDoubleBuffer {
+    /// Simulates a multi-layer double-buffered execution stream and returns per-layer overlap traces.
+    pub fn execute_double_buffered_stream(
+        num_layers: u32,
+        cold_expert_bytes_per_layer: usize,
+        nvme_bw_gbps: f64,
+        compute_ms_per_layer: f64,
+    ) -> Vec<ColibriPrefetchStepTrace> {
+        let mut traces = Vec::with_capacity(num_layers as usize);
+        let bw_bytes_per_ms = (nvme_bw_gbps.max(0.5) * 1e9) / 1000.0;
+
+        for l in 0..num_layers {
+            let (active_slot, prefetch_slot) = if l % 2 == 0 {
+                ("Slot-A (Compute)", "Slot-B (NVMe DMA)")
+            } else {
+                ("Slot-B (Compute)", "Slot-A (NVMe DMA)")
+            };
+            let dma_ms = ((cold_expert_bytes_per_layer as f64) / bw_bytes_per_ms).round_to_2();
+            // Because Slot-B prefetches during Slot-A's compute window, stall is max(0, dma - compute):
+            let stall_ms = (dma_ms - compute_ms_per_layer).max(0.0).round_to_2();
+
+            traces.push(ColibriPrefetchStepTrace {
+                layer_index: l,
+                active_compute_slot: active_slot,
+                background_prefetch_slot: prefetch_slot,
+                compute_duration_ms: compute_ms_per_layer,
+                nvme_dma_duration_ms: dma_ms,
+                effective_pipeline_stall_ms: stall_ms,
+            });
+        }
+
+        traces
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1068,5 +1212,45 @@ mod tests {
         assert_eq!(report.speculative_verification.proposed_draft_tokens, 4);
         assert!(report.speculative_verification.accepted_draft_tokens >= 2);
         assert!(report.speculative_verification.effective_speedup_multiplier > 1.5);
+    }
+
+    #[test]
+    fn test_q4k_block_matvec_and_colibri_double_buffer_prefetch() {
+        let rows = 8usize;
+        let cols = 32usize;
+        let weights: Vec<f32> = (0..(rows * cols))
+            .map(|i| ((i as f32) * 0.05).sin() * 0.8)
+            .collect();
+        let x: Vec<f32> = (0..cols).map(|j| ((j as f32) * 0.1).cos() * 0.5).collect();
+
+        // Exact FP32 reference y = W * x
+        let mut expected = vec![0.0f32; rows];
+        for r in 0..rows {
+            let mut acc = 0.0f32;
+            for c in 0..cols {
+                acc += weights[r * cols + c] * x[c];
+            }
+            expected[r] = acc;
+        }
+
+        let q4 = Q4KBlockTensor::quantize_matrix(&weights, rows, cols);
+        assert!(q4.compression_ratio() > 5.0);
+        let actual = q4.matvec_f32(&x);
+
+        for (e, a) in expected.iter().zip(actual.iter()) {
+            assert!((e - a).abs() < 0.18, "expected {e}, got {a}");
+        }
+
+        // Verify Colibri Double-Buffered NVMe DMA overlaps completely when compute >= DMA
+        let traces = ColibriNvmeDoubleBuffer::execute_double_buffered_stream(
+            4,
+            4 * 1024 * 1024, // 4 MiB cold expert page
+            7.4,             // 7.4 GB/s PCIe Gen4 NVMe (~0.57 ms DMA)
+            1.20,            // 1.20 ms compute window
+        );
+        assert_eq!(traces.len(), 4);
+        for t in &traces {
+            assert_eq!(t.effective_pipeline_stall_ms, 0.0);
+        }
     }
 }

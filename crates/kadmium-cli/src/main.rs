@@ -1,20 +1,22 @@
 use clap::{Parser, Subcommand};
 use kadmium_core::{
-    HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteState, WorkloadKind,
-    sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
+    HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteActivityMonitor,
+    PoliteActivitySample, PoliteState, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
+    sample_personal_cluster,
 };
 use kadmium_data::{
     Fts3TransferScheduler, GitHubConnector, HuggingFaceHubConnector, KtbBankPacker, KtbBankReader,
-    SafetensorsToKtbTranscoder, TensorEncoding,
+    KtbMerkleTree, SafetensorsToKtbTranscoder, TensorEncoding,
 };
 use kadmium_gateway::{GatewayState, KadmiumMcpServer, McpJsonRpcRequest, build_router};
-use kadmium_network::{JoinTicket, LanDiscoveryBeacon};
+use kadmium_network::{ClusterStateCrdt, JoinTicket, LanDiscoveryBeacon};
 use kadmium_rl::{
     DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, RlEnvironmentSuiteSpec,
     RlTopologyPlanner,
 };
 use kadmium_runtime::{
-    DeMoDctCompressor, TrainingJobTelemetry, VerdeVerificationEngine, sample_boinc_workunits,
+    ColibriNvmeDoubleBuffer, DeMoDctCompressor, Q4KBlockTensor, TrainingJobTelemetry,
+    VerdeVerificationEngine, sample_boinc_workunits,
 };
 use kadmium_sharding::{
     ClusterShardPlan, DataflowStreamPlanner, HybridCloudArbitragePlanner, ResponsibilityShiftPlan,
@@ -675,6 +677,79 @@ fn run_probe() {
     println!(
         "--- 🎟️  Generated WAN/LAN Mesh Join Ticket (MAC Verified): {}... ---",
         &encoded_ticket[..44.min(encoded_ticket.len())]
+    );
+
+    // 6. PoliteActivityMonitor <200ms Gaming Auto-Yield Governance
+    let yield_decision = PoliteActivityMonitor::evaluate_sample(
+        &live_node,
+        &PoliteActivitySample {
+            foreground_process_name: Some("cyberpunk2077.exe".into()),
+            fullscreen_swapchain_active: true,
+            external_gpu_utilization_pct: 72.0,
+            external_vram_used_gb: 8.4,
+            on_battery_power: false,
+            package_temp_celsius: 68.0,
+        },
+    );
+    println!(
+        "--- 🎮 PoliteActivityMonitor Auto-Yield: {:?} -> {:?} in {:.1} ms (VRAM ceiling {:.2} GB, {} CPU threads) [OK] ---",
+        yield_decision.previous_state,
+        yield_decision.recommended_state,
+        yield_decision.estimated_yield_latency_ms,
+        yield_decision.vram_ceiling_gb,
+        yield_decision.cpu_thread_budget
+    );
+
+    // 7. KtbMerkleTree O(log N) 64 KiB Page Inclusion Proof
+    let merkle = KtbMerkleTree::from_ktb_bytes(&ktb_bytes);
+    let proof_p1 = merkle.prove_page(1).expect("merkle proof page 1");
+    let verified_p1 =
+        KtbMerkleTree::verify_page(&ktb_bytes[65_536..131_072], &proof_p1, merkle.root_hash);
+    println!(
+        "--- 🌳 KtbMerkleTree 64 KiB Page Verifier: {} pages | Root: {:#018x} | Page #1 Proof Verified: {} [OK] ---",
+        merkle.leaf_hashes.len(),
+        merkle.root_hash,
+        verified_p1
+    );
+
+    // 8. Q4_K 4-Bit Group-Quantized MatVec + Colibri Double-Buffered NVMe DMA
+    let w_fp32: Vec<f32> = (0..(16 * 32)).map(|i| ((i as f32) * 0.03).sin()).collect();
+    let x_fp32: Vec<f32> = (0..32).map(|j| ((j as f32) * 0.07).cos()).collect();
+    let q4_mat = Q4KBlockTensor::quantize_matrix(&w_fp32, 16, 32);
+    let y_q4 = q4_mat.matvec_f32(&x_fp32);
+    let colibri = ColibriNvmeDoubleBuffer::execute_double_buffered_stream(
+        4,
+        4 * 1024 * 1024,
+        live_node.memory.nvme_read_bw_gbps,
+        1.45,
+    );
+    println!(
+        "--- ⚡ Q4_K 4-Bit MatVec ({:.2}x compression, |y[0]|={:.3}) & Colibri Double-Buffer Stall: {:.2} ms [OK] ---",
+        q4_mat.compression_ratio(),
+        y_q4[0].abs(),
+        colibri[0].effective_pipeline_stall_ms
+    );
+
+    // 9. LWW-Element-Map + Vector Clock ClusterStateCrdt Gossip Merge
+    let mut crdt_local = ClusterStateCrdt::new();
+    crdt_local.upsert_node_state(
+        &live_node.id.0,
+        &live_node.id.0,
+        PoliteState::IdleDedicated,
+        Some((0, 25)),
+        true,
+    );
+    let frame = crdt_local.to_wire_frame(1);
+    let crdt_decoded = ClusterStateCrdt::from_wire_frame(&frame).expect("decode CRDT frame");
+    println!(
+        "--- 🔄 ClusterStateCrdt Gossip Replication: {} register(s), Vector Clock v{} [OK] ---",
+        crdt_decoded.registers.len(),
+        crdt_decoded
+            .vector_clock
+            .values()
+            .max()
+            .copied()
+            .unwrap_or(0)
     );
 }
 

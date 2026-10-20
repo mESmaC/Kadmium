@@ -389,6 +389,109 @@ impl LanDiscoveryBeacon {
     }
 }
 
+/// Last-Write-Wins (LWW) CRDT register for a single node's replicated state in the gossip mesh.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrdtNodeRegister {
+    pub node_id: String,
+    pub lamport_ts: u64,
+    pub writer_peer: String,
+    pub polite_state: PoliteState,
+    pub assigned_layers: Option<(u32, u32)>,
+    pub online: bool,
+}
+
+impl CrdtNodeRegister {
+    /// Deterministic LWW ordering: higher `lamport_ts` wins; ties broken lexicographically by `writer_peer`.
+    pub fn supersedes(&self, other: &Self) -> bool {
+        (self.lamport_ts, &self.writer_peer) > (other.lamport_ts, &other.writer_peer)
+    }
+}
+
+/// Conflict-Free Replicated Data Type (LWW-Element-Map + Vector Clock) for decentralized
+/// Kadmium cluster topology and shard assignment replication.
+///
+/// Guarantees strong eventual consistency ($A \sqcup B = B \sqcup A$, $(A \sqcup B) \sqcup C = A \sqcup (B \sqcup C)$, $A \sqcup A = A$).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterStateCrdt {
+    pub vector_clock: std::collections::BTreeMap<String, u64>,
+    pub registers: std::collections::BTreeMap<String, CrdtNodeRegister>,
+}
+
+impl ClusterStateCrdt {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Updates a node's state in the CRDT, advancing `writer_peer`'s logical clock.
+    pub fn upsert_node_state(
+        &mut self,
+        writer_peer: impl Into<String>,
+        node_id: impl Into<String>,
+        polite_state: PoliteState,
+        assigned_layers: Option<(u32, u32)>,
+        online: bool,
+    ) {
+        let writer = writer_peer.into();
+        let nid = node_id.into();
+        let max_seen = self.vector_clock.values().copied().max().unwrap_or(0);
+        let next_ts = max_seen + 1;
+        self.vector_clock.insert(writer.clone(), next_ts);
+
+        let candidate = CrdtNodeRegister {
+            node_id: nid.clone(),
+            lamport_ts: next_ts,
+            writer_peer: writer,
+            polite_state,
+            assigned_layers,
+            online,
+        };
+
+        match self.registers.get(&nid) {
+            Some(existing) if !candidate.supersedes(existing) => {}
+            _ => {
+                self.registers.insert(nid, candidate);
+            }
+        }
+    }
+
+    /// Commutative, associative, and idempotent join ($\sqcup$) with a remote peer's `ClusterStateCrdt`.
+    pub fn merge(&mut self, remote: &Self) {
+        for (peer, &remote_ts) in &remote.vector_clock {
+            let entry = self.vector_clock.entry(peer.clone()).or_insert(0);
+            if remote_ts > *entry {
+                *entry = remote_ts;
+            }
+        }
+
+        for (nid, remote_reg) in &remote.registers {
+            match self.registers.get(nid) {
+                Some(local_reg) => {
+                    if remote_reg.supersedes(local_reg) {
+                        self.registers.insert(nid.clone(), remote_reg.clone());
+                    }
+                }
+                None => {
+                    self.registers.insert(nid.clone(), remote_reg.clone());
+                }
+            }
+        }
+    }
+
+    /// Packs this CRDT snapshot into a `WireFrame` for P2P gossip transmission.
+    pub fn to_wire_frame(&self, epoch: u32) -> WireFrame {
+        WireFrame {
+            kind: WireFrameKind::ShardPlanEpochUpdate,
+            epoch,
+            payload: serde_json::to_vec(self).expect("serialize ClusterStateCrdt"),
+        }
+    }
+
+    /// Unpacks a `ClusterStateCrdt` from a received `WireFrame`.
+    pub fn from_wire_frame(frame: &WireFrame) -> Result<Self, String> {
+        serde_json::from_slice(&frame.payload).map_err(|e| format!("Invalid CRDT payload: {e}"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,5 +600,61 @@ mod tests {
             .await
             .expect("recv udp beacon");
         assert_eq!(received_beacon, beacon);
+    }
+
+    #[test]
+    fn test_cluster_state_crdt_commutativity_idempotence_and_wire_sync() {
+        let mut crdt_a = ClusterStateCrdt::new();
+        crdt_a.upsert_node_state(
+            "node-main-pc",
+            "node-main-pc",
+            PoliteState::IdleDedicated,
+            Some((0, 25)),
+            true,
+        );
+        crdt_a.upsert_node_state(
+            "node-main-pc",
+            "node-m4-mac-mini",
+            PoliteState::IdleDedicated,
+            Some((26, 42)),
+            true,
+        );
+
+        let mut crdt_b = crdt_a.clone();
+        // Concurrent update on node A: main PC enters gaming mode
+        crdt_a.upsert_node_state(
+            "node-main-pc",
+            "node-main-pc",
+            PoliteState::GamingOrHeavyApp,
+            Some((0, 12)),
+            true,
+        );
+        // Concurrent update on node B: Mac Mini absorbs layers 13..42
+        crdt_b.upsert_node_state(
+            "node-m4-mac-mini",
+            "node-m4-mac-mini",
+            PoliteState::IdleDedicated,
+            Some((13, 42)),
+            true,
+        );
+
+        let mut ab = crdt_a.clone();
+        ab.merge(&crdt_b);
+
+        let mut ba = crdt_b.clone();
+        ba.merge(&crdt_a);
+
+        // Commutativity: A ⊔ B == B ⊔ A
+        assert_eq!(ab, ba);
+
+        // Idempotence: (A ⊔ B) ⊔ B == A ⊔ B
+        let mut abb = ab.clone();
+        abb.merge(&crdt_b);
+        assert_eq!(abb, ab);
+
+        // WireFrame round-trip
+        let frame = ab.to_wire_frame(9);
+        let decoded = ClusterStateCrdt::from_wire_frame(&frame).expect("decode CRDT frame");
+        assert_eq!(decoded, ab);
     }
 }
