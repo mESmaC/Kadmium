@@ -280,6 +280,8 @@
     var otaVerState = React.useState('v0.2.0-cd48'), otaVerInput = otaVerState[0], setOtaVerInput = otaVerState[1];
     var fts3State = React.useState(null), fts3Reply = fts3State[0], setFts3Reply = fts3State[1];
     var ckptState = React.useState(null), ckptReply = ckptState[0], setCkptReply = ckptState[1];
+    var verdeState = React.useState(null), verdeReply = verdeState[0], setVerdeReply = verdeState[1];
+    var dreamReplayState = React.useState(null), dreamReplayReply = dreamReplayState[0], setDreamReplayReply = dreamReplayState[1];
 
     function refreshWorkersAndOverview() {
       fetch('/api/v1/cluster/workers').then(function (r) { return r.json(); }).then(setWorkersOverview);
@@ -454,6 +456,50 @@
         setCkptReply(data);
         refreshWorkersAndOverview();
       });
+    }
+
+    function runLiveVerdeAudit(faultLayer) {
+      fetch('/api/v1/verde/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ total_layers: 32, inject_fault_layer: faultLayer })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setVerdeReply(data);
+      });
+    }
+
+    function runLiveDreamRsiReplay() {
+      fetch('/api/v1/rl/dream-replay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ world_id: 'dream-rsi-cuda-q4k-kernel-synth-v1', mcts_simulations: 64 })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setDreamReplayReply(data);
+      });
+    }
+
+    function testGatewayEmbeddings() {
+      fetch('/v1/embeddings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'kadmium-embed-v1',
+          input: ['Asymmetric Q* sharding across heterogeneous silicon', 'Colibri NVMe MoE expert streaming'],
+          dimensions: 16
+        })
+      }).then(function (r) { return r.json(); }).then(setGatewayReply);
+    }
+
+    function testGatewayVisionOffload() {
+      fetch('/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'deepseek-v3-671b-moe',
+          vision_offload: true,
+          messages: [{ role: 'user', content: 'Analyze diagram image with Strata vision offload on Apple Metal / SBC NPU.' }]
+        })
+      }).then(function (r) { return r.json(); }).then(setGatewayReply);
     }
 
     var wordmark = theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg';
@@ -962,6 +1008,9 @@
                     h(K.Button, { variant: 'cloud', size: 'sm', onClick: runLiveDistributedTrainingStep }, 'Step Live QLoRA + DeMo Training'),
                     h(K.Button, { variant: 'quiet', size: 'sm', onClick: runLiveFts3ShardStream }, 'Stream .ktb Shard (FTS3 TCP)'),
                     h(K.Button, { variant: 'ghost', size: 'sm', onClick: exportKtbCheckpoint }, 'Save .ktb Checkpoint to Disk'),
+                    h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { runLiveVerdeAudit(null); } }, 'Verde O(log L) Audit'),
+                    h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { runLiveVerdeAudit(19); } }, 'Catch L19 Drift'),
+                    h(K.Button, { variant: 'cloud', size: 'sm', onClick: runLiveDreamRsiReplay }, 'Dream-RSI SBC Replay (TCP)'),
                     h(K.Button, { variant: 'ghost', size: 'sm', onClick: refreshWorkersAndOverview }, 'Refresh')),
                   liveInfReply ? h('div', { style: { marginTop: 'var(--space-3)' } },
                     h('div', { className: 'code', style: { marginBottom: 'var(--space-2)', color: 'var(--cadmium)' } }, liveInfReply.generated_response),
@@ -1007,7 +1056,36 @@
                     h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-2)' } },
                       h(K.Badge, { tone: 'ok', dot: true }, 'Saved ' + ckptReply.checkpoint_id + ' (' + (ckptReply.file_size_bytes / 1024) + ' KiB)'),
                       h(K.Badge, { tone: 'local' }, 'Zero-Copy Verified · Merkle 0x' + (ckptReply.merkle_root_fnv64 || 0).toString(16).slice(0, 12))),
-                    h('div', { className: 'code' }, ckptReply.file_path)) : null),
+                    h('div', { className: 'code' }, ckptReply.file_path)) : null,
+                  verdeReply ? h('div', { style: { marginTop: 'var(--space-3)' } },
+                    h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-2)' } },
+                      h(K.Badge, { tone: verdeReply.bit_exact_verified ? 'ok' : 'danger', dot: true },
+                        verdeReply.bit_exact_verified ? 'Verde O(log L) Bit-Exact Verified (' + verdeReply.bisection_steps.length + ' hops)' : 'Disputed Layer L' + verdeReply.disputed_layer + ' Isolated (' + verdeReply.fraud_proof_certificate_id + ')'),
+                      h(K.Badge, { tone: 'local' }, verdeReply.target_hostname + ' · ' + verdeReply.total_audit_wall_ms + ' ms')),
+                    h('div', { className: 'table-wrap' },
+                      h('table', { className: 'mono-table' },
+                        h('thead', null, h('tr', null,
+                          h('th', null, 'STEP'),
+                          h('th', null, 'INTERVAL'),
+                          h('th', null, 'MIDPOINT'),
+                          h('th', null, 'WORKER REPOPS'),
+                          h('th', null, 'MATCH'))),
+                        h('tbody', null, (verdeReply.bisection_steps || []).map(function (st) {
+                          return h('tr', { key: st.step_index },
+                            h('td', null, '#' + st.step_index),
+                            h('td', null, '[L' + st.search_low_layer + '..L' + st.search_high_layer + ']'),
+                            h('td', null, 'L' + st.midpoint_layer),
+                            h('td', null, '0x' + st.worker_repops_digest.toString(16).slice(0, 12)),
+                            h('td', null, h(K.Badge, { tone: st.matched ? 'ok' : 'danger' }, st.matched ? 'Match' : 'Drift')));
+                        }))))) : null,
+                  dreamReplayReply ? h('div', { style: { marginTop: 'var(--space-3)' } },
+                    h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-2)' } },
+                      h(K.Badge, { tone: 'ok', dot: true }, 'Dream-RSI Peak: ' + dreamReplayReply.best_evolved_speedup + '× speedup'),
+                      h(K.Badge, { tone: 'local' }, dreamReplayReply.total_mcts_simulations + ' MCTS sims · 0.0 GPU-hrs'),
+                      h(K.Badge, { tone: 'cloud' }, 'Policy 0x' + (dreamReplayReply.evolved_policy_hash_fnv64 || 0).toString(16).slice(0, 12))),
+                    (dreamReplayReply.worker_runs || []).map(function (wr) {
+                      return h('div', { key: wr.hostname, className: 'code', style: { marginTop: '4px' } }, wr.best_discovered_kernel_snippet);
+                    })) : null),
                 h('div', { className: 'panel' },
                   h('p', { className: 'eyebrow' }, 'Over-The-Air (OTA) Fleet Update Pusher · Local LAN (TCP WireFrame) + Online WAN (Heartbeat Pull/Relay)'),
                   h(K.Input, {
@@ -1070,7 +1148,9 @@
                 code: '$ curl -X POST http://127.0.0.1:7848/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"deepseek-v3-671b-moe","messages":[{"role":"user","content":"Ping"}]}\''
               }),
               h('div', { className: 'kd-row' },
-                h(K.Button, { variant: 'primary', icon: 'rods', onClick: testGatewayInference }, 'Run live /v1/chat/completions request')),
+                h(K.Button, { variant: 'primary', size: 'sm', icon: 'rods', onClick: testGatewayInference }, 'Run /v1/chat/completions'),
+                h(K.Button, { variant: 'cloud', size: 'sm', onClick: testGatewayVisionOffload }, 'Run Vision Offload (Metal/SBC)'),
+                h(K.Button, { variant: 'quiet', size: 'sm', onClick: testGatewayEmbeddings }, 'Run /v1/embeddings')),
               gatewayReply ? h(K.CodeBlock, {
                 title: 'gateway response',
                 language: 'json',

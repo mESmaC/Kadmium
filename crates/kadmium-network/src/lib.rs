@@ -165,6 +165,7 @@ pub enum WireFrameKind {
     Fts3KtbChunkStream = 5,
     VerdeBisectionChallenge = 6,
     FleetUpdatePush = 7,
+    DreamRsiRolloutReplay = 8,
 }
 
 impl WireFrameKind {
@@ -177,6 +178,7 @@ impl WireFrameKind {
             5 => Some(Self::Fts3KtbChunkStream),
             6 => Some(Self::VerdeBisectionChallenge),
             7 => Some(Self::FleetUpdatePush),
+            8 => Some(Self::DreamRsiRolloutReplay),
             _ => None,
         }
     }

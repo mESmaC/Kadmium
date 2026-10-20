@@ -33,9 +33,9 @@ use kadmium_rl::{
 use kadmium_runtime::{
     DistributedLanExecutor, DistributedPipelineExecutionReport, HardwareKernelDispatcher,
     HardwareKernelSuiteReport, KtbCheckpointExportReport, LiveDistributedTrainingStepReport,
-    LiveFts3SwarmStreamReport, LiveHopTelemetry, LocalFleetSpawner, Pipeline1F1BSchedule,
-    Pipeline1F1BScheduler, VerdeFraudProofCertificate, VerdeFraudProofEngine,
-    apply_ota_update_manifest_local,
+    LiveDreamRsiSwarmReport, LiveFts3SwarmStreamReport, LiveHopTelemetry, LiveVerdeAuditReport,
+    LocalFleetSpawner, Pipeline1F1BSchedule, Pipeline1F1BScheduler, VerdeFraudProofCertificate,
+    VerdeFraudProofEngine, apply_ota_update_manifest_local,
 };
 use kadmium_sharding::{
     CloudShieldCutoverWatcher, CloudShieldWatcherReport, ClusterPoolSliceLayout,
@@ -92,6 +92,32 @@ pub struct ChatCompletionRequest {
     pub messages: Vec<serde_json::Value>,
     #[serde(default)]
     pub stream: Option<bool>,
+    #[serde(default)]
+    pub vision_offload: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EmbeddingsRequest {
+    pub model: Option<String>,
+    pub input: serde_json::Value,
+    #[serde(default)]
+    pub dimensions: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct VerdeAuditRequest {
+    #[serde(default)]
+    pub total_layers: Option<u32>,
+    #[serde(default)]
+    pub inject_fault_layer: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DreamRsiReplayRequest {
+    #[serde(default)]
+    pub world_id: Option<String>,
+    #[serde(default)]
+    pub mcts_simulations: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,6 +298,16 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             get(get_cloud_shield_watcher),
         )
         .route("/api/v1/ga/governance", get(get_ga_governance))
+        .route(
+            "/api/v1/verde/audit",
+            get(post_live_verde_audit).post(post_live_verde_audit),
+        )
+        .route(
+            "/api/v1/rl/dream-replay",
+            get(post_live_dream_rsi_replay).post(post_live_dream_rsi_replay),
+        )
+        .route("/v1/models", get(openai_list_models))
+        .route("/v1/embeddings", post(openai_embeddings))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .with_state(state)
@@ -1257,6 +1293,223 @@ pub fn format_openai_sse_stream(epoch: u64, model_name: &str, tokens: &[&str]) -
     sse
 }
 
+async fn post_live_verde_audit(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    maybe_req: Option<Json<VerdeAuditRequest>>,
+) -> Json<LiveVerdeAuditReport> {
+    let req = maybe_req.map(|j| j.0).unwrap_or_default();
+    let (epoch, total_layers, workers) = {
+        let guard = state.lock().expect("gateway state lock");
+        (
+            guard.epoch,
+            req.total_layers.unwrap_or(guard.inference_plan.total_layers),
+            guard.live_workers.clone(),
+        )
+    };
+    let report = DistributedLanExecutor::run_live_verde_bisection_audit_tcp(
+        epoch,
+        total_layers,
+        req.inject_fault_layer,
+        &workers,
+    )
+    .await;
+    Json(report)
+}
+
+async fn post_live_dream_rsi_replay(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    maybe_req: Option<Json<DreamRsiReplayRequest>>,
+) -> Json<LiveDreamRsiSwarmReport> {
+    let req = maybe_req.map(|j| j.0).unwrap_or_default();
+    let (epoch, workers) = {
+        let guard = state.lock().expect("gateway state lock");
+        (guard.epoch, guard.live_workers.clone())
+    };
+    let world_id = req
+        .world_id
+        .unwrap_or_else(|| "dream-rsi-cuda-q4k-kernel-synth-v1".to_string());
+    let sims = req.mcts_simulations.unwrap_or(64);
+    let report =
+        DistributedLanExecutor::run_live_dream_rsi_replay_tcp(epoch, &world_id, sims, &workers)
+            .await;
+    Json(report)
+}
+
+async fn openai_list_models(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<serde_json::Value> {
+    let guard = state.lock().expect("gateway state lock");
+    let epoch = guard.epoch;
+    let inf_tps = guard.inference_plan.estimated_throughput;
+    let live_cnt = guard.live_workers.len();
+
+    Json(serde_json::json!({
+        "object": "list",
+        "data": [
+            {
+                "id": "deepseek-v3-671b-moe",
+                "object": "model",
+                "created": 1735689600,
+                "owned_by": "kadmium-cd48-fabric",
+                "kadmium_fabric": {
+                    "epoch": epoch,
+                    "estimated_tokens_per_sec": inf_tps,
+                    "live_tcp_workers": live_cnt,
+                    "sharding": "Asymmetric Q* + Colibri NVMe MoE Streaming"
+                }
+            },
+            {
+                "id": "qwen3-235b-moe",
+                "object": "model",
+                "created": 1735689600,
+                "owned_by": "kadmium-cd48-fabric",
+                "kadmium_fabric": {
+                    "epoch": epoch,
+                    "live_tcp_workers": live_cnt,
+                    "sharding": "Asymmetric Q* + Colibri NVMe MoE Streaming"
+                }
+            },
+            {
+                "id": "llama-3-70b-lora",
+                "object": "model",
+                "created": 1735689600,
+                "owned_by": "kadmium-cd48-fabric",
+                "kadmium_fabric": {
+                    "epoch": epoch,
+                    "live_tcp_workers": live_cnt,
+                    "sharding": "1F1B Asymmetric QLoRA + DeMo DCT + DiLoCo"
+                }
+            },
+            {
+                "id": "kadmium-embed-v1",
+                "object": "model",
+                "created": 1735689600,
+                "owned_by": "kadmium-cd48-fabric",
+                "kadmium_fabric": {
+                    "epoch": epoch,
+                    "dimensions": 64,
+                    "sharding": "Distributed Hidden-State Pooling + Verde RepOps"
+                }
+            },
+            {
+                "id": "kadmium-vision-siglip-400m",
+                "object": "model",
+                "created": 1735689600,
+                "owned_by": "kadmium-cd48-fabric",
+                "kadmium_fabric": {
+                    "epoch": epoch,
+                    "sharding": "Strata Multimodal Vision Offloading (Metal / SBC NPU)"
+                }
+            }
+        ]
+    }))
+}
+
+async fn openai_embeddings(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(req): Json<EmbeddingsRequest>,
+) -> Json<serde_json::Value> {
+    let (plan, workers) = {
+        let guard = state.lock().expect("gateway state lock");
+        (guard.inference_plan.clone(), guard.live_workers.clone())
+    };
+    let model_name = req.model.unwrap_or_else(|| "kadmium-embed-v1".to_string());
+    let dims = req.dimensions.unwrap_or(64);
+    let inputs: Vec<String> = match &req.input {
+        serde_json::Value::String(s) => vec![s.clone()],
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        _ => vec!["Kadmium distributed embedding pass".to_string()],
+    };
+    let inputs = if inputs.is_empty() {
+        vec!["Kadmium distributed embedding pass".to_string()]
+    } else {
+        inputs
+    };
+
+    let report =
+        DistributedLanExecutor::execute_live_embeddings(&plan, &inputs, dims, &workers).await;
+
+    {
+        let mut guard = state.lock().expect("gateway state lock");
+        for h in &report.live_hops {
+            if let Some(w) = guard.live_workers.get_mut(&h.node_id) {
+                w.executed_forward_stages += 1;
+                w.last_measured_rtt_ms = h.wire_plus_compute_ms;
+            }
+        }
+    }
+
+    let data: Vec<serde_json::Value> = report
+        .vectors
+        .iter()
+        .map(|v| {
+            serde_json::json!({
+                "object": "embedding",
+                "index": v.index,
+                "embedding": v.embedding,
+                "repops_digest_fnv1a": format!("{:#018x}", v.repops_digest_fnv1a)
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "object": "list",
+        "model": model_name,
+        "data": data,
+        "usage": {
+            "prompt_tokens": report.prompt_tokens,
+            "total_tokens": report.prompt_tokens
+        },
+        "kadmium_fabric": {
+            "epoch": report.epoch,
+            "dimensions": report.dimensions,
+            "total_wall_ms": report.total_wall_ms,
+            "live_hops": report.live_hops
+        }
+    }))
+}
+
+fn extract_prompt_and_vision_flag(messages: &[serde_json::Value], explicit_vision: Option<bool>) -> (String, bool) {
+    let mut has_vision = explicit_vision.unwrap_or(false);
+    let mut extracted = String::new();
+
+    if let Some(last_msg) = messages.last()
+        && let Some(content) = last_msg.get("content")
+    {
+        match content {
+            serde_json::Value::String(s) => {
+                extracted = s.clone();
+                if s.contains("image") || s.contains("vision") || s.contains("data:image/") {
+                    has_vision = true;
+                }
+            }
+            serde_json::Value::Array(blocks) => {
+                for b in blocks {
+                    let btype = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    if btype.contains("image") {
+                        has_vision = true;
+                    }
+                    if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                        if !extracted.is_empty() {
+                            extracted.push(' ');
+                        }
+                        extracted.push_str(t);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if extracted.trim().is_empty() {
+        extracted = "Kadmium distributed inference".to_string();
+    }
+    (extracted, has_vision)
+}
+
 async fn openai_chat_completions(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ChatCompletionRequest>,
@@ -1270,14 +1523,20 @@ async fn openai_chat_completions(
         )
     };
     let model_name = req.model.unwrap_or_else(|| plan.model_id.clone());
-    let prompt_sample = req
-        .messages
-        .last()
-        .and_then(|m| m.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("Kadmium distributed inference");
+    let (prompt_sample, needs_vision_offload) =
+        extract_prompt_and_vision_flag(&req.messages, req.vision_offload);
+
+    let vision_telemetry = if needs_vision_offload {
+        Some(
+            DistributedLanExecutor::execute_vision_patch_offload(epoch, &prompt_sample, &workers)
+                .await,
+        )
+    } else {
+        None
+    };
+
     let (exec_report, live_hops) =
-        DistributedLanExecutor::execute_live_pipeline(&plan, prompt_sample, &workers).await;
+        DistributedLanExecutor::execute_live_pipeline(&plan, &prompt_sample, &workers).await;
 
     {
         let mut guard = state.lock().expect("gateway state lock");
@@ -1341,6 +1600,7 @@ async fn openai_chat_completions(
             "estimated_tokens_per_sec": exec_report.effective_tokens_per_sec,
             "speculative_draft_node": exec_report.speculative_verification.draft_node_id,
             "speculative_speedup": exec_report.speculative_verification.effective_speedup_multiplier,
+            "vision_offload": vision_telemetry,
             "execution_trace": exec_report,
             "live_hops": live_hops
         },
@@ -1359,21 +1619,74 @@ async fn openai_chat_completions(
 async fn anthropic_messages(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ChatCompletionRequest>,
-) -> Json<serde_json::Value> {
-    let guard = state.lock().expect("gateway state lock");
-    let model_name = req
-        .model
-        .unwrap_or_else(|| guard.inference_plan.model_id.clone());
+) -> axum::response::Response {
+    let (epoch, plan, workers) = {
+        let guard = state.lock().expect("gateway state lock");
+        (
+            guard.epoch,
+            guard.inference_plan.clone(),
+            guard.live_workers.clone(),
+        )
+    };
+    let model_name = req.model.unwrap_or_else(|| plan.model_id.clone());
+    let (prompt_sample, needs_vision_offload) =
+        extract_prompt_and_vision_flag(&req.messages, req.vision_offload);
+
+    let vision_telemetry = if needs_vision_offload {
+        Some(
+            DistributedLanExecutor::execute_vision_patch_offload(epoch, &prompt_sample, &workers)
+                .await,
+        )
+    } else {
+        None
+    };
+
+    let (exec_report, live_hops) =
+        DistributedLanExecutor::execute_live_pipeline(&plan, &prompt_sample, &workers).await;
+
+    {
+        let mut guard = state.lock().expect("gateway state lock");
+        for h in &live_hops {
+            if let Some(w) = guard.live_workers.get_mut(&h.node_id) {
+                w.executed_forward_stages += 1;
+                w.last_measured_rtt_ms = h.wire_plus_compute_ms;
+            }
+        }
+    }
+
+    if req.stream == Some(true) {
+        let sse = format!(
+            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_kadmium_e{epoch}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"{model_name}\"}}}}\n\nevent: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"Executed via Kadmium Strata Anthropic /v1/messages gateway ({:.1} tok/s).\"}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+            exec_report.effective_tokens_per_sec
+        );
+        return (
+            [(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")],
+            sse,
+        )
+            .into_response();
+    }
 
     Json(serde_json::json!({
-        "id": format!("msg_kadmium_e{}", guard.epoch),
+        "id": format!("msg_kadmium_e{epoch}"),
         "type": "message",
         "role": "assistant",
         "model": model_name,
         "content": [{
             "type": "text",
-            "text": "Executed via Kadmium's Strata-compatible Anthropic /v1/messages gateway across your distributed home/lab cluster."
+            "text": format!(
+                "Executed via Kadmium's Strata-compatible Anthropic /v1/messages gateway across {} stages ({:.1} tok/s, {:.2} ms total TCP+compute latency).",
+                live_hops.len(),
+                exec_report.effective_tokens_per_sec,
+                exec_report.total_pipeline_latency_ms
+            )
         }],
-        "stop_reason": "end_turn"
+        "stop_reason": "end_turn",
+        "kadmium_fabric": {
+            "epoch": epoch,
+            "estimated_tokens_per_sec": exec_report.effective_tokens_per_sec,
+            "vision_offload": vision_telemetry,
+            "live_hops": live_hops
+        }
     }))
+    .into_response()
 }
