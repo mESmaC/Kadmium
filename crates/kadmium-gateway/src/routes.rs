@@ -86,6 +86,12 @@ pub struct ShiftRequest {
     pub scenario: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ModelSwapRequest {
+    pub inference_model_id: Option<String>,
+    pub training_model_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ChatCompletionRequest {
     pub model: Option<String>,
@@ -244,6 +250,7 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/docs", get(get_documentation_catalog))
         .route("/api/v1/cluster/overview", get(get_cluster_overview))
         .route("/api/v1/cluster/shift", post(post_cluster_shift))
+        .route("/api/v1/cluster/model", post(post_cluster_model))
         .route("/api/v1/cluster/workers", get(get_cluster_workers))
         .route("/api/v1/cluster/register", post(post_cluster_register))
         .route("/api/v1/cluster/heartbeat", post(post_cluster_heartbeat))
@@ -452,6 +459,22 @@ async fn get_cluster_overview(
     State(state): State<Arc<Mutex<GatewayState>>>,
 ) -> Json<ClusterOverviewResponse> {
     let guard = state.lock().expect("gateway state lock");
+    Json(guard.snapshot())
+}
+
+async fn post_cluster_model(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(req): Json<ModelSwapRequest>,
+) -> Json<ClusterOverviewResponse> {
+    let mut guard = state.lock().expect("gateway state lock");
+    if let Some(inf_id) = req.inference_model_id.as_deref() {
+        guard.inference_model = ModelSpec::from_id(inf_id);
+    }
+    if let Some(trn_id) = req.training_model_id.as_deref() {
+        guard.training_model = ModelSpec::from_id(trn_id);
+    }
+    guard.epoch += 1;
+    guard.recompute_plans();
     Json(guard.snapshot())
 }
 

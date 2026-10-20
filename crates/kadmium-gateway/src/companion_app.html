@@ -272,7 +272,7 @@
             h('p', { className: 'eyebrow' }, 'This machine · live hardware profiler'),
             h(K.NodeCard, {
               name: probe.local_node.hostname,
-              hardware: probe.local_node.compute_backend.toLowerCase() + ' · ' + probe.local_node.memory.vram_gb + ' gb vram · ' + probe.local_node.memory.system_ram_gb + ' gb ram · q* ' + probe.q_star_ratio,
+              hardware: String(probe.local_node.backend || probe.local_node.compute_backend || 'cpu').toLowerCase() + ' · ' + probe.local_node.memory.vram_gb + ' gb vram · ' + probe.local_node.memory.system_ram_gb + ' gb ram · q* ' + probe.q_star_ratio,
               kind: 'desktop',
               placement: 'local',
               status: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 'yielded' : 'resident',
@@ -400,7 +400,7 @@
                           size: 'sm',
                           onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedVerifiedMiddleOnly'); }
                         }, 'Middle-only'))));
-                })))))),
+                }))))),
 
           h('div', { className: 'panel' },
             h('p', { className: 'eyebrow' }, 'OS swapchain & thermal hooks · ' + pairing.os_hysteresis.hook_backend),

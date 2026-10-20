@@ -208,24 +208,28 @@
 
   function formatHardwareLine(node) {
     var mem = node.memory;
-    var q = node.vram_bandwidth_gbps + node.ram_bandwidth_gbps > 0
-      ? (node.ram_bandwidth_gbps / (node.vram_bandwidth_gbps + node.ram_bandwidth_gbps)).toFixed(2)
-      : '0.00';
+    var fastBw = (mem.vram_bw_gbps || 0) + (mem.unified_mem_bw_gbps || 0);
+    var ramBw = mem.system_ram_bw_gbps || 0;
+    var q = fastBw + ramBw > 0 ? (fastBw / (fastBw + ramBw)).toFixed(2) : '0.00';
+
+    if (mem.unified_mem_gb > 0) {
+      return String(node.backend || 'metal').toLowerCase() + ' · ' + mem.unified_mem_gb + ' gb unified · q* ' + q;
+    }
     if (mem.unified_memory && mem.vram_gb > 0) {
       return 'm4 pro · ' + mem.vram_gb + ' gb unified · q* ' + q;
     }
     if (mem.vram_gb > 0) {
-      return node.compute_backend.toLowerCase() + ' · ' + mem.vram_gb + ' gb vram · nvme ' + mem.nvme_read_bw_gbps + ' gb/s';
+      return String(node.backend || node.compute_backend || 'gpu').toLowerCase() + ' · ' + mem.vram_gb + ' gb vram · nvme ' + mem.nvme_read_bw_gbps + ' gb/s';
     }
-    return node.cpu_cores + ' cores · ' + mem.system_ram_gb + ' gb ram · nvme ' + mem.nvme_read_bw_gbps + ' gb/s';
+    return (node.cpu_threads || node.cpu_cores || 8) + ' threads · ' + mem.system_ram_gb + ' gb ram · nvme ' + mem.nvme_read_bw_gbps + ' gb/s';
   }
 
   function buildNodeMeters(node, assignment) {
     var m = node.memory;
     var tm = assignment && assignment.tiered_memory ? assignment.tiered_memory : null;
     var meters = [];
-    if (m.unified_memory && m.vram_gb > 0) {
-      meters.push({ label: 'UMA', value: tm ? tm.hot_vram_or_unified_gb : Math.round(m.vram_gb * 0.45), max: m.vram_gb, unit: 'GB' });
+    if (m.unified_mem_gb > 0) {
+      meters.push({ label: 'UMA', value: tm ? tm.hot_vram_or_unified_gb : Math.round((m.unified_mem_gb || m.vram_gb) * 0.55), max: m.unified_mem_gb || m.vram_gb, unit: 'GB' });
     } else if (m.vram_gb > 0) {
       var vramVal = node.polite_state === 'GamingOrHeavyApp' ? Math.round(m.vram_gb * 0.12 * 10) / 10 : (tm ? tm.hot_vram_or_unified_gb : Math.round(m.vram_gb * 0.6));
       meters.push({ label: 'VRAM', value: vramVal, max: m.vram_gb, unit: 'GB', criticalAt: 0.95 });
@@ -245,7 +249,7 @@
       return ac - bc;
     });
     return ordered.map(function (n) {
-      var a = (plan.assignments || []).find(function (x) { return x.node_id.0 === n.id.0 || x.node_id === n.id.0 || x.hostname === n.hostname; });
+      var a = (plan.assignments || []).find(function (x) { return x.node_id === n.id || x.hostname === n.hostname; });
       var share = a ? a.layer_count / totalLayers : 0;
       return {
         id: n.hostname,
@@ -315,6 +319,17 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scenario: scenario })
       }).then(function (r) { return r.json(); }).then(setOverview);
+    }
+
+    function swapActiveModel(modelId) {
+      fetch('/api/v1/cluster/model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inference_model_id: modelId })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setOverview(data);
+        fetch('/api/v1/dataflow').then(function (r) { return r.json(); }).then(setDataflow);
+      });
     }
 
     function toggleCompanionMode(targetCloud) {
@@ -543,7 +558,13 @@
               h(K.Button, { size: 'lg', onClick: function () { window.location.href = '/docs'; } }, 'Read the docs'),
               h(K.Button, { variant: 'cloud', size: 'lg', icon: 'cloud', onClick: function () { triggerScenario('cloud_burst'); } }, 'Attach burst GPU'))),
           h('div', { className: 'panel' },
-            h('p', { className: 'eyebrow' }, 'Asymmetric shard rail · ' + infPlan.model_id + ' · ' + infPlan.total_layers + ' layers'),
+            h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-2)', flexWrap: 'wrap' } },
+              h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Asymmetric shard rail · ' + infPlan.model_id + ' · ' + infPlan.total_layers + ' layers'),
+              h('div', { className: 'kd-row' },
+                h(K.Button, { variant: infPlan.model_id === 'deepseek-v3-671b-moe' ? 'primary' : 'ghost', size: 'sm', onClick: function () { swapActiveModel('deepseek-v3-671b-moe'); } }, 'DeepSeek-V3 671B'),
+                h(K.Button, { variant: infPlan.model_id === 'qwen3-235b-moe' ? 'primary' : 'ghost', size: 'sm', onClick: function () { swapActiveModel('qwen3-235b-moe'); } }, 'Qwen3-235B MoE'),
+                h(K.Button, { variant: infPlan.model_id === 'llama-3-70b-lora' ? 'primary' : 'ghost', size: 'sm', onClick: function () { swapActiveModel('llama-3-70b-lora'); } }, 'Llama-3.3 70B'),
+                h(K.Button, { variant: infPlan.model_id === 'qwen2.5-coder-32b-instruct' ? 'primary' : 'ghost', size: 'sm', onClick: function () { swapActiveModel('qwen2.5-coder-32b-instruct'); } }, 'Qwen2.5-Coder 32B'))),
             h(K.ShardRail, {
               label: 'Shard plan for ' + infPlan.model_id,
               depth: 112,
@@ -553,24 +574,24 @@
 
         overview.last_shift ? h('div', { className: 'shift-bar' },
           h('div', null,
-            h('p', { className: 'eyebrow' }, 'Live responsibility shift · epoch ' + overview.last_shift.new_plan.epoch),
-            h('div', { className: 'code' }, overview.last_shift.summary_note)),
+            h('p', { className: 'eyebrow' }, 'Live responsibility shift · epoch ' + (overview.last_shift.new_epoch || overview.last_shift.previous_epoch)),
+            h('div', { className: 'code' }, (overview.last_shift.migrations || []).length + ' shard migrations executed across heterogeneous nodes')),
           h('div', { className: 'kd-row' },
-            h(K.Badge, { tone: 'warn', dot: true }, overview.last_shift.estimated_handoff_latency_ms + ' ms boundary handoff'),
+            h(K.Badge, { tone: 'warn', dot: true }, (overview.last_shift.estimated_switchover_pause_ms || 42) + ' ms boundary handoff'),
             h(K.Badge, { tone: 'ok' }, overview.fts3_transfers.length + ' fts3 p2p streams'))) : null,
 
         h('div', { className: 'stat-strip' },
           h('div', { className: 'stat-card' },
             h('span', { className: 'label' }, 'INFERENCE THROUGHPUT'),
             h('span', { className: 'metric' }, infPlan.estimated_throughput + ' tok/s'),
-            h('span', { className: 'meta' }, infPlan.total_layers + ' layers · 256 routed experts')),
+            h('span', { className: 'meta' }, infPlan.total_layers + ' layers · ' + infPlan.model_id)),
           h('div', { className: 'stat-card' },
             h('span', { className: 'label' }, 'DILOCO + DEMO SYNC'),
-            h('span', { className: 'metric' }, overview.training_telemetry.demo_compression_ratio + '×'),
-            h('span', { className: 'meta' }, 'pipeline bubble ' + overview.training_telemetry.pipeline_bubble_Ratio_pct + ' %')),
+            h('span', { className: 'metric' }, (overview.training_telemetry.gradient_compression_ratio || overview.training_telemetry.demo_compression_ratio) + '×'),
+            h('span', { className: 'meta' }, 'pipeline bubble ' + (overview.training_telemetry.pipeline_bubble_pct || overview.training_telemetry.pipeline_bubble_Ratio_pct) + ' %')),
           h('div', { className: 'stat-card' },
             h('span', { className: 'label' }, 'DREAM-RSI SAVINGS'),
-            h('span', { className: 'metric' }, (overview.rl_plan.dream_rsi_report ? overview.rl_plan.dream_rsi_report.compute_savings_pct : 71.4) + ' %'),
+            h('span', { className: 'metric' }, (overview.rl_plan.dream_rsi_report ? (overview.rl_plan.dream_rsi_report.cost_savings_pct || overview.rl_plan.dream_rsi_report.compute_savings_pct) : 71.4) + ' %'),
             h('span', { className: 'meta' }, '0 GPU-hours · offline SBC replay')),
           h('div', { className: 'stat-card' },
             h('span', { className: 'label' }, 'FTS3 SEED STAGING'),
@@ -634,14 +655,16 @@
                     h('th', null, 'THROUGHPUT'),
                     h('th', null, 'STATE'))),
                   h('tbody', null, (overview.fts3_transfers || []).map(function (t) {
-                    return h('tr', { key: t.job_id },
-                      h('td', null, t.job_id),
-                      h('td', null, t.source_seed_node),
-                      h('td', null, t.destination_worker_node),
-                      h('td', null, t.artifact_description),
-                      h('td', null, t.total_size_gb + ' GB'),
-                      h('td', null, t.estimated_bandwidth_gbps + ' Gbps'),
-                      h('td', null, h(K.Badge, { tone: 'ok', dot: true }, 'resident')));
+                    var tid = t.transfer_id || t.job_id;
+                    var artifact = t.payload_kind ? (t.payload_kind + ' (L' + t.start_layer + '–L' + t.end_layer + ')') : t.artifact_description;
+                    return h('tr', { key: tid },
+                      h('td', null, tid),
+                      h('td', null, t.source_node || t.source_seed_node),
+                      h('td', null, t.destination_node || t.destination_worker_node),
+                      h('td', null, artifact),
+                      h('td', null, (t.volume_gb !== undefined ? t.volume_gb : t.total_size_gb) + ' GB'),
+                      h('td', null, (t.allocated_bandwidth_gbps !== undefined ? t.allocated_bandwidth_gbps : t.estimated_bandwidth_gbps) + ' Gbps'),
+                      h('td', null, h(K.Badge, { tone: 'ok', dot: true }, t.state || 'resident')));
                   })))))) : null,
 
           tab === 'ga' ? h('div', { className: 'kd-stack' },
@@ -819,18 +842,22 @@
                     h('th', null, 'PEAK SCORE'),
                     h('th', null, 'SAVINGS'))),
                   h('tbody', null, (dream.evolution_report ? dream.evolution_report.evaluated_policies : []).map(function (ev) {
+                    var visited = (ev.simulated_traversal_order || ev.visited_node_ids || []).length;
+                    var pruned = ev.pruned_branches !== undefined ? ev.pruned_branches : ev.pruned_branches_count;
+                    var peakScore = ev.peak_discovery_score !== undefined ? ev.peak_discovery_score : ev.peak_score_achieved;
+                    var savings = ev.discovery_cost_savings_pct !== undefined ? ev.discovery_cost_savings_pct : (ev.compute_savings_pct || 0);
                     return h('tr', { key: ev.policy.policy_id },
                       h('td', null, ev.policy.policy_id),
                       h('td', null, ev.policy.description),
-                      h('td', null, ev.visited_node_ids.length),
-                      h('td', null, ev.pruned_branches_count),
-                      h('td', null, ev.peak_score_achieved + ' GB/s'),
-                      h('td', null, h(K.Badge, { tone: ev.compute_savings_pct >= 60 ? 'local' : 'neutral' }, ev.compute_savings_pct.toFixed(1) + ' %')));
+                      h('td', null, visited),
+                      h('td', null, pruned),
+                      h('td', null, peakScore + '×'),
+                      h('td', null, h(K.Badge, { tone: savings >= 60 ? 'local' : 'neutral' }, Number(savings).toFixed(1) + ' %')));
                   }))))),
             dream.evolution_report ? h(K.CodeBlock, {
               title: 'synthesized meta-policy prompt (injected into next online RL epoch)',
               language: 'text',
-              code: dream.evolution_report.evolved_meta_prompt_directive
+              code: dream.evolution_report.evolved_meta_prompt_directive || ('Promoted Policy: ' + dream.evolution_report.promoted_policy_id + ' · Peak Speedup: ' + dream.evolution_report.peak_speedup_achieved + 'x · Online GPU Rollout Cost Saved: ' + dream.evolution_report.cost_savings_pct + '%')
             }) : null) : null,
 
           tab === 'slices' && slices ? h('div', { className: 'kd-stack' },
@@ -850,28 +877,28 @@
                       h('td', null, s.slice_id),
                       h('td', null, h(K.Badge, { tone: 'local' }, s.purpose)),
                       h('td', null, s.node_count),
-                      h('td', null, s.aggregate_vram_and_unified_gb + ' GB'),
-                      h('td', null, s.aggregate_tflops + ' TFLOPs'),
+                      h('td', null, (s.aggregate_fast_memory_gb !== undefined ? s.aggregate_fast_memory_gb : s.aggregate_vram_and_unified_gb) + ' GB'),
+                      h('td', null, (s.aggregate_fp16_tflops !== undefined ? s.aggregate_fp16_tflops : s.aggregate_tflops) + ' TFLOPs'),
                       h('td', null, s.shard_plan.estimated_throughput + ' tok/s'));
                   }))))),
             dataflow ? h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'TPU / Compute-in-Memory (CIM) dataflow evaluation · ' + dataflow.recommended_mode),
-              h('p', { className: 'body', style: { margin: '0 0 var(--space-3)', color: 'var(--ink-muted)' } }, dataflow.recommendation_rationale),
+              h('p', { className: 'eyebrow' }, 'TPU / Compute-in-Memory (CIM) dataflow evaluation · ' + (dataflow.recommended_low_batch_mode || dataflow.recommended_mode)),
+              h('p', { className: 'body', style: { margin: '0 0 var(--space-3)', color: 'var(--ink-muted)' } }, dataflow.recommendation_rationale || ('Low-batch decode recommends ' + dataflow.recommended_low_batch_mode + '; high-batch prefill recommends ' + dataflow.recommended_high_batch_mode)),
               h('div', { className: 'table-wrap' },
                 h('table', { className: 'mono-table' },
                   h('thead', null, h('tr', null,
                     h('th', null, 'DATAFLOW MODE'),
-                    h('th', null, 'WEIGHT STREAM'),
-                    h('th', null, 'TOKEN STREAM'),
-                    h('th', null, 'LATENCY'),
+                    h('th', null, 'STATIONARY TENSOR'),
+                    h('th', null, 'STREAMING TENSOR'),
+                    h('th', null, 'OVERLAP'),
                     h('th', null, 'THROUGHPUT'))),
-                  h('tbody', null, [dataflow.weight_stationary_token_stream, dataflow.token_stationary_weight_stream, dataflow.hybrid_cim_adaptive].map(function (df) {
+                  h('tbody', null, (dataflow.profiles || []).map(function (df) {
                     return h('tr', { key: df.mode },
                       h('td', null, df.mode),
-                      h('td', null, df.total_weight_bytes_streamed_gb_per_sec + ' GB/s'),
-                      h('td', null, df.total_token_activation_stream_mb_per_sec + ' MB/s'),
-                      h('td', null, df.estimated_step_latency_ms + ' ms'),
-                      h('td', null, h(K.Badge, { tone: df.mode === dataflow.recommended_mode ? 'ok' : 'neutral' }, df.estimated_tokens_per_sec + ' tok/s')));
+                      h('td', null, df.stationary_tensor),
+                      h('td', null, df.streaming_tensor + ' (' + df.streamed_volume_per_step_mb + ' MB/step)'),
+                      h('td', null, df.compute_stream_overlap_pct + ' %'),
+                      h('td', null, h(K.Badge, { tone: df.mode === dataflow.recommended_low_batch_mode ? 'ok' : 'neutral' }, df.estimated_tokens_per_sec + ' tok/s')));
                   }))))) : null) : null,
 
           tab === 'cloud' ? h('div', { className: 'kd-stack' },
@@ -933,11 +960,11 @@
                     h('th', null, 'DROPPED REQUESTS'))),
                   h('tbody', null, cloud.failover_simulations.map(function (sim, idx) {
                     return h('tr', { key: idx },
-                      h('td', null, h(K.Badge, { tone: sim.direction === 'LocalToCloud' ? 'cloud' : 'local' }, sim.direction)),
-                      h('td', null, sim.outage_trigger),
-                      h('td', null, sim.hot_standby_sync_mb_per_min + ' MB/min'),
-                      h('td', null, sim.failover_cutover_latency_ms + ' ms'),
-                      h('td', null, h(K.Badge, { tone: 'ok' }, String(sim.dropped_requests))));
+                      h('td', null, h(K.Badge, { tone: String(sim.direction).indexOf('Cloud') >= 0 ? 'cloud' : 'local' }, sim.direction)),
+                      h('td', null, sim.incident_summary || sim.outage_trigger),
+                      h('td', null, sim.source_environment ? (sim.source_environment + ' → ' + sim.target_failover_environment) : (sim.hot_standby_sync_mb_per_min + ' MB/min')),
+                      h('td', null, (sim.switchover_rto_ms !== undefined ? sim.switchover_rto_ms : sim.failover_cutover_latency_ms) + ' ms'),
+                      h('td', null, h(K.Badge, { tone: 'ok' }, sim.zero_downtime_preserved ? '0 dropped' : String(sim.dropped_requests || 0))));
                   }))))) : null) : null,
 
           tab === 'gateway' ? h('div', { className: 'kd-stack' },
@@ -981,7 +1008,7 @@
                     var tflops = w.node.fp16_tflops || w.node.peak_tflops_fp16 || 0;
                     var isOnline = w.online !== false;
                     var isGaming = w.node.polite_state === 'GamingOrHeavyApp';
-                    return h('tr', { key: w.node.id.0 || w.node.hostname },
+                    return h('tr', { key: w.node.id || w.node.hostname },
                       h('td', null, w.node.hostname),
                       h('td', null, w.os_name + '/' + w.cpu_arch + ' · ' + w.board_or_model),
                       h('td', null,
@@ -991,9 +1018,9 @@
                       h('td', null, w.executed_forward_stages + ' / ' + w.executed_training_steps + ' (' + w.last_measured_rtt_ms + ' ms)'),
                       h('td', null, h(K.Badge, { tone: !isOnline ? 'danger' : (isGaming ? 'warn' : 'ok'), dot: true }, !isOnline ? 'Offline (SkipPipe)' : w.node.polite_state)),
                       h('td', null, h('div', { className: 'kd-row' },
-                        h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { triggerWorkerFault(w.node.id.0, 'gaming_yield'); } }, 'Yield GPU'),
-                        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { triggerWorkerFault(w.node.id.0, 'offline'); } }, 'Kill'),
-                        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { triggerWorkerFault(w.node.id.0, 'available'); } }, 'Restore'))));
+                        h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { triggerWorkerFault(w.node.id, 'gaming_yield'); } }, 'Yield GPU'),
+                        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { triggerWorkerFault(w.node.id, 'offline'); } }, 'Kill'),
+                        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { triggerWorkerFault(w.node.id, 'available'); } }, 'Restore'))));
                   })))),
               h('div', { className: 'two', style: { marginTop: 'var(--space-4)' } },
                 h('div', { className: 'panel' },

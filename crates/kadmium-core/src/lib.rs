@@ -460,6 +460,34 @@ impl ModelSpec {
             lora_state_per_layer_gb: 0.11,
         }
     }
+
+    /// Preset: Qwen2.5-Coder-32B-Instruct Dense (Q4_K `.ktb` for consumer LAN/SBC clusters).
+    pub fn qwen2_5_coder_32b() -> Self {
+        Self {
+            id: "qwen2.5-coder-32b-instruct".to_string(),
+            display_name: "Qwen2.5-Coder-32B-Instruct (Q4_K KTB)".to_string(),
+            total_params_billions: 32.5,
+            num_layers: 64,
+            is_moe: false,
+            dense_layer_size_gb: 0.29,
+            experts_per_layer: 0,
+            active_experts_per_token: 0,
+            single_expert_size_gb: 0.0,
+            kv_cache_per_layer_gb: 0.08,
+            training_activation_per_layer_gb: 0.28,
+            lora_state_per_layer_gb: 0.06,
+        }
+    }
+
+    /// Resolves a model preset by ID or returns `deepseek_v3_671b_moe()` by default.
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            "qwen3-235b-moe" => Self::qwen3_235b_moe(),
+            "llama-3-70b-lora" | "llama-3.3-70b-instruct" => Self::llama_3_70b_lora(),
+            "qwen2.5-coder-32b-instruct" | "qwen2.5-coder-32b" => Self::qwen2_5_coder_32b(),
+            _ => Self::deepseek_v3_671b_moe(),
+        }
+    }
 }
 
 /// Builds a representative personal + home lab cluster matching real-world heterogeneous hardware:
