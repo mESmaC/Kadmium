@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use kadmium_core::{
-    HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteActivityMonitor,
-    PoliteActivitySample, PoliteState, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
-    sample_personal_cluster,
+    HardwareNode, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, NodeTrustTier,
+    PoliteActivityMonitor, PoliteActivitySample, PoliteState, WorkloadKind,
+    sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::{
     Fts3TransferScheduler, GitHubConnector, HuggingFaceHubConnector, KtbBankPacker, KtbBankReader,
@@ -19,7 +19,8 @@ use kadmium_runtime::{
     VerdeVerificationEngine, sample_boinc_workunits,
 };
 use kadmium_sharding::{
-    ClusterShardPlan, DataflowStreamPlanner, HybridCloudArbitragePlanner, ResponsibilityShiftPlan,
+    ClusterShardPlan, DataflowStreamPlanner, DistributedPagedKvPlanner,
+    HybridCloudArbitragePlanner, MinMaxStageLatencyOptimizer, ResponsibilityShiftPlan,
     ShardPlanner, ShiftTriggerReason, SubClusterPartitioner,
 };
 use std::sync::{Arc, Mutex};
@@ -96,6 +97,27 @@ enum Commands {
         #[arg(short, long)]
         inspect: bool,
     },
+    /// Initialize a local Kadmium workspace configuration (`kadmium.toml`) tailored to the probed host
+    Init {
+        /// Optional output path to write `kadmium.toml` to disk
+        #[arg(short, long)]
+        out: Option<String>,
+    },
+    /// Compile and verify a 64 KiB page-aligned `.ktb` (Kadmium Tensor Bank) shard archive
+    Compile {
+        /// Model identifier
+        #[arg(short, long, default_value = "deepseek-v3-671b-moe")]
+        model: String,
+        /// Start layer index (inclusive)
+        #[arg(long, default_value_t = 0)]
+        start_layer: u32,
+        /// End layer index (inclusive)
+        #[arg(long, default_value_t = 3)]
+        end_layer: u32,
+        /// Optional output `.ktb` file path to write to disk
+        #[arg(short, long)]
+        out: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -123,6 +145,13 @@ async fn main() {
         Commands::Join { ticket } => run_join(ticket).await,
         Commands::Pull { uri } => run_pull(&uri),
         Commands::Mcp { inspect } => run_mcp(inspect),
+        Commands::Init { out } => run_init(out.as_deref()),
+        Commands::Compile {
+            model,
+            start_layer,
+            end_layer,
+            out,
+        } => run_compile(&model, start_layer, end_layer, out.as_deref()),
     }
 }
 
@@ -795,6 +824,31 @@ fn run_plan(model_name: &str, workload_name: &str) {
             t.estimated_duration_sec
         );
     }
+
+    let opt = MinMaxStageLatencyOptimizer::optimize_stage_boundaries(&plan, &nodes);
+    println!(
+        "\n--- Min-Max Pipeline Bottleneck Optimizer (Initial {:.2} ms -> Optimized {:.2} ms, -{:.1}%) ---",
+        opt.initial_bottleneck_ms, opt.optimized_bottleneck_ms, opt.latency_reduction_pct
+    );
+    for (host, cnt, lat) in &opt.refined_stage_layers {
+        println!(
+            "  * {:<22} {:>2} layers | Stage Latency: {:>5.2} ms",
+            host, cnt, lat
+        );
+    }
+
+    let kv_allocs = DistributedPagedKvPlanner::plan_kv_cache_pages(&plan, &model, &nodes);
+    println!("\n--- Distributed PagedAttention KV-Cache Planner (16 tokens/page) ---");
+    for kv in &kv_allocs {
+        println!(
+            "  * {:<22} Layers: {:>2} | KV Budget: {:>5.2} GB | Pages: {:>4} | Max Context: {:>6} tokens",
+            kv.hostname,
+            kv.assigned_layers,
+            kv.kv_budget_gb,
+            kv.allocated_kv_pages,
+            kv.max_context_tokens_supported
+        );
+    }
 }
 
 fn run_simulation() {
@@ -1126,5 +1180,76 @@ fn run_mcp(inspect: bool) {
                 let _ = stdout.flush();
             }
         }
+    }
+}
+
+fn run_init(out_path: Option<&str>) {
+    let local_node = LiveHardwareProfiler::probe_local_host();
+    let cfg = KadmiumWorkspaceConfig::from_local_probe(local_node);
+    let toml_text = cfg.render_kadmium_toml();
+
+    println!(
+        "===================================================================================="
+    );
+    println!(" Kadmium (Cd-48) — Workspace Initialization (`kadmium.toml`)");
+    println!(
+        "===================================================================================="
+    );
+    println!("{toml_text}");
+
+    if let Some(path) = out_path {
+        std::fs::write(path, &toml_text).expect("Failed to write kadmium.toml to disk");
+        println!("  [OK] Wrote configuration manifest to: {path}");
+    }
+}
+
+fn run_compile(model: &str, start_layer: u32, end_layer: u32, out_path: Option<&str>) {
+    let mut packer = KtbBankPacker::new(model);
+    for l in start_layer..=end_layer {
+        packer.add_tensor_bank(
+            format!("layers.{l}.attn.qkv_proj"),
+            l,
+            None,
+            TensorEncoding::Fp8E4M3,
+            vec![0xA5; 32_768],
+        );
+        for exp in 0..2u32 {
+            packer.add_tensor_bank(
+                format!("layers.{l}.moe.experts.{exp}.gate_up_proj"),
+                l,
+                Some(exp),
+                TensorEncoding::Q4KBlock,
+                vec![(l as u8).wrapping_add(exp as u8); 65_536],
+            );
+        }
+    }
+
+    let ktb_bytes = packer.pack_to_bytes();
+    let merkle = KtbMerkleTree::from_ktb_bytes(&ktb_bytes);
+    let reader = KtbBankReader::from_slice(&ktb_bytes).expect("valid compiled .ktb image");
+
+    println!(
+        "===================================================================================="
+    );
+    println!(" Kadmium (Cd-48) — 64 KiB Page-Aligned `.ktb` Tensor Bank Compiler");
+    println!(
+        "===================================================================================="
+    );
+    println!("  * Model ID:               {}", reader.header.model_id);
+    println!("  * Compiled Layer Range:   L{start_layer:02}..L{end_layer:02}");
+    println!(
+        "  * Total Archive Size:     {} bytes ({} x 64 KiB pages)",
+        ktb_bytes.len(),
+        merkle.leaf_hashes.len()
+    );
+    println!("  * Merkle Root Digest:     {:#018x}", merkle.root_hash);
+    println!(
+        "  * Tensor Entries Packed:  {}",
+        reader.header.entries.len()
+    );
+
+    if let Some(path) = out_path {
+        std::fs::write(path, &ktb_bytes).expect("Failed to write .ktb bank to disk");
+        println!("  * Saved .ktb Archive To:  {path}");
     }
 }

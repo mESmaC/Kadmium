@@ -13,7 +13,10 @@ use kadmium_core::{ModelSpec, WorkloadKind};
 use kadmium_data::{GitHubConnector, HuggingFaceHubConnector};
 use kadmium_rl::{GrpoEpochExecutor, SandboxOp, WasiMicroSandbox};
 use kadmium_runtime::DistributedMoEPipelineExecutor;
-use kadmium_sharding::{HybridCloudArbitragePlanner, ShardPlanner};
+use kadmium_sharding::{
+    DistributedPagedKvPlanner, HybridCloudArbitragePlanner, MinMaxStageLatencyOptimizer,
+    ShardPlanner,
+};
 
 use crate::GatewayState;
 
@@ -385,25 +388,28 @@ impl KadmiumMcpServer {
                     .get("workload")
                     .and_then(|v| v.as_str())
                     .unwrap_or("inference");
-                let plan = if workload_str == "training" {
-                    ShardPlanner::compute_plan(
-                        state.epoch,
-                        &ModelSpec::llama_3_70b_lora(),
+                let (model, workload) = if workload_str == "training" {
+                    (
+                        ModelSpec::llama_3_70b_lora(),
                         WorkloadKind::DistributedTraining,
-                        &state.nodes,
                     )
                 } else {
-                    ShardPlanner::compute_plan(
-                        state.epoch,
-                        &ModelSpec::deepseek_v3_671b_moe(),
-                        WorkloadKind::Inference,
-                        &state.nodes,
-                    )
+                    (ModelSpec::deepseek_v3_671b_moe(), WorkloadKind::Inference)
                 };
-                let text = serde_json::to_string_pretty(&plan).unwrap_or_default();
+                let plan = ShardPlanner::compute_plan(state.epoch, &model, workload, &state.nodes);
+                let latency_opt =
+                    MinMaxStageLatencyOptimizer::optimize_stage_boundaries(&plan, &state.nodes);
+                let paged_kv =
+                    DistributedPagedKvPlanner::plan_kv_cache_pages(&plan, &model, &state.nodes);
+                let payload = json!({
+                    "shard_plan": plan,
+                    "latency_optimization": latency_opt,
+                    "paged_kv_allocations": paged_kv
+                });
+                let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
                 Ok(json!({
                     "content": [{ "type": "text", "text": text }],
-                    "structuredContent": plan,
+                    "structuredContent": payload,
                     "isError": false
                 }))
             }
