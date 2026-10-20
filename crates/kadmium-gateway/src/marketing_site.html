@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kadmium (kadmium.ai) — Turn the hardware you own into a private AI cloud, burst to spot GPUs, or rent out your idle silicon.</title>
+  <title>Kadmium (kadmium.ai) — Your own hardware as a private AI cloud.</title>
   <link rel="icon" href="/assets/Logos/kadmium-favicon.svg">
   <link rel="stylesheet" href="/tokens.css">
   <link rel="stylesheet" href="/components/bundle.css">
@@ -18,26 +18,26 @@
       -webkit-font-smoothing: antialiased;
     }
 
-    /* ---- Responsive Typography Overrides ---- */
+    /* ---- Fluid Typography ---- */
     .display-xl {
-      font-size: clamp(32px, 4.4vw, 52px);
-      line-height: 1.08;
+      font-size: clamp(34px, 4vw, 54px);
+      line-height: 1.06;
       letter-spacing: -0.035em;
       font-weight: 650;
     }
     .headline {
-      font-size: clamp(22px, 2.8vw, 30px);
-      line-height: 1.18;
-      letter-spacing: -0.02em;
+      font-size: clamp(24px, 2.5vw, 32px);
+      line-height: 1.16;
+      letter-spacing: -0.022em;
       font-weight: 600;
     }
     .title {
-      font-size: clamp(18px, 2vw, 21px);
-      line-height: 1.3;
+      font-size: clamp(18px, 1.8vw, 21px);
+      line-height: 1.28;
       font-weight: 600;
     }
 
-    /* ---- Commercial Top Navigation ---- */
+    /* ---- Wide, Breathable Container (1440px) ---- */
     .top-wrap {
       position: sticky;
       top: 0;
@@ -46,14 +46,14 @@
       border-bottom: 1px solid var(--line);
     }
     .top {
-      max-width: 1240px;
+      max-width: 1440px;
       margin: 0 auto;
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: var(--space-4);
-      min-height: 64px;
-      padding: var(--space-2) var(--space-6);
+      min-height: 68px;
+      padding: var(--space-2) var(--space-8);
     }
     .brand-cluster {
       display: flex;
@@ -70,7 +70,7 @@
       letter-spacing: 0.08em;
       color: var(--ink-muted);
       text-transform: uppercase;
-      padding: 2px 8px;
+      padding: 3px 9px;
       border-radius: var(--radius-full);
       border: 1px solid var(--line);
       background: var(--graphite-2);
@@ -78,7 +78,7 @@
     .nav-links {
       display: flex;
       align-items: center;
-      gap: var(--space-1);
+      gap: var(--space-2);
     }
     .nav-link {
       font-family: var(--font-sans);
@@ -86,7 +86,7 @@
       font-weight: 500;
       color: var(--ink-muted);
       text-decoration: none;
-      padding: 6px 12px;
+      padding: 8px 14px;
       border-radius: var(--radius-sm);
       transition: color 0.12s ease, background-color 0.12s ease;
       white-space: nowrap;
@@ -98,12 +98,10 @@
     .nav-actions {
       display: flex;
       align-items: center;
-      gap: var(--space-2);
+      gap: var(--space-3);
       flex-shrink: 0;
     }
-    .mobile-menu-btn {
-      display: none;
-    }
+    .mobile-menu-btn { display: none; }
     .mobile-drawer {
       display: none;
       border-top: 1px solid var(--line);
@@ -115,80 +113,47 @@
       gap: var(--space-2);
     }
 
-    /* ---- Page Layout & Grid Safety (min-width: 0 prevents blowout) ---- */
+    /* ---- Main Page Canvas ---- */
     .page {
-      max-width: 1240px;
+      max-width: 1440px;
       margin: 0 auto;
-      padding: var(--space-8) var(--space-6) var(--space-16);
+      padding: var(--space-10) var(--space-8) 96px;
       display: grid;
-      gap: var(--space-16);
+      gap: 80px;
     }
     .page > *, .kd-stack > *, .two > *, .three > *, .plans > *, .node-grid > *, .stat-strip > * {
       min-width: 0;
     }
+    .section-block {
+      display: grid;
+      gap: var(--space-6);
+    }
 
-    /* ---- Hero Section ---- */
+    /* ---- Spacious Hero ---- */
     .hero-card {
       background: var(--graphite-1);
       border: 1px solid var(--line);
       border-radius: var(--radius-lg);
-      padding: var(--space-8);
+      padding: 44px;
       box-shadow: var(--shadow-sm);
       display: grid;
-      grid-template-columns: 1.18fr 0.82fr;
-      gap: var(--space-8);
-      align-items: stretch;
+      grid-template-columns: 1.12fr 0.88fr;
+      gap: 48px;
+      align-items: center;
     }
     .hero-left {
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: var(--space-5);
+      display: grid;
+      gap: var(--space-6);
       min-width: 0;
     }
     .hero-right {
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: var(--space-4);
+      display: grid;
+      gap: var(--space-5);
       background: var(--graphite-2);
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      padding: var(--space-5);
+      padding: var(--space-6);
       min-width: 0;
-    }
-    .hero-pillars {
-      display: grid;
-      gap: var(--space-2);
-      margin: 0;
-      padding: 0;
-      list-style: none;
-    }
-    .hero-pillars li {
-      display: flex;
-      align-items: flex-start;
-      gap: var(--space-3);
-      font-size: 15px;
-      line-height: 22px;
-      color: var(--ink-muted);
-    }
-    .hero-pillars li strong {
-      color: var(--ink);
-      font-weight: 600;
-    }
-    .pillar-bar {
-      flex: none;
-      width: 4px;
-      height: 16px;
-      margin-top: 3px;
-      border-radius: var(--radius-full);
-      background: var(--cadmium);
-    }
-    .pillar-bar.cloud {
-      background: var(--cherenkov);
-    }
-    .pillar-bar.ok {
-      background: var(--ok);
     }
     .hero-svg-box {
       width: 100%;
@@ -196,12 +161,31 @@
       border-radius: var(--radius-sm);
       border: 1px solid var(--line);
       background: var(--graphite-1);
-      padding: var(--space-3);
+      padding: var(--space-4);
     }
     .hero-svg-box svg {
       width: 100%;
       height: auto;
       display: block;
+    }
+    .hero-mini-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--space-3);
+    }
+    .hero-mini-stat {
+      background: var(--graphite-1);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: var(--space-4);
+      display: grid;
+      gap: 4px;
+    }
+    .hero-mini-stat .val {
+      font-family: var(--font-mono);
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
     }
     .slab { fill: var(--cadmium); }
     .tint { fill: var(--cadmium-soft); }
@@ -225,18 +209,17 @@
       display: flex;
       justify-content: space-between;
       align-items: flex-end;
-      gap: var(--space-4);
+      gap: var(--space-6);
       flex-wrap: wrap;
-      margin-bottom: var(--space-2);
     }
     .section-head-copy {
-      max-width: 720px;
+      max-width: 680px;
     }
     .panel {
       background: var(--graphite-1);
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      padding: var(--space-6);
+      padding: 32px;
       box-shadow: var(--shadow-sm);
       min-width: 0;
     }
@@ -244,48 +227,42 @@
       background: var(--graphite-2);
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      padding: var(--space-4);
+      padding: var(--space-5);
       min-width: 0;
     }
 
-    /* ---- Responsive Grids ---- */
+    /* ---- Grids ---- */
     .two {
       display: grid;
-      grid-template-columns: 1.05fr 0.95fr;
-      gap: var(--space-6);
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-8);
       align-items: start;
-    }
-    .three {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: var(--space-5);
-      align-items: stretch;
     }
     .node-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: var(--space-4);
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: var(--space-5);
     }
     .stat-strip {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: var(--space-4);
+      gap: var(--space-5);
     }
     .stat-strip-3 {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: var(--space-4);
+      gap: var(--space-5);
     }
     .stat-strip-2 {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: var(--space-4);
+      gap: var(--space-5);
     }
     .stat-card {
       background: var(--graphite-1);
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      padding: var(--space-5);
+      padding: var(--space-6);
       box-shadow: var(--shadow-sm);
       display: flex;
       flex-direction: column;
@@ -295,39 +272,19 @@
     .stat-card .meta {
       font-family: var(--font-mono);
       font-size: 12px;
-      line-height: 17px;
+      line-height: 18px;
       color: var(--ink-muted);
       font-variant-numeric: tabular-nums;
     }
 
-    /* ---- Product Pillar Cards ---- */
-    .service-card {
-      background: var(--graphite-1);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: var(--space-6);
-      box-shadow: var(--shadow-sm);
-      display: flex;
-      flex-direction: column;
-      gap: var(--space-4);
-    }
-    .service-card-featured {
-      border-color: var(--cherenkov);
-    }
-    .service-card .kd-btn {
-      margin-top: auto;
-      width: 100%;
-    }
-
-    /* ---- Pricing Grid ---- */
+    /* ---- Pricing & Product Cards ---- */
     .plans {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: var(--space-5);
+      gap: var(--space-6);
       align-items: stretch;
     }
     .plan-featured-wrap {
-      position: relative;
       display: flex;
       flex-direction: column;
     }
@@ -337,9 +294,10 @@
     }
     .plans > .kd-plan {
       height: 100%;
+      padding: 32px;
     }
 
-    /* ---- Scrollable Tables (No Horizontal Blowout) ---- */
+    /* ---- Scrollable Tables ---- */
     .table-wrap {
       width: 100%;
       overflow-x: auto;
@@ -350,7 +308,7 @@
     }
     .mono-table {
       width: 100%;
-      min-width: 520px;
+      min-width: 480px;
       border-collapse: collapse;
       font-family: var(--font-mono);
       font-size: 12px;
@@ -358,7 +316,7 @@
     }
     .mono-table th {
       text-align: left;
-      padding: var(--space-3) var(--space-3);
+      padding: 12px 16px;
       background: var(--graphite-2);
       color: var(--ink-muted);
       border-bottom: 1px solid var(--line);
@@ -368,7 +326,7 @@
       white-space: nowrap;
     }
     .mono-table td {
-      padding: var(--space-3) var(--space-3);
+      padding: 14px 16px;
       border-bottom: 1px solid var(--line);
       color: var(--ink);
       vertical-align: middle;
@@ -379,13 +337,13 @@
     .faq-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: var(--space-4);
+      gap: var(--space-5);
     }
     .faq-card {
       background: var(--graphite-1);
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      padding: var(--space-5);
+      padding: var(--space-6);
       display: grid;
       gap: var(--space-2);
     }
@@ -395,7 +353,7 @@
       background: var(--graphite-1);
       border: 1px solid var(--cadmium-edge);
       border-radius: var(--radius-lg);
-      padding: var(--space-8);
+      padding: 40px 44px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -412,7 +370,7 @@
     .footer-grid {
       display: grid;
       grid-template-columns: 1.5fr repeat(3, 1fr);
-      gap: var(--space-6);
+      gap: var(--space-8);
     }
     .footer-col {
       display: grid;
@@ -423,7 +381,7 @@
       color: var(--ink-muted);
       text-decoration: none;
       font-size: 14px;
-      line-height: 20px;
+      line-height: 22px;
     }
     .footer-col a:hover { color: var(--ink); }
     .footer-bottom {
@@ -440,21 +398,24 @@
     }
 
     /* ---- Responsive Breakpoints ---- */
+    @media (max-width: 1200px) {
+      .node-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
     @media (max-width: 1040px) {
       .nav-links { display: none; }
       .mobile-menu-btn { display: inline-flex; }
-      .hero-card { grid-template-columns: 1fr; padding: var(--space-6); }
-      .two { grid-template-columns: 1fr; }
-      .three, .plans { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+      .hero-card { grid-template-columns: 1fr; padding: var(--space-6); gap: var(--space-6); }
+      .two { grid-template-columns: 1fr; gap: var(--space-6); }
+      .plans { grid-template-columns: 1fr; }
       .stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .footer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 720px) {
       .top { padding: var(--space-2) var(--space-4); }
       .brand-tag { display: none; }
-      .page { padding: var(--space-5) var(--space-4) var(--space-12); gap: var(--space-10); }
-      .hero-card, .panel, .cta-banner { padding: var(--space-4); }
-      .stat-strip, .stat-strip-3, .stat-strip-2, .faq-grid, .footer-grid {
+      .page { padding: var(--space-6) var(--space-4) var(--space-12); gap: 48px; }
+      .hero-card, .panel, .cta-banner { padding: var(--space-5); }
+      .hero-mini-stats, .node-grid, .stat-strip, .stat-strip-3, .stat-strip-2, .faq-grid, .footer-grid {
         grid-template-columns: 1fr;
       }
       .nav-actions .hide-sm { display: none; }
@@ -473,19 +434,19 @@
 
   var QUICKSTART_TABS = {
     cli: {
-      title: 'terminal · install kadmium & pool your local machines in 30 seconds',
+      title: 'terminal · install & launch in 30 seconds',
       lang: 'shell',
-      code: '# 1. Install the single Rust binary (macOS, Linux, Windows)\n$ curl -fsSL https://kadmium.ai/install.sh | sh\n\n# 2. Auto-detect GPUs, Apple Silicon & LAN peers and launch the OpenAI/Anthropic gateway\n$ kadmium init && kadmium serve --port 7848'
+      code: '$ curl -fsSL https://kadmium.ai/install.sh | sh\n$ kadmium init && kadmium serve --port 7848'
     },
     sdk: {
-      title: 'python · drop-in OpenAI / Anthropic client with automatic CloudShield failover',
+      title: 'openai / anthropic sdk · drop-in local or hybrid endpoint',
       lang: 'shell',
-      code: '# Point any OpenAI, Anthropic, Cursor, or Claude Code client at your Kadmium endpoint\n$ export OPENAI_BASE_URL="http://127.0.0.1:7848/v1"\n$ export OPENAI_API_KEY="kdm_live_slice_01_prod_deploy"\n\n$ curl http://127.0.0.1:7848/v1/chat/completions \\\n  -d \'{"model":"deepseek-v3-671b-moe","messages":[{"role":"user","content":"Hello from my own hardware!"}]}\''
+      code: '$ export OPENAI_BASE_URL="http://127.0.0.1:7848/v1"\n$ curl http://127.0.0.1:7848/v1/chat/completions \\\n  -d \'{"model":"deepseek-v3-671b-moe","messages":[{"role":"user","content":"Hello!"}]}\''
     },
     lease: {
-      title: 'terminal · rent out idle GPU/Mac hours overnight for USD or 1.25× Cloud credits',
+      title: 'supply grid · earn USD or 1.25× Cloud credits overnight',
       lang: 'shell',
-      code: '# Earn passive USD or 1.25x Cloud burst credits while your rig is idle\n$ kadmium lease --hours 12 --payout credits\n# -> Polite Auto-Yield: < 200 ms instant eviction when you launch a game (0% penalty)\n# -> Blind Privacy: Layer 0 & Layer N-1 stay on the renter; your machine runs middle layers only'
+      code: '$ kadmium lease --hours 12 --payout credits\n# < 200 ms auto-yield on game launch · blind middle layers only'
     }
   };
 
@@ -493,12 +454,11 @@
     local_mesh: {
       id: 'local_mesh',
       buttonLabel: '1. Local Cluster ($0/hr)',
-      eyebrow: 'Mode 01 · 100% Local Hardware · $0.00 / hour',
-      summary: 'Run 671B DeepSeek-V3 or 70B Llama-3 across the desktop PC, M4 Mac Mini, gaming laptop, and NAS already in your home or office. Zero API fees, 100% data residency.',
+      eyebrow: '100% Local Hardware · $0.00 / hr',
+      summary: 'Shards 671B DeepSeek-V3 across your desktop GPU, M4 Mac Mini, laptop, and NAS at $0/hr.',
       throughput: '44.8 tok/s',
-      handoff: '0 ms · steady state',
+      handoff: '0 ms steady',
       cloudBurn: '$0.00 / hr',
-      savings: 'Saves $32.77/hr vs. AWS p5',
       badgeTone: 'local',
       badgeText: '100% local',
       rail: [
@@ -513,20 +473,19 @@
       nodes: [
         {
           name: 'cameron-main-rig',
-          hardware: 'rtx 4090 · 24 gb vram · nvme 7.4 gb/s',
+          hardware: 'rtx 4090 · 24 gb vram',
           kind: 'desktop',
           placement: 'local',
           status: 'resident',
           shards: 'layers 0–25 (42.6 %)',
           meters: [
             { label: 'VRAM', value: 19.8, max: 24, unit: 'GB' },
-            { label: 'RAM', value: 28.4, max: 64, unit: 'GB' },
-            { label: 'NVMe', value: 64, max: 512, unit: 'GB' }
+            { label: 'RAM', value: 28.4, max: 64, unit: 'GB' }
           ]
         },
         {
           name: 'm4-mac-mini-pro',
-          hardware: 'm4 pro · 48 gb unified · q* 0.96',
+          hardware: 'm4 pro · 48 gb unified',
           kind: 'compact',
           placement: 'local',
           status: 'resident',
@@ -538,20 +497,19 @@
         },
         {
           name: 'zephyrus-g16-rtx4070',
-          hardware: 'rtx 4070m · 8 gb vram · nvme 5.2 gb/s',
+          hardware: 'rtx 4070m · 8 gb vram',
           kind: 'laptop',
           placement: 'local',
           status: 'resident',
           shards: 'layers 43–51 (14.8 %)',
           meters: [
             { label: 'VRAM', value: 6.8, max: 8, unit: 'GB' },
-            { label: 'RAM', value: 18.0, max: 32, unit: 'GB' },
-            { label: 'NVMe', value: 36, max: 256, unit: 'GB' }
+            { label: 'RAM', value: 18.0, max: 32, unit: 'GB' }
           ]
         },
         {
           name: 'rk3588-sbc-bramble',
-          hardware: '3x rk3588 · 24 gb ram · 18 tops npu',
+          hardware: '3x rk3588 · 18 tops npu',
           kind: 'sbc',
           placement: 'local',
           status: 'resident',
@@ -565,13 +523,12 @@
     },
     gaming_yield: {
       id: 'gaming_yield',
-      buttonLabel: '2. Launch Game (<200ms Yield)',
-      eyebrow: 'Mode 02 · Polite Auto-Yield · 142 ms Token-Boundary Handoff',
-      summary: 'Launch Cyberpunk or Premiere Pro on your main desktop. Kadmium detects the fullscreen swapchain, frees 90% of your VRAM in 142 ms, and shifts layers 8–25 onto your M4 Mac Mini and laptop with zero dropped tokens.',
+      buttonLabel: '2. Game Launch (<200ms)',
+      eyebrow: 'Polite Auto-Yield · 142 ms Handoff',
+      summary: 'A fullscreen game opens on your desktop; Kadmium frees 90% of VRAM in 142 ms and shifts layers to your Mac Mini.',
       throughput: '36.2 tok/s',
-      handoff: '142 ms · 0 dropped tokens',
+      handoff: '142 ms · 0 drops',
       cloudBurn: '$0.00 / hr',
-      savings: 'Zero FPS drop on desktop',
       badgeTone: 'warn',
       badgeText: 'auto-yielded',
       rail: [
@@ -586,20 +543,19 @@
       nodes: [
         {
           name: 'cameron-main-rig',
-          hardware: 'rtx 4090 · gaming mode active',
+          hardware: 'rtx 4090 · gaming active',
           kind: 'desktop',
           placement: 'local',
           status: 'yielded',
           shards: 'layers 0–7 (13.1 %)',
           meters: [
             { label: 'VRAM', value: 2.4, max: 24, unit: 'GB' },
-            { label: 'RAM', value: 8.0, max: 64, unit: 'GB' },
-            { label: 'NVMe', value: 24, max: 512, unit: 'GB' }
+            { label: 'RAM', value: 8.0, max: 64, unit: 'GB' }
           ]
         },
         {
           name: 'm4-mac-mini-pro',
-          hardware: 'm4 pro · 48 gb unified · q* 0.96',
+          hardware: 'm4 pro · 48 gb unified',
           kind: 'compact',
           placement: 'local',
           status: 'resident',
@@ -611,20 +567,19 @@
         },
         {
           name: 'zephyrus-g16-rtx4070',
-          hardware: 'rtx 4070m · 8 gb vram · nvme 5.2 gb/s',
+          hardware: 'rtx 4070m · 8 gb vram',
           kind: 'laptop',
           placement: 'local',
           status: 'resident',
           shards: 'layers 36–49 (23.0 %)',
           meters: [
             { label: 'VRAM', value: 7.4, max: 8, unit: 'GB' },
-            { label: 'RAM', value: 24.2, max: 32, unit: 'GB' },
-            { label: 'NVMe', value: 52, max: 256, unit: 'GB' }
+            { label: 'RAM', value: 24.2, max: 32, unit: 'GB' }
           ]
         },
         {
           name: 'rk3588-sbc-bramble',
-          hardware: '3x rk3588 · 24 gb ram · 18 tops npu',
+          hardware: '3x rk3588 · 18 tops npu',
           kind: 'sbc',
           placement: 'local',
           status: 'resident',
@@ -638,13 +593,12 @@
     },
     cloud_burst: {
       id: 'cloud_burst',
-      buttonLabel: '3. Burst with Spot GPU ($1.49/hr)',
-      eyebrow: 'Mode 03 · Kadmium Cloud Spot Arbitrage · 2.1× Faster Throughput',
-      summary: 'Need extra speed for a fine-tuning deadline? Attach a surplus spot H100 from Kadmium Cloud in one click. External cloud nodes are pinned strictly to middle layers (22–52) so raw text prompts and token sampling never leave your room.',
+      buttonLabel: '3. Spot Burst ($1.49/hr)',
+      eyebrow: 'Kadmium Cloud Spot Burst · 2.1× Faster',
+      summary: 'Attaches a spot H100 for middle layers (22–52) while keeping token embeddings and sampling on local hardware.',
       throughput: '92.4 tok/s',
-      handoff: '185 ms · blind middle shard',
+      handoff: '185 ms · blind middle',
       cloudBurn: '$1.49 / hr',
-      savings: '84% cheaper than dedicated rack',
       badgeTone: 'cloud',
       badgeText: 'cloud burst',
       rail: [
@@ -659,24 +613,23 @@
       nodes: [
         {
           name: 'cameron-main-rig',
-          hardware: 'rtx 4090 · 24 gb vram · local ingress',
+          hardware: 'rtx 4090 · local ingress',
           kind: 'desktop',
           placement: 'local',
           status: 'resident',
           shards: 'layers 0–14 (ingress)',
           meters: [
             { label: 'VRAM', value: 14.2, max: 24, unit: 'GB' },
-            { label: 'RAM', value: 18.0, max: 64, unit: 'GB' },
-            { label: 'NVMe', value: 32, max: 512, unit: 'GB' }
+            { label: 'RAM', value: 18.0, max: 64, unit: 'GB' }
           ]
         },
         {
           name: 'm4-mac-mini-pro',
-          hardware: 'm4 pro · 48 gb unified · local egress',
+          hardware: 'm4 pro · local egress',
           kind: 'compact',
           placement: 'local',
           status: 'resident',
-          shards: 'layers 15–21 + 53–60 (egress)',
+          shards: 'layers 15–21 + 53–60',
           meters: [
             { label: 'UMA', value: 26.4, max: 48, unit: 'GB' },
             { label: 'NVMe', value: 30, max: 512, unit: 'GB' }
@@ -684,41 +637,38 @@
         },
         {
           name: 'zephyrus-g16-rtx4070',
-          hardware: 'rtx 4070m · 8 gb vram · nvme 5.2 gb/s',
+          hardware: 'rtx 4070m · hot standby',
           kind: 'laptop',
           placement: 'local',
           status: 'resident',
-          shards: 'hot standby + verification',
+          shards: 'standby + audit',
           meters: [
             { label: 'VRAM', value: 4.1, max: 8, unit: 'GB' },
-            { label: 'RAM', value: 12.0, max: 32, unit: 'GB' },
-            { label: 'NVMe', value: 28, max: 256, unit: 'GB' }
+            { label: 'RAM', value: 12.0, max: 32, unit: 'GB' }
           ]
         },
         {
           name: 'cloud-spot-h100-sxm',
-          hardware: 'h100 80 gb · blind middle shard',
+          hardware: 'h100 80 gb · spot middle',
           kind: 'gpu',
           placement: 'cloud',
           status: 'resident',
           shards: 'layers 22–52 (49.2 %)',
           meters: [
             { label: 'VRAM', value: 68.4, max: 80, unit: 'GB' },
-            { label: 'RAM', value: 42.0, max: 128, unit: 'GB' },
-            { label: 'NVMe', value: 96, max: 1024, unit: 'GB' }
+            { label: 'RAM', value: 42.0, max: 128, unit: 'GB' }
           ]
         }
       ]
     },
     failover_shield: {
       id: 'failover_shield',
-      buttonLabel: '4. CloudShield Failover (340ms)',
-      eyebrow: 'Mode 04 · CloudShield Downtime Insurance · 340 ms Cutover',
-      summary: 'If home fiber blips or a desktop reboots, Kadmium Cloud promotes a pre-warmed .ktb vault on a spot L40S in 340 ms. Production API callers experience zero dropped requests, and an 18-minute outage costs just $0.27.',
+      buttonLabel: '4. Outage Shield (340ms)',
+      eyebrow: 'CloudShield Failover · 340 ms Cutover',
+      summary: 'Home fiber drops; a pre-warmed .ktb standby on a spot L40S takes over in 340 ms ($0.27 for an 18-min blip).',
       throughput: '51.6 tok/s',
-      handoff: '340 ms · 0 dropped requests',
-      cloudBurn: '$0.69 / hr (prorated $0.27)',
-      savings: '99.99% uptime on home hardware',
+      handoff: '340 ms · 0 drops',
+      cloudBurn: '$0.69 / hr ($0.27 blip)',
       badgeTone: 'cloud',
       badgeText: 'shield active',
       rail: [
@@ -732,24 +682,23 @@
       nodes: [
         {
           name: 'cameron-main-rig',
-          hardware: 'rtx 4090 · ISP fiber drop detected',
+          hardware: 'rtx 4090 · fiber drop',
           kind: 'desktop',
           placement: 'local',
           status: 'offline',
-          shards: 'offline — rerouted in 340 ms',
+          shards: 'rerouted in 340 ms',
           meters: [
             { label: 'VRAM', value: 0, max: 24, unit: 'GB' },
-            { label: 'RAM', value: 0, max: 64, unit: 'GB' },
-            { label: 'NVMe', value: 64, max: 512, unit: 'GB' }
+            { label: 'RAM', value: 0, max: 64, unit: 'GB' }
           ]
         },
         {
           name: 'm4-mac-mini-pro',
-          hardware: 'm4 pro · 48 gb unified · quorum leader',
+          hardware: 'm4 pro · quorum leader',
           kind: 'compact',
           placement: 'local',
           status: 'resident',
-          shards: 'layers 0–12 + 49–60 (quorum)',
+          shards: 'layers 0–12 + 49–60',
           meters: [
             { label: 'UMA', value: 41.0, max: 48, unit: 'GB' },
             { label: 'NVMe', value: 64, max: 512, unit: 'GB' }
@@ -757,20 +706,19 @@
         },
         {
           name: 'zephyrus-g16-rtx4070',
-          hardware: 'rtx 4070m · 8 gb vram · nvme 5.2 gb/s',
+          hardware: 'rtx 4070m · 8 gb vram',
           kind: 'laptop',
           placement: 'local',
           status: 'resident',
           shards: 'layers 13–26 (23.0 %)',
           meters: [
             { label: 'VRAM', value: 7.2, max: 8, unit: 'GB' },
-            { label: 'RAM', value: 21.0, max: 32, unit: 'GB' },
-            { label: 'NVMe', value: 44, max: 256, unit: 'GB' }
+            { label: 'RAM', value: 21.0, max: 32, unit: 'GB' }
           ]
         },
         {
           name: 'cloud-vault-l40s',
-          hardware: 'l40s 48 gb · pre-warmed .ktb standby',
+          hardware: 'l40s 48 gb · .ktb vault',
           kind: 'cloud',
           placement: 'cloud',
           status: 'resident',
@@ -786,121 +734,87 @@
 
   var WORKLOAD_TABS = {
     inference: {
-      eyebrow: 'Workload 01 · Private OpenAI & Anthropic API Gateway',
-      title: 'Serve 671B MoE models across 5 memory tiers without buying a server rack.',
-      prose: 'Kadmium compiles Safetensors and GGUF v3 weights on your NAS into 64 KiB page-aligned .ktb banks. Hot attention weights stay in VRAM and Apple Unified Memory; cold routed experts stream from PCIe Gen4 NVMe via Colibri double-buffered DMA with 0.00 ms pipeline stall.',
-      codeTitle: 'terminal · selective Hugging Face pull & OpenAI SSE stream',
+      eyebrow: '01 · 5-Tier MoE Inference',
+      title: 'Run 671B models across VRAM, Apple Unified Memory, and NVMe.',
+      prose: 'Hot attention weights stay in VRAM and Unified Memory while cold MoE experts stream from NVMe via 64 KiB page-aligned .ktb banks with 0.00 ms DMA stall.',
+      codeTitle: 'terminal · selective pull & OpenAI SSE stream',
       codeLang: 'shell',
-      code: '$ kadmium pull hf://deepseek-ai/DeepSeek-V3@main\n$ kadmium serve --port 7848\n$ curl -N http://127.0.0.1:7848/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"deepseek-v3-671b-moe","stream":true}\'',
+      code: '$ kadmium pull hf://deepseek-ai/DeepSeek-V3@main\n$ kadmium serve --port 7848',
       rows: [
-        ['Binary format', '.ktb v1 (64 KiB page-aligned, FNV-1a + O(log N) Merkle proofs)'],
-        ['Quantization', 'Q4_K 32-element block MatVec (5.33× compression) + FP8 E4M3'],
-        ['Draft verification', 'rk3588-sbc-bramble 0.6B INT4 speculative drafts (2.22× speedup)'],
-        ['KV cache', 'Distributed PagedAttention (16 tokens/page, 32K–128K context)'],
-        ['Privacy pinning', 'Layer 0 and Layer N-1 pinned strictly to TrustedCore local nodes']
+        ['Tensor format', '.ktb v1 (64 KiB pages + O(log N) Merkle proofs)'],
+        ['Quantization', 'Q4_K 4-bit block MatVec (5.33×) + FP8 E4M3'],
+        ['Speculative draft', 'ARM SBC 0.6B INT4 draft verifier (2.22× speedup)'],
+        ['Privacy boundary', 'Layer 0 & Layer N-1 stay on TrustedCore local hardware']
       ]
     },
     training: {
-      eyebrow: 'Workload 02 · Distributed Fine-Tuning (DiLoCo + Nous DeMo DCT + QLoRA)',
-      title: 'Fine-tune 70B models across home fiber with 1,000× less network traffic.',
-      prose: 'Standard All-Reduce chokes on residential upload links. Kadmium pairs an asymmetric 1F1B micro-batch pipeline inside your LAN with Sharded-Island DiLoCo Nesterov outer steps and Nous DeMo orthonormal DCT-II fast-frequency momentum compression across WAN links.',
-      codeTitle: 'terminal · distributed QLoRA + DeMo training schedule',
+      eyebrow: '02 · DiLoCo + Nous DeMo Training',
+      title: 'Fine-tune 70B models over home fiber with 1,000× less traffic.',
+      prose: 'Combines an asymmetric 1F1B LAN pipeline with Sharded-Island DiLoCo outer steps and Nous DeMo DCT-II spectral momentum compression.',
+      codeTitle: 'terminal · distributed QLoRA + DeMo schedule',
       codeLang: 'shell',
-      code: '$ kadmium plan --model llama-3-70b-lora --workload training\n$ kadmium compile --model llama-3-70b-lora --start-layer 0 --end-layer 19 --out island0.ktb\n$ kadmium inspect island0.ktb',
+      code: '$ kadmium plan --model llama-3-70b-lora --workload training\n$ kadmium compile --model llama-3-70b-lora --out island0.ktb',
       rows: [
-        ['Inner loop', 'Asymmetric 1F1B pipeline + Hivemind 8-bit boundary activations'],
-        ['Outer loop', 'Sharded-Island DiLoCo Nesterov momentum every H = 500 inner steps'],
-        ['Wire compressor', 'Nous DeMo DCT-II top-k spectral packets + lossless error feedback'],
-        ['Adapter math', 'Frozen Q4_K base weights + analytical rank-r FP32 LoRA gradients'],
-        ['Cross-silicon audit', 'Gensyn Verde RepOps + O(log L) refereed layer-bisection']
+        ['Inner loop', 'Asymmetric 1F1B pipeline + 8-bit boundary activations'],
+        ['Outer loop', 'DiLoCo Nesterov outer step every H = 500 steps'],
+        ['Wire codec', 'Nous DeMo DCT-II top-k packets + lossless residual'],
+        ['Verification', 'Gensyn Verde RepOps + O(log L) layer bisection']
       ]
     },
     dream_rsi: {
-      eyebrow: 'Workload 03 · Disaggregated RL & Dream-RSI Sandboxes',
-      title: 'Put Raspberry Pis and old laptops to work verifying RL rollouts at $0 GPU cost.',
-      prose: 'During reinforcement learning, GPUs should never stall waiting on compilers or unit tests. Kadmium offloads deterministic WASI reward verification and Dream-RSI Monte Carlo Tree Search (PUCT / UCB1) causal replay onto ARM SBCs and legacy laptops.',
-      codeTitle: 'terminal · mount a GitHub world & run Dream-RSI replay',
+      eyebrow: '03 · Disaggregated RL & Dream-RSI',
+      title: 'Offload RL verification and MCTS replay onto SBCs at $0 GPU cost.',
+      prose: 'GPUs never stall waiting on compilers or unit tests. Deterministic WASI sandboxes and PUCT tree search run on Raspberry Pis and laptops.',
+      codeTitle: 'terminal · mount a GitHub RL world',
       codeLang: 'shell',
-      code: '$ kadmium pull gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt\n$ kadmium dream\n$ kadmium registry',
+      code: '$ kadmium pull gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt\n$ kadmium dream',
       rows: [
-        ['Reward sandbox', 'Fuel-metered WasiMicroSandbox (deterministic instruction & stack caps)'],
-        ['Policy gradient', 'GRPO group-relative advantages (zero mean, unit variance, no critic model)'],
-        ['Offline replay', 'DreamRsiMctsEngine PUCT search over recorded DiscoveryTree trajectories'],
-        ['Measured savings', '71.4 % fewer online GPU rollouts to reach 2.31× kernel speedup'],
-        ['World registry', 'Public gh:// catalog of commit-pinned WASI RL benchmarks']
+        ['Sandbox', 'Fuel-metered WasiMicroSandbox (deterministic caps)'],
+        ['Advantage math', 'Critic-free GRPO group-relative normalization'],
+        ['Offline replay', '71.4% fewer GPU rollouts to reach 2.31× speedup'],
+        ['World registry', 'Public gh:// catalog of commit-pinned RL benchmarks']
       ]
     },
     mcp_ecosystem: {
-      eyebrow: 'Workload 04 · Model Context Protocol (kadmium-mcp) & Team RBAC',
-      title: 'Connect Claude Code, Cursor, and Antigravity directly to your compute fabric.',
-      prose: 'The kadmium binary includes a compliant MCP 2025-03-26 server over both stdio and Streamable HTTP (/mcp), plus multi-tenant Sub-Cluster RBAC so engineering teams can carve a 100-node pool into isolated 20-node slices.',
-      codeTitle: '.mcp.json · attach Claude Code / Cursor / Antigravity to kadmium',
+      eyebrow: '04 · MCP Server & Team RBAC',
+      title: 'Connect Claude Code, Cursor, and Antigravity in one config.',
+      prose: 'Exposes a full MCP 2025-03-26 server over stdio and HTTP (/mcp), plus multi-tenant Sub-Cluster RBAC with scoped kdm_live_... API keys.',
+      codeTitle: '.mcp.json · IDE & agent integration',
       codeLang: 'json',
-      code: '{\n  "mcpServers": {\n    "kadmium": {\n      "command": "kadmium",\n      "args": ["mcp"],\n      "env": {\n        "KADMIUM_COORDINATOR_URL": "http://127.0.0.1:7848"\n      }\n    }\n  }\n}',
+      code: '{\n  "mcpServers": {\n    "kadmium": { "command": "kadmium", "args": ["mcp"] }\n  }\n}',
       rows: [
-        ['MCP transports', 'stdio (kadmium mcp) + Streamable HTTP (POST http://127.0.0.1:7848/mcp)'],
-        ['Exposed MCP tools', 'cluster_status, plan_sharding, pull_artifact, run_inference, verify_rl_sandbox, cloud_shield_arbitrage, supply_marketplace'],
-        ['Hugging Face (hf://)', 'Selective HTTP Range byte-slice .safetensors pull into 64 KiB .ktb'],
-        ['Team RBAC', 'Scoped kdm_live_... API keys with per-slice VRAM & cloud spend caps'],
-        ['Observability', 'Prometheus /metrics + Weights & Biases (wandb://) telemetry exporter']
+        ['Transports', 'stdio (kadmium mcp) + HTTP (POST /mcp)'],
+        ['Hugging Face', 'HTTP Range byte-slice pull into 64 KiB .ktb banks'],
+        ['Team RBAC', 'Per-slice VRAM & hourly cloud spend caps'],
+        ['Telemetry', 'Prometheus /metrics + Weights & Biases exporter']
       ]
     }
   };
 
   var SUPPLY_NODES = [
-    {
-      id: 'rig-alpha-rtx4090',
-      name: 'Desktop Gaming PC (RTX 4090)',
-      hardware: '24 GB VRAM · 82.6 TFLOPS',
-      workload: 'Blind middle layers (1..N-2) & DiLoCo island',
-      usdPerHour: 0.38
-    },
-    {
-      id: 'mac-mini-m4-pro',
-      name: 'Apple M4 Mac Mini Pro',
-      hardware: '48 GB Unified · 273 GB/s',
-      workload: 'Contiguous middle MoE layers (q* = 0.96)',
-      usdPerHour: 0.29
-    },
-    {
-      id: 'zephyrus-g16-rtx4070',
-      name: 'Gaming Laptop (RTX 4070M)',
-      hardware: '8 GB VRAM · 32 GB DDR5',
-      workload: 'Middle attention blocks & DeMo DCT outer steps',
-      usdPerHour: 0.14
-    },
-    {
-      id: 'rk3588-sbc-bramble',
-      name: 'ARM64 SBC / Raspberry Pi Cluster',
-      hardware: '24 GB RAM · 18 TOPS NPU',
-      workload: 'Fuel-capped WASI RL verification & Dream-RSI MCTS',
-      usdPerHour: 0.06
-    },
-    {
-      id: 'synology-nas-vault',
-      name: 'Home / Lab NAS Storage Vault',
-      hardware: '16 TB ZFS · 10 GbE',
-      workload: 'Merkle-verified 64 KiB .ktb shard seeding',
-      usdPerHour: 0.05
-    }
+    { id: 'rig-alpha-rtx4090', name: 'Desktop PC (RTX 4090)', hardware: '24 GB VRAM · Blind middle layers', usdPerHour: 0.38 },
+    { id: 'mac-mini-m4-pro', name: 'M4 Mac Mini Pro', hardware: '48 GB Unified · Contiguous MoE layers', usdPerHour: 0.29 },
+    { id: 'zephyrus-g16-rtx4070', name: 'Gaming Laptop (RTX 4070M)', hardware: '8 GB VRAM · Attention + DeMo sync', usdPerHour: 0.14 },
+    { id: 'rk3588-sbc-bramble', name: 'ARM64 SBC Cluster', hardware: '24 GB RAM · WASI RL sandboxes', usdPerHour: 0.06 },
+    { id: 'synology-nas-vault', name: 'Home / Lab NAS Vault', hardware: '16 TB ZFS · .ktb P2P shard seeding', usdPerHour: 0.05 }
   ];
 
   var FAQS = [
     {
-      q: 'Can external Supply Grid nodes or spot cloud GPUs read my prompts or proprietary weights?',
-      a: 'No. Kadmium enforces a strict 3-Tier Trust Zone architecture: Layer 0 (token embeddings), Layer N-1 (final RMSNorm + LM head), and token sampling stay pinned strictly to your own TrustedCore local machines. External or cloud nodes only receive anonymous, quantized middle-layer activation tensors.'
+      q: 'Can cloud or Supply Grid nodes see my prompts or weights?',
+      a: 'No. Layer 0 (token embeddings) and Layer N-1 (final output head) stay pinned strictly to your own local machines. External nodes only process anonymous middle-layer activation tensors.'
     },
     {
-      q: 'If I rent out my gaming PC on the Kadmium Supply Grid, will it lag when I launch a game?',
-      a: 'Never. Kadmium hooks directly into OS swapchain events (DXGI/NVML on Windows, IOKit/Metal on macOS, DRM/sysfs on Linux). The instant a fullscreen game or creative app opens, Kadmium evicts leased shards at the next token boundary (< 200 ms) with zero slashing penalty and a 15-second anti-thrash cooldown.'
+      q: 'Will leasing my gaming PC slow down my games?',
+      a: 'Never. OS swapchain hooks detect fullscreen apps and evict leased shards in under 200 ms with zero slashing penalty and a 15-second cooldown.'
     },
     {
-      q: 'How does Kadmium position itself relative to hyperscale datacenters?',
-      a: 'We don’t need any additional datacenters built. Kadmium harvests the millions of air-cooled GPUs and Apple Silicon Macs already sitting on desks first (0 L cooling water, 0 kg new concrete), and when you need extra burst capacity, Kadmium Cloud rents unutilized spot surplus sitting idle inside already-built datacenters.'
+      q: 'How does CloudShield failover billing work?',
+      a: 'You only pay the spot GPU rate ($0.55–$0.89/hr, billed per second) during the exact minutes a local node is offline. An 18-minute internet blip costs $0.27.'
     },
     {
-      q: 'How am I billed for CloudShield downtime protection?',
-      a: 'Keeping a pre-warmed .ktb standby manifest registered in Kadmium Cloud is included in your workspace. You only pay the spot GPU rate ($0.55–$0.89/hr, billed per second) during the exact minutes a local machine is offline—an 18-minute home internet outage costs $0.27.'
+      q: 'Why say "we don’t need any additional datacenters"?',
+      a: 'Because millions of air-cooled GPUs and Macs already sit idle on desks (0 L cooling water, 0 kg new concrete), and existing datacenters already have unutilized spot surplus we can absorb on demand.'
     }
   ];
 
@@ -938,8 +852,6 @@
     var monthlyUsdTotal = hourlyUsdTotal * leaseHours * 30;
     var monthlyCreditsTotal = hourlyCreditsTotal * leaseHours * 30;
     var monthlyBurstHoursL40s = monthlyCreditsTotal / 0.79;
-    var monthlyCoolingWaterSavedLiters = leaseHours * 30 * (activeSupplyCount / 5) * 0.65 * 1.8;
-    var embodiedCarbonAvoidedKg = activeSupplyCount * 340;
 
     React.useEffect(function () {
       document.documentElement.setAttribute('data-theme', theme);
@@ -951,18 +863,18 @@
     var wk = WORKLOAD_TABS[workloadTab] || WORKLOAD_TABS.inference;
 
     return h(React.Fragment, null,
-      /* ---- Sticky Commercial Navigation ---- */
+      /* ---- Sticky Commercial Header ---- */
       h('div', { className: 'top-wrap' },
         h('header', { className: 'top' },
           h('a', { href: '#top', className: 'brand-cluster' },
             h('img', { src: wordmark, alt: 'Kadmium' }),
             h('span', { className: 'brand-tag' }, 'Cd‑48 · v1.0 GA')),
           h('nav', { className: 'nav-links', 'aria-label': 'Primary Navigation' },
-            h('a', { href: '#services', className: 'nav-link' }, 'Products'),
+            h('a', { href: '#pricing', className: 'nav-link' }, 'Products & Pricing'),
             h('a', { href: '#simulator', className: 'nav-link' }, 'Live Simulator'),
             h('a', { href: '#no-new-datacenters', className: 'nav-link' }, 'Zero New Datacenters'),
             h('a', { href: '#supply-grid', className: 'nav-link' }, 'Rent Your GPU'),
-            h('a', { href: '#pricing', className: 'nav-link' }, 'Pricing'),
+            h('a', { href: '#architecture', className: 'nav-link' }, 'Architecture'),
             h('a', { href: '/docs', className: 'nav-link' }, 'Docs')),
           h('div', { className: 'nav-actions' },
             h(K.Button, {
@@ -990,39 +902,29 @@
               onClick: function () { setMobileMenuOpen(!mobileMenuOpen); }
             }, mobileMenuOpen ? 'Close' : 'Menu'))),
         h('div', { className: 'mobile-drawer' + (mobileMenuOpen ? ' open' : '') },
-          h('a', { href: '#services', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Products & Services'),
-          h('a', { href: '#simulator', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Interactive Simulator'),
+          h('a', { href: '#pricing', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Products & Pricing'),
+          h('a', { href: '#simulator', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Live Cluster Simulator'),
           h('a', { href: '#no-new-datacenters', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Zero Additional Datacenters'),
-          h('a', { href: '#supply-grid', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Supply Grid (Rent Your GPU)'),
-          h('a', { href: '#pricing', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Pricing & Cloud Arbitrage'),
+          h('a', { href: '#supply-grid', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Rent Your GPU (Supply Grid)'),
+          h('a', { href: '#architecture', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Architecture'),
           h('div', { className: 'kd-row', style: { paddingTop: 'var(--space-2)' } },
             h(K.Button, { size: 'sm', onClick: function () { window.location.href = '/companion'; } }, 'Companion App'),
-            h(K.Button, { size: 'sm', onClick: function () { window.location.href = '/docs'; } }, 'Documentation'),
-            h(K.Button, { size: 'sm', onClick: function () { setTheme(theme === 'dark' ? 'light' : 'dark'); } }, theme === 'dark' ? 'Light theme' : 'Dark theme')))),
+            h(K.Button, { size: 'sm', onClick: function () { window.location.href = '/docs'; } }, 'Docs'),
+            h(K.Button, { size: 'sm', onClick: function () { setTheme(theme === 'dark' ? 'light' : 'dark'); } }, theme === 'dark' ? 'Light' : 'Dark')))),
 
       h('main', { id: 'top', className: 'page' },
-        /* ---- 1. Commercial Hero + Interactive Quick-Start ---- */
+        /* ---- 1. Clean, Spacious Hero ---- */
         h('section', { className: 'hero-card' },
           h('div', { className: 'hero-left' },
             h('div', null,
               h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)' } },
-                h(K.Badge, { tone: 'local', dot: true }, 'Self-Hosted Open Source ($0)'),
-                h(K.Badge, { tone: 'cloud', dot: true }, 'Kadmium Cloud ($0.55/hr Spot)'),
-                h(K.Badge, { tone: 'ok' }, 'Supply Grid (+$345/mo Passive)')),
+                h(K.Badge, { tone: 'local', dot: true }, 'Local Fabric · $0'),
+                h(K.Badge, { tone: 'cloud', dot: true }, 'Spot Cloud · $0.55/hr'),
+                h(K.Badge, { tone: 'ok' }, 'GPU Leasing · +$345/mo')),
               h('h1', { className: 'display-xl', style: { margin: '0 0 var(--space-4)' } },
-                'Every machine you own, unified into one private AI cloud.'),
-              h('p', { className: 'body-lg', style: { color: 'var(--ink-muted)', margin: '0 0 var(--space-5)' } },
-                'Stop paying $32/hour for monolithic hyperscaler racks or giving up data privacy to rate-limited APIs. Kadmium links your desktop GPUs, Apple Silicon Macs, laptops, and NAS into a drop-in OpenAI & Anthropic cloud—backed by instant spot GPU bursting and 340 ms failover protection.'),
-              h('ul', { className: 'hero-pillars' },
-                h('li', null,
-                  h('span', { className: 'pillar-bar' }),
-                  h('span', null, h('strong', null, 'Pool your own devices at $0/hr: '), 'Run 671B DeepSeek-V3 or fine-tune 70B Llama-3 across heterogeneous GPUs, M4 Macs, and NVMe drives.')),
-                h('li', null,
-                  h('span', { className: 'pillar-bar cloud' }),
-                  h('span', null, h('strong', null, 'Burst & insure with Kadmium Cloud: '), 'Attach surplus spot GPUs (RunPod, Vast, Lambda) for middle layers only—saving 78% with < 340 ms automatic failover.')),
-                h('li', null,
-                  h('span', { className: 'pillar-bar ok' }),
-                  h('span', null, h('strong', null, 'Rent out your idle compute: '), 'Earn direct USD or 1.25× Cloud credits while you sleep, with < 200 ms instant auto-yield when you launch a game.')))),
+                'Your own hardware, unified into one private AI cloud.'),
+              h('p', { className: 'body-lg', style: { color: 'var(--ink-muted)', margin: 0, maxWidth: '640px' } },
+                'Pool your desktop GPUs, Apple Silicon Macs, and laptops into a single OpenAI & Anthropic endpoint at $0/hr. Burst to cheap spot GPUs when you need extra speed, or rent out your idle rig overnight.')),
 
             h('div', { className: 'kd-stack' },
               h(K.Tabs, {
@@ -1031,8 +933,8 @@
                 onChange: setQuickstartTab,
                 items: [
                   { id: 'cli', label: '1. Install CLI (30s)' },
-                  { id: 'sdk', label: '2. Drop-In OpenAI / Claude API' },
-                  { id: 'lease', label: '3. Lease Idle GPU ($)' }
+                  { id: 'sdk', label: '2. Drop-In API' },
+                  { id: 'lease', label: '3. Lease Idle GPU' }
                 ]
               }),
               h(K.CodeBlock, {
@@ -1040,133 +942,146 @@
                 language: qs.lang,
                 code: qs.code
               }),
-              h('div', { className: 'kd-row' },
-                h(K.Button, { variant: 'primary', size: 'lg', icon: 'rods', onClick: function () { window.location.href = '/'; } }, 'Open Live Control Room'),
-                h(K.Button, { variant: 'cloud', size: 'lg', icon: 'cloud', onClick: function () { window.location.href = '/companion'; } }, 'Download Desktop Companion'),
-                h(K.Button, { size: 'lg', onClick: function () { document.getElementById('supply-grid').scrollIntoView({ behavior: 'smooth' }); } }, 'Calculate GPU Earnings')))),
+              h('div', { className: 'kd-row', style: { paddingTop: 'var(--space-1)' } },
+                h(K.Button, { variant: 'primary', size: 'lg', icon: 'rods', onClick: function () { window.location.href = '/'; } }, 'Open Control Room'),
+                h(K.Button, { variant: 'cloud', size: 'lg', icon: 'cloud', onClick: function () { window.location.href = '/companion'; } }, 'Desktop Companion'),
+                h(K.Button, { size: 'lg', onClick: function () { document.getElementById('pricing').scrollIntoView({ behavior: 'smooth' }); } }, 'View Pricing')))),
 
           h('div', { className: 'hero-right' },
-            h('div', null,
-              h('div', { className: 'kd-row', style: { justifyContent: 'space-between', marginBottom: 'var(--space-2)' } },
-                h('span', { className: 'eyebrow', style: { margin: 0 } }, 'Live Kadmium Grid Status'),
-                h(K.Badge, { tone: 'ok', dot: true }, '99.99% CloudShield SLA')),
-              h('div', { className: 'hero-svg-box', 'aria-hidden': 'true' },
-                h('svg', { viewBox: '0 0 520 240' },
-                  h('rect', { className: 'slab', x: 16, y: 12, width: 176, height: 212, rx: 10 }),
-                  h('rect', { className: 'tint', x: 208, y: 76, width: 120, height: 148, rx: 10 }),
-                  h('rect', { className: 'deep', x: 344, y: 40, width: 160, height: 184, rx: 10 }),
-                  h('line', { className: 'rail', x1: 16, y1: 36, x2: 504, y2: 36 }),
-                  h('line', { className: 'rod cut', x1: 40, y1: 28, x2: 40, y2: 116 }),
-                  h('line', { className: 'rod cut', x1: 68, y1: 28, x2: 68, y2: 176 }),
-                  h('line', { className: 'rod cut', x1: 96, y1: 28, x2: 96, y2: 96 }),
-                  h('line', { className: 'rod cut', x1: 124, y1: 28, x2: 124, y2: 152 }),
-                  h('line', { className: 'rod cut', x1: 152, y1: 28, x2: 152, y2: 196 }),
-                  h('line', { className: 'rod', x1: 236, y1: 28, x2: 236, y2: 92 }),
-                  h('line', { className: 'rod', x1: 268, y1: 28, x2: 268, y2: 164 }),
-                  h('line', { className: 'rod', x1: 300, y1: 28, x2: 300, y2: 124 }),
-                  h('line', { className: 'rod', x1: 372, y1: 28, x2: 372, y2: 148 }),
-                  h('line', { className: 'rod cloud', x1: 404, y1: 28, x2: 404, y2: 188 }),
-                  h('line', { className: 'rod', x1: 436, y1: 28, x2: 436, y2: 112 }),
-                  h('line', { className: 'rod cloud', x1: 468, y1: 28, x2: 468, y2: 160 }))),
-              h('p', { className: 'caption', style: { color: 'var(--ink-muted)', margin: 'var(--space-2) 0 0' } },
-                'Yellow rods (--cadmium) represent sovereign local hardware; blue rods (--cherenkov) represent ephemeral spot cloud burst & failover shards.')),
+            h('div', { className: 'kd-row', style: { justifyContent: 'space-between' } },
+              h('span', { className: 'eyebrow', style: { margin: 0 } }, 'Cd‑48 Hybrid Reactor Mesh'),
+              h(K.Badge, { tone: 'ok', dot: true }, '99.99% CloudShield SLA')),
+            h('div', { className: 'hero-svg-box', 'aria-hidden': 'true' },
+              h('svg', { viewBox: '0 0 520 220' },
+                h('rect', { className: 'slab', x: 16, y: 12, width: 176, height: 196, rx: 10 }),
+                h('rect', { className: 'tint', x: 208, y: 68, width: 120, height: 140, rx: 10 }),
+                h('rect', { className: 'deep', x: 344, y: 36, width: 160, height: 172, rx: 10 }),
+                h('line', { className: 'rail', x1: 16, y1: 34, x2: 504, y2: 34 }),
+                h('line', { className: 'rod cut', x1: 40, y1: 26, x2: 40, y2: 112 }),
+                h('line', { className: 'rod cut', x1: 68, y1: 26, x2: 68, y2: 168 }),
+                h('line', { className: 'rod cut', x1: 96, y1: 26, x2: 96, y2: 92 }),
+                h('line', { className: 'rod cut', x1: 124, y1: 26, x2: 124, y2: 144 }),
+                h('line', { className: 'rod cut', x1: 152, y1: 26, x2: 152, y2: 184 }),
+                h('line', { className: 'rod', x1: 236, y1: 26, x2: 236, y2: 88 }),
+                h('line', { className: 'rod', x1: 268, y1: 26, x2: 268, y2: 156 }),
+                h('line', { className: 'rod', x1: 300, y1: 26, x2: 300, y2: 118 }),
+                h('line', { className: 'rod', x1: 372, y1: 26, x2: 372, y2: 140 }),
+                h('line', { className: 'rod cloud', x1: 404, y1: 26, x2: 404, y2: 178 }),
+                h('line', { className: 'rod', x1: 436, y1: 26, x2: 436, y2: 106 }),
+                h('line', { className: 'rod cloud', x1: 468, y1: 26, x2: 468, y2: 152 }))),
+            h('div', { className: 'hero-mini-stats' },
+              h('div', { className: 'hero-mini-stat' },
+                h('span', { className: 'label' }, 'LOCAL TOKENS'),
+                h('span', { className: 'val', style: { color: 'var(--cadmium-text)' } }, '$0.00'),
+                h('span', { className: 'caption', style: { color: 'var(--ink-muted)' } }, '100% private LAN')),
+              h('div', { className: 'hero-mini-stat' },
+                h('span', { className: 'label' }, 'SPOT BURST'),
+                h('span', { className: 'val', style: { color: 'var(--cherenkov-text)' } }, '-78 %'),
+                h('span', { className: 'caption', style: { color: 'var(--ink-muted)' } }, '$0.55/hr middle shards')),
+              h('div', { className: 'hero-mini-stat' },
+                h('span', { className: 'label' }, 'FAILOVER SLA'),
+                h('span', { className: 'val', style: { color: 'var(--ok)' } }, '340 ms'),
+                h('span', { className: 'caption', style: { color: 'var(--ink-muted)' } }, '0 dropped requests'))))),
 
-            h('div', { className: 'kd-stack' },
-              h('div', { className: 'well' },
-                h('div', { className: 'kd-row', style: { justifyContent: 'space-between', marginBottom: 'var(--space-1)' } },
-                  h('span', { className: 'label' }, 'LOCAL CLUSTER INFERENCE COST'),
-                  h(K.Badge, { tone: 'local' }, '100% Private')),
-                h('div', { className: 'metric', style: { color: 'var(--cadmium-text)' } }, '$0.00 / 1M tokens'),
-                h('div', { className: 'caption', style: { color: 'var(--ink-muted)' } }, 'Runs across your RTX GPU + Apple Silicon Mac + NVMe')),
-
-              h('div', { className: 'well' },
-                h('div', { className: 'kd-row', style: { justifyContent: 'space-between', marginBottom: 'var(--space-1)' } },
-                  h('span', { className: 'label' }, 'SPOT BURST ARBITRAGE (L40S / H100)'),
-                  h(K.Badge, { tone: 'cloud' }, '-78% vs AWS')),
-                h('div', { className: 'metric', style: { color: 'var(--cherenkov-text)' } }, '$0.55 – $1.49 / hr'),
-                h('div', { className: 'caption', style: { color: 'var(--ink-muted)' } }, 'Best-price orderbook across RunPod, Vast, Lambda & Prime')),
-
-              h('div', { className: 'well' },
-                h('div', { className: 'kd-row', style: { justifyContent: 'space-between', marginBottom: 'var(--space-1)' } },
-                  h('span', { className: 'label' }, 'SUPPLY GRID OWNER PAYOUT'),
-                  h(K.Badge, { tone: 'ok' }, '< 200ms Auto-Yield')),
-                h('div', { className: 'metric' }, '+$345.00 / mo'),
-                h('div', { className: 'caption', style: { color: 'var(--ink-muted)' } }, '5-node home lab leased 12 hrs/night at 1.25× Cloud credits'))))),
-
-        /* ---- 2. Commercial Value Metrics Strip ---- */
-        h('section', { className: 'stat-strip' },
-          h('div', { className: 'stat-card' },
-            h('span', { className: 'label' }, 'CLOUD COST REDUCTION'),
-            h('span', { className: 'metric', style: { color: 'var(--cherenkov-text)' } }, '78 % Saved'),
-            h('span', { className: 'meta' }, 'Spot GPU arbitrage + 1,000× DeMo compression vs. monolithic NVLink racks')),
-          h('div', { className: 'stat-card' },
-            h('span', { className: 'label' }, 'CLOUDSHIELD FAILOVER SLA'),
-            h('span', { className: 'metric' }, '< 340 ms'),
-            h('span', { className: 'meta' }, 'Zero dropped requests when home internet blips; $0.27 per 18-min incident')),
-          h('div', { className: 'stat-card' },
-            h('span', { className: 'label' }, 'POLITE GAMING AUTO-YIELD'),
-            h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } }, '< 200 ms'),
-            h('span', { className: 'meta' }, 'Instant VRAM release on fullscreen game launch with 15s cooldown hysteresis')),
-          h('div', { className: 'stat-card' },
-            h('span', { className: 'label' }, 'ADDITIONAL DATACENTERS NEEDED'),
-            h('span', { className: 'metric', style: { color: 'var(--ok)' } }, 'Zero'),
-            h('span', { className: 'meta' }, '0 L cooling water & 0 kg new concrete by harvesting existing silicon first'))),
-
-        /* ---- 3. Three Marketable Service Pillars ---- */
-        h('section', { id: 'services', className: 'kd-stack' },
+        /* ---- 2. Products & Pricing (Unified, Non-Repetitive 3-Pillar Showcase) ---- */
+        h('section', { id: 'pricing', className: 'section-block' },
           h('div', { className: 'section-head' },
             h('div', { className: 'section-head-copy' },
-              h('p', { className: 'eyebrow' }, 'Three products, one unified fabric'),
-              h('h2', { className: 'headline', style: { margin: '0 0 var(--space-2)' } }, 'Use Kadmium as your local AI workstation, your elastic cloud, or a passive income stream.'),
+              h('p', { className: 'eyebrow' }, 'Products & transparent pricing'),
+              h('h2', { className: 'headline', style: { margin: '0 0 var(--space-1)' } }, 'Start free on your own hardware. Burst or lease whenever you want.'),
               h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'Start 100% free on your own machines, turn on managed CloudShield failover and spot GPU bursting when you launch to production, or lease your idle GPUs overnight.'))),
+                'No seat licenses, no token markups, and no monthly minimums.'))),
 
-          h('div', { className: 'three' },
-            h('article', { className: 'service-card' },
-              h('div', { className: 'kd-row', style: { justifyContent: 'space-between' } },
-                h(K.Badge, { tone: 'local', dot: true }, '01 · Kadmium Local Fabric'),
-                h('span', { className: 'code-sm', style: { color: 'var(--cadmium-text)' } }, '$0 Forever')),
-              h('h3', { className: 'title', style: { margin: 0 } }, 'Pool every computer in your house or lab into one endpoint.'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'Kadmium automatically profiles CUDA, ROCm, Apple Metal, Vulkan, and CPU/NPU nodes on your LAN, pairs them via 6-digit SAS codes, and shards 70B–671B models proportionally to each device’s compute and bandwidth (FreeToken q*).'),
-              h('ul', { className: 'kd-plan-features' },
-                h('li', null, 'Drop-in OpenAI (/v1/chat/completions), Anthropic (/v1/messages) & MCP server'),
-                h('li', null, 'Selective hf:// byte-range downloads (never download the full 400 GB repo twice)'),
-                h('li', null, '100-node Sub-Cluster slicing with scoped team API keys')),
-              h(K.Button, { variant: 'primary', onClick: function () { window.location.href = '/'; } }, 'Open Local Control Room')),
+          h('div', { className: 'plans' },
+            h(K.PlanCard, {
+              product: 'self-hosted',
+              eyebrow: '01 · Self-Hosted Open Source',
+              name: 'Kadmium Local',
+              price: '$0',
+              period: 'forever · MIT / Apache-2.0',
+              summary: 'Link every computer in your home or lab into one private AI workstation.',
+              features: [
+                'Unlimited CUDA, ROCm, Metal, Vulkan & NPU nodes',
+                'Asymmetric Q* sharding for 70B–671B models',
+                '< 200 ms gaming auto-yield & 6-digit SAS pairing',
+                'Drop-in OpenAI, Anthropic & MCP 2025-03-26 server'
+              ],
+              cta: 'Open Local Control Room',
+              onSelect: function () { window.location.href = '/'; }
+            }),
+            h('div', { className: 'plan-featured-wrap' },
+              h(K.PlanCard, {
+                product: 'cloud',
+                eyebrow: '02 · Managed Hybrid Cloud · Most Popular',
+                name: 'Kadmium Cloud',
+                price: '$0.55',
+                period: '/ GPU-hr spot (from)',
+                summary: 'Instant spot GPU bursting, WAN NAT relay, and < 340 ms outage insurance.',
+                features: [
+                  'Live spot orderbook across RunPod, Vast, Lambda & Prime',
+                  '< 340 ms CloudShield failover ($0.27 for an 18-min blip)',
+                  'Blind middle shards only (Layer 0 & N-1 stay local)',
+                  'Multi-tenant Sub-Cluster RBAC & per-second billing'
+                ],
+                cta: 'Enable in Desktop Companion',
+                onSelect: function () { window.location.href = '/companion'; }
+              })),
+            h(K.PlanCard, {
+              product: 'self-hosted',
+              eyebrow: '03 · Two-Sided Compute Grid',
+              name: 'Supply Grid Host',
+              price: '+$1.15',
+              period: '/ hr earned (1.25× credits)',
+              summary: 'Rent out idle GPUs, M4 Macs, and NAS vaults overnight with zero gaming lag.',
+              features: [
+                'Earn direct USD or 1.25× Kadmium Cloud burst credits',
+                'Blind middle-layer execution (zero raw prompt exposure)',
+                '< 200 ms OS swapchain auto-yield on game launch',
+                'Cryptographic Gensyn Verde RepOps settlement proofs'
+              ],
+              cta: 'Calculate Your Earnings',
+              onSelect: function () { document.getElementById('supply-grid').scrollIntoView({ behavior: 'smooth' }); }
+            })),
 
-            h('article', { className: 'service-card service-card-featured' },
-              h('div', { className: 'kd-row', style: { justifyContent: 'space-between' } },
-                h(K.Badge, { tone: 'cloud', dot: true }, '02 · Kadmium Cloud & Shield'),
-                h('span', { className: 'code-sm', style: { color: 'var(--cherenkov-text)' } }, 'From $0.55 / hr')),
-              h('h3', { className: 'title', style: { margin: 0 } }, 'Elastic spot GPU bursting & < 340 ms downtime insurance.'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'Connect your local cluster to kadmium.ai for managed WAN NAT traversal, instant multi-provider spot GPU bidding (RunPod, Vast.ai, Lambda, Prime), and automatic failover if your home internet or power drops.'),
-              h('ul', { className: 'kd-plan-features' },
-                h('li', null, 'Blind middle-shard cloud bursting: Layer 0 & Layer N-1 stay on your local hardware'),
-                h('li', null, 'Pre-warmed .ktb cloud standby vault promotes in 340 ms with 0 dropped tokens'),
-                h('li', null, 'Per-second usage billing with strict hourly spend caps in kadmium.toml')),
-              h(K.Button, { variant: 'cloud', icon: 'cloud', onClick: function () { window.location.href = '/companion'; } }, 'Configure CloudShield')),
+          h('div', { className: 'panel' },
+            h('div', { className: 'section-head', style: { marginBottom: 'var(--space-4)' } },
+              h('div', null,
+                h('p', { className: 'eyebrow', style: { margin: 0 } }, '24-hour 70B fine-tuning cost comparison'),
+                h('h3', { className: 'title', style: { margin: '4px 0 0' } }, 'Why teams replace $32/hr monolithic racks with Kadmium.'))),
+            h('div', { className: 'table-wrap' },
+              h('table', { className: 'mono-table' },
+                h('thead', null, h('tr', null,
+                  h('th', null, 'TOPOLOGY'),
+                  h('th', null, 'INTERCONNECT'),
+                  h('th', null, 'HOURLY RATE'),
+                  h('th', null, '24-HR TOTAL'),
+                  h('th', null, 'FAILOVER SLA'))),
+                h('tbody', null,
+                  h('tr', null,
+                    h('td', null, 'Kadmium Local Mesh (4090 + M4 Mini + Laptop + NAS)'),
+                    h('td', null, 'Home / Office LAN + Wi-Fi 6E'),
+                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$0.00 / hr'),
+                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$0.00'),
+                    h('td', null, '< 200 ms Polite auto-yield')),
+                  h('tr', null,
+                    h('td', null, 'Kadmium Hybrid (Local + 1× Spot L40S / H100 Burst)'),
+                    h('td', null, 'Standard Fiber (1,000× DeMo compression)'),
+                    h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$0.79 – $1.49 / hr'),
+                    h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$18.96 – $35.76'),
+                    h('td', null, '< 340 ms live .ktb cutover')),
+                  h('tr', null,
+                    h('td', null, 'Monolithic Hyperscaler 8× H100 (AWS p5.48xlarge)'),
+                    h('td', null, '3,200 Gbps EFA / NVSwitch lock-in'),
+                    h('td', { style: { color: 'var(--ink-muted)' } }, '$32.77 / hr'),
+                    h('td', { style: { color: 'var(--ink-muted)' } }, '$786.48'),
+                    h('td', null, 'Checkpoint crash & restart'))))))),
 
-            h('article', { className: 'service-card' },
-              h('div', { className: 'kd-row', style: { justifyContent: 'space-between' } },
-                h(K.Badge, { tone: 'ok', dot: true }, '03 · Kadmium Supply Grid'),
-                h('span', { className: 'code-sm', style: { color: 'var(--ok)' } }, 'Earn USD or 1.25× Credits')),
-              h('h3', { className: 'title', style: { margin: 0 } }, 'Rent out your idle GPUs, Macs & NAS while you sleep.'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'Turn depreciating desktop GPUs, M4 Mac Minis, and NAS storage into passive income or 1.25× Cloud burst credits. Polite OS swapchain hooks guarantee your machine yields in under 200 ms the instant you touch your mouse or launch a game.'),
-              h('ul', { className: 'kd-plan-features' },
-                h('li', null, 'Zero privacy risk: execute anonymous middle-layer tensors & WASI sandboxes only'),
-                h('li', null, 'Cryptographic Gensyn Verde RepOps receipts & automated settlement'),
-                h('li', null, 'Zero penalty when you interrupt a lease to play games or edit video')),
-              h(K.Button, { variant: 'default', onClick: function () { document.getElementById('supply-grid').scrollIntoView({ behavior: 'smooth' }); } }, 'Open Earnings Calculator')))),
-
-        /* ---- 4. Interactive Live Cluster & Failover Simulator ---- */
-        h('section', { id: 'simulator', className: 'kd-stack' },
+        /* ---- 3. Interactive Live Cluster Simulator ---- */
+        h('section', { id: 'simulator', className: 'section-block' },
           h('div', { className: 'section-head' },
             h('div', { className: 'section-head-copy' },
-              h('p', { className: 'eyebrow' }, 'Interactive product walkthrough · deepseek-v3-671b-moe (61 layers)'),
-              h('h2', { className: 'headline', style: { margin: 0 } }, 'Watch how Kadmium handles local pooling, gaming auto-yield, spot bursting, and outages.')),
+              h('p', { className: 'eyebrow' }, 'Interactive cluster simulator · deepseek-v3-671b-moe'),
+              h('h2', { className: 'headline', style: { margin: 0 } }, 'See how shards rebalance across local and cloud silicon in real time.')),
             h('div', { className: 'kd-row' },
               Object.keys(SCENARIOS).map(function (key) {
                 var item = SCENARIOS[key];
@@ -1182,22 +1097,21 @@
               }))),
 
           h('div', { className: 'panel' },
-            h('div', { className: 'two' },
+            h('div', { className: 'two', style: { alignItems: 'center' } },
               h('div', { className: 'kd-stack' },
                 h('p', { className: 'eyebrow', style: { margin: 0 } }, sc.eyebrow),
-                h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } }, sc.summary),
+                h('p', { className: 'body-lg', style: { color: 'var(--ink)', margin: 0 } }, sc.summary),
                 h('div', { className: 'kd-row', style: { paddingTop: 'var(--space-2)' } },
                   h(K.Badge, { tone: sc.badgeTone, dot: true }, sc.badgeText),
-                  h(K.Badge, { tone: 'neutral' }, 'Speed: ' + sc.throughput),
-                  h(K.Badge, { tone: 'neutral' }, 'Handoff: ' + sc.handoff),
-                  h(K.Badge, { tone: sc.cloudBurn === '$0.00 / hr' ? 'local' : 'cloud' }, sc.cloudBurn),
-                  h(K.Badge, { tone: 'ok' }, sc.savings))),
+                  h(K.Badge, { tone: 'neutral' }, sc.throughput),
+                  h(K.Badge, { tone: 'neutral' }, sc.handoff),
+                  h(K.Badge, { tone: sc.cloudBurn === '$0.00 / hr' ? 'local' : 'cloud' }, sc.cloudBurn))),
               h('div', { className: 'well' },
-                h('p', { className: 'eyebrow' }, 'Live shard rail · yellow = local hardware · blue = Kadmium Cloud spot'),
+                h('p', { className: 'eyebrow' }, 'Asymmetric shard rail · yellow = local · blue = cloud'),
                 h(K.ShardRail, {
                   label: 'Interactive shard plan for deepseek-v3-671b-moe',
-                  depth: 100,
-                  pitch: 56,
+                  depth: 96,
+                  pitch: 58,
                   nodes: sc.rail
                 })))),
 
@@ -1215,62 +1129,54 @@
               });
             }))),
 
-        /* ---- 5. "We Don't Need Any Additional Datacenters" Positioning ---- */
+        /* ---- 4. "We Don't Need Any Additional Datacenters" ---- */
         h('section', { id: 'no-new-datacenters', className: 'panel' },
-          h('div', { className: 'two', style: { marginBottom: 'var(--space-6)' } },
+          h('div', { className: 'two', style: { alignItems: 'center', marginBottom: 'var(--space-6)' } },
             h('div', { className: 'kd-stack' },
-              h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Sustainable infrastructure · why build more datacenters when the silicon already exists?'),
+              h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Civic & grid physics · the alternative to greenfield buildouts'),
               h('h2', { className: 'headline', style: { margin: 0 } }, 'We don\u2019t need any additional datacenters.'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'Across the world, communities are pushing back against new 500 MW hyperscale datacenters that strain residential electric grids, evaporate millions of liters of local drinking watersheds, and lock neighborhoods into multi-decade utility hikes—all while tens of millions of high-end GPUs, Apple Silicon Macs, and workstation servers sit plugged into wall outlets at under 10% utilization.'),
-              h('p', { className: 'body', style: { color: 'var(--ink)', margin: 0 } },
-                'Kadmium isn\u2019t a new datacenter. We aggregate the dormant silicon already sitting on desks first, and when you need elastic burst capacity, we rent unutilized spot slots sitting idle inside already-built datacenters—so no new concrete or cooling towers need to be built.')),
+              h('p', { className: 'body-lg', style: { color: 'var(--ink-muted)', margin: 0 } },
+                'New hyperscale datacenters strain municipal grids and evaporate millions of liters of local cooling water—while tens of millions of GPUs and Macs already sit plugged into wall outlets at under 10% utilization. Kadmium harvests existing local hardware first, and rents unutilized spot slots in already-built datacenters only when you burst.')),
             h('div', { className: 'table-wrap' },
               h('table', { className: 'mono-table' },
                 h('thead', null, h('tr', null,
-                  h('th', null, 'DIMENSION'),
-                  h('th', null, 'NEW HYPERSCALE DATACENTER'),
-                  h('th', null, 'KADMIUM HYBRID GRID'))),
+                  h('th', null, 'METRIC'),
+                  h('th', null, 'NEW DATACENTER'),
+                  h('th', null, 'KADMIUM GRID'))),
                 h('tbody', null,
                   h('tr', null,
-                    h('td', null, 'Primary silicon source'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, 'New greenfield 500 MW buildout'),
-                    h('td', { style: { color: 'var(--cadmium-text)' } }, 'Existing local GPUs/Macs + idle spot surplus')),
+                    h('td', null, 'Hardware source'),
+                    h('td', { style: { color: 'var(--ink-muted)' } }, 'Greenfield 500 MW buildout'),
+                    h('td', { style: { color: 'var(--cadmium-text)' } }, 'Existing PCs/Macs + idle spot slots')),
                   h('tr', null,
-                    h('td', null, 'Watershed cooling draw'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, '~1.8 L / kWh evaporative water'),
-                    h('td', { style: { color: 'var(--ok)' } }, '0 L / hr additional water on local nodes')),
+                    h('td', null, 'Cooling water'),
+                    h('td', { style: { color: 'var(--ink-muted)' } }, '~1.8 L / kWh evaporated'),
+                    h('td', { style: { color: 'var(--ok)' } }, '0 L / hr additional water')),
                   h('tr', null,
-                    h('td', null, 'Embodied concrete & fab CO₂e'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, 'Thousands of tons of new concrete'),
-                    h('td', { style: { color: 'var(--ok)' } }, '0 kg new concrete (1,700 kg CO₂e saved / 5 nodes)')),
-                  h('tr', null,
-                    h('td', null, 'Datacenter relationship'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, 'Requires endless new construction'),
-                    h('td', { style: { color: 'var(--cherenkov-text)' } }, 'Absorbs idle spot slots in existing facilities')))))),
+                    h('td', null, 'New concrete & silicon'),
+                    h('td', { style: { color: 'var(--ink-muted)' } }, 'Thousands of tons'),
+                    h('td', { style: { color: 'var(--ok)' } }, '0 kg (1,700 kg CO₂e saved / 5 nodes)')))))),
 
           h('div', { className: 'stat-strip-3' },
             h('div', { className: 'stat-card' },
-              h('span', { className: 'label' }, 'TIER 1 · LOCAL SILICON FIRST (--cadmium)'),
-              h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } }, '0 L / hr Water'),
-              h('span', { className: 'meta' }, 'Ambient air-cooled desktops, Macs & laptops already sitting in homes and offices')),
+              h('span', { className: 'label' }, 'LOCAL COOLING WATER (--cadmium)'),
+              h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } }, '0 L / hr'),
+              h('span', { className: 'meta' }, 'Ambient air-cooled desktops, Macs & laptops already on desks')),
             h('div', { className: 'stat-card' },
-              h('span', { className: 'label' }, 'TIER 2 · EXISTING DATACENTER SURPLUS (--cherenkov)'),
-              h('span', { className: 'metric', style: { color: 'var(--cherenkov-text)' } }, 'Spot Arbitrage'),
-              h('span', { className: 'meta' }, 'Rents already-built, sitting-idle datacenter GPU slots only when local capacity overflows')),
+              h('span', { className: 'label' }, 'EXISTING DATACENTER SLOTS (--cherenkov)'),
+              h('span', { className: 'metric', style: { color: 'var(--cherenkov-text)' } }, 'Spot Surplus'),
+              h('span', { className: 'meta' }, 'Absorbs idle GPUs in already-built facilities instead of building new ones')),
             h('div', { className: 'stat-card' },
               h('span', { className: 'label' }, 'EMBODIED CARBON AVOIDED'),
               h('span', { className: 'metric', style: { color: 'var(--ok)' } }, '1,700 kg CO₂e'),
-              h('span', { className: 'meta' }, 'Saved per 5-node personal cluster by extending the useful life of existing hardware')))),
+              h('span', { className: 'meta' }, 'Saved per 5-node cluster by reusing already-manufactured silicon')))),
 
-        /* ---- 6. Interactive Supply Grid Calculator ("Rent Out Your Idle Compute") ---- */
-        h('section', { id: 'supply-grid', className: 'kd-stack' },
+        /* ---- 5. Supply Grid Calculator ("Rent Out Your Idle Compute") ---- */
+        h('section', { id: 'supply-grid', className: 'section-block' },
           h('div', { className: 'section-head' },
             h('div', { className: 'section-head-copy' },
-              h('p', { className: 'eyebrow' }, 'Kadmium Supply Grid · passive income & cloud credit calculator'),
-              h('h2', { className: 'headline', style: { margin: '0 0 var(--space-1)' } }, 'Rent out your idle compute while you sleep. Yield in < 200 ms when you sit down.'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'Toggle your machines and daily idle hours below to calculate your monthly USD payout or 1.25× Kadmium Cloud burst credits.')),
+              h('p', { className: 'eyebrow' }, 'Kadmium Supply Grid · passive income calculator'),
+              h('h2', { className: 'headline', style: { margin: 0 } }, 'Lease idle silicon overnight. Yield in < 200 ms when you play.')),
             h('div', { className: 'kd-row' },
               h(K.Button, {
                 variant: payoutMode === 'credits' ? 'primary' : 'default',
@@ -1281,7 +1187,7 @@
                 variant: payoutMode === 'usd' ? 'primary' : 'default',
                 size: 'sm',
                 onClick: function () { setPayoutMode('usd'); }
-              }, 'Direct USD Payout'),
+              }, 'Direct USD'),
               [8, 12, 16, 24].map(function (hrs) {
                 return h(K.Button, {
                   key: hrs,
@@ -1293,22 +1199,19 @@
 
           h('div', { className: 'two' },
             h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'Select hardware to lease during idle hours'),
-              h('p', { className: 'caption', style: { color: 'var(--ink-muted)', margin: '0 0 var(--space-3)' } },
-                'Renters keep Layer 0 and Layer N-1 on their own hardware. Your machines only process blind middle-layer tensors and fuel-metered WASI sandboxes.'),
               h('div', { className: 'table-wrap' },
                 h('table', { className: 'mono-table' },
                   h('thead', null, h('tr', null,
                     h('th', null, 'MACHINE'),
                     h('th', null, 'USD / HR'),
                     h('th', null, '1.25× CREDITS'),
-                    h('th', null, 'STATUS'))),
+                    h('th', null, 'LEASE'))),
                   h('tbody', null, SUPPLY_NODES.map(function (nd) {
                     var active = !!enabledSupply[nd.id];
-                    return h('tr', { key: nd.id, style: { opacity: active ? 1 : 0.5 } },
+                    return h('tr', { key: nd.id, style: { opacity: active ? 1 : 0.48 } },
                       h('td', null,
                         h('div', { style: { color: 'var(--ink)', fontWeight: 600 } }, nd.name),
-                        h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, nd.hardware + ' · ' + nd.workload)),
+                        h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, nd.hardware)),
                       h('td', null, '$' + nd.usdPerHour.toFixed(2)),
                       h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$' + (nd.usdPerHour * 1.25).toFixed(2)),
                       h('td', null,
@@ -1322,129 +1225,36 @@
             h('div', { className: 'kd-stack' },
               h('div', { className: 'stat-strip-2' },
                 h('div', { className: 'stat-card' },
-                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'HOURLY RATE (1.25× CREDITS)' : 'HOURLY DIRECT USD'),
+                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'HOURLY (1.25× CREDITS)' : 'HOURLY DIRECT USD'),
                   h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } },
                     '$' + (payoutMode === 'credits' ? hourlyCreditsTotal : hourlyUsdTotal).toFixed(2) + ' / hr'),
-                  h('span', { className: 'meta' }, activeSupplyCount + ' active machines · ' + leaseHours + ' hr/day idle schedule')),
+                  h('span', { className: 'meta' }, activeSupplyCount + ' nodes · ' + leaseHours + ' hr/day idle window')),
                 h('div', { className: 'stat-card' },
-                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'ESTIMATED MONTHLY CREDITS' : 'ESTIMATED MONTHLY PAYOUT'),
+                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'MONTHLY CREDITS' : 'MONTHLY USD PAYOUT'),
                   h('span', { className: 'metric', style: { color: 'var(--ok)' } },
                     '$' + (payoutMode === 'credits' ? monthlyCreditsTotal : monthlyUsdTotal).toFixed(2) + ' / mo'),
-                  h('span', { className: 'meta' }, '≈ ' + monthlyBurstHoursL40s.toFixed(1) + ' hrs of L40S 48 GB burst · ' + monthlyCoolingWaterSavedLiters.toFixed(0) + ' L water saved (' + embodiedCarbonAvoidedKg + ' kg CO₂e avoided)'))),
+                  h('span', { className: 'meta' }, '≈ ' + monthlyBurstHoursL40s.toFixed(0) + ' hrs of L40S 48 GB burst / mo'))),
               h(K.CodeBlock, {
-                title: 'terminal · start leasing idle compute in one command',
+                title: 'terminal · start leasing in one command',
                 language: 'shell',
-                code: '$ kadmium lease --hours ' + leaseHours + ' --payout ' + payoutMode + '\n# -> Projected return: $' + (payoutMode === 'credits' ? monthlyCreditsTotal : monthlyUsdTotal).toFixed(2) + '/month (' + (payoutMode === 'credits' ? '1.25x Kadmium Cloud credits' : 'Direct USD payout') + ')\n# -> Auto-yield SLA:   < 200 ms instant eviction when you launch a game\n# -> Settlement proof: Gensyn Verde RepOps + O(log L) fraud-proof certificate'
+                code: '$ kadmium lease --hours ' + leaseHours + ' --payout ' + payoutMode + '\n# -> Projected: $' + (payoutMode === 'credits' ? monthlyCreditsTotal : monthlyUsdTotal).toFixed(2) + '/mo · < 200 ms game auto-yield (0% penalty)'
               })))),
 
-        /* ---- 7. Transparent Pricing & Cloud Arbitrage Comparison ---- */
-        h('section', { id: 'pricing', className: 'kd-stack' },
+        /* ---- 6. Under the Hood (Clean Tabbed Architecture) ---- */
+        h('section', { id: 'architecture', className: 'section-block' },
           h('div', { className: 'section-head' },
-            h('div', { className: 'section-head-copy' },
-              h('p', { className: 'eyebrow' }, 'Simple, transparent pricing'),
-              h('h2', { className: 'headline', style: { margin: '0 0 var(--space-1)' } }, 'Free to self-host forever. Pay only per-second when you burst to the cloud.'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'No per-seat licenses, no hidden token markups, and no minimum monthly commitment.'))),
-
-          h('div', { className: 'plans' },
-            h(K.PlanCard, {
-              product: 'self-hosted',
-              eyebrow: 'Self-Hosted Open Source',
-              name: 'Kadmium Local',
-              price: '$0',
-              period: 'forever (MIT / Apache-2.0)',
-              summary: 'Turn all the computers in your home or lab into one sovereign AI cluster.',
-              features: [
-                'Unlimited local nodes (CUDA, ROCm, Metal, Vulkan, CPU/NPU)',
-                'Asymmetric Q* sharding & < 200 ms gaming auto-yield',
-                'DiLoCo + DeMo training over home internet',
-                'OpenAI, Anthropic & MCP 2025-03-26 gateway',
-                'Zero-Click 6-digit SAS LAN pairing & Web Control Room'
-              ],
-              cta: 'Launch Local Control Room',
-              onSelect: function () { window.location.href = '/'; }
-            }),
-            h('div', { className: 'plan-featured-wrap' },
-              h(K.PlanCard, {
-                product: 'cloud',
-                eyebrow: 'Managed Hybrid Cloud · Most Popular',
-                name: 'Kadmium Cloud',
-                price: '$0.55',
-                period: '/ GPU-hr spot (from)',
-                summary: 'Instant spot GPU bursting, managed WAN relay, and < 340 ms CloudShield failover protection.',
-                features: [
-                  'Live spot arbitrage across RunPod, Vast, Lambda & Prime',
-                  'Pre-warmed .ktb vault for < 340 ms automatic outage failover',
-                  'Blind middle-layer privacy (Layer 0 & N-1 stay on your rig)',
-                  'Multi-tenant Sub-Cluster RBAC & scoped team API keys',
-                  'Billed to the exact second ($0.27 for an 18-min outage)'
-                ],
-                cta: 'Enable CloudShield in Companion',
-                onSelect: function () { window.location.href = '/companion'; }
-              })),
-            h(K.PlanCard, {
-              product: 'self-hosted',
-              eyebrow: 'Two-Sided Compute Marketplace',
-              name: 'Supply Grid Host',
-              price: '+$1.15',
-              period: '/ hr earned (1.25× credits)',
-              summary: 'Monetize idle local GPUs, M4 Mac Minis, SBCs, and NAS vaults overnight.',
-              features: [
-                'Choose direct USD payouts or 1.25× Kadmium Cloud burst credits',
-                'Blind middle-shard execution (never touches raw user text)',
-                '< 200 ms OS swapchain auto-yield on game launch (0% penalty)',
-                'Fuel-capped WASI sandboxes for safe CPU/SBC RL verification',
-                'Cryptographic Gensyn Verde RepOps settlement receipts'
-              ],
-              cta: 'Start Leasing in Companion',
-              onSelect: function () { window.location.href = '/companion'; }
-            })),
-
-          h('div', { className: 'panel' },
-            h('p', { className: 'eyebrow' }, 'Real-world cost comparison · 70B QLoRA + DiLoCo 24-hour training run'),
-            h('h3', { className: 'title', style: { margin: '0 0 var(--space-3)' } }, 'Why teams switch from monolithic hyperscaler instances to Kadmium.'),
-            h('div', { className: 'table-wrap' },
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'DEPLOYMENT OPTION'),
-                  h('th', null, 'NETWORK REQUIREMENT'),
-                  h('th', null, 'HOURLY RATE'),
-                  h('th', null, '24-HOUR TOTAL'),
-                  h('th', null, 'OUTAGE / EVICTION RECOVERY'))),
-                h('tbody', null,
-                  h('tr', null,
-                    h('td', null, 'Kadmium Local Mesh (RTX 4090 + M4 Mini + Laptop + NAS)'),
-                    h('td', null, 'Existing Home/Office LAN + Wi-Fi 6E'),
-                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$0.00 / hr'),
-                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$0.00'),
-                    h('td', null, '< 200 ms Polite auto-yield to NAS')),
-                  h('tr', null,
-                    h('td', null, 'Kadmium Hybrid (Local Mesh + 1× Spot L40S / H100 Burst)'),
-                    h('td', null, 'Standard Fiber (1,000× DeMo DCT compression)'),
-                    h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$0.79 – $1.49 / hr'),
-                    h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$18.96 – $35.76'),
-                    h('td', null, '< 340 ms live .ktb handoff (0 dropped requests)')),
-                  h('tr', null,
-                    h('td', null, 'Hyperscaler Monolithic 8× H100 (AWS p5.48xlarge)'),
-                    h('td', null, '3,200 Gbps EFA / NVSwitch Datacenter Lock-in'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, '$32.77 / hr'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, '$786.48'),
-                    h('td', null, 'Full job crash & checkpoint restart'))))))),
-
-        /* ---- 8. Technical Deep-Dive Explorer (For Systems Engineers) ---- */
-        h('section', { className: 'kd-stack' },
-          h('div', null,
-            h('p', { className: 'eyebrow' }, 'Under the hood · built in 100% safe Rust'),
-            h('h2', { className: 'headline', style: { margin: '0 0 var(--space-3)' } }, 'Engineered for heterogeneous memory buses and residential links.'),
+            h('div', null,
+              h('p', { className: 'eyebrow' }, 'Under the hood · 100% safe Rust'),
+              h('h2', { className: 'headline', style: { margin: 0 } }, 'Four workloads on one heterogeneous mesh.')),
             h(K.Tabs, {
               label: 'Kadmium workloads',
               value: workloadTab,
               onChange: setWorkloadTab,
               items: [
-                { id: 'inference', label: 'Asymmetric MoE Inference' },
+                { id: 'inference', label: 'MoE Inference' },
                 { id: 'training', label: 'DiLoCo + DeMo Training' },
-                { id: 'dream_rsi', label: 'Disaggregated RL & Dream-RSI' },
-                { id: 'mcp_ecosystem', label: 'MCP Server & Team RBAC' }
+                { id: 'dream_rsi', label: 'RL & Dream-RSI' },
+                { id: 'mcp_ecosystem', label: 'MCP & Team RBAC' }
               ]
             })),
 
@@ -1469,11 +1279,11 @@
               code: wk.code
             }))),
 
-        /* ---- 9. Frequently Asked Questions ---- */
-        h('section', { className: 'kd-stack' },
+        /* ---- 7. Concise FAQ ---- */
+        h('section', { className: 'section-block' },
           h('div', null,
-            h('p', { className: 'eyebrow' }, 'Frequently asked questions'),
-            h('h2', { className: 'headline', style: { margin: 0 } }, 'Everything you need to know about privacy, billing, and auto-yield.')),
+            h('p', { className: 'eyebrow' }, 'FAQ'),
+            h('h2', { className: 'headline', style: { margin: 0 } }, 'Common questions.')),
           h('div', { className: 'faq-grid' },
             FAQS.map(function (item) {
               return h('article', { key: item.q, className: 'faq-card' },
@@ -1481,17 +1291,17 @@
                 h('p', { className: 'body', style: { margin: 0, color: 'var(--ink-muted)' } }, item.a));
             }))),
 
-        /* ---- 10. Bottom Conversion Banner ---- */
+        /* ---- 8. Bottom Conversion Banner ---- */
         h('section', { className: 'cta-banner' },
-          h('div', { style: { maxWidth: '680px' } },
-            h('p', { className: 'eyebrow' }, 'Ready to ignite your cluster? · Cd‑48'),
-            h('h2', { className: 'headline', style: { margin: '0 0 var(--space-2)' } }, 'Pool your first machines in 30 seconds—at $0/hour.'),
+          h('div', { style: { maxWidth: '620px' } },
+            h('p', { className: 'eyebrow' }, 'Get started in 30 seconds · Cd‑48'),
+            h('h2', { className: 'headline', style: { margin: '0 0 var(--space-1)' } }, 'Ignite your local cluster at $0/hour.'),
             h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-              'Open the live Control Room to inspect your cluster, download the Desktop Companion to configure CloudShield failover, or enable Supply Grid leasing to start earning tonight.')),
+              'Open the live Control Room, configure CloudShield in the Desktop Companion, or start leasing idle GPUs tonight.')),
           h('div', { className: 'kd-row' },
             h(K.Button, { variant: 'primary', size: 'lg', icon: 'rods', onClick: function () { window.location.href = '/'; } }, 'Launch Control Room'),
-            h(K.Button, { variant: 'cloud', size: 'lg', icon: 'cloud', onClick: function () { window.location.href = '/companion'; } }, 'Open Desktop Companion'),
-            h(K.Button, { size: 'lg', onClick: function () { window.location.href = '/docs'; } }, 'Explore Documentation'))),
+            h(K.Button, { variant: 'cloud', size: 'lg', icon: 'cloud', onClick: function () { window.location.href = '/companion'; } }, 'Desktop Companion'),
+            h(K.Button, { size: 'lg', onClick: function () { window.location.href = '/docs'; } }, 'Read Docs'))),
 
         /* ---- Commercial Footer ---- */
         h('footer', { className: 'site-footer' },
@@ -1500,26 +1310,26 @@
               h('div', { className: 'brand-cluster' },
                 h('img', { src: wordmark, alt: 'Kadmium' }),
                 h('span', { className: 'brand-tag' }, 'Cd‑48')),
-              h('p', { className: 'caption', style: { color: 'var(--ink-muted)', margin: 'var(--space-2) 0 0', maxWidth: '320px' } },
-                'Consolidated, Aggregate & Distributed AI/ML Compute Fabric in Pure Rust. Harvest existing silicon first; absorb spot surplus only when needed.')),
+              h('p', { className: 'caption', style: { color: 'var(--ink-muted)', margin: 'var(--space-2) 0 0', maxWidth: '300px' } },
+                'Consolidated, Aggregate & Distributed AI/ML Compute Fabric in Pure Rust.')),
             h('div', { className: 'footer-col' },
               h('span', { className: 'label', style: { color: 'var(--ink)' } }, 'PRODUCTS'),
               h('a', { href: '/' }, 'Local Control Room'),
-              h('a', { href: '/companion' }, 'Desktop Companion App'),
+              h('a', { href: '/companion' }, 'Desktop Companion'),
               h('a', { href: '#pricing' }, 'Kadmium Cloud & Shield'),
               h('a', { href: '#supply-grid' }, 'Supply Grid Leasing')),
             h('div', { className: 'footer-col' },
               h('span', { className: 'label', style: { color: 'var(--ink)' } }, 'DEVELOPERS'),
-              h('a', { href: '/docs' }, 'Documentation & CLI Reference'),
-              h('a', { href: '/design-system' }, 'Visual Design System'),
+              h('a', { href: '/docs' }, 'Documentation & CLI'),
+              h('a', { href: '/design-system' }, 'Design System'),
               h('a', { href: '/metrics' }, 'Prometheus /metrics'),
               h('a', { href: '/api/v1/ga/governance' }, 'v1.0 GA Governance API')),
             h('div', { className: 'footer-col' },
-              h('span', { className: 'label', style: { color: 'var(--ink)' } }, 'ARCHITECTURE'),
-              h('a', { href: '#no-new-datacenters' }, 'Zero Additional Datacenters'),
-              h('a', { href: '#simulator' }, 'Asymmetric Q* Sharding'),
+              h('span', { className: 'label', style: { color: 'var(--ink)' } }, 'GRID'),
+              h('a', { href: '#no-new-datacenters' }, 'Zero New Datacenters'),
+              h('a', { href: '#simulator' }, 'Live Shard Simulator'),
               h('a', { href: '/api/v1/supply/marketplace' }, 'Verde Fraud Proofs'),
-              h('a', { href: '/api/v1/runtime/kernels' }, 'Fused Kernel Benchmarks'))),
+              h('a', { href: '/api/v1/runtime/kernels' }, 'Kernel Benchmarks'))),
           h('div', { className: 'footer-bottom' },
             h('span', null, '© 2026 Kadmium · Cd‑48 · https://kadmium.ai'),
             h('span', null, 'One Rust binary. Free to self-host, forever. MIT or Apache-2.0.')))));
