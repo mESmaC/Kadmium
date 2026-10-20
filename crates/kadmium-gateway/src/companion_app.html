@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kadmium Desktop Companion — Cd‑48</title>
+  <link rel="icon" href="/assets/Logos/kadmium-favicon.svg">
+  <link rel="stylesheet" href="/tokens.css">
+  <link rel="stylesheet" href="/components/bundle.css">
+  <style>
+    html, body { margin: 0; }
+    body {
+      background: var(--graphite-0);
+      color: var(--ink);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+    }
+    .top {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+      min-height: 56px;
+      padding: var(--space-2) var(--space-6);
+      border-bottom: 1px solid var(--line);
+      background: var(--graphite-1);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      flex-wrap: wrap;
+    }
+    .top img { height: 24px; display: block; }
+    .top .cd {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      color: var(--ink-muted);
+      text-transform: uppercase;
+    }
+    .top .spacer { flex: 1; }
+    .shell {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: var(--space-8) var(--space-6) var(--space-16);
+      display: grid;
+      gap: var(--space-6);
+    }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-muted);
+      margin: 0 0 var(--space-2);
+    }
+    .panel {
+      background: var(--graphite-1);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: var(--space-5);
+      box-shadow: var(--shadow-sm);
+    }
+    .two {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-4);
+      align-items: start;
+    }
+    .mode-card {
+      background: var(--graphite-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: var(--space-4);
+      display: grid;
+      gap: var(--space-3);
+    }
+    .mode-card.active-local {
+      border-color: var(--cadmium-edge);
+    }
+    .mode-card.active-cloud {
+      border-color: var(--cherenkov);
+    }
+    .mono-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 18px;
+      font-variant-numeric: tabular-nums;
+    }
+    .mono-table th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 500;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--ink-muted);
+      background: var(--graphite-2);
+      padding: var(--space-2) var(--space-3);
+      border-bottom: 1px solid var(--line);
+    }
+    .mono-table td {
+      padding: var(--space-2) var(--space-3);
+      border-bottom: 1px solid var(--line);
+      color: var(--ink);
+    }
+    @media (max-width: 780px) {
+      .two { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div id="app"></div>
+
+<script src="/components/lib/react.production.min.js"></script>
+<script src="/components/lib/react-dom.production.min.js"></script>
+<script src="/components/bundle.js"></script>
+<script>
+(function () {
+  var K = window.Kadmium, h = React.createElement;
+
+  function CompanionApp() {
+    var themeState = React.useState('dark'), theme = themeState[0], setTheme = themeState[1];
+    var statusState = React.useState(null), status = statusState[0], setStatus = statusState[1];
+    var probeState = React.useState(null), probe = probeState[0], setProbe = probeState[1];
+    var execState = React.useState(null), execReport = execState[0], setExecReport = execState[1];
+    var workspaceState = React.useState('cameron-lab'), workspace = workspaceState[0], setWorkspace = workspaceState[1];
+    var budgetState = React.useState('2.50'), budget = budgetState[0], setBudget = budgetState[1];
+
+    React.useEffect(function () {
+      document.documentElement.setAttribute('data-theme', theme);
+    }, [theme]);
+
+    React.useEffect(function () {
+      fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
+      fetch('/api/v1/host/probe').then(function (r) { return r.json(); }).then(setProbe);
+      fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
+    }, []);
+
+    function switchMode(useCloud) {
+      var payload = useCloud
+        ? {
+            KadmiumCloudManaged: {
+              workspace_slug: workspace || 'cameron-lab',
+              cloud_endpoint: 'https://api.kadmium.ai',
+              downtime_shield_enabled: true,
+              spot_arbitrage_burst_enabled: true,
+              max_hourly_spend_cap_usd: parseFloat(budget) || 2.50
+            }
+          }
+        : {
+            SelfHostedOpenSource: {
+              local_coordinator_url: 'http://127.0.0.1:7848'
+            }
+          };
+      fetch('/api/v1/companion/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }).then(function (r) { return r.json(); }).then(setStatus);
+    }
+
+    function setHostPoliteMode(scenario) {
+      fetch('/api/v1/cluster/shift', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scenario: scenario })
+      }).then(function () {
+        fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
+        fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
+      });
+    }
+
+    var wordmark = theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg';
+    var isCloud = status && status.mode && status.mode.KadmiumCloudManaged;
+
+    return h(React.Fragment, null,
+      h('header', { className: 'top' },
+        h('img', { src: wordmark, alt: 'Kadmium' }),
+        h('span', { className: 'cd' }, 'Cd‑48 · Companion v' + (status ? status.app_version : '0.1.0')),
+        status ? h(K.Badge, { tone: isCloud ? 'cloud' : 'local', dot: true }, isCloud ? 'kadmium cloud' : 'self-hosted oss') : null,
+        h('span', { className: 'spacer' }),
+        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/'; } }, 'Control room'),
+        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/site'; } }, 'kadmium.ai site'),
+        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/docs'; } }, 'Docs'),
+        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { setTheme(theme === 'dark' ? 'light' : 'dark'); } }, theme === 'dark' ? 'Light theme' : 'Dark theme')),
+
+      h('main', { className: 'shell' },
+        h('section', { className: 'panel' },
+          h('p', { className: 'eyebrow' }, 'Operating mode · one binary for open-source and Kadmium Cloud'),
+          h('h1', { className: 'headline', style: { margin: '0 0 var(--space-4)' } }, 'Desktop Companion Node Agent'),
+          h('div', { className: 'two' },
+            h('div', { className: 'mode-card ' + (!isCloud ? 'active-local' : '') },
+              h('div', { className: 'kd-row' },
+                h(K.Badge, { tone: 'local', dot: !isCloud }, 'self-hosted'),
+                h('span', { className: 'code-sm', style: { marginLeft: 'auto' } }, '$0.00 / hr')),
+              h('div', { className: 'title' }, 'Open-source local mesh'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
+                'Connects strictly to your LAN coordinator (127.0.0.1:7848) via UDP KDMD beacons. Zero cloud account required.'),
+              h(K.Button, {
+                variant: !isCloud ? 'primary' : 'quiet',
+                onClick: function () { switchMode(false); }
+              }, !isCloud ? 'Active: Self-hosted mode' : 'Switch to self-hosted')),
+
+            h('div', { className: 'mode-card ' + (isCloud ? 'active-cloud' : '') },
+              h('div', { className: 'kd-row' },
+                h(K.Badge, { tone: 'cloud', dot: Boolean(isCloud) }, 'kadmium cloud'),
+                h('span', { className: 'code-sm', style: { marginLeft: 'auto' } }, status ? '$' + status.current_hourly_cloud_burn_usd.toFixed(2) + ' / hr active' : '$0.89 / GPU-hr')),
+              h('div', { className: 'title' }, 'Kadmium Cloud + Failover Shield'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
+                'Links this node to kadmium.ai for WAN hole-punching, multi-provider spot arbitrage, and < 400 ms bidirectional failover.'),
+              h('div', { className: 'two' },
+                h(K.Input, { label: 'Workspace', mono: true, value: workspace, onChange: function (e) { setWorkspace(e.target.value); } }),
+                h(K.Input, { label: 'Max spend cap', mono: true, prefix: '$', value: budget, onChange: function (e) { setBudget(e.target.value); } })),
+              h(K.Button, {
+                variant: 'cloud',
+                icon: 'cloud',
+                onClick: function () { switchMode(true); }
+              }, isCloud ? 'Active: Linked to ' + workspace : 'Link to Kadmium Cloud')))),
+
+        probe ? h('section', { className: 'two' },
+          h('div', { className: 'panel' },
+            h('p', { className: 'eyebrow' }, 'This machine · live hardware profiler'),
+            h(K.NodeCard, {
+              name: probe.local_node.hostname,
+              hardware: probe.local_node.compute_backend.toLowerCase() + ' · ' + probe.local_node.memory.vram_gb + ' gb vram · ' + probe.local_node.memory.system_ram_gb + ' gb ram · q* ' + probe.q_star_ratio,
+              kind: 'desktop',
+              placement: 'local',
+              status: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 'yielded' : 'resident',
+              shards: 'leader: ' + (status ? status.active_coordinator_leader : 'main-gaming-pc'),
+              meters: [
+                { label: 'VRAM', value: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 0.5 : Math.max(1.2, probe.local_node.memory.vram_gb * 0.6), max: Math.max(4, probe.local_node.memory.vram_gb), unit: 'GB' },
+                { label: 'RAM', value: Math.round(probe.local_node.memory.system_ram_gb * 0.35), max: probe.local_node.memory.system_ram_gb, unit: 'GB' },
+                { label: 'NVMe', value: probe.local_node.memory.nvme_read_bw_gbps, max: 14, unit: 'GB/s' }
+              ]
+            })),
+          h('div', { className: 'panel' },
+            h('p', { className: 'eyebrow' }, 'Polite host governor · < 200 ms gaming & battery auto-yield'),
+            h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 var(--space-3)' } },
+              'When you launch a game or unplug a laptop, Kadmium yields local VRAM/compute within 200 ms and hands active shards to your Mac Mini.'),
+            h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-4)' } },
+              h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { setHostPoliteMode('gaming_mode'); } }, 'Simulate gaming yield (15 %)'),
+              h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { setHostPoliteMode('reset'); } }, 'Restore dedicated idle (100 %)')),
+            h(K.Input, {
+              label: 'LAN / WAN Join Ticket (kdm1)',
+              mono: true,
+              defaultValue: probe.join_ticket_token,
+              hint: 'UDP LAN beacon active on port 7849 (KDMD magic).'
+            }))) : null,
+
+        execReport ? h('section', { className: 'panel' },
+          h('p', { className: 'eyebrow' }, 'Live pipeline execution trace · Top-4 MoE router + Speculative draft verification'),
+          h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)' } },
+            h(K.Badge, { tone: 'local' }, execReport.effective_tokens_per_sec + ' tok/s effective'),
+            h(K.Badge, { tone: 'ok', dot: true }, execReport.speculative_verification.accepted_draft_tokens + ' / ' + execReport.speculative_verification.proposed_draft_tokens + ' draft tokens accepted (' + execReport.speculative_verification.effective_speedup_multiplier + '× speedup)'),
+            h(K.Badge, { tone: 'neutral' }, execReport.total_pipeline_latency_ms + ' ms forward pass')),
+          h('table', { className: 'mono-table' },
+            h('thead', null, h('tr', null,
+              h('th', null, 'STAGE NODE'),
+              h('th', null, 'LAYERS'),
+              h('th', null, 'TOP-4 ROUTED EXPERTS (SOFTMAX)'),
+              h('th', null, 'COLD NVMe'),
+              h('th', null, 'INT8 BOUNDARY'),
+              h('th', null, 'LATENCY'))),
+            h('tbody', null, execReport.stages.map(function (st) {
+              var expText = st.routed_experts_sample.map(function (e) {
+                return 'E' + e.expert_id + '(' + e.gating_weight.toFixed(2) + ')';
+              }).join(' ');
+              return h('tr', { key: st.node_id },
+                h('td', null, st.hostname),
+                h('td', null, st.start_layer + '–' + st.end_layer),
+                h('td', null, expText),
+                h('td', null, st.cold_nvme_expert_fetches + ' .ktb pages'),
+                h('td', null, st.boundary_int8_payload_bytes + ' B'),
+                h('td', null, st.stage_latency_ms + ' ms'));
+            })))) : null));
+  }
+
+  ReactDOM.createRoot(document.getElementById('app')).render(h(CompanionApp));
+})();
+</script>
+</body>
+</html>

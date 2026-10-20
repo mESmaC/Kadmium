@@ -807,20 +807,32 @@ async fn run_server(port: u16) {
         "===================================================================================="
     );
     println!(
-        " 🧪 Kadmium Unified Dashboard & API Gateway listening on http://localhost:{}",
+        " Kadmium (Cd-48) Control Room & AI Gateway listening on http://127.0.0.1:{}",
         port
     );
-    println!("    - Web Dashboard:          http://localhost:{}/", port);
+    println!("    - Cluster Control Room:   http://127.0.0.1:{}/", port);
     println!(
-        "    - Cluster Overview API:   http://localhost:{}/api/v1/cluster/overview",
-        port
-    );
-    println!(
-        "    - OpenAI Chat Endpoint:   http://localhost:{}/v1/chat/completions",
+        "    - kadmium.ai Website:     http://127.0.0.1:{}/site",
         port
     );
     println!(
-        "    - Anthropic Endpoint:     http://localhost:{}/v1/messages",
+        "    - Desktop Companion UI:   http://127.0.0.1:{}/companion",
+        port
+    );
+    println!(
+        "    - Application Docs:       http://127.0.0.1:{}/docs",
+        port
+    );
+    println!(
+        "    - Design System Showcase: http://127.0.0.1:{}/design-system",
+        port
+    );
+    println!(
+        "    - OpenAI Chat Endpoint:   http://127.0.0.1:{}/v1/chat/completions",
+        port
+    );
+    println!(
+        "    - Anthropic Endpoint:     http://127.0.0.1:{}/v1/messages",
         port
     );
     println!(

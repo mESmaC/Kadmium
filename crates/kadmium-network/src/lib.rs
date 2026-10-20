@@ -307,6 +307,88 @@ impl CoordinatorFailoverQuorum {
     }
 }
 
+/// 4-byte UDP LAN mDNS/beacon magic (`"KDMD"` = Kadmium Discovery).
+pub const LAN_BEACON_MAGIC: [u8; 4] = *b"KDMD";
+
+/// Zero-config LAN discovery beacon broadcast over UDP (`_kadmium._udp.local` / port `7849`)
+/// so nodes on the same Wi-Fi/Ethernet subnet auto-discover each other without manual IPs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LanDiscoveryBeacon {
+    pub node_id: NodeId,
+    pub hostname: String,
+    pub quic_port: u16,
+    pub q_star_ratio: f64,
+    pub vram_or_uma_gb: f64,
+    pub polite_state: PoliteState,
+    pub trust_tier: NodeTrustTier,
+}
+
+impl LanDiscoveryBeacon {
+    /// Constructs a LAN discovery beacon from a `HardwareNode`.
+    pub fn from_node(node: &HardwareNode, quic_port: u16) -> Self {
+        Self {
+            node_id: node.id.clone(),
+            hostname: node.hostname.clone(),
+            quic_port,
+            q_star_ratio: node.compute_q_star_ratio(),
+            vram_or_uma_gb: node.memory.vram_gb,
+            polite_state: node.polite_state,
+            trust_tier: node.trust_tier,
+        }
+    }
+
+    /// Encodes the beacon into a compact `"KDMD"` UDP datagram.
+    pub fn encode_datagram(&self) -> Vec<u8> {
+        let json = serde_json::to_vec(self).expect("serialize LanDiscoveryBeacon");
+        let mut pkt = Vec::with_capacity(6 + json.len());
+        pkt.extend_from_slice(&LAN_BEACON_MAGIC);
+        pkt.extend_from_slice(&(json.len() as u16).to_le_bytes());
+        pkt.extend_from_slice(&json);
+        pkt
+    }
+
+    /// Decodes and validates a `"KDMD"` UDP datagram.
+    pub fn decode_datagram(pkt: &[u8]) -> Result<Self, String> {
+        if pkt.len() < 6 {
+            return Err("UDP datagram shorter than 6-byte KDMD header".into());
+        }
+        if pkt[0..4] != LAN_BEACON_MAGIC {
+            return Err("Invalid LAN beacon magic (expected 'KDMD')".into());
+        }
+        let len = u16::from_le_bytes([pkt[4], pkt[5]]) as usize;
+        if pkt.len() < 6 + len {
+            return Err("Truncated LAN beacon JSON payload".into());
+        }
+        serde_json::from_slice(&pkt[6..6 + len]).map_err(|e| format!("Invalid beacon JSON: {e}"))
+    }
+
+    /// Sends this beacon over an async Tokio `UdpSocket` to `target_addr`.
+    pub async fn broadcast_once(
+        &self,
+        socket: &tokio::net::UdpSocket,
+        target_addr: std::net::SocketAddr,
+    ) -> Result<usize, String> {
+        let dgram = self.encode_datagram();
+        socket
+            .send_to(&dgram, target_addr)
+            .await
+            .map_err(|e| format!("UDP send_to error: {e}"))
+    }
+
+    /// Receives and decodes a single `LanDiscoveryBeacon` from an async Tokio `UdpSocket`.
+    pub async fn recv_once(
+        socket: &tokio::net::UdpSocket,
+    ) -> Result<(Self, std::net::SocketAddr), String> {
+        let mut buf = [0u8; 2048];
+        let (n, peer_addr) = socket
+            .recv_from(&mut buf)
+            .await
+            .map_err(|e| format!("UDP recv_from error: {e}"))?;
+        let beacon = Self::decode_datagram(&buf[..n])?;
+        Ok((beacon, peer_addr))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +478,24 @@ mod tests {
         let new_leader = quorum.trigger_failover(&NodeId("node-main-pc".into()));
         assert_eq!(new_leader, NodeId("node-m4-mac-mini".into()));
         assert_eq!(quorum.term, 2);
+
+        // Also test async UDP LAN Discovery Beacon ("KDMD") broadcast and receive:
+        let rx_sock = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind rx udp");
+        let rx_addr = rx_sock.local_addr().expect("rx addr");
+        let tx_sock = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind tx udp");
+
+        let beacon = LanDiscoveryBeacon::from_node(&cluster[1], 7848);
+        beacon
+            .broadcast_once(&tx_sock, rx_addr)
+            .await
+            .expect("broadcast udp beacon");
+        let (received_beacon, _) = LanDiscoveryBeacon::recv_once(&rx_sock)
+            .await
+            .expect("recv udp beacon");
+        assert_eq!(received_beacon, beacon);
     }
 }

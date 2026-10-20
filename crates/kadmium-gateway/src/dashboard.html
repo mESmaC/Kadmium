@@ -202,18 +202,18 @@
 
   function buildNodeMeters(node, assignment) {
     var m = node.memory;
+    var tm = assignment && assignment.tiered_memory ? assignment.tiered_memory : null;
     var meters = [];
-    var usedWeight = assignment ? assignment.resident_hot_weights_gb + assignment.warm_ram_weights_gb : 0.8;
     if (m.unified_memory && m.vram_gb > 0) {
-      meters.push({ label: 'UMA', value: Math.min(m.vram_gb, Math.max(4, Math.round(usedWeight * 10) / 10)), max: m.vram_gb, unit: 'GB' });
+      meters.push({ label: 'UMA', value: tm ? tm.hot_vram_or_unified_gb : Math.round(m.vram_gb * 0.45), max: m.vram_gb, unit: 'GB' });
     } else if (m.vram_gb > 0) {
-      var vramVal = node.polite_state === 'GamingOrHeavyApp' ? Math.round(m.vram_gb * 0.12 * 10) / 10 : Math.min(m.vram_gb, Math.max(1.2, Math.round(usedWeight * 0.65 * 10) / 10));
+      var vramVal = node.polite_state === 'GamingOrHeavyApp' ? Math.round(m.vram_gb * 0.12 * 10) / 10 : (tm ? tm.hot_vram_or_unified_gb : Math.round(m.vram_gb * 0.6));
       meters.push({ label: 'VRAM', value: vramVal, max: m.vram_gb, unit: 'GB', criticalAt: 0.95 });
-      meters.push({ label: 'RAM', value: Math.min(m.system_ram_gb, Math.max(4, Math.round(usedWeight * 0.55 * 10) / 10)), max: m.system_ram_gb, unit: 'GB' });
+      meters.push({ label: 'RAM', value: tm ? tm.warm_system_ram_gb : Math.round(m.system_ram_gb * 0.35), max: m.system_ram_gb, unit: 'GB' });
     } else {
-      meters.push({ label: 'RAM', value: Math.min(m.system_ram_gb, Math.max(2.4, Math.round(m.system_ram_gb * 0.35 * 10) / 10)), max: m.system_ram_gb, unit: 'GB' });
+      meters.push({ label: 'RAM', value: tm ? tm.warm_system_ram_gb : Math.round(m.system_ram_gb * 0.35), max: m.system_ram_gb, unit: 'GB' });
     }
-    meters.push({ label: 'NVMe', value: Math.min(m.nvme_cache_gb, Math.max(12, Math.round((assignment ? assignment.cold_nvme_stream_gb : 48) * 10) / 10)), max: m.nvme_cache_gb, unit: 'GB' });
+    meters.push({ label: 'NVMe', value: tm ? tm.cold_nvme_stream_gb : Math.min(m.nvme_cache_gb, 48), max: m.nvme_cache_gb, unit: 'GB' });
     return meters;
   }
 
@@ -325,6 +325,8 @@
         h(K.Badge, { tone: 'ok', dot: true }, 'leader ' + overview.coordinator_quorum.active_leader + ' · term ' + overview.coordinator_quorum.term),
         h(K.Badge, { tone: isCloudCompanion || hasCloudNode ? 'cloud' : 'local' }, isCloudCompanion ? 'kadmium cloud' : 'self-hosted'),
         h('span', { className: 'spacer' }),
+        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/site'; } }, 'Site'),
+        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/companion'; } }, 'Companion'),
         h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/docs'; } }, 'Docs'),
         h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/design-system'; } }, 'Design system'),
         h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { setTheme(theme === 'dark' ? 'light' : 'dark'); } }, theme === 'dark' ? 'Light theme' : 'Dark theme'),
@@ -397,7 +399,7 @@
             nodes.map(function (node) {
               var assign = (infPlan.assignments || []).find(function (a) { return a.hostname === node.hostname; });
               var shardText = assign && assign.layer_count > 0
-                ? 'layers ' + assign.start_layer + '–' + assign.end_layer + ' · ' + assign.assigned_experts_per_layer + ' exp'
+                ? 'layers ' + assign.start_layer + '–' + assign.end_layer + ' (' + assign.compute_share_pct + ' %)'
                 : (node.hostname.indexOf('nas') >= 0 ? '.ktb seed vault' : 'drafts + dream-rsi');
               return h(K.NodeCard, {
                 key: node.hostname,

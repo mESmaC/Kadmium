@@ -23,8 +23,8 @@ use kadmium_rl::{
     RlTopologyPlanner,
 };
 use kadmium_runtime::{
-    BoincWorkunit, Pipeline1F1BSchedule, Pipeline1F1BScheduler, TrainingJobTelemetry,
-    sample_boinc_workunits,
+    BoincWorkunit, DistributedMoEPipelineExecutor, DistributedPipelineExecutionReport,
+    Pipeline1F1BSchedule, Pipeline1F1BScheduler, TrainingJobTelemetry, sample_boinc_workunits,
 };
 use kadmium_sharding::{
     ClusterPoolSliceLayout, ClusterShardPlan, DataflowComparisonReport, DataflowStreamPlanner,
@@ -36,6 +36,8 @@ use std::sync::{Arc, Mutex};
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 const DOCS_PORTAL_HTML: &str = include_str!("docs_portal.html");
+const MARKETING_SITE_HTML: &str = include_str!("marketing_site.html");
+const COMPANION_APP_HTML: &str = include_str!("companion_app.html");
 const DESIGN_SYSTEM_DEMO_HTML: &str = include_str!("../../../design-system/demo.html");
 
 const DS_TOKENS_CSS: &str = include_str!("../../../design-system/tokens.css");
@@ -353,6 +355,8 @@ pub struct ChatCompletionRequest {
 pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
     Router::new()
         .route("/", get(serve_dashboard))
+        .route("/site", get(serve_marketing_site))
+        .route("/companion", get(serve_companion_app))
         .route("/docs", get(serve_docs_portal))
         .route("/design-system", get(serve_design_system_demo))
         .route("/tokens.css", get(serve_tokens_css))
@@ -408,6 +412,7 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/host/probe", get(get_local_host_probe))
         .route("/api/v1/companion/status", get(get_companion_status))
         .route("/api/v1/companion/mode", post(post_companion_mode))
+        .route("/api/v1/pipeline/execute", get(get_pipeline_execution))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .with_state(state)
@@ -415,6 +420,14 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
 
 async fn serve_dashboard() -> Html<&'static str> {
     Html(DASHBOARD_HTML)
+}
+
+async fn serve_marketing_site() -> Html<&'static str> {
+    Html(MARKETING_SITE_HTML)
+}
+
+async fn serve_companion_app() -> Html<&'static str> {
+    Html(COMPANION_APP_HTML)
 }
 
 async fn serve_docs_portal() -> Html<&'static str> {
@@ -635,6 +648,16 @@ async fn post_companion_mode(
     Json(guard.companion_status())
 }
 
+async fn get_pipeline_execution(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<DistributedPipelineExecutionReport> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(DistributedMoEPipelineExecutor::execute_forward_pass(
+        &guard.inference_plan,
+        "Verify asymmetric MoE routing and speculative draft verification across the cluster.",
+    ))
+}
+
 async fn post_cluster_shift(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ShiftRequest>,
@@ -710,6 +733,15 @@ async fn openai_chat_completions(
     let model_name = req
         .model
         .unwrap_or_else(|| guard.inference_plan.model_id.clone());
+    let prompt_sample = req
+        .messages
+        .last()
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("Kadmium distributed inference");
+    let exec_report =
+        DistributedMoEPipelineExecutor::execute_forward_pass(&guard.inference_plan, prompt_sample);
+
     let active_stages: Vec<String> = guard
         .inference_plan
         .assignments
@@ -732,8 +764,10 @@ async fn openai_chat_completions(
         "kadmium_fabric": {
             "epoch": guard.epoch,
             "pipeline_route": active_stages,
-            "estimated_tokens_per_sec": guard.inference_plan.estimated_throughput,
-            "speculative_draft_node": "rk3588-sbc-bramble"
+            "estimated_tokens_per_sec": exec_report.effective_tokens_per_sec,
+            "speculative_draft_node": exec_report.speculative_verification.draft_node_id,
+            "speculative_speedup": exec_report.speculative_verification.effective_speedup_multiplier,
+            "execution_trace": exec_report
         },
         "choices": [{
             "index": 0,
