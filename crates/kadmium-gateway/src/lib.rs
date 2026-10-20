@@ -19,8 +19,8 @@ use kadmium_network::{
     CoordinatorFailoverQuorum, JoinTicket, PeerLinkMetrics, build_mesh_link_matrix,
 };
 use kadmium_rl::{
-    DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, RlEnvironmentSuiteSpec,
-    RlTopologyPlanner,
+    DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, GrpoEpochExecutor,
+    GrpoVerifiedStepReport, RlEnvironmentSuiteSpec, RlTopologyPlanner,
 };
 use kadmium_runtime::{
     BoincWorkunit, DistributedMoEPipelineExecutor, DistributedPipelineExecutionReport,
@@ -408,6 +408,7 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/dataflow", get(get_dataflow_comparison))
         .route("/api/v1/training/schedule", get(get_training_1f1b_schedule))
         .route("/api/v1/rl/dream-rsi", get(get_dream_rsi_status))
+        .route("/api/v1/rl/grpo-step", get(get_grpo_verified_step))
         .route("/api/v1/cloud-shield", get(get_cloud_shield_status))
         .route("/api/v1/host/probe", get(get_local_host_probe))
         .route("/api/v1/companion/status", get(get_companion_status))
@@ -656,6 +657,10 @@ async fn get_pipeline_execution(
         &guard.inference_plan,
         "Verify asymmetric MoE routing and speculative draft verification across the cluster.",
     ))
+}
+
+async fn get_grpo_verified_step() -> Json<GrpoVerifiedStepReport> {
+    Json(GrpoEpochExecutor::run_verified_grpo_step())
 }
 
 async fn post_cluster_shift(

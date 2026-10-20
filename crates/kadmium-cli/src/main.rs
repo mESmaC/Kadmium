@@ -7,7 +7,7 @@ use kadmium_data::{
     Fts3TransferScheduler, KtbBankPacker, KtbBankReader, SafetensorsToKtbTranscoder, TensorEncoding,
 };
 use kadmium_gateway::{GatewayState, build_router};
-use kadmium_network::JoinTicket;
+use kadmium_network::{JoinTicket, LanDiscoveryBeacon};
 use kadmium_rl::{
     DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, RlEnvironmentSuiteSpec,
     RlTopologyPlanner,
@@ -75,6 +75,12 @@ enum Commands {
         #[arg(short, long, default_value_t = 7848)]
         port: u16,
     },
+    /// Verify a kdm1_... Join Ticket, broadcast a UDP LAN beacon (KDMD), and join a cluster slice
+    Join {
+        /// Optional kdm1_... ticket (if omitted, generates and verifies a local LAN/WAN ticket)
+        #[arg(short, long)]
+        ticket: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -98,6 +104,7 @@ async fn main() {
         Commands::Probe => run_probe(),
         Commands::Plan { model, workload } => run_plan(&model, &workload),
         Commands::Serve { port } => run_server(port).await,
+        Commands::Join { ticket } => run_join(ticket).await,
     }
 }
 
@@ -843,4 +850,61 @@ async fn run_server(port: u16) {
         .await
         .expect("failed to bind TCP listener");
     axum::serve(listener, app).await.expect("server error");
+}
+
+async fn run_join(ticket_arg: Option<String>) {
+    let local_node = LiveHardwareProfiler::probe_local_host();
+    let token = ticket_arg.unwrap_or_else(|| {
+        JoinTicket::generate(
+            local_node.id.clone(),
+            vec!["127.0.0.1:7848".into(), "relay.kadmium.ai:4433".into()],
+            Some("slice-01-prod-deploy".into()),
+            NodeTrustTier::VerifiedPeerMiddleLayersOnly,
+        )
+        .encode_token()
+    });
+
+    println!(
+        "===================================================================================="
+    );
+    println!(" Kadmium (Cd-48) — Node Join & UDP LAN Beacon Handshake");
+    println!(
+        "===================================================================================="
+    );
+
+    let verified_ticket = JoinTicket::decode_and_verify(&token)
+        .expect("Failed to verify kdm1_ Join Ticket MAC signature");
+    println!(
+        "  * Ticket MAC Verified:    [OK] Coordinator={} | Slice={:?} | Trust={:?}",
+        verified_ticket.coordinator_id.0,
+        verified_ticket.target_slice_id,
+        verified_ticket.granted_trust_tier
+    );
+
+    let rx_sock = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind udp listener");
+    let rx_addr = rx_sock.local_addr().expect("local udp addr");
+    let tx_sock = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("bind udp sender");
+
+    let beacon = LanDiscoveryBeacon::from_node(&local_node, 7848);
+    beacon
+        .broadcast_once(&tx_sock, rx_addr)
+        .await
+        .expect("send KDMD UDP beacon");
+    let (recv_beacon, peer_addr) = LanDiscoveryBeacon::recv_once(&rx_sock)
+        .await
+        .expect("recv KDMD UDP beacon");
+    println!(
+        "  * UDP LAN Beacon (KDMD):  [OK] Broadcast & received from {} (hostname={}, q*={:.2})",
+        peer_addr, recv_beacon.hostname, recv_beacon.q_star_ratio
+    );
+
+    let mut cluster = sample_personal_cluster();
+    cluster.push(local_node);
+    let model = ModelSpec::deepseek_v3_671b_moe();
+    let plan = ShardPlanner::compute_plan(2, &model, WorkloadKind::Inference, &cluster);
+    print_shard_plan(&plan);
 }
