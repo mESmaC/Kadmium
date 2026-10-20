@@ -734,17 +734,17 @@
 
   var WORKLOAD_TABS = {
     inference: {
-      eyebrow: '01 · 5-Tier MoE Inference',
-      title: 'Run 671B models across VRAM, Apple Unified Memory, and NVMe.',
-      prose: 'Hot attention weights stay in VRAM and Unified Memory while cold MoE experts stream from NVMe via 64 KiB page-aligned .ktb banks with 0.00 ms DMA stall.',
-      codeTitle: 'terminal · selective pull & OpenAI SSE stream',
+      eyebrow: '01 · 5-Tier MoE Inference + RAID-5 Swarm Striping',
+      title: 'Run 671B models across VRAM, Apple Unified Memory, NVMe, and RAID-5 peer swarms.',
+      prose: 'Hot attention weights stay in VRAM and Unified Memory while cold MoE experts stream from NVMe (.ktb 64 KiB pages) and stripe across parallel seeders with RAID-5 straggler parity.',
+      codeTitle: 'terminal · selective pull, Wireshark privacy check & OpenAI stream',
       codeLang: 'shell',
-      code: '$ kadmium pull hf://deepseek-ai/DeepSeek-V3@main\n$ kadmium serve --port 7848',
+      code: '$ kadmium pull hf://deepseek-ai/DeepSeek-V3@main\n$ kadmium serve --port 7848 --raid-parity 1',
       rows: [
         ['Tensor format', '.ktb v1 (64 KiB pages + O(log N) Merkle proofs)'],
-        ['Quantization', 'Q4_K 4-bit block MatVec (5.33×) + FP8 E4M3'],
-        ['Speculative draft', 'ARM SBC 0.6B INT4 draft verifier (2.22× speedup)'],
-        ['Privacy boundary', 'Layer 0 & Layer N-1 stay on TrustedCore local hardware']
+        ['Swarm & RAID-5', 'Multi-seeder BitTorrent pull + RAID-5 coded activation striping (8× uplink)'],
+        ['Speculative draft', 'ARM SBC 0.6B INT4 draft verifier (2.22× WAN speedup)'],
+        ['Privacy boundary', 'Layer 0 & Layer N-1 pinned locally (0 plaintext bytes on wire)']
       ]
     },
     training: {
@@ -805,16 +805,16 @@
       a: 'No. Layer 0 (token embeddings) and Layer N-1 (final output head) stay pinned strictly to your own local machines. External nodes only process anonymous middle-layer activation tensors.'
     },
     {
-      q: 'Will leasing my gaming PC slow down my games?',
-      a: 'Never. OS swapchain hooks detect fullscreen apps and evict leased shards in under 200 ms with zero slashing penalty and a 15-second cooldown.'
+      q: 'How does RAID-5 P2P tensor striping fix slow residential upload speeds?',
+      a: 'Kadmium stripes 64 KiB .ktb pages and token chunks across k parallel seeders plus a linear-algebraic parity node (Y_p = Σ Y_j), multiplying return bandwidth by 8×–16× while ignoring the slowest straggler node.'
     },
     {
-      q: 'How does CloudShield failover billing work?',
-      a: 'You only pay the spot GPU rate ($0.55–$0.89/hr, billed per second) during the exact minutes a local node is offline. An 18-minute internet blip costs $0.27.'
+      q: 'How do students & universities get free compute or STTR funding?',
+      a: 'Students with a .edu email receive $50/mo in free off-peak Scholar Compute Credits routed to overnight campus/community nodes. University CS labs can partner as NSF STTR Co-PIs ($95k–$400k lab subaward).'
     },
     {
       q: 'Why say "we don’t need any additional datacenters"?',
-      a: 'Because millions of air-cooled GPUs and Macs already sit idle on desks (0 L cooling water, 0 kg new concrete), and existing datacenters already have unutilized spot surplus we can absorb on demand.'
+      a: 'Because 30M+ air-cooled GPUs, Macs, and campus computers already sit 85% idle (0 L cooling water, 0 kg new concrete), and decommissioned enterprise servers can be recycled into Sentinel & Scholar nodes.'
     }
   ];
 
@@ -822,10 +822,12 @@
     var themeState = React.useState('dark'), theme = themeState[0], setTheme = themeState[1];
     var menuState = React.useState(false), mobileMenuOpen = menuState[0], setMobileMenuOpen = menuState[1];
     var quickstartState = React.useState('cli'), quickstartTab = quickstartState[0], setQuickstartTab = quickstartState[1];
+    var pricingTrackState = React.useState('individual'), pricingTrack = pricingTrackState[0], setPricingTrack = pricingTrackState[1];
     var scenarioState = React.useState('local_mesh'), activeScenarioKey = scenarioState[0], setScenarioKey = scenarioState[1];
     var workloadTabState = React.useState('inference'), workloadTab = workloadTabState[0], setWorkloadTab = workloadTabState[1];
     var leaseHoursState = React.useState(12), leaseHours = leaseHoursState[0], setLeaseHours = leaseHoursState[1];
     var payoutModeState = React.useState('credits'), payoutMode = payoutModeState[0], setPayoutMode = payoutModeState[1];
+    var actionBannerState = React.useState(null), actionBanner = actionBannerState[0], setActionBanner = actionBannerState[1];
     var enabledSupplyState = React.useState({
       'rig-alpha-rtx4090': true,
       'mac-mini-m4-pro': true,
@@ -872,7 +874,8 @@
           h('nav', { className: 'nav-links', 'aria-label': 'Primary Navigation' },
             h('a', { href: '#pricing', className: 'nav-link' }, 'Products & Pricing'),
             h('a', { href: '#simulator', className: 'nav-link' }, 'Live Simulator'),
-            h('a', { href: '#no-new-datacenters', className: 'nav-link' }, 'Zero New Datacenters'),
+            h('a', { href: '#no-new-datacenters', className: 'nav-link' }, 'Grid-Zero'),
+            h('a', { href: '#scholars', className: 'nav-link' }, 'Scholars & Founders'),
             h('a', { href: '#supply-grid', className: 'nav-link' }, 'Rent Your GPU'),
             h('a', { href: '#architecture', className: 'nav-link' }, 'Architecture'),
             h('a', { href: '/docs', className: 'nav-link' }, 'Docs')),
@@ -904,7 +907,8 @@
         h('div', { className: 'mobile-drawer' + (mobileMenuOpen ? ' open' : '') },
           h('a', { href: '#pricing', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Products & Pricing'),
           h('a', { href: '#simulator', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Live Cluster Simulator'),
-          h('a', { href: '#no-new-datacenters', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Zero Additional Datacenters'),
+          h('a', { href: '#no-new-datacenters', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Grid-Zero (No New Datacenters)'),
+          h('a', { href: '#scholars', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Scholars (.edu) & Founders'),
           h('a', { href: '#supply-grid', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Rent Your GPU (Supply Grid)'),
           h('a', { href: '#architecture', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Architecture'),
           h('div', { className: 'kd-row', style: { paddingTop: 'var(--space-2)' } },
@@ -988,60 +992,120 @@
           h('div', { className: 'section-head' },
             h('div', { className: 'section-head-copy' },
               h('p', { className: 'eyebrow' }, 'Products & transparent pricing'),
-              h('h2', { className: 'headline', style: { margin: '0 0 var(--space-1)' } }, 'Start free on your own hardware. Burst or lease whenever you want.'),
+              h('h2', { className: 'headline', style: { margin: '0 0 var(--space-1)' } }, 'Start free on your own hardware. Burst, govern, or lease whenever you want.'),
               h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'No seat licenses, no token markups, and no monthly minimums.'))),
-
-          h('div', { className: 'plans' },
-            h(K.PlanCard, {
-              product: 'self-hosted',
-              eyebrow: '01 · Self-Hosted Open Source',
-              name: 'Kadmium Local',
-              price: '$0',
-              period: 'forever · MIT / Apache-2.0',
-              summary: 'Link every computer in your home or lab into one private AI workstation.',
-              features: [
-                'Unlimited CUDA, ROCm, Metal, Vulkan & NPU nodes',
-                'Asymmetric Q* sharding for 70B–671B models',
-                '< 200 ms gaming auto-yield & 6-digit SAS pairing',
-                'Drop-in OpenAI, Anthropic & MCP 2025-03-26 server'
-              ],
-              cta: 'Open Local Control Room',
-              onSelect: function () { window.location.href = '/'; }
-            }),
-            h('div', { className: 'plan-featured-wrap' },
-              h(K.PlanCard, {
-                product: 'cloud',
-                eyebrow: '02 · Managed Hybrid Cloud · Most Popular',
-                name: 'Kadmium Cloud',
-                price: '$0.55',
-                period: '/ GPU-hr spot (from)',
-                summary: 'Instant spot GPU bursting, WAN NAT relay, and < 340 ms outage insurance.',
-                features: [
-                  'Live spot orderbook across RunPod, Vast, Lambda & Prime',
-                  '< 340 ms CloudShield failover ($0.27 for an 18-min blip)',
-                  'Blind middle shards only (Layer 0 & N-1 stay local)',
-                  'Multi-tenant Sub-Cluster RBAC & per-second billing'
-                ],
-                cta: 'Enable in Desktop Companion',
-                onSelect: function () { window.location.href = '/companion'; }
-              })),
-            h(K.PlanCard, {
-              product: 'self-hosted',
-              eyebrow: '03 · Two-Sided Compute Grid',
-              name: 'Supply Grid Host',
-              price: '+$1.15',
-              period: '/ hr earned (1.25× credits)',
-              summary: 'Rent out idle GPUs, M4 Macs, and NAS vaults overnight with zero gaming lag.',
-              features: [
-                'Earn direct USD or 1.25× Kadmium Cloud burst credits',
-                'Blind middle-layer execution (zero raw prompt exposure)',
-                '< 200 ms OS swapchain auto-yield on game launch',
-                'Cryptographic Gensyn Verde RepOps settlement proofs'
-              ],
-              cta: 'Calculate Your Earnings',
-              onSelect: function () { document.getElementById('supply-grid').scrollIntoView({ behavior: 'smooth' }); }
+                'Zero token markups on local silicon. Switch between Individual/Prosumer plans and University Lab / Regulated Enterprise Fabrics.')),
+            h(K.Tabs, {
+              label: 'Pricing track',
+              value: pricingTrack,
+              onChange: setPricingTrack,
+              items: [
+                { id: 'individual', label: 'Individuals & Prosumers' },
+                { id: 'enterprise_labs', label: 'Labs, Regulated SMBs & Hardware' }
+              ]
             })),
+
+          pricingTrack === 'individual'
+            ? h('div', { className: 'plans' },
+                h(K.PlanCard, {
+                  product: 'self-hosted',
+                  eyebrow: '01 · Self-Hosted Open Source',
+                  name: 'Kadmium Local',
+                  price: '$0',
+                  period: 'forever · MIT / Apache-2.0',
+                  summary: 'Link every computer in your home or lab into one private AI workstation.',
+                  features: [
+                    'Unlimited CUDA, ROCm, Metal, Vulkan & NPU nodes',
+                    'Asymmetric Q* sharding + RAID-5 P2P tensor striping',
+                    '< 200 ms gaming auto-yield & 6-digit SAS pairing',
+                    'Drop-in OpenAI, Anthropic & MCP 2025-03-26 server'
+                  ],
+                  cta: 'Open Local Control Room',
+                  onSelect: function () { window.location.href = '/'; }
+                }),
+                h('div', { className: 'plan-featured-wrap' },
+                  h(K.PlanCard, {
+                    product: 'cloud',
+                    eyebrow: '02 · Hybrid Burst + WAN Shield · Most Popular',
+                    name: 'CloudShield Pro',
+                    price: '$29',
+                    period: '/ mo (includes $40 burst credits)',
+                    summary: 'Includes $40/mo of middle-layer spot burst (~53 hrs L40S), WAN relay, and < 340 ms failover.',
+                    features: [
+                      '$40/mo Burst Credit pool ($0.45/hr 4090 · $0.75/hr L40S)',
+                      'Or buy $25 / $100 Prepaid Burst Packs (non-expiring)',
+                      'Blind middle shards only (Layer 0 & N-1 stay local)',
+                      '< 340 ms CloudShield failover on gaming or fiber drop'
+                    ],
+                    cta: 'Enable in Desktop Companion',
+                    onSelect: function () { window.location.href = '/companion'; }
+                  })),
+                h(K.PlanCard, {
+                  product: 'self-hosted',
+                  eyebrow: '03 · Two-Sided Compute Grid',
+                  name: 'Supply Grid Host',
+                  price: '+$1.15',
+                  period: '/ hr earned (1.25× credits)',
+                  summary: 'Rent out idle GPUs, M4 Macs, and NAS vaults overnight with zero gaming lag.',
+                  features: [
+                    'Earn 1.25× closed-loop Cloud Credits or direct USD',
+                    'Blind middle-layer execution & .ktb BitTorrent seeding',
+                    '< 200 ms OS swapchain auto-yield on game launch',
+                    'Cryptographic Gensyn Verde RepOps settlement proofs'
+                  ],
+                  cta: 'Calculate Your Earnings',
+                  onSelect: function () { document.getElementById('supply-grid').scrollIntoView({ behavior: 'smooth' }); }
+                }))
+            : h('div', { className: 'plans' },
+                h(K.PlanCard, {
+                  product: 'cloud',
+                  eyebrow: '01 · University Labs & AI Teams',
+                  name: 'Kadmium Lab & Team',
+                  price: '$199',
+                  period: '/ mo (includes $250 burst credits)',
+                  summary: 'Unify up to 25 mismatched lab GPUs, Mac Studios, and servers with per-student spend caps.',
+                  features: [
+                    'Includes $250/mo shared Burst Credits (+$499 White-Glove Setup)',
+                    'Sub-Cluster Slices (Prod, Train-DiLoCo, RL-Dream-RSI)',
+                    'Scoped kdm_live_... RBAC keys & hard hourly cloud limits',
+                    'Eligible for NSF STTR Co-PI ($95k–$400k lab subaward)'
+                  ],
+                  cta: 'Configure Lab Slices',
+                  onSelect: function () { window.location.href = '/'; }
+                }),
+                h('div', { className: 'plan-featured-wrap' },
+                  h(K.PlanCard, {
+                    product: 'cloud',
+                    eyebrow: '02 · Legal, Healthcare & Defense SMBs',
+                    name: 'Private Office Fabric',
+                    price: '$499',
+                    period: '/ mo · Zero-CapEx Appliance',
+                    summary: 'Turns existing office Macs & PCs into a HIPAA / ABA Rule 1.6 compliant AI cloud (saves $25k+ CapEx).',
+                    features: [
+                      'Zero new server purchase: runs on 5–50 existing office machines',
+                      'Air-gapped LAN mode or Blind Middle-Layer Burst (L0/LN-1 on-prem)',
+                      'HIPAA BAA, CMMC 2.0 CUI boundary & audit log export',
+                      'MSP Partner Program: 25% recurring rev-share for IT integrators'
+                    ],
+                    cta: 'Launch Compliance View',
+                    onSelect: function () { window.location.href = '/'; }
+                  })),
+                h(K.PlanCard, {
+                  product: 'self-hosted',
+                  eyebrow: '03 · Plug-and-Play Hardware Tier',
+                  name: 'Cd‑48 Control Rod Node',
+                  price: '$699',
+                  period: 'one-time · Pre-Certified Dev Kit',
+                  summary: '32 GB RK3588 ARM64 + 2 TB NVMe pre-loaded with 1.5 TB of .ktb models & $200 Burst Credits.',
+                  features: [
+                    '24/7 local coordinator, .ktb BitTorrent seeder & WASI RL verifier',
+                    'Runs 0.6B INT4 speculative drafts (2.22× WAN decode speedup)',
+                    'Includes $200 in Kadmium Burst Credits & Founder Pro badge',
+                    'Reserve for $1 VIP Deposit (locks in $100 bonus credits)'
+                  ],
+                  cta: 'Reserve $1 VIP Founder Pass',
+                  onSelect: function () { document.getElementById('scholars').scrollIntoView({ behavior: 'smooth' }); }
+                })),
 
           h('div', { className: 'panel' },
             h('div', { className: 'section-head', style: { marginBottom: 'var(--space-4)' } },
@@ -1170,6 +1234,103 @@
               h('span', { className: 'label' }, 'EMBODIED CARBON AVOIDED'),
               h('span', { className: 'metric', style: { color: 'var(--ok)' } }, '1,700 kg CO₂e'),
               h('span', { className: 'meta' }, 'Saved per 5-node cluster by reusing already-manufactured silicon')))),
+
+        /* ---- 4B. Kadmium Scholar (.edu), University STTR & Crowdfunding Founder Pass ---- */
+        h('section', { id: 'scholars', className: 'section-block' },
+          h('div', { className: 'section-head' },
+            h('div', { className: 'section-head-copy' },
+              h('p', { className: 'eyebrow' }, 'Academic grants · crowdfunding · circular hardware'),
+              h('h2', { className: 'headline', style: { margin: 0 } }, 'Free .edu student compute, university STTR grants, and Founder Passes.')),
+            h('div', { className: 'kd-row' },
+              h(K.Badge, { tone: 'local', dot: true }, '$50/mo .edu Scholar Grant'),
+              h(K.Badge, { tone: 'cloud', dot: true }, 'NSF STTR / NAIRR Ready'),
+              h(K.Badge, { tone: 'ok' }, '$1 VIP Founder Pass'))),
+
+          actionBanner && h('div', { className: 'well', style: { borderColor: 'var(--cadmium-edge)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--space-4)', flexWrap: 'wrap' } },
+            h('span', { className: 'body-strong', style: { color: 'var(--cadmium-text)' } }, actionBanner),
+            h(K.Button, { size: 'sm', onClick: function () { setActionBanner(null); } }, 'Dismiss')),
+
+          h('div', { className: 'two' },
+            h('div', { className: 'panel kd-stack' },
+              h('div', null,
+                h('p', { className: 'eyebrow', style: { margin: 0 } }, '01 · Kadmium Scholar (.edu) & University Campus Fabrics'),
+                h('h3', { className: 'title', style: { margin: '4px 0 var(--space-2)' } }, 'Turn idle campus labs into a zero-CapEx supercomputer.'),
+                h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
+                  'Students apply with a .edu email for $50/mo in free off-peak burst credits powered by overnight campus and community nodes. University CS labs partnering with Kadmium on NSF STTR Phase I/II proposals receive 30%–40% ($95k–$400k) in direct lab subawards.')),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'ACADEMIC TRACK'),
+                    h('th', null, 'ALLOCATION / GRANT'),
+                    h('th', null, 'ELIGIBILITY'))),
+                  h('tbody', null,
+                    h('tr', null,
+                      h('td', null, 'Kadmium Scholar (.edu)'),
+                      h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$50/mo Free Credits + Pro'),
+                      h('td', null, 'Any verified .edu student / researcher')),
+                    h('tr', null,
+                      h('td', null, 'Campus Overnight Fabric'),
+                      h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, '$0 CapEx Department Mesh'),
+                      h('td', null, 'University CS / Engineering labs (10–500 PCs)')),
+                    h('tr', null,
+                      h('td', null, 'NSF STTR / DOE Co-PI'),
+                      h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$95k–$400k Lab Subaward'),
+                      h('td', null, 'U.S. accredited research institutions'))))),
+              h('div', { className: 'kd-row' },
+                h(K.Button, {
+                  variant: 'primary',
+                  size: 'sm',
+                  onClick: function () {
+                    setActionBanner('Scholar (.edu) Pass Activated: Run `kadmium login --scholar user@university.edu` in the CLI to claim $50/mo off-peak credits.');
+                  }
+                }, 'Apply with .edu Email'),
+                h(K.Button, {
+                  size: 'sm',
+                  onClick: function () {
+                    window.location.href = '/docs?page=market-research-and-launch-plan';
+                  }
+                }, 'View STTR & Grant Prospectus'))),
+
+            h('div', { className: 'panel kd-stack' },
+              h('div', null,
+                h('p', { className: 'eyebrow', style: { margin: 0 } }, '02 · Crowdfunding Founder Pass & Sentinel Hardware Recycling'),
+                h('h3', { className: 'title', style: { margin: '4px 0 var(--space-2)' } }, 'Back the Grid-Zero fabric or donate retired drive-less servers.'),
+                h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
+                  'Lock in a refundable $1 VIP Founder Reservation for our upcoming campaign (+$100 bonus Burst Credits or $200 off the pre-certified Cd-48 32GB RK3588 Control Rod node). Datacenters and trading firms can also donate retired drive-less servers for Scope 3 ESG impact.')),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'TIER / PROGRAM'),
+                    h('th', null, 'COMMITMENT'),
+                    h('th', null, 'REWARD / IMPACT'))),
+                  h('tbody', null,
+                    h('tr', null,
+                      h('td', null, '$1 VIP Founder Pass'),
+                      h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$1 (100% Refundable)'),
+                      h('td', null, '+$100 Bonus Credits + Early-Bird Lock')),
+                    h('tr', null,
+                      h('td', null, 'Lifetime Personal Pro'),
+                      h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$299 Crowdfunding Tier'),
+                      h('td', null, 'Lifetime CloudShield WAN + $200 Credits')),
+                    h('tr', null,
+                      h('td', null, 'Drive-Less Server Donation'),
+                      h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, 'Retired Xeon/EPYC/GPU'),
+                      h('td', null, 'Scope 3 ESG Cert + Scholar Grid Branding'))))),
+              h('div', { className: 'kd-row' },
+                h(K.Button, {
+                  variant: 'cloud',
+                  size: 'sm',
+                  icon: 'cloud',
+                  onClick: function () {
+                    setActionBanner('$1 VIP Founder Reservation Selected: Locks in +$100 bonus Burst Credits and Super-Early-Bird pricing on the Cd-48 Control Rod node.');
+                  }
+                }, 'Reserve $1 VIP Pass'),
+                h(K.Button, {
+                  size: 'sm',
+                  onClick: function () {
+                    setActionBanner('Sentinel Server Donation Program: We accept drive-less (zero-data-risk) Dell/Supermicro/HPE blades & GPUs for the University & Scholar Grid.');
+                  }
+                }, 'Donate Retired Servers'))))),
 
         /* ---- 5. Supply Grid Calculator ("Rent Out Your Idle Compute") ---- */
         h('section', { id: 'supply-grid', className: 'section-block' },
