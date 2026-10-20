@@ -14,6 +14,7 @@ Kadmium turns every piece of silicon you can reach—your main gaming desktop, A
 | [**Quickstart & Installation (`getting-started.md`)**](./getting-started.md) | Install the single-binary `kadmium` CLI or Desktop Companion App, probe your hardware, launch a local cluster in 60 seconds, and connect LAN or remote nodes. |
 | [**CLI Command Reference (`cli-reference.md`)**](./cli-reference.md) | Complete reference for `kadmium probe`, `serve`, `plan`, `simulate`, `slice`, `dataflow`, `dream`, and `cloud-shield`. |
 | [**HTTP & AI Gateway API (`api-reference.md`)**](./api-reference.md) | Drop-in OpenAI (`/v1/chat/completions`) & Anthropic (`/v1/messages`) endpoints plus the full Cluster Control Plane REST API. |
+| [**Technical Specsheet & Product Roadmap (`SPECSHEET_AND_ROADMAP.md`)**](./SPECSHEET_AND_ROADMAP.md) | Complete `Cd-48` engine specifications, 5-tier memory & hardware matrix, algorithmic guarantees, and phased `v0.1` $\to$ `v1.0 GA` roadmap. |
 | [**Deep Technical Architecture (`ARCHITECTURE.md`)**](./ARCHITECTURE.md) | Mathematical foundations, 5-tier memory hierarchy, `.ktb` binary format spec, 1F1B pipeline scheduling, `DeMo` DCT math, and `Verde` verification. |
 
 ### 2. Operator & Developer Guides

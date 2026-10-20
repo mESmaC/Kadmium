@@ -84,6 +84,7 @@ const DOC_SUBCLUSTERS_CLOUD_MD: &str =
     include_str!("../../../docs/guides/subclusters-and-cloud-shield.md");
 const DOC_INTEGRATIONS_MD: &str = include_str!("../../../docs/guides/integrations-hf-github.md");
 const DOC_MCP_MD: &str = include_str!("../../../docs/guides/mcp-server.md");
+const DOC_SPECSHEET_ROADMAP_MD: &str = include_str!("../../../docs/SPECSHEET_AND_ROADMAP.md");
 const DOC_ARCHITECTURE_MD: &str = include_str!("../../../docs/ARCHITECTURE.md");
 
 /// Structured entry for a public documentation page served from `docs/` via `/api/v1/docs` and `/docs`.
@@ -171,6 +172,14 @@ pub fn build_documentation_catalog() -> Vec<DocumentationPage> {
             file_path: "docs/guides/mcp-server.md".into(),
             summary: "Connect Claude Code, Cursor, Antigravity, Windsurf, or any MCP client via kadmium mcp (stdio) or POST /mcp.".into(),
             markdown: DOC_MCP_MD.into(),
+        },
+        DocumentationPage {
+            slug: "specsheet-and-roadmap".into(),
+            title: "Technical Specsheet & Product Roadmap".into(),
+            category: "3. Deep Specifications".into(),
+            file_path: "docs/SPECSHEET_AND_ROADMAP.md".into(),
+            summary: "Complete Cd-48 engine specifications, 5-tier memory & hardware matrix, algorithmic guarantees, and phased v0.1 -> v1.0 GA roadmap.".into(),
+            markdown: DOC_SPECSHEET_ROADMAP_MD.into(),
         },
         DocumentationPage {
             slug: "architecture".into(),
@@ -1057,7 +1066,7 @@ mod tests {
 
         // Verify embedded public documentation catalog from `docs/`
         let docs = build_documentation_catalog();
-        assert_eq!(docs.len(), 10);
+        assert_eq!(docs.len(), 11);
         assert!(docs.iter().all(|d| !d.markdown.is_empty()));
 
         // Verify Kadmium MCP Server (JSON-RPC 2.0 initialize, tools/list, tools/call, resources/read)
