@@ -327,7 +327,7 @@ mod tests {
 
         // Verify embedded public documentation catalog from `docs/`
         let docs = build_documentation_catalog();
-        assert_eq!(docs.len(), 11);
+        assert_eq!(docs.len(), 12);
         assert!(docs.iter().all(|d| !d.markdown.is_empty()));
 
         // Verify Kadmium MCP Server (JSON-RPC 2.0 initialize, tools/list, tools/call, resources/read)

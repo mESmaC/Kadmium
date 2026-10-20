@@ -18,6 +18,8 @@ pub(crate) const DOC_MCP_MD: &str = include_str!("../../../docs/guides/mcp-serve
 pub(crate) const DOC_SPECSHEET_ROADMAP_MD: &str =
     include_str!("../../../docs/SPECSHEET_AND_ROADMAP.md");
 pub(crate) const DOC_ARCHITECTURE_MD: &str = include_str!("../../../docs/ARCHITECTURE.md");
+pub(crate) const DOC_MARKET_RESEARCH_MD: &str =
+    include_str!("../../../docs/MARKET_RESEARCH_AND_LAUNCH_PLAN.md");
 
 /// Structured entry for a public documentation page served from `docs/` via `/api/v1/docs` and `/docs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +122,14 @@ pub fn build_documentation_catalog() -> Vec<DocumentationPage> {
             file_path: "docs/ARCHITECTURE.md".into(),
             summary: "Full mathematical and systems specification across all 8 Rust workspace crates.".into(),
             markdown: DOC_ARCHITECTURE_MD.into(),
+        },
+        DocumentationPage {
+            slug: "market-research-and-launch-plan".into(),
+            title: "Market Research & Rapid-Revenue Launch Plan".into(),
+            category: "3. Deep Specifications".into(),
+            file_path: "docs/MARKET_RESEARCH_AND_LAUNCH_PLAN.md".into(),
+            summary: "2026 competitive pricing teardowns (Salad, Modal, Baseten, SF Compute, EXO, Prime Intellect), unit economics, and 30-day revenue playbook.".into(),
+            markdown: DOC_MARKET_RESEARCH_MD.into(),
         },
     ]
 }
