@@ -11,49 +11,128 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 /// Live hardware discovery profiler that inspects the local host machine's CPU, GPU,
-/// memory hierarchy, and storage read throughput.
+/// memory hierarchy, and storage read throughput across Windows, macOS, Linux x86_64,
+/// and Linux ARM64/RISC-V SBCs.
 pub struct LiveHardwareProfiler;
 
 impl LiveHardwareProfiler {
+    /// Discovers the local machine's primary outbound LAN IPv4 address (e.g., `192.168.1.42`)
+    /// by querying the OS routing table via a non-transmitting UDP socket connect.
+    pub fn probe_local_lan_ip() -> String {
+        if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0")
+            && sock.connect("8.8.8.8:80").is_ok()
+            && let Ok(local_addr) = sock.local_addr()
+        {
+            let ip = local_addr.ip().to_string();
+            if !ip.starts_with("127.") && ip != "0.0.0.0" {
+                return ip;
+            }
+        }
+        "127.0.0.1".to_string()
+    }
+
     /// Probes the local physical machine and returns a populated `HardwareNode` capability vector.
     pub fn probe_local_host() -> HardwareNode {
         let cpu_threads = std::thread::available_parallelism()
             .map(|n| n.get() as u32)
             .unwrap_or(8);
 
-        let hostname = std::env::var("COMPUTERNAME")
+        let hostname = std::env::var("KADMIUM_HOSTNAME")
+            .or_else(|_| std::env::var("COMPUTERNAME"))
             .or_else(|_| std::env::var("HOSTNAME"))
+            .or_else(|_| {
+                std::fs::read_to_string("/etc/hostname")
+                    .map(|s| s.trim().to_string())
+                    .map_err(|_| std::env::VarError::NotPresent)
+            })
             .unwrap_or_else(|_| "local-kadmium-node".into());
 
-        // Attempt lightweight `nvidia-smi` query for discrete NVIDIA GPU name & VRAM (MiB)
-        let (gpu_name, vram_gb, backend, fp16_tflops) = Self::probe_gpu_accelerator(cpu_threads);
+        let total_ram_gb = Self::probe_system_memory_gb();
+        let board_model = Self::probe_sbc_or_board_model();
+        let is_sbc = Self::is_sbc_architecture(&board_model, total_ram_gb, cpu_threads);
+        let is_nas_vault = Self::detect_nas_storage_vault();
+
+        // Attempt lightweight GPU/accelerator query across NVIDIA, AMD ROCm/Vulkan, Apple Metal, and ARM SBCs
+        let (gpu_name, vram_gb, backend, fp16_tflops) =
+            Self::probe_gpu_accelerator(cpu_threads, total_ram_gb, &board_model, is_sbc);
 
         // Micro-benchmark 64KB page-aligned sequential streaming bandwidth in memory/storage
         let nvme_bw_gbps = Self::benchmark_page_aligned_stream_gbps();
         let cpu_tflops = ((cpu_threads as f64) * 0.16 * 10.0).round() / 10.0;
 
         let _ = gpu_name;
-        HardwareNode {
-            id: NodeId(format!("node-live-{}", hostname.to_lowercase())),
-            hostname,
-            device_kind: if vram_gb >= 16.0 {
-                DeviceKind::DesktopWorkstation
-            } else if vram_gb > 0.0 {
-                DeviceKind::GamingLaptop
-            } else if cfg!(target_os = "macos") {
-                DeviceKind::AppleSiliconMac
+        let is_apple_silicon =
+            cfg!(target_os = "macos") || backend == ComputeBackend::MetalUnified;
+
+        let device_kind = if is_sbc {
+            DeviceKind::LinuxSbc
+        } else if is_apple_silicon {
+            DeviceKind::AppleSiliconMac
+        } else if is_nas_vault && vram_gb == 0.0 {
+            DeviceKind::HomeNas
+        } else if vram_gb >= 12.0 || (vram_gb > 0.0 && cpu_threads >= 16 && total_ram_gb >= 32.0) {
+            DeviceKind::DesktopWorkstation
+        } else if vram_gb > 0.0 {
+            DeviceKind::GamingLaptop
+        } else {
+            DeviceKind::LegacyLaptop
+        };
+
+        let mut roles = Vec::new();
+        if !is_sbc {
+            roles.push(NodeRole::Coordinator);
+        }
+        if vram_gb > 0.0 || is_apple_silicon || total_ram_gb >= 8.0 {
+            roles.push(NodeRole::ComputeWorker);
+        }
+        roles.push(NodeRole::DraftAndUtilityWorker);
+        if is_nas_vault || total_ram_gb >= 32.0 {
+            roles.push(NodeRole::StorageVault);
+        }
+
+        let (unified_mem_gb, unified_mem_bw_gbps, system_ram_gb, system_ram_bw_gbps) =
+            if is_apple_silicon {
+                let bw = if total_ram_gb >= 64.0 {
+                    400.0
+                } else if total_ram_gb >= 32.0 {
+                    273.0
+                } else {
+                    120.0
+                };
+                (total_ram_gb, bw, 0.0, 0.0)
+            } else if is_sbc {
+                (total_ram_gb, 34.0, 0.0, 0.0)
             } else {
-                DeviceKind::LegacyLaptop
-            },
+                let ram_bw = if total_ram_gb >= 64.0 {
+                    89.6
+                } else if total_ram_gb >= 32.0 {
+                    64.0
+                } else {
+                    44.8
+                };
+                (0.0, 0.0, total_ram_gb, ram_bw)
+            };
+
+        let clean_host = hostname
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>();
+
+        HardwareNode {
+            id: NodeId(format!("node-live-{clean_host}")),
+            hostname,
+            device_kind,
             backend,
-            roles: vec![
-                NodeRole::Coordinator,
-                NodeRole::ComputeWorker,
-                NodeRole::DraftAndUtilityWorker,
-            ],
+            roles,
             trust_tier: NodeTrustTier::TrustedCore,
             fp16_tflops,
-            int4_tops: fp16_tflops * 4.0,
+            int4_tops: (fp16_tflops * 4.0 * 10.0).round() / 10.0,
             cpu_threads,
             cpu_tflops,
             memory: MemoryTierProfile {
@@ -65,25 +144,151 @@ impl LiveHardwareProfiler {
                 } else {
                     0.0
                 },
-                unified_mem_gb: if cfg!(target_os = "macos") { 32.0 } else { 0.0 },
-                unified_mem_bw_gbps: if cfg!(target_os = "macos") {
-                    200.0
+                unified_mem_gb,
+                unified_mem_bw_gbps,
+                system_ram_gb,
+                system_ram_bw_gbps,
+                interconnect_bw_gbps: if is_apple_silicon {
+                    unified_mem_bw_gbps
+                } else if is_sbc {
+                    34.0
+                } else if vram_gb > 0.0 {
+                    15.7
                 } else {
                     0.0
                 },
-                system_ram_gb: 32.0,
-                system_ram_bw_gbps: 64.0,
-                interconnect_bw_gbps: if vram_gb > 0.0 { 15.7 } else { 0.0 },
-                nvme_cache_gb: 256.0,
+                nvme_cache_gb: if is_nas_vault {
+                    2048.0
+                } else if is_sbc {
+                    64.0
+                } else {
+                    256.0
+                },
                 nvme_read_bw_gbps: nvme_bw_gbps,
             },
             polite_state: PoliteState::IdleDedicated,
-            network_uplink_gbps: 2.5,
+            network_uplink_gbps: if is_nas_vault { 10.0 } else { 2.5 },
             network_latency_ms: 0.2,
         }
     }
 
-    fn probe_gpu_accelerator(cpu_threads: u32) -> (String, f64, ComputeBackend, f64) {
+    /// Probes physical host RAM in GiB across Linux (`/proc/meminfo`), macOS (`sysctl`), and Windows.
+    pub fn probe_system_memory_gb() -> f64 {
+        // 1. Linux (/proc/meminfo)
+        if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
+            for line in meminfo.lines() {
+                if let Some(rest) = line.strip_prefix("MemTotal:") {
+                    let kb_str = rest.trim().trim_end_matches("kB").trim();
+                    if let Ok(kb) = kb_str.parse::<u64>() {
+                        let gb = (kb as f64) / (1024.0 * 1024.0);
+                        return (gb * 10.0).round() / 10.0;
+                    }
+                }
+            }
+        }
+
+        // 2. macOS (sysctl -n hw.memsize)
+        if cfg!(target_os = "macos")
+            && let Ok(out) = std::process::Command::new("sysctl")
+                .args(["-n", "hw.memsize"])
+                .output()
+            && out.status.success()
+            && let Ok(bytes) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>()
+        {
+            let gb = (bytes as f64) / (1024.0 * 1024.0 * 1024.0);
+            return (gb * 10.0).round() / 10.0;
+        }
+
+        // 3. Windows (wmic computersystem get TotalPhysicalMemory /value)
+        if cfg!(target_os = "windows")
+            && let Ok(out) = std::process::Command::new("wmic")
+                .args(["computersystem", "get", "TotalPhysicalMemory", "/value"])
+                .output()
+            && out.status.success()
+        {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                if let Some(val) = line.trim().strip_prefix("TotalPhysicalMemory=")
+                    && let Ok(bytes) = val.trim().parse::<u64>()
+                {
+                    let gb = (bytes as f64) / (1024.0 * 1024.0 * 1024.0);
+                    return (gb * 10.0).round() / 10.0;
+                }
+            }
+        }
+
+        32.0
+    }
+
+    /// Reads SBC device-tree model on Linux ARM/RISC-V or CPU brand string on macOS.
+    pub fn probe_sbc_or_board_model() -> Option<String> {
+        for path in [
+            "/proc/device-tree/model",
+            "/sys/firmware/devicetree/base/model",
+            "/etc/nv_tegra_release",
+        ] {
+            if let Ok(raw) = std::fs::read_to_string(path) {
+                let cleaned = raw.trim_matches(char::from(0)).trim().to_string();
+                if !cleaned.is_empty() {
+                    return Some(cleaned);
+                }
+            }
+        }
+        if cfg!(target_os = "macos")
+            && let Ok(out) = std::process::Command::new("sysctl")
+                .args(["-n", "machdep.cpu.brand_string"])
+                .output()
+            && out.status.success()
+        {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+        None
+    }
+
+    fn is_sbc_architecture(
+        board_model: &Option<String>,
+        total_ram_gb: f64,
+        cpu_threads: u32,
+    ) -> bool {
+        if let Some(model) = board_model {
+            let lower = model.to_lowercase();
+            if lower.contains("raspberry pi")
+                || lower.contains("rk3588")
+                || lower.contains("rockchip")
+                || lower.contains("orange pi")
+                || lower.contains("radxa")
+                || lower.contains("rock 5")
+                || lower.contains("jetson")
+                || lower.contains("visionfive")
+                || lower.contains("spacemit")
+                || lower.contains("bananapi")
+            {
+                return true;
+            }
+        }
+        let arch = std::env::consts::ARCH;
+        (arch == "aarch64" || arch == "arm" || arch == "riscv64")
+            && !cfg!(target_os = "macos")
+            && total_ram_gb <= 32.0
+            && cpu_threads <= 16
+    }
+
+    fn detect_nas_storage_vault() -> bool {
+        std::path::Path::new("/proc/spl/kstat/zfs").exists()
+            || std::env::var("KADMIUM_ROLE_NAS")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+    }
+
+    fn probe_gpu_accelerator(
+        cpu_threads: u32,
+        total_ram_gb: f64,
+        board_model: &Option<String>,
+        is_sbc: bool,
+    ) -> (String, f64, ComputeBackend, f64) {
         if let Ok(output) = std::process::Command::new("nvidia-smi")
             .args([
                 "--query-gpu=name,memory.total",
@@ -111,13 +316,84 @@ impl LiveHardwareProfiler {
             }
         }
 
+        // Linux AMD ROCm / amdgpu sysfs VRAM detection
+        for card_idx in 0..4 {
+            let sysfs_vram = format!("/sys/class/drm/card{card_idx}/device/mem_info_vram_total");
+            if let Ok(raw) = std::fs::read_to_string(&sysfs_vram)
+                && let Ok(bytes) = raw.trim().parse::<u64>()
+                && bytes >= 2 * 1024 * 1024 * 1024
+            {
+                let vram_gb = ((bytes as f64) / (1024.0 * 1024.0 * 1024.0) * 10.0).round() / 10.0;
+                let tflops = if vram_gb >= 16.0 { 85.0 } else { 42.0 };
+                return (
+                    "AMD Radeon ROCm GPU".into(),
+                    vram_gb,
+                    ComputeBackend::Rocm,
+                    tflops,
+                );
+            }
+        }
+
+        // Windows WMIC fallback for AMD Radeon / Intel Arc discrete GPUs
+        if cfg!(target_os = "windows")
+            && let Ok(out) = std::process::Command::new("wmic")
+                .args([
+                    "path",
+                    "win32_VideoController",
+                    "get",
+                    "Name,AdapterRAM",
+                    "/value",
+                ])
+                .output()
+            && out.status.success()
+        {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut adapter_ram_bytes = 0u64;
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if let Some(v) = trimmed.strip_prefix("AdapterRAM=") {
+                    adapter_ram_bytes = v.trim().parse::<u64>().unwrap_or(0);
+                } else if let Some(n) = trimmed.strip_prefix("Name=") {
+                    let adapter_name = n.trim().to_string();
+                    let lower = adapter_name.to_lowercase();
+                    if (lower.contains("radeon") || lower.contains("arc") || lower.contains("rtx"))
+                        && adapter_ram_bytes >= 2 * 1024 * 1024 * 1024
+                    {
+                        let vram_gb = ((adapter_ram_bytes as f64) / (1024.0 * 1024.0 * 1024.0)
+                            * 10.0)
+                            .round()
+                            / 10.0;
+                        let backend = if lower.contains("radeon") {
+                            ComputeBackend::Rocm
+                        } else {
+                            ComputeBackend::VulkanWgpu
+                        };
+                        return (adapter_name, vram_gb, backend, 45.0);
+                    }
+                }
+            }
+        }
+
         if cfg!(target_os = "macos") {
-            return (
-                "Apple Silicon Metal GPU".into(),
-                0.0,
-                ComputeBackend::MetalUnified,
-                38.0,
-            );
+            let chip = board_model
+                .clone()
+                .unwrap_or_else(|| "Apple Silicon Metal GPU".into());
+            let tflops = if total_ram_gb >= 64.0 {
+                68.0
+            } else if total_ram_gb >= 32.0 {
+                38.0
+            } else {
+                24.0
+            };
+            return (chip, 0.0, ComputeBackend::MetalUnified, tflops);
+        }
+
+        if is_sbc {
+            let label = board_model
+                .clone()
+                .unwrap_or_else(|| "ARM64/RISC-V SBC NEON+NPU".into());
+            let sbc_tflops = ((cpu_threads as f64) * 0.45 * 10.0).round() / 10.0;
+            return (label, 0.0, ComputeBackend::CpuArmNeonNpu, sbc_tflops);
         }
 
         let cpu_flops = ((cpu_threads as f64) * 0.22 * 10.0).round() / 10.0;
@@ -142,7 +418,7 @@ impl LiveHardwareProfiler {
         let elapsed = start.elapsed().as_secs_f64().max(1e-6);
         let _ = std::hint::black_box(acc);
         let raw_gbps = (block_bytes as f64 / (1024.0 * 1024.0 * 1024.0)) / elapsed;
-        (raw_gbps.clamp(2.5, 14.0) * 100.0).round() / 100.0
+        (raw_gbps.clamp(2.5, 14.0) * 100.0).round() / 10.0
     }
 }
 
@@ -191,6 +467,45 @@ impl PoliteActivityMonitor {
         "resolve",
         "premiere",
     ];
+
+    /// Samples live GPU utilization, VRAM usage, and temperature from the host OS when available.
+    pub fn sample_live_host() -> PoliteActivitySample {
+        if let Ok(out) = std::process::Command::new("nvidia-smi")
+            .args([
+                "--query-gpu=utilization.gpu,memory.used,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ])
+            .output()
+            && out.status.success()
+        {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if let Some(first_line) = text.lines().next() {
+                let parts: Vec<&str> = first_line.split(',').map(|s| s.trim()).collect();
+                if parts.len() >= 3 {
+                    let util_pct = parts[0].parse::<f64>().unwrap_or(0.0);
+                    let used_mb = parts[1].parse::<f64>().unwrap_or(0.0);
+                    let temp_c = parts[2].parse::<f64>().unwrap_or(45.0);
+                    return PoliteActivitySample {
+                        foreground_process_name: None,
+                        fullscreen_swapchain_active: util_pct >= 65.0,
+                        external_gpu_utilization_pct: util_pct,
+                        external_vram_used_gb: ((used_mb / 1024.0) * 100.0).round() / 100.0,
+                        on_battery_power: false,
+                        package_temp_celsius: temp_c,
+                    };
+                }
+            }
+        }
+
+        PoliteActivitySample {
+            foreground_process_name: None,
+            fullscreen_swapchain_active: false,
+            external_gpu_utilization_pct: 4.0,
+            external_vram_used_gb: 0.8,
+            on_battery_power: false,
+            package_temp_celsius: 46.0,
+        }
+    }
 
     /// Evaluates a host telemetry sample against `node` and computes the `<200ms` yield budget.
     pub fn evaluate_sample(

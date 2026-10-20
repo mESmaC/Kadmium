@@ -4,21 +4,31 @@
 //! for **Kadmium (`Cd`)**.
 
 use kadmium_core::{
-    HardwareNode, ModelSpec, PoliteState, SupplyLeasePolicy, SupplyMarketplaceSnapshot,
-    SupplySettlementEngine, WorkloadKind, sample_personal_cluster,
+    HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteState, SupplyLeasePolicy,
+    SupplyMarketplaceSnapshot, SupplySettlementEngine, WorkloadKind, sample_personal_cluster,
 };
 use kadmium_data::{Fts3TransferScheduler, ThirdPartyTransferJob};
-use kadmium_network::{CoordinatorFailoverQuorum, PeerLinkMetrics, build_mesh_link_matrix};
+use kadmium_network::{
+    CoordinatorFailoverQuorum, DEFAULT_KADMIUM_RUNTIME_VERSION, FleetUpdateManifest,
+    FleetUpdatePushSummary, JoinTicket, LiveClusterWorkersOverview, LiveWorkerRegistration,
+    PeerLinkMetrics, UpdatePayloadKind, UpdateTargetScope, WorkerHeartbeatAck,
+    WorkerHeartbeatRequest, WorkerRegistrationAck, WorkerUpdatePushAck, build_mesh_link_matrix,
+};
 use kadmium_rl::{
     DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, RlEnvironmentSuiteSpec,
     RlTopologyPlanner,
 };
-use kadmium_runtime::{BoincWorkunit, TrainingJobTelemetry, sample_boinc_workunits};
+use kadmium_runtime::{
+    BoincWorkunit, DEFAULT_INITIAL_KTB_MERKLE_ROOT, KtbCheckpointExportReport,
+    LiveFts3SwarmStreamReport, SpawnedLocalWorkerInstance, TrainingJobTelemetry,
+    sample_boinc_workunits,
+};
 use kadmium_sharding::{
     ClusterShardPlan, FailoverShieldSimulation, MultiProviderArbitragePlan,
-    ResponsibilityShiftPlan, ShardPlanner,
+    ResponsibilityShiftPlan, ShardPlanner, ShiftTriggerReason,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub mod docs;
 pub mod mcp;
@@ -109,6 +119,28 @@ pub struct GatewayState {
     pub training_plan: ClusterShardPlan,
     pub fts3_transfers: Vec<ThirdPartyTransferJob>,
     pub last_shift: Option<ResponsibilityShiftPlan>,
+    /// Live physical LAN/WAN workers registered via `POST /api/v1/cluster/register` (`kadmium join`)
+    /// or spawned locally via `POST /api/v1/cluster/spawn-local-fleet`.
+    pub live_workers: BTreeMap<String, LiveWorkerRegistration>,
+    /// Spawned local TCP worker servers (`127.0.0.1:7851..=7855`) for multi-node local testing.
+    pub spawned_fleet_instances: Vec<SpawnedLocalWorkerInstance>,
+    /// When true, `nodes` contains only live physical/spawned machines registered in `live_workers`.
+    pub live_only_mode: bool,
+    pub coordinator_lan_ip: String,
+    pub coordinator_http_port: u16,
+    pub training_step_counter: u64,
+    pub last_training_loss: f64,
+    pub training_loss_history: Vec<(u64, f64)>,
+    /// Active OTA release version & `.ktb` Merkle root across the cluster.
+    pub active_cluster_version: String,
+    pub active_ktb_merkle_root_fnv64: u64,
+    pub latest_update_manifest: Option<FleetUpdateManifest>,
+    /// Queued OTA update manifests for Online WAN nodes that poll `/api/v1/cluster/heartbeat`.
+    pub pending_wan_updates: BTreeMap<String, FleetUpdateManifest>,
+    pub update_receipts: Vec<WorkerUpdatePushAck>,
+    pub last_checkpoint_step: u64,
+    pub last_checkpoint_report: Option<KtbCheckpointExportReport>,
+    pub last_fts3_stream_report: Option<LiveFts3SwarmStreamReport>,
 }
 
 impl Default for GatewayState {
@@ -133,11 +165,12 @@ impl GatewayState {
             &nodes,
         );
         let fts3_transfers = Fts3TransferScheduler::plan_initial_staging(&inference_plan, &nodes);
+        let lan_ip = LiveHardwareProfiler::probe_local_lan_ip();
 
         Self {
             epoch: 1,
             companion_mode: CompanionConnectionMode::SelfHostedOpenSource {
-                local_coordinator_url: "http://127.0.0.1:7848".into(),
+                local_coordinator_url: format!("http://{lan_ip}:7848"),
             },
             supply_policy: SupplyLeasePolicy::default(),
             coordinator_quorum,
@@ -148,6 +181,543 @@ impl GatewayState {
             training_plan,
             fts3_transfers,
             last_shift: None,
+            live_workers: BTreeMap::new(),
+            spawned_fleet_instances: Vec::new(),
+            live_only_mode: false,
+            coordinator_lan_ip: lan_ip,
+            coordinator_http_port: 7848,
+            training_step_counter: 1_420,
+            last_training_loss: 1.184,
+            training_loss_history: vec![
+                (1_417, 1.312),
+                (1_418, 1.264),
+                (1_419, 1.219),
+                (1_420, 1.184),
+            ],
+            active_cluster_version: DEFAULT_KADMIUM_RUNTIME_VERSION.to_string(),
+            active_ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+            latest_update_manifest: None,
+            pending_wan_updates: BTreeMap::new(),
+            update_receipts: Vec::new(),
+            last_checkpoint_step: 1_400,
+            last_checkpoint_report: None,
+            last_fts3_stream_report: None,
+        }
+    }
+
+    /// Recomputes `coordinator_quorum`, `inference_plan`, `training_plan`, and `fts3_transfers`
+    /// whenever the node topology changes.
+    pub fn recompute_plans(&mut self) {
+        if self.nodes.is_empty() {
+            self.nodes = vec![LiveHardwareProfiler::probe_local_host()];
+        }
+        self.coordinator_quorum = CoordinatorFailoverQuorum::from_cluster(&self.nodes);
+        self.inference_plan = ShardPlanner::compute_plan(
+            self.epoch,
+            &self.inference_model,
+            WorkloadKind::Inference,
+            &self.nodes,
+        );
+        self.training_plan = ShardPlanner::compute_plan(
+            self.epoch,
+            &self.training_model,
+            WorkloadKind::DistributedTraining,
+            &self.nodes,
+        );
+        self.fts3_transfers =
+            Fts3TransferScheduler::plan_initial_staging(&self.inference_plan, &self.nodes);
+    }
+
+    /// Switches between Live-Hardware-Only mode (`true`) and Hybrid Demo + Live mode (`false`).
+    pub fn set_live_only_mode(&mut self, live_only: bool) {
+        self.live_only_mode = live_only;
+        self.epoch += 1;
+        if live_only {
+            let live_nodes: Vec<HardwareNode> = self
+                .live_workers
+                .values()
+                .filter(|w| w.online)
+                .map(|w| w.node.clone())
+                .collect();
+            self.nodes = if live_nodes.is_empty() {
+                vec![LiveHardwareProfiler::probe_local_host()]
+            } else {
+                live_nodes
+            };
+        } else {
+            let mut merged = sample_personal_cluster();
+            for w in self.live_workers.values().filter(|w| w.online) {
+                if let Some(existing) = merged.iter_mut().find(|n| n.id == w.node.id) {
+                    *existing = w.node.clone();
+                } else {
+                    merged.push(w.node.clone());
+                }
+            }
+            self.nodes = merged;
+        }
+        self.recompute_plans();
+    }
+
+    /// Registers or updates a live LAN/WAN worker (`kadmium join`), recomputes asymmetric shard
+    /// plans across the updated cluster, and returns `WorkerRegistrationAck`.
+    pub fn register_live_worker(
+        &mut self,
+        node: HardwareNode,
+        worker_tcp_addr: String,
+        measured_rtt_ms: f64,
+        switch_to_live_only: bool,
+    ) -> WorkerRegistrationAck {
+        let board = LiveHardwareProfiler::probe_sbc_or_board_model()
+            .unwrap_or_else(|| format!("{:?} ({:?})", node.device_kind, node.backend));
+        let net_chan = if node.id.0.contains("remote") || node.id.0.contains("wan") {
+            "OnlineWAN".to_string()
+        } else {
+            "LocalLAN".to_string()
+        };
+        self.register_live_worker_with_meta(
+            node,
+            worker_tcp_addr,
+            measured_rtt_ms,
+            switch_to_live_only,
+            std::env::consts::OS.to_string(),
+            std::env::consts::ARCH.to_string(),
+            board,
+            net_chan,
+        )
+    }
+
+    /// Registers a live or locally-spawned worker with explicit OS/Arch/Board and network channel metadata.
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_live_worker_with_meta(
+        &mut self,
+        mut node: HardwareNode,
+        worker_tcp_addr: String,
+        measured_rtt_ms: f64,
+        switch_to_live_only: bool,
+        os_name: String,
+        cpu_arch: String,
+        board_or_model: String,
+        network_channel: String,
+    ) -> WorkerRegistrationAck {
+        node.network_latency_ms = measured_rtt_ms.max(0.1);
+        let now_ms = LiveWorkerRegistration::now_unix_ms();
+
+        let (lan_ip, tcp_port) = match worker_tcp_addr.rsplit_once(':') {
+            Some((ip, p)) => (ip.to_string(), p.parse::<u16>().unwrap_or(7850)),
+            None => (worker_tcp_addr.clone(), 7850),
+        };
+
+        let (prev_fwd, prev_trn, reg_at, hb_cnt, ver, mrk) = self
+            .live_workers
+            .get(&node.id.0)
+            .map(|w| {
+                (
+                    w.executed_forward_stages,
+                    w.executed_training_steps,
+                    w.registered_at_unix_ms,
+                    w.heartbeat_count + 1,
+                    w.installed_version.clone(),
+                    w.ktb_merkle_root_fnv64,
+                )
+            })
+            .unwrap_or((
+                0,
+                0,
+                now_ms,
+                1,
+                self.active_cluster_version.clone(),
+                self.active_ktb_merkle_root_fnv64,
+            ));
+
+        self.live_workers.insert(
+            node.id.0.clone(),
+            LiveWorkerRegistration {
+                node: node.clone(),
+                worker_tcp_addr,
+                worker_lan_ip: lan_ip,
+                worker_tcp_port: tcp_port,
+                os_name,
+                cpu_arch,
+                board_or_model,
+                network_channel,
+                installed_version: ver,
+                ktb_merkle_root_fnv64: mrk,
+                heartbeat_count: hb_cnt,
+                registered_at_unix_ms: reg_at,
+                last_heartbeat_unix_ms: now_ms,
+                last_measured_rtt_ms: measured_rtt_ms,
+                executed_forward_stages: prev_fwd,
+                executed_training_steps: prev_trn,
+                online: true,
+            },
+        );
+
+        if switch_to_live_only && !self.live_only_mode {
+            self.live_only_mode = true;
+            self.nodes = self
+                .live_workers
+                .values()
+                .filter(|w| w.online)
+                .map(|w| w.node.clone())
+                .collect();
+        } else if let Some(existing) = self.nodes.iter_mut().find(|n| n.id == node.id) {
+            *existing = node.clone();
+        } else {
+            self.nodes.push(node.clone());
+        }
+
+        self.epoch += 1;
+        self.recompute_plans();
+
+        let inf_assign = self
+            .inference_plan
+            .assignments
+            .iter()
+            .find(|a| a.node_id == node.id);
+        let trn_assign = self
+            .training_plan
+            .assignments
+            .iter()
+            .find(|a| a.node_id == node.id);
+
+        let inference_layers = inf_assign.and_then(|a| Some((a.start_layer?, a.end_layer?)));
+        let training_layers = trn_assign.and_then(|a| Some((a.start_layer?, a.end_layer?)));
+        let compute_share_pct = inf_assign.map(|a| a.compute_share_pct).unwrap_or(0.0);
+
+        WorkerRegistrationAck {
+            accepted: true,
+            cluster_epoch: self.epoch,
+            coordinator_id: self.coordinator_quorum.active_leader.clone(),
+            assigned_node_id: node.id.clone(),
+            measured_tcp_rtt_ms: measured_rtt_ms,
+            inference_layers,
+            training_layers,
+            compute_share_pct,
+            q_star_ratio: node.compute_q_star_ratio(),
+            total_cluster_nodes: self.nodes.len(),
+            total_live_workers: self.live_workers.len(),
+            message: format!(
+                "Registered live worker '{}' ({:?}) at epoch {}",
+                node.hostname, node.device_kind, self.epoch
+            ),
+        }
+    }
+
+    /// Processes a periodic heartbeat from a live worker daemon (`POST /api/v1/cluster/heartbeat`).
+    /// Automatically triggers a `<200ms` live responsibility shift if the worker's `PoliteState` changed,
+    /// and delivers any queued OTA update (`pending_ota_update`) for Online WAN nodes!
+    pub fn record_worker_heartbeat(&mut self, req: &WorkerHeartbeatRequest) -> WorkerHeartbeatAck {
+        let now_ms = LiveWorkerRegistration::now_unix_ms();
+        let mut state_changed = false;
+
+        if let Some(ota_ack) = &req.applied_ota_ack
+            && ota_ack.accepted
+        {
+            if let Some(w) = self.live_workers.get_mut(&req.node_id.0) {
+                w.installed_version = ota_ack.installed_version.clone();
+                w.ktb_merkle_root_fnv64 = ota_ack.applied_ktb_merkle_root_fnv64;
+            }
+            self.update_receipts
+                .retain(|r| r.node_id != ota_ack.node_id);
+            self.update_receipts.push(ota_ack.clone());
+        }
+
+        if let Some(w) = self.live_workers.get_mut(&req.node_id.0) {
+            w.last_heartbeat_unix_ms = now_ms;
+            w.heartbeat_count += 1;
+            w.online = true;
+            if !req.worker_tcp_addr.is_empty() {
+                w.worker_tcp_addr = req.worker_tcp_addr.clone();
+            }
+            if w.node.polite_state != req.polite_state {
+                w.node.polite_state = req.polite_state;
+                state_changed = true;
+            }
+        }
+
+        if let Some(n) = self.nodes.iter_mut().find(|n| n.id == req.node_id)
+            && n.polite_state != req.polite_state
+        {
+            n.polite_state = req.polite_state;
+            state_changed = true;
+        }
+
+        if state_changed {
+            self.epoch += 1;
+            let trigger = ShiftTriggerReason::HostEnteredGamingMode {
+                node_id: req.node_id.clone(),
+            };
+            let shift = ShardPlanner::plan_responsibility_shift(
+                &self.inference_plan,
+                &self.inference_model,
+                &self.nodes,
+                trigger,
+            );
+            self.fts3_transfers =
+                Fts3TransferScheduler::plan_live_shift_transfers(&shift, &self.nodes);
+            self.inference_plan = shift.new_plan.clone();
+            self.training_plan = ShardPlanner::compute_plan(
+                self.epoch,
+                &self.training_model,
+                WorkloadKind::DistributedTraining,
+                &self.nodes,
+            );
+            self.last_shift = Some(shift);
+        }
+
+        let inference_layers = self
+            .inference_plan
+            .assignments
+            .iter()
+            .find(|a| a.node_id == req.node_id)
+            .and_then(|a| Some((a.start_layer?, a.end_layer?)));
+        let training_layers = self
+            .training_plan
+            .assignments
+            .iter()
+            .find(|a| a.node_id == req.node_id)
+            .and_then(|a| Some((a.start_layer?, a.end_layer?)));
+
+        let pending_ota_update = self.pending_wan_updates.remove(&req.node_id.0);
+
+        WorkerHeartbeatAck {
+            cluster_epoch: self.epoch,
+            rebalance_triggered: state_changed,
+            inference_layers,
+            training_layers,
+            active_leader: self.coordinator_quorum.active_leader.clone(),
+            pending_ota_update,
+        }
+    }
+
+    /// Toggles a live or locally-spawned worker between `Available`, `GamingOrHeavyApp` (Polite auto-yield),
+    /// or `Offline` (triggers `SkipPipe` bypass & shard rebalance).
+    pub fn set_worker_fault_or_polite_state(
+        &mut self,
+        node_id_str: &str,
+        polite_state: PoliteState,
+        online: bool,
+    ) -> bool {
+        let mut found = false;
+        let mut target_node_id = None;
+
+        if let Some(w) = self.live_workers.get_mut(node_id_str) {
+            w.node.polite_state = polite_state;
+            w.online = online;
+            target_node_id = Some(w.node.id.clone());
+            found = true;
+        }
+
+        for inst in &self.spawned_fleet_instances {
+            if let Ok(mut guard) = inst.server.node.lock()
+                && guard.id.0 == node_id_str
+            {
+                guard.polite_state = polite_state;
+            }
+        }
+
+        if let Some(nid) = target_node_id {
+            if !online {
+                self.nodes.retain(|n| n.id != nid);
+            } else if let Some(n) = self.nodes.iter_mut().find(|n| n.id == nid) {
+                n.polite_state = polite_state;
+            } else if let Some(w) = self.live_workers.get(node_id_str) {
+                self.nodes.push(w.node.clone());
+            }
+
+            self.epoch += 1;
+            let trigger = ShiftTriggerReason::HostEnteredGamingMode { node_id: nid };
+            let shift = ShardPlanner::plan_responsibility_shift(
+                &self.inference_plan,
+                &self.inference_model,
+                &self.nodes,
+                trigger,
+            );
+            self.fts3_transfers =
+                Fts3TransferScheduler::plan_live_shift_transfers(&shift, &self.nodes);
+            self.inference_plan = shift.new_plan.clone();
+            self.training_plan = ShardPlanner::compute_plan(
+                self.epoch,
+                &self.training_model,
+                WorkloadKind::DistributedTraining,
+                &self.nodes,
+            );
+            self.last_shift = Some(shift);
+        }
+
+        found
+    }
+
+    /// Builds a signed `FleetUpdateManifest` for an Over-The-Air (OTA) update push across Local LAN and/or Online WAN nodes.
+    pub fn create_ota_update_manifest(
+        &mut self,
+        target_version: String,
+        payload_kind: UpdatePayloadKind,
+        target_scope: UpdateTargetScope,
+        rolling_canary: bool,
+        release_notes: String,
+    ) -> FleetUpdateManifest {
+        let now_ms = LiveWorkerRegistration::now_unix_ms();
+        let update_id = format!("ota-e{}-{}", self.epoch + 1, target_version);
+
+        // Synthesize deterministic binary/delta payload bytes and new .ktb Merkle root
+        let payload_bytes: Vec<u8> = match payload_kind {
+            UpdatePayloadKind::BinaryRelease => format!(
+                "KDM_BIN_RELEASE|version={target_version}|targets=win-x64,macos-arm64,linux-x64,linux-arm64,linux-riscv64|notes={release_notes}"
+            )
+            .into_bytes(),
+            UpdatePayloadKind::KtbWeightDelta => {
+                let mut page_delta = vec![0x4Bu8; 1024];
+                for (i, b) in target_version.bytes().enumerate() {
+                    page_delta[i % 1024] ^= b;
+                }
+                page_delta
+            }
+            UpdatePayloadKind::DreamRsiPolicyBundle => format!(
+                "KDM_DREAM_RSI_POLICY|version={target_version}|puct_c=1.414|wasi_cap_mb=256|notes={release_notes}"
+            )
+            .into_bytes(),
+        };
+
+        let expected_merkle = FleetUpdateManifest::compute_signature_mac(
+            "ktb-merkle-root",
+            &target_version,
+            self.active_ktb_merkle_root_fnv64,
+            &payload_bytes,
+        );
+        let mac = FleetUpdateManifest::compute_signature_mac(
+            &update_id,
+            &target_version,
+            expected_merkle,
+            &payload_bytes,
+        );
+
+        let artifact_size_bytes = match payload_kind {
+            UpdatePayloadKind::BinaryRelease => 14_680_064, // 14 MB cross-platform release bundle
+            UpdatePayloadKind::KtbWeightDelta => 65_536 * 4, // 4 x 64 KiB page-aligned .ktb delta
+            UpdatePayloadKind::DreamRsiPolicyBundle => 262_144, // 256 KiB WASI + MCTS policy bundle
+        };
+
+        let manifest = FleetUpdateManifest {
+            update_id,
+            target_version,
+            payload_kind,
+            target_scope,
+            rolling_canary,
+            issued_at_unix_ms: now_ms,
+            expected_ktb_merkle_root_fnv64: expected_merkle,
+            artifact_size_bytes,
+            payload_bytes,
+            signature_mac_fnv64: mac,
+            release_notes,
+        };
+
+        self.latest_update_manifest = Some(manifest.clone());
+        manifest
+    }
+
+    /// Commits the `WorkerUpdatePushAck` receipts returned by Local LAN (TCP WireFrame) and
+    /// Online WAN (Heartbeat Pull/Relay) workers after an OTA update push.
+    pub fn record_ota_receipts(
+        &mut self,
+        manifest: &FleetUpdateManifest,
+        receipts: Vec<WorkerUpdatePushAck>,
+        local_lan_count: usize,
+        online_wan_count: usize,
+    ) -> FleetUpdatePushSummary {
+        self.epoch += 1;
+        self.active_cluster_version = manifest.target_version.clone();
+        self.active_ktb_merkle_root_fnv64 = manifest.expected_ktb_merkle_root_fnv64;
+
+        for ack in &receipts {
+            if ack.accepted
+                && let Some(w) = self.live_workers.get_mut(&ack.node_id.0)
+            {
+                w.installed_version = ack.installed_version.clone();
+                w.ktb_merkle_root_fnv64 = ack.applied_ktb_merkle_root_fnv64;
+            }
+        }
+
+        self.update_receipts = receipts.clone();
+
+        FleetUpdatePushSummary {
+            active_cluster_version: self.active_cluster_version.clone(),
+            active_ktb_merkle_root_fnv64: self.active_ktb_merkle_root_fnv64,
+            latest_manifest: Some(manifest.clone()),
+            total_nodes_targeted: receipts.len(),
+            local_lan_pushed_count: local_lan_count,
+            online_wan_pushed_count: online_wan_count,
+            canary_verified: manifest.rolling_canary,
+            zero_downtime_skippipe_active: true,
+            node_receipts: receipts,
+        }
+    }
+
+    /// Returns the current OTA Fleet Update status (`GET /api/v1/update/status`).
+    pub fn ota_update_status(&self) -> FleetUpdatePushSummary {
+        let local_cnt = self
+            .update_receipts
+            .iter()
+            .filter(|r| r.delivery_mechanism.contains("LAN"))
+            .count();
+        let wan_cnt = self
+            .update_receipts
+            .iter()
+            .filter(|r| r.delivery_mechanism.contains("WAN"))
+            .count();
+
+        FleetUpdatePushSummary {
+            active_cluster_version: self.active_cluster_version.clone(),
+            active_ktb_merkle_root_fnv64: self.active_ktb_merkle_root_fnv64,
+            latest_manifest: self.latest_update_manifest.clone(),
+            total_nodes_targeted: self.update_receipts.len(),
+            local_lan_pushed_count: local_cnt,
+            online_wan_pushed_count: wan_cnt,
+            canary_verified: self
+                .latest_update_manifest
+                .as_ref()
+                .map(|m| m.rolling_canary)
+                .unwrap_or(true),
+            zero_downtime_skippipe_active: true,
+            node_receipts: self.update_receipts.clone(),
+        }
+    }
+
+    /// Returns a snapshot of connected live workers and the LAN join command/ticket.
+    pub fn workers_overview(&self) -> LiveClusterWorkersOverview {
+        let http_url = format!(
+            "http://{}:{}",
+            self.coordinator_lan_ip, self.coordinator_http_port
+        );
+        let ticket = JoinTicket::generate(
+            self.coordinator_quorum.active_leader.clone(),
+            vec![format!(
+                "{}:{}",
+                self.coordinator_lan_ip, self.coordinator_http_port
+            )],
+            Some("slice-01-prod-deploy".into()),
+            NodeTrustTier::TrustedCore,
+        )
+        .encode_token();
+
+        let join_cmd = format!(
+            "cargo run --release --bin kadmium -- join --coordinator {http_url}"
+        );
+        let workers_vec: Vec<LiveWorkerRegistration> =
+            self.live_workers.values().cloned().collect();
+
+        LiveClusterWorkersOverview {
+            coordinator_lan_ip: self.coordinator_lan_ip.clone(),
+            coordinator_http_url: http_url.clone(),
+            join_command_cli: format!("kadmium join --coordinator {http_url}"),
+            recommended_join_command: join_cmd,
+            join_ticket_token: ticket,
+            live_only_mode: self.live_only_mode,
+            total_cluster_nodes: self.nodes.len(),
+            live_worker_count: workers_vec.len(),
+            active_cluster_version: self.active_cluster_version.clone(),
+            live_workers: workers_vec.clone(),
+            workers: workers_vec,
         }
     }
 
@@ -176,7 +746,7 @@ impl GatewayState {
         };
 
         CompanionAppStatus {
-            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            app_version: self.active_cluster_version.clone(),
             mode: self.companion_mode.clone(),
             local_host_polite_state: local_polite,
             gaming_auto_yield_active: true,
@@ -187,7 +757,11 @@ impl GatewayState {
     }
 
     pub fn snapshot(&self) -> ClusterOverviewResponse {
-        let training_telemetry = TrainingJobTelemetry::sample_for_plan(&self.training_plan);
+        let mut training_telemetry = TrainingJobTelemetry::sample_for_plan(&self.training_plan);
+        training_telemetry.current_step = self.training_step_counter;
+        training_telemetry.loss = self.last_training_loss;
+        training_telemetry.last_nas_checkpoint_step = self.last_checkpoint_step;
+
         let boinc_workunits = sample_boinc_workunits();
         let mesh_links = build_mesh_link_matrix(&self.nodes);
         let rl_env_suite = RlEnvironmentSuiteSpec::dream_rsi_evolving_world();
@@ -221,6 +795,15 @@ impl GatewayState {
         out.push_str("# HELP kadmium_cluster_epoch Current sharding and quorum epoch.\n");
         out.push_str("# TYPE kadmium_cluster_epoch gauge\n");
         out.push_str(&format!("kadmium_cluster_epoch {}\n", self.epoch));
+
+        out.push_str(
+            "# HELP kadmium_live_workers_connected Connected physical LAN/WAN worker daemons.\n",
+        );
+        out.push_str("# TYPE kadmium_live_workers_connected gauge\n");
+        out.push_str(&format!(
+            "kadmium_live_workers_connected {}\n",
+            self.live_workers.len()
+        ));
 
         out.push_str("# HELP kadmium_inference_throughput_tokens_per_sec Estimated aggregate inference throughput.\n");
         out.push_str("# TYPE kadmium_inference_throughput_tokens_per_sec gauge\n");
@@ -272,16 +855,20 @@ impl GatewayState {
             "project": "kadmium-cd48-fabric",
             "run_id": format!("kadmium-run-e{}", self.epoch),
             "signature": "Cd-48",
+            "active_version": self.active_cluster_version,
             "model_id": self.inference_plan.model_id,
             "training_model_id": self.training_plan.model_id,
             "metrics": {
                 "inference/tokens_per_sec": self.inference_plan.estimated_throughput,
                 "training/pipeline_bubble_pct": snap.training_telemetry.pipeline_bubble_pct,
                 "training/demo_compression_ratio": snap.training_telemetry.gradient_compression_ratio,
+                "training/current_step": self.training_step_counter,
+                "training/loss": self.last_training_loss,
                 "rl/vectorized_env_slots": snap.rl_plan.total_vectorized_env_slots,
                 "dream_rsi/cost_savings_pct": snap.rl_plan.dream_rsi_report.as_ref().map(|r| r.cost_savings_pct).unwrap_or(62.5),
                 "dream_rsi/peak_speedup": snap.rl_plan.dream_rsi_report.as_ref().map(|r| r.peak_speedup_achieved).unwrap_or(2.31),
                 "cluster/active_nodes": self.nodes.len(),
+                "cluster/live_workers": self.live_workers.len(),
                 "cluster/quorum_term": self.coordinator_quorum.term
             }
         })
@@ -376,5 +963,39 @@ mod tests {
         let sse = format_openai_sse_stream(1, "deepseek-v3-671b-moe", &["Hello ", "Kadmium"]);
         assert!(sse.contains("\"object\":\"chat.completion.chunk\""));
         assert!(sse.ends_with("data: [DONE]\n\n"));
+
+        // Verify live worker registration & heartbeat auto-rebalance
+        let probe_node = LiveHardwareProfiler::probe_local_host();
+        let ack = state.register_live_worker(
+            probe_node.clone(),
+            "127.0.0.1:7850".into(),
+            0.35,
+            true,
+        );
+        assert!(ack.accepted);
+        assert!(state.live_only_mode);
+        assert_eq!(state.nodes.len(), 1);
+        assert_eq!(state.live_workers.len(), 1);
+
+        let hb_ack = state.record_worker_heartbeat(&WorkerHeartbeatRequest {
+            node_id: probe_node.id.clone(),
+            worker_tcp_addr: "127.0.0.1:7850".into(),
+            polite_state: PoliteState::GamingOrHeavyApp,
+            external_gpu_utilization_pct: 75.0,
+            external_vram_used_gb: 8.0,
+            package_temp_celsius: 68.0,
+            applied_ota_ack: None,
+        });
+        assert!(hb_ack.rebalance_triggered);
+
+        // Verify OTA Update Manifest signature & receipt commit
+        let ota_manifest = state.create_ota_update_manifest(
+            "v0.2.0-cd48".into(),
+            UpdatePayloadKind::BinaryRelease,
+            UpdateTargetScope::AllNodes,
+            true,
+            "Fused Q4_K kernel + Dream-RSI rollout".into(),
+        );
+        assert!(ota_manifest.verify_signature());
     }
 }

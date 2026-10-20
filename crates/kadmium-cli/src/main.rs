@@ -1,15 +1,22 @@
 use clap::{Parser, Subcommand};
 use kadmium_core::{
-    HardwareNode, KadmiumWorkspaceConfig, ModelSpec, PoliteState, WorkloadKind,
-    sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
+    HardwareNode, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, PoliteState,
+    WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::Fts3TransferScheduler;
 use kadmium_gateway::{GatewayState, build_router};
+use kadmium_network::{
+    DEFAULT_LAN_DISCOVERY_UDP_PORT, DEFAULT_WORKER_TCP_PORT, LanCoordinatorAnnouncement,
+    LanCoordinatorDiscovery,
+};
 use kadmium_rl::{
     DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, RlEnvironmentSuiteSpec,
     RlTopologyPlanner,
 };
-use kadmium_runtime::{TrainingJobTelemetry, sample_boinc_workunits};
+use kadmium_runtime::{
+    DistributedLanExecutor, LiveNodeWorkerServer, LocalFleetSpawner, TrainingJobTelemetry,
+    sample_boinc_workunits,
+};
 use kadmium_sharding::{
     ClusterShardPlan, DataflowStreamPlanner, DistributedPagedKvPlanner,
     MinMaxStageLatencyOptimizer, ResponsibilityShiftPlan, ShardPlanner, ShiftTriggerReason,
@@ -78,12 +85,36 @@ enum Commands {
         /// Optional path to `kadmium.toml` workspace configuration
         #[arg(short, long)]
         config: Option<String>,
+        /// Start with only real probed hardware nodes (disabling the simulated demo fleet)
+        #[arg(long)]
+        live: bool,
+        /// Spawn a 5-node local + online TCP worker test fleet on ports 7851..=7855 for single-machine testing
+        #[arg(long)]
+        spawn_fleet: bool,
+        /// Local TCP port for the coordinator's built-in `WireFrame` stage worker listener
+        #[arg(long, default_value_t = DEFAULT_WORKER_TCP_PORT)]
+        worker_port: u16,
     },
-    /// Verify a kdm1_... Join Ticket, broadcast a UDP LAN beacon (KDMD), and join a cluster slice
+    /// Join a live Kadmium cluster as a persistent LAN/WAN `WireFrame` compute worker daemon (or verify a `kdm1_...` ticket)
     Join {
-        /// Optional kdm1_... ticket (if omitted, generates and verifies a local LAN/WAN ticket)
+        /// Coordinator HTTP gateway URL (e.g., `http://192.168.1.48:7848`); auto-discovered via UDP LAN broadcast if omitted
+        #[arg(short, long)]
+        coordinator: Option<String>,
+        /// Optional `kdm1_...` Join Ticket token
         #[arg(short, long)]
         ticket: Option<String>,
+        /// Preferred TCP port to bind this machine's `WireFrame` (`KDMF`) worker listener
+        #[arg(long, default_value_t = DEFAULT_WORKER_TCP_PORT)]
+        worker_port: u16,
+        /// Optional custom hostname / node label (useful when testing multiple workers)
+        #[arg(long)]
+        hostname: Option<String>,
+        /// Switch the coordinator to Live-Hardware-Only mode upon registration
+        #[arg(long)]
+        live_only: bool,
+        /// Register and run a single verification pass, then exit instead of staying in the daemon heartbeat loop
+        #[arg(long)]
+        once: bool,
     },
     /// Pull and stage a Hugging Face model/dataset (hf://...) or GitHub RL/Dream-RSI world (gh://...)
     Pull {
@@ -137,7 +168,23 @@ enum Commands {
     /// Inspect Phase 3/4 Zero-Click LAN Pairing (6-digit SAS), OS Swapchain Hysteresis (<200ms yield / 15s cooldown), and <400ms CloudShield Watcher
     Pairing,
     /// Inspect v1.0 GA Multi-Provider Spot Orderbook, Multi-Tenant Sub-Cluster RBAC, Verde Fraud Proofs, and the Public Dream-RSI World Registry
+    /// Inspect v1.0 GA Multi-Provider Spot Orderbook, Multi-Tenant Sub-Cluster RBAC, Verde Fraud Proofs, and the Public Dream-RSI World Registry
     Registry,
+    /// Push a signed Over-The-Air (OTA) update (binary, ktb-delta, or policy) across local LAN TCP workers and online WAN nodes
+    Update {
+        /// Coordinator HTTP gateway URL (defaults to http://127.0.0.1:7848)
+        #[arg(short, long)]
+        coordinator: Option<String>,
+        /// Target release version string (e.g. v0.2.0-cd48)
+        #[arg(short, long, default_value = "v0.2.0-cd48")]
+        version: String,
+        /// Payload kind: binary | ktb-delta | policy
+        #[arg(short, long, default_value = "binary")]
+        kind: String,
+        /// Target scope: all | local | online
+        #[arg(short, long, default_value = "all")]
+        scope: String,
+    },
 }
 
 #[tokio::main]
@@ -161,8 +208,31 @@ async fn main() {
         Commands::CloudShield => run_cloud_shield(),
         Commands::Probe => run_probe(),
         Commands::Plan { model, workload } => run_plan(&model, &workload),
-        Commands::Serve { port, config } => run_server(port, config.as_deref()).await,
-        Commands::Join { ticket } => run_join(ticket).await,
+        Commands::Serve {
+            port,
+            config,
+            live,
+            worker_port,
+            spawn_fleet,
+        } => run_server(port, config.as_deref(), live, worker_port, spawn_fleet).await,
+        Commands::Join {
+            coordinator,
+            ticket,
+            worker_port,
+            hostname,
+            live_only,
+            once,
+        } => {
+            run_join(
+                coordinator,
+                ticket,
+                worker_port,
+                hostname,
+                live_only,
+                once,
+            )
+            .await
+        }
         Commands::Pull { uri } => run_pull(&uri),
         Commands::Mcp { inspect } => run_mcp(inspect),
         Commands::Init { out } => run_init(out.as_deref()),
@@ -177,6 +247,12 @@ async fn main() {
         Commands::Bench => run_bench().await,
         Commands::Pairing => run_pairing(),
         Commands::Registry => run_registry(),
+        Commands::Update {
+            coordinator,
+            version,
+            kind,
+            scope,
+        } => run_update(coordinator, version, kind, scope).await,
     }
 }
 
@@ -682,8 +758,16 @@ fn run_simulation() {
     );
 }
 
-async fn run_server(port: u16, config_path: Option<&str>) {
+async fn run_server(
+    port: u16,
+    config_path: Option<&str>,
+    live_only: bool,
+    worker_port: u16,
+    spawn_fleet: bool,
+) {
     let mut gw_state = GatewayState::new();
+    gw_state.coordinator_http_port = port;
+
     if let Some(cfg_file) = config_path
         && let Ok(raw_toml) = std::fs::read_to_string(cfg_file)
         && let Ok(parsed_cfg) = KadmiumWorkspaceConfig::parse_kadmium_toml(&raw_toml)
@@ -704,7 +788,107 @@ async fn run_server(port: u16, config_path: Option<&str>) {
         );
     }
 
+    let local_node = LiveHardwareProfiler::probe_local_host();
+    let lan_ip = gw_state.coordinator_lan_ip.clone();
+
+    // Spawn built-in TCP WireFrame worker server for the coordinator's own hardware:
+    let local_worker = LiveNodeWorkerServer::spawn_auto_port(
+        "0.0.0.0",
+        worker_port,
+        local_node.clone(),
+        true,
+    )
+    .await
+    .expect("failed to bind coordinator local worker TCP listener");
+    let bound_worker_port = local_worker.local_addr.port();
+    let worker_tcp_addr = format!("{lan_ip}:{bound_worker_port}");
+
+    gw_state.register_live_worker(local_node.clone(), worker_tcp_addr.clone(), 0.15, live_only);
+
+    if spawn_fleet
+        && let Ok(instances) =
+            LocalFleetSpawner::spawn_heterogeneous_local_fleet(bound_worker_port + 1, true).await
+    {
+        for inst in instances {
+            let tcp_addr = inst.server.local_addr.to_string();
+            let node_clone = inst.server.node.lock().expect("node lock").clone();
+            let rtt = match DistributedLanExecutor::ping_worker_tcp(&tcp_addr, 1).await {
+                Ok((_, ms)) => ms,
+                Err(_) => 0.25,
+            };
+            gw_state.register_live_worker_with_meta(
+                node_clone,
+                tcp_addr,
+                rtt,
+                true,
+                inst.os_name.clone(),
+                inst.cpu_arch.clone(),
+                inst.board_or_model.clone(),
+                inst.network_channel.clone(),
+            );
+            gw_state.spawned_fleet_instances.push(inst);
+        }
+        gw_state.set_live_only_mode(true);
+    }
+
+    let overview = gw_state.workers_overview();
+    let announcement = LanCoordinatorAnnouncement {
+        coordinator_id: gw_state.coordinator_quorum.active_leader.clone(),
+        coordinator_hostname: local_node.hostname.clone(),
+        coordinator_http_url: overview.coordinator_http_url.clone(),
+        join_ticket_token: overview.join_ticket_token.clone(),
+        active_model_id: gw_state.inference_plan.model_id.clone(),
+        cluster_epoch: gw_state.epoch,
+    };
+    let udp_disc_status = match LanCoordinatorDiscovery::spawn_responder(
+        DEFAULT_LAN_DISCOVERY_UDP_PORT,
+        announcement,
+    )
+    .await
+    {
+        Ok(addr) => format!("Active on UDP {addr} (KDMD auto-discovery)"),
+        Err(_) => "Port 7849 busy (use --coordinator URL on workers)".to_string(),
+    };
+
     let state = Arc::new(Mutex::new(gw_state));
+    let health_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(12));
+        loop {
+            interval.tick().await;
+            let (epoch, targets) = {
+                let guard = health_state.lock().expect("gateway state lock");
+                let list: Vec<(String, String)> = guard
+                    .live_workers
+                    .values()
+                    .filter(|w| w.online)
+                    .map(|w| (w.node.id.0.clone(), w.worker_tcp_addr.clone()))
+                    .collect();
+                (guard.epoch, list)
+            };
+            for (nid, tcp_addr) in targets {
+                match DistributedLanExecutor::ping_worker_tcp(&tcp_addr, epoch).await {
+                    Ok((pong, rtt)) => {
+                        let mut guard = health_state.lock().expect("gateway state lock");
+                        if let Some(w) = guard.live_workers.get_mut(&nid) {
+                            w.last_measured_rtt_ms = rtt;
+                            w.installed_version = pong.installed_version;
+                            w.ktb_merkle_root_fnv64 = pong.ktb_merkle_root_fnv64;
+                        }
+                    }
+                    Err(_) => {
+                        let mut guard = health_state.lock().expect("gateway state lock");
+                        guard.set_worker_fault_or_polite_state(
+                            &nid,
+                            kadmium_core::PoliteState::IdleDedicated,
+                            false,
+                        );
+                    }
+                }
+            }
+        }
+    });
+
     let app = build_router(state);
     let addr = format!("0.0.0.0:{}", port);
     println!(
@@ -714,6 +898,7 @@ async fn run_server(port: u16, config_path: Option<&str>) {
         " Kadmium (Cd-48) Control Room & AI Gateway listening on http://127.0.0.1:{}",
         port
     );
+    println!("    - LAN Coordinator URL:    http://{}:{}/", lan_ip, port);
     println!("    - Cluster Control Room:   http://127.0.0.1:{}/", port);
     println!(
         "    - kadmium.ai Website:     http://127.0.0.1:{}/site",
@@ -746,6 +931,28 @@ async fn run_server(port: u16, config_path: Option<&str>) {
     println!(
         "    - Prometheus Metrics:     http://127.0.0.1:{}/metrics",
         port
+    );
+    println!(
+        "------------------------------------------------------------------------------------"
+    );
+    println!(
+        "    - Local WireFrame Worker: {} ({:?}, {:.1} GB fast mem)",
+        worker_tcp_addr,
+        local_node.device_kind,
+        local_node.available_fast_memory_gb()
+    );
+    println!("    - LAN UDP Auto-Discovery: {}", udp_disc_status);
+    println!(
+        "    - Connect any PC/Mac/SBC: {}",
+        overview.join_command_cli
+    );
+    println!(
+        "    - Linux/macOS/SBC 1-Line: curl -sSL http://{}:{}/join.sh | sh",
+        lan_ip, port
+    );
+    println!(
+        "    - Windows 1-Line Join:    irm http://{}:{}/join.ps1 | iex",
+        lan_ip, port
     );
     println!(
         "===================================================================================="

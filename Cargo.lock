@@ -407,10 +407,12 @@ version = "0.1.0"
 dependencies = [
  "kadmium-core",
  "kadmium-data",
+ "kadmium-network",
  "kadmium-sharding",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

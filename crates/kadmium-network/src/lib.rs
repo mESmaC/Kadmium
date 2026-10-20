@@ -10,8 +10,10 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub mod lan_pairing;
+pub mod live_mesh;
 pub mod nat_traversal;
 pub use lan_pairing::*;
+pub use live_mesh::*;
 pub use nat_traversal::*;
 
 /// Transport path classification between two peers in the Kadmium mesh.
@@ -162,6 +164,7 @@ pub enum WireFrameKind {
     DeMoCompressedGradient = 4,
     Fts3KtbChunkStream = 5,
     VerdeBisectionChallenge = 6,
+    FleetUpdatePush = 7,
 }
 
 impl WireFrameKind {
@@ -173,6 +176,7 @@ impl WireFrameKind {
             4 => Some(Self::DeMoCompressedGradient),
             5 => Some(Self::Fts3KtbChunkStream),
             6 => Some(Self::VerdeBisectionChallenge),
+            7 => Some(Self::FleetUpdatePush),
             _ => None,
         }
     }

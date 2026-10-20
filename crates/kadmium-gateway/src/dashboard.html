@@ -272,6 +272,20 @@
     var gatewayReplyState = React.useState(null), gatewayReply = gatewayReplyState[0], setGatewayReply = gatewayReplyState[1];
     var gaState = React.useState(null), ga = gaState[0], setGa = gaState[1];
     var kernelsState = React.useState(null), kernels = kernelsState[0], setKernels = kernelsState[1];
+    var workersState = React.useState(null), workersOverview = workersState[0], setWorkersOverview = workersState[1];
+    var liveInfState = React.useState(null), liveInfReply = liveInfState[0], setLiveInfReply = liveInfState[1];
+    var liveTrainState = React.useState(null), liveTrainReply = liveTrainState[0], setLiveTrainReply = liveTrainState[1];
+    var otaState = React.useState(null), otaStatus = otaState[0], setOtaStatus = otaState[1];
+    var promptState = React.useState('Verify multi-node TCP WireFrame pipeline and SkipPipe routing across local + online hardware.'), promptInput = promptState[0], setPromptInput = promptState[1];
+    var otaVerState = React.useState('v0.2.0-cd48'), otaVerInput = otaVerState[0], setOtaVerInput = otaVerState[1];
+    var fts3State = React.useState(null), fts3Reply = fts3State[0], setFts3Reply = fts3State[1];
+    var ckptState = React.useState(null), ckptReply = ckptState[0], setCkptReply = ckptState[1];
+
+    function refreshWorkersAndOverview() {
+      fetch('/api/v1/cluster/workers').then(function (r) { return r.json(); }).then(setWorkersOverview);
+      fetch('/api/v1/cluster/overview').then(function (r) { return r.json(); }).then(setOverview);
+      fetch('/api/v1/update/status').then(function (r) { return r.json(); }).then(setOtaStatus);
+    }
 
     React.useEffect(function () {
       document.documentElement.setAttribute('data-theme', theme);
@@ -279,6 +293,8 @@
 
     React.useEffect(function () {
       fetch('/api/v1/cluster/overview').then(function (r) { return r.json(); }).then(setOverview);
+      fetch('/api/v1/cluster/workers').then(function (r) { return r.json(); }).then(setWorkersOverview);
+      fetch('/api/v1/update/status').then(function (r) { return r.json(); }).then(setOtaStatus);
       fetch('/api/v1/slices').then(function (r) { return r.json(); }).then(setSlices);
       fetch('/api/v1/dataflow').then(function (r) { return r.json(); }).then(setDataflow);
       fetch('/api/v1/rl/dream-rsi').then(function (r) { return r.json(); }).then(setDream);
@@ -344,6 +360,100 @@
           params: { name: toolName, arguments: args || {} }
         })
       }).then(function (r) { return r.json(); }).then(setMcpReply);
+    }
+
+    function toggleLiveOnlyMode(liveOnly) {
+      fetch('/api/v1/cluster/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ live_only: liveOnly })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setWorkersOverview(data);
+        fetch('/api/v1/cluster/overview').then(function (r) { return r.json(); }).then(setOverview);
+      });
+    }
+
+    function spawnLocalTestFleet() {
+      fetch('/api/v1/cluster/spawn-local-fleet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setWorkersOverview(data);
+        refreshWorkersAndOverview();
+      });
+    }
+
+    function triggerWorkerFault(nodeId, action) {
+      fetch('/api/v1/cluster/worker-fault', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ node_id: nodeId, action: action })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setWorkersOverview(data);
+        fetch('/api/v1/cluster/overview').then(function (r) { return r.json(); }).then(setOverview);
+      });
+    }
+
+    function pushOtaUpdate(targetVersion, payloadKind, targetScope) {
+      fetch('/api/v1/update/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target_version: targetVersion,
+          payload_kind: payloadKind,
+          target_scope: targetScope,
+          rolling_canary: true,
+          release_notes: 'Control Room OTA push (' + payloadKind + ' -> ' + targetScope + ')'
+        })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setOtaStatus(data);
+        refreshWorkersAndOverview();
+      });
+    }
+
+    function runLiveMultiNodeInference() {
+      fetch('/api/v1/pipeline/live', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: promptInput,
+          max_tokens: 16
+        })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setLiveInfReply(data);
+        refreshWorkersAndOverview();
+      });
+    }
+
+    function runLiveDistributedTrainingStep() {
+      fetch('/api/v1/training/step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ learning_rate: 0.001 })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setLiveTrainReply(data);
+        refreshWorkersAndOverview();
+      });
+    }
+
+    function runLiveFts3ShardStream() {
+      fetch('/api/v1/fts3/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setFts3Reply(data);
+        refreshWorkersAndOverview();
+      });
+    }
+
+    function exportKtbCheckpoint() {
+      fetch('/api/v1/training/checkpoint', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setCkptReply(data);
+        refreshWorkersAndOverview();
+      });
     }
 
     var wordmark = theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg';
@@ -784,7 +894,157 @@
                       h('td', null, h(K.Badge, { tone: 'ok' }, String(sim.dropped_requests))));
                   }))))) : null) : null,
 
-          tab === 'gateway' ? h('div', { className: 'two' },
+          tab === 'gateway' ? h('div', { className: 'kd-stack' },
+            workersOverview ? h('div', { className: 'panel' },
+              h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
+                h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Live LAN + Online WAN worker mesh · TCP WireFrame (port 7850+) · UDP discovery (port 7849)'),
+                h('div', { className: 'kd-row' },
+                  h(K.Badge, { tone: 'local' }, 'release ' + (workersOverview.active_cluster_version || 'v0.1.0-cd48')),
+                  h(K.Badge, { tone: workersOverview.live_only_mode ? 'ok' : 'local', dot: true },
+                    workersOverview.live_only_mode ? 'Live Hardware Only' : 'Hybrid Demo + Live Fleet'),
+                  h(K.Badge, { tone: 'ok' }, workersOverview.live_worker_count + ' live TCP workers'),
+                  h(K.Button, {
+                    variant: 'primary',
+                    size: 'sm',
+                    icon: 'rods',
+                    onClick: spawnLocalTestFleet
+                  }, 'Spawn 5-Node Local + WAN TCP Fleet (Ports 7851–7855)'),
+                  h(K.Button, {
+                    variant: 'ghost',
+                    size: 'sm',
+                    onClick: function () { toggleLiveOnlyMode(!workersOverview.live_only_mode); }
+                  }, workersOverview.live_only_mode ? 'Switch to Hybrid Demo Fleet' : 'Switch to Live Hardware Only'))),
+              h(K.CodeBlock, {
+                title: 'Run on any Windows PC, Apple Silicon Mac, Linux x86_64 box, or ARM64/RISC-V SBC on your LAN',
+                language: 'shell',
+                code: '$ ' + workersOverview.recommended_join_command + '\n# Zero-friction bootstrap (macOS / Linux / ARM64 SBC / NAS):\n$ curl -sSL ' + workersOverview.coordinator_http_url + '/join.sh | sh\n# Zero-friction bootstrap (Windows PowerShell):\nPS> irm ' + workersOverview.coordinator_http_url + '/join.ps1 | iex\n# Or auto-discover via UDP port 7849 broadcast:\n$ cargo run --bin kadmium -- join'
+              }),
+              h('div', { className: 'table-wrap', style: { marginTop: 'var(--space-3)' } },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'HOSTNAME'),
+                    h('th', null, 'OS / ARCH / BOARD'),
+                    h('th', null, 'CHANNEL & TCP'),
+                    h('th', null, 'VERSION & .KTB MERKLE'),
+                    h('th', null, 'BACKEND'),
+                    h('th', null, 'FWD / TRN'),
+                    h('th', null, 'STATE'),
+                    h('th', null, 'FAULT / YIELD CONTROLS'))),
+                  h('tbody', null, (workersOverview.workers || []).map(function (w) {
+                    var backendName = w.node.backend || w.node.compute_backend || 'CpuSimd';
+                    var tflops = w.node.fp16_tflops || w.node.peak_tflops_fp16 || 0;
+                    var isOnline = w.online !== false;
+                    var isGaming = w.node.polite_state === 'GamingOrHeavyApp';
+                    return h('tr', { key: w.node.id.0 || w.node.hostname },
+                      h('td', null, w.node.hostname),
+                      h('td', null, w.os_name + '/' + w.cpu_arch + ' · ' + w.board_or_model),
+                      h('td', null,
+                        h(K.Badge, { tone: w.network_channel === 'OnlineWAN' ? 'cloud' : 'local' }, w.network_channel + ' · ' + w.worker_lan_ip + ':' + w.worker_tcp_port)),
+                      h('td', null, w.installed_version + ' · 0x' + (w.ktb_merkle_root_fnv64 || 0).toString(16).slice(0, 10)),
+                      h('td', null, backendName + ' (' + tflops + ' TF)'),
+                      h('td', null, w.executed_forward_stages + ' / ' + w.executed_training_steps + ' (' + w.last_measured_rtt_ms + ' ms)'),
+                      h('td', null, h(K.Badge, { tone: !isOnline ? 'danger' : (isGaming ? 'warn' : 'ok'), dot: true }, !isOnline ? 'Offline (SkipPipe)' : w.node.polite_state)),
+                      h('td', null, h('div', { className: 'kd-row' },
+                        h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { triggerWorkerFault(w.node.id.0, 'gaming_yield'); } }, 'Yield GPU'),
+                        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { triggerWorkerFault(w.node.id.0, 'offline'); } }, 'Kill'),
+                        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { triggerWorkerFault(w.node.id.0, 'available'); } }, 'Restore'))));
+                  })))),
+              h('div', { className: 'two', style: { marginTop: 'var(--space-4)' } },
+                h('div', { className: 'panel' },
+                  h('p', { className: 'eyebrow' }, 'Interactive Multi-Node TCP Playground · Inference & QLoRA+DeMo Training'),
+                  h(K.Input, {
+                    label: 'Prompt routed across live TCP WireFrame stages',
+                    value: promptInput,
+                    onChange: function (e) { setPromptInput(e.target.value); }
+                  }),
+                  h('div', { className: 'kd-row', style: { marginTop: 'var(--space-3)', flexWrap: 'wrap' } },
+                    h(K.Button, { variant: 'primary', size: 'sm', icon: 'rods', onClick: runLiveMultiNodeInference }, 'Execute Live TCP Inference'),
+                    h(K.Button, { variant: 'cloud', size: 'sm', onClick: runLiveDistributedTrainingStep }, 'Step Live QLoRA + DeMo Training'),
+                    h(K.Button, { variant: 'quiet', size: 'sm', onClick: runLiveFts3ShardStream }, 'Stream .ktb Shard (FTS3 TCP)'),
+                    h(K.Button, { variant: 'ghost', size: 'sm', onClick: exportKtbCheckpoint }, 'Save .ktb Checkpoint to Disk'),
+                    h(K.Button, { variant: 'ghost', size: 'sm', onClick: refreshWorkersAndOverview }, 'Refresh')),
+                  liveInfReply ? h('div', { style: { marginTop: 'var(--space-3)' } },
+                    h('div', { className: 'code', style: { marginBottom: 'var(--space-2)', color: 'var(--cadmium)' } }, liveInfReply.generated_response),
+                    h('div', { className: 'table-wrap' },
+                      h('table', { className: 'mono-table' },
+                        h('thead', null, h('tr', null,
+                          h('th', null, 'STAGE'),
+                          h('th', null, 'NODE'),
+                          h('th', null, 'LAYERS'),
+                          h('th', null, 'TRANSPORT'),
+                          h('th', null, 'WIRE+EXEC'),
+                          h('th', null, 'REPOPS DIGEST'))),
+                        h('tbody', null, (liveInfReply.live_hops || []).map(function (hop) {
+                          return h('tr', { key: hop.stage_index },
+                            h('td', null, '#' + hop.stage_index),
+                            h('td', null, hop.hostname),
+                            h('td', null, 'L' + hop.start_layer + '–L' + hop.end_layer),
+                            h('td', null, h(K.Badge, { tone: hop.transport_mode.indexOf('SkipPipe') >= 0 ? 'warn' : 'local' }, hop.transport_mode)),
+                            h('td', null, hop.wire_plus_compute_ms + ' ms'),
+                            h('td', null, '0x' + hop.repops_digest_fnv1a.toString(16)));
+                        }))))) : null,
+                  liveTrainReply ? h('div', { style: { marginTop: 'var(--space-3)' } },
+                    h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-2)' } },
+                      h(K.Badge, { tone: 'ok', dot: true }, 'Step #' + liveTrainReply.global_step + ' · Loss: ' + liveTrainReply.mean_loss),
+                      h(K.Badge, { tone: 'cloud' }, 'DeMo DCT: ' + liveTrainReply.average_compression_ratio + '× compression'),
+                      h(K.Badge, { tone: 'local' }, 'DiLoCo ||w||=' + liveTrainReply.diloco_outer_consensus_norm)),
+                    h('div', { className: 'table-wrap' },
+                      h('table', { className: 'mono-table' },
+                        h('thead', null, h('tr', null,
+                          h('th', null, 'STEP HISTORY'),
+                          h('th', null, 'MEAN LOSS'))),
+                        h('tbody', null, (liveTrainReply.loss_history || []).slice(-6).map(function (item) {
+                          return h('tr', { key: item[0] },
+                            h('td', null, 'Step #' + item[0]),
+                            h('td', null, item[1].toFixed(4)));
+                        }))))) : null,
+                  fts3Reply ? h('div', { style: { marginTop: 'var(--space-3)' } },
+                    h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-2)' } },
+                      h(K.Badge, { tone: 'ok', dot: true }, 'FTS3 Streamed ' + fts3Reply.shard_name + ' (' + (fts3Reply.ktb_total_bytes / 1024) + ' KiB)'),
+                      h(K.Badge, { tone: 'local' }, 'Merkle 0x' + (fts3Reply.merkle_root_fnv64 || 0).toString(16).slice(0, 12)),
+                      h(K.Badge, { tone: 'cloud' }, fts3Reply.aggregate_goodput_mbps + ' Mbps · ' + fts3Reply.target_receipts.length + ' pages verified'))) : null,
+                  ckptReply ? h('div', { style: { marginTop: 'var(--space-3)' } },
+                    h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-2)' } },
+                      h(K.Badge, { tone: 'ok', dot: true }, 'Saved ' + ckptReply.checkpoint_id + ' (' + (ckptReply.file_size_bytes / 1024) + ' KiB)'),
+                      h(K.Badge, { tone: 'local' }, 'Zero-Copy Verified · Merkle 0x' + (ckptReply.merkle_root_fnv64 || 0).toString(16).slice(0, 12))),
+                    h('div', { className: 'code' }, ckptReply.file_path)) : null),
+                h('div', { className: 'panel' },
+                  h('p', { className: 'eyebrow' }, 'Over-The-Air (OTA) Fleet Update Pusher · Local LAN (TCP WireFrame) + Online WAN (Heartbeat Pull/Relay)'),
+                  h(K.Input, {
+                    label: 'Target Release Version Tag',
+                    mono: true,
+                    value: otaVerInput,
+                    onChange: function (e) { setOtaVerInput(e.target.value); },
+                    hint: 'Signed with FNV-1a MAC + 64 KiB .ktb Merkle root; verified via Verde RepOps self-test on every worker.'
+                  }),
+                  h('div', { className: 'kd-row', style: { marginTop: 'var(--space-3)', flexWrap: 'wrap' } },
+                    h(K.Button, { variant: 'primary', size: 'sm', icon: 'rods', onClick: function () { pushOtaUpdate(otaVerInput, 'BinaryRelease', 'AllNodes'); } }, 'Push Binary Release (All: LAN + WAN)'),
+                    h(K.Button, { variant: 'cloud', size: 'sm', onClick: function () { pushOtaUpdate(otaVerInput + '-ktb', 'KtbWeightDelta', 'AllNodes'); } }, 'Push .ktb 64KB Delta (All Nodes)'),
+                    h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { pushOtaUpdate(otaVerInput + '-lan', 'BinaryRelease', 'LocalLanOnly'); } }, 'Push Local LAN Only (TCP)'),
+                    h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { pushOtaUpdate(otaVerInput + '-wan', 'DreamRsiPolicyBundle', 'OnlineWanOnly'); } }, 'Push Online WAN Only (Relay)')),
+                  otaStatus && otaStatus.node_receipts && otaStatus.node_receipts.length > 0 ? h('div', { style: { marginTop: 'var(--space-3)' } },
+                    h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-2)' } },
+                      h(K.Badge, { tone: 'ok', dot: true }, 'Active: ' + otaStatus.active_cluster_version),
+                      h(K.Badge, { tone: 'local' }, otaStatus.local_lan_pushed_count + ' LAN TCP'),
+                      h(K.Badge, { tone: 'cloud' }, otaStatus.online_wan_pushed_count + ' WAN Relay'),
+                      h(K.Badge, { tone: 'ok' }, 'Merkle 0x' + otaStatus.active_ktb_merkle_root_fnv64.toString(16).slice(0, 10))),
+                    h('div', { className: 'table-wrap' },
+                      h('table', { className: 'mono-table' },
+                        h('thead', null, h('tr', null,
+                          h('th', null, 'WORKER'),
+                          h('th', null, 'VERSION'),
+                          h('th', null, 'DELIVERY CHANNEL'),
+                          h('th', null, 'REPOPS CHECK'),
+                          h('th', null, 'LATENCY'))),
+                        h('tbody', null, otaStatus.node_receipts.map(function (r) {
+                          return h('tr', { key: r.hostname },
+                            h('td', null, r.hostname),
+                            h('td', null, r.previous_version + ' → ' + r.installed_version),
+                            h('td', null, h(K.Badge, { tone: r.delivery_mechanism.indexOf('WAN') >= 0 ? 'cloud' : 'local' }, r.delivery_mechanism)),
+                            h('td', null, '0x' + r.repops_post_check_digest.toString(16).slice(0, 12)),
+                            h('td', null, r.apply_latency_ms + ' ms'));
+                        }))))) : null))) : null,
+            h('div', { className: 'two' },
             h('div', { className: 'panel' },
               h('p', { className: 'eyebrow' }, 'Local host hardware probe · /api/v1/host/probe'),
               probe ? h('div', { className: 'kd-stack' },
@@ -815,7 +1075,7 @@
                 title: 'gateway response',
                 language: 'json',
                 code: JSON.stringify(gatewayReply, null, 2)
-              }) : null)) : null)));
+              }) : null))) : null)));
   }
 
   ReactDOM.createRoot(document.getElementById('app')).render(h(App));

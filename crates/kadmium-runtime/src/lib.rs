@@ -11,8 +11,10 @@ use serde::{Deserialize, Serialize};
 
 pub mod fraud_proof;
 pub mod kernels;
+pub mod live_worker;
 pub use fraud_proof::*;
 pub use kernels::*;
+pub use live_worker::*;
 
 /// Telemetry snapshot for a running distributed & decentralized training job in Kadmium.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -682,5 +684,147 @@ mod tests {
                 .iter()
                 .all(|p| p.repops_digest_fnv1a == report.canonical_repops_digest_fnv1a)
         );
+    }
+
+    #[tokio::test]
+    async fn test_live_multi_node_tcp_wireframe_inference_and_training() {
+        use kadmium_network::LiveWorkerRegistration;
+        use std::collections::BTreeMap;
+
+        let cluster = sample_personal_cluster();
+        // Spawn 2 real TCP WireFrame worker daemons (Main PC + M4 Mac Mini) on ephemeral loopback ports:
+        let w0 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, cluster[0].clone(), false)
+            .await
+            .expect("spawn worker 0");
+        let w1 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, cluster[1].clone(), false)
+            .await
+            .expect("spawn worker 1");
+
+        let (pong0, rtt0) = DistributedLanExecutor::ping_worker_tcp(&w0.local_addr.to_string(), 1)
+            .await
+            .expect("ping worker 0");
+        assert_eq!(pong0.node.id, cluster[0].id);
+        assert!(rtt0 >= 0.0);
+
+        let mut live_workers = BTreeMap::new();
+        live_workers.insert(
+            cluster[0].id.0.clone(),
+            LiveWorkerRegistration {
+                node: cluster[0].clone(),
+                worker_tcp_addr: w0.local_addr.to_string(),
+                worker_lan_ip: "127.0.0.1".into(),
+                worker_tcp_port: w0.local_addr.port(),
+                os_name: "windows".into(),
+                cpu_arch: "x86_64".into(),
+                board_or_model: "RTX 4090 Desktop".into(),
+                network_channel: "LocalLAN".into(),
+                installed_version: "v0.1.0-cd48".into(),
+                ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+                heartbeat_count: 1,
+                registered_at_unix_ms: 1000,
+                last_heartbeat_unix_ms: 1000,
+                last_measured_rtt_ms: rtt0,
+                executed_forward_stages: 0,
+                executed_training_steps: 0,
+                online: true,
+            },
+        );
+        live_workers.insert(
+            cluster[1].id.0.clone(),
+            LiveWorkerRegistration {
+                node: cluster[1].clone(),
+                worker_tcp_addr: w1.local_addr.to_string(),
+                worker_lan_ip: "127.0.0.1".into(),
+                worker_tcp_port: w1.local_addr.port(),
+                os_name: "macos".into(),
+                cpu_arch: "aarch64".into(),
+                board_or_model: "Mac Mini M4 Pro".into(),
+                network_channel: "LocalLAN".into(),
+                installed_version: "v0.1.0-cd48".into(),
+                ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+                heartbeat_count: 1,
+                registered_at_unix_ms: 1000,
+                last_heartbeat_unix_ms: 1000,
+                last_measured_rtt_ms: 0.2,
+                executed_forward_stages: 0,
+                executed_training_steps: 0,
+                online: true,
+            },
+        );
+
+        let sub_cluster = vec![cluster[0].clone(), cluster[1].clone(), cluster[5].clone()];
+        let model = ModelSpec::deepseek_v3_671b_moe();
+        let inf_plan =
+            ShardPlanner::compute_plan(1, &model, WorkloadKind::Inference, &sub_cluster);
+
+        let (inf_report, hops) = DistributedLanExecutor::execute_live_pipeline(
+            &inf_plan,
+            "Test multi-node LAN WireFrame inference",
+            &live_workers,
+        )
+        .await;
+        assert_eq!(hops.len(), 2);
+        assert!(
+            hops.iter()
+                .all(|h| h.transport_mode.contains("Live TCP WireFrame"))
+        );
+        assert!(inf_report.effective_tokens_per_sec > 0.0);
+
+        let trn_plan = ShardPlanner::compute_plan(
+            1,
+            &ModelSpec::llama_3_70b_lora(),
+            WorkloadKind::DistributedTraining,
+            &sub_cluster,
+        );
+        let trn_report = DistributedLanExecutor::execute_live_training_step(
+            &trn_plan,
+            1,
+            0.05,
+            &live_workers,
+        )
+        .await;
+        assert_eq!(trn_report.stages.len(), 2);
+        assert!(trn_report.mean_loss_after < trn_report.mean_loss_before);
+        assert!(trn_report.mean_wire_compression_ratio >= 10.0);
+        assert!(trn_report.all_stages_repops_verified);
+
+        // Also verify Over-The-Air (OTA) FleetUpdatePush over live TCP WireFrame & LocalFleetSpawner:
+        use kadmium_network::{FleetUpdateManifest, UpdatePayloadKind, UpdateTargetScope};
+        let payload = b"KDM_OTA_TEST_PAYLOAD".to_vec();
+        let expected_merkle = 0x9988_7766_5544_3322u64;
+        let mac = FleetUpdateManifest::compute_signature_mac(
+            "ota-test-1",
+            "v0.2.0-cd48",
+            expected_merkle,
+            &payload,
+        );
+        let manifest = FleetUpdateManifest {
+            update_id: "ota-test-1".into(),
+            target_version: "v0.2.0-cd48".into(),
+            payload_kind: UpdatePayloadKind::BinaryRelease,
+            target_scope: UpdateTargetScope::AllNodes,
+            rolling_canary: true,
+            issued_at_unix_ms: 2000,
+            expected_ktb_merkle_root_fnv64: expected_merkle,
+            artifact_size_bytes: payload.len(),
+            payload_bytes: payload,
+            signature_mac_fnv64: mac,
+            release_notes: "Unit test OTA push".into(),
+        };
+        let ota_ack =
+            DistributedLanExecutor::push_update_tcp(&w0.local_addr.to_string(), 2, &manifest)
+                .await
+                .expect("push OTA update over TCP WireFrame");
+        assert!(ota_ack.accepted);
+        assert_eq!(ota_ack.installed_version, "v0.2.0-cd48");
+        assert_eq!(ota_ack.applied_ktb_merkle_root_fnv64, expected_merkle);
+        assert_ne!(ota_ack.repops_post_check_digest, 0);
+
+        let spawned = LocalFleetSpawner::spawn_heterogeneous_local_fleet(19100, false)
+            .await
+            .expect("spawn 5-node local + online TCP fleet");
+        assert_eq!(spawned.len(), 5);
+        assert!(spawned.iter().any(|s| s.network_channel == "OnlineWAN"));
+        assert!(spawned.iter().any(|s| s.network_channel == "LocalLAN"));
     }
 }
