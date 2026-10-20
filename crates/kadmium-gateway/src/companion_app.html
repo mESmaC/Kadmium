@@ -125,6 +125,8 @@
     var probeState = React.useState(null), probe = probeState[0], setProbe = probeState[1];
     var execState = React.useState(null), execReport = execState[0], setExecReport = execState[1];
     var supplyState = React.useState(null), supply = supplyState[0], setSupply = supplyState[1];
+    var pairingState = React.useState(null), pairing = pairingState[0], setPairing = pairingState[1];
+    var watcherState = React.useState(null), watcher = watcherState[0], setWatcher = watcherState[1];
     var workspaceState = React.useState('cameron-lab'), workspace = workspaceState[0], setWorkspace = workspaceState[1];
     var budgetState = React.useState('2.50'), budget = budgetState[0], setBudget = budgetState[1];
 
@@ -137,7 +139,18 @@
       fetch('/api/v1/host/probe').then(function (r) { return r.json(); }).then(setProbe);
       fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
       fetch('/api/v1/supply/marketplace').then(function (r) { return r.json(); }).then(setSupply);
+      fetch('/api/v1/companion/pairing').then(function (r) { return r.json(); }).then(setPairing);
+      fetch('/api/v1/cloud-shield/watcher').then(function (r) { return r.json(); }).then(setWatcher);
     }, []);
+
+    function approveLanPeer(candidateId, newStatus) {
+      if (!pairing) return;
+      var nextCandidates = pairing.lan_candidates.map(function (c) {
+        if (c.candidate_id !== candidateId) return c;
+        return Object.assign({}, c, { status: newStatus });
+      });
+      setPairing(Object.assign({}, pairing, { lan_candidates: nextCandidates }));
+    }
 
     function updateSupplyPolicy(nextEnabled, nextHours, nextPayoutCredits) {
       if (!supply) return;
@@ -332,6 +345,84 @@
                 h('td', null, st.cold_nvme_expert_fetches + ' .ktb pages'),
                 h('td', null, st.boundary_int8_payload_bytes + ' B'),
                 h('td', null, st.stage_latency_ms + ' ms'));
+            })))) : null,
+
+        pairing ? h('section', { className: 'two' },
+          h('div', { className: 'panel' },
+            h('p', { className: 'eyebrow' }, 'Zero-click LAN pairing · UDP KDMD beacon queue'),
+            h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Approve discovered local peers via 6-digit SAS code'),
+            h('table', { className: 'mono-table' },
+              h('thead', null, h('tr', null,
+                h('th', null, 'DISCOVERED PEER'),
+                h('th', null, 'SAS CODE'),
+                h('th', null, 'STATUS'),
+                h('th', null, 'ACTION'))),
+              h('tbody', null, pairing.lan_candidates.map(function (c) {
+                var approved = c.status !== 'PendingTrayApproval';
+                return h('tr', { key: c.candidate_id },
+                  h('td', null,
+                    h('div', { style: { color: 'var(--ink)' } }, c.hostname),
+                    h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, c.hardware_summary)),
+                  h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, c.short_auth_code),
+                  h('td', null,
+                    h(K.Badge, { tone: approved ? 'ok' : 'warn', dot: true },
+                      c.status === 'ApprovedTrustedCore' ? 'trusted core' : c.status === 'ApprovedVerifiedMiddleOnly' ? 'middle only' : 'pending tray')),
+                  h('td', null,
+                    h('div', { className: 'kd-row' },
+                      h(K.Button, {
+                        variant: c.status === 'ApprovedTrustedCore' ? 'primary' : 'quiet',
+                        size: 'sm',
+                        onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedTrustedCore'); }
+                      }, 'TrustedCore'),
+                      h(K.Button, {
+                        variant: c.status === 'ApprovedVerifiedMiddleOnly' ? 'primary' : 'quiet',
+                        size: 'sm',
+                        onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedVerifiedMiddleOnly'); }
+                      }, 'Middle-only'))));
+              })))),
+
+          h('div', { className: 'panel' },
+            h('p', { className: 'eyebrow' }, 'OS swapchain & thermal hooks · ' + pairing.os_hysteresis.hook_backend),
+            h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Fast-yield (' + pairing.os_hysteresis.fast_yield_sla_ms + ' ms) & 15 s anti-thrash hysteresis'),
+            h('table', { className: 'mono-table' },
+              h('thead', null, h('tr', null,
+                h('th', null, 'T (MS)'),
+                h('th', null, 'OS HOOK EVENT'),
+                h('th', null, 'STATE'),
+                h('th', null, 'VRAM CAP'))),
+              h('tbody', null, pairing.os_hysteresis.timeline.map(function (step) {
+                return h('tr', { key: step.timestamp_ms },
+                  h('td', null, step.timestamp_ms + ' ms'),
+                  h('td', null, step.event_label),
+                  h('td', null, h(K.Badge, { tone: step.new_state === 'GamingOrHeavyApp' ? 'warn' : 'local' }, step.new_state)),
+                  h('td', { style: { color: 'var(--cadmium-text)' } }, step.allocated_vram_gb.toFixed(1) + ' GB'));
+              }))))) : null,
+
+        watcher ? h('section', { className: 'panel' },
+          h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
+            h('div', null,
+              h('p', { className: 'eyebrow' }, 'Automated CloudShield heartbeat watcher · < 400 ms cutover & failback'),
+              h('div', { className: 'title' }, 'Guarding ' + watcher.protected_local_node + ' (layers ' + watcher.guarded_layers[0] + '–' + watcher.guarded_layers[1] + ') via ' + watcher.standby_vault_node)),
+            h('div', { className: 'kd-row' },
+              h(K.Badge, { tone: 'cloud', dot: true }, watcher.measured_cutover_rto_ms + ' ms cutover · 0 dropped requests'),
+              h(K.Badge, { tone: 'local' }, '18-min outage prorated cost: $' + watcher.total_prorated_incident_cost_usd.toFixed(2)))),
+          h('table', { className: 'mono-table' },
+            h('thead', null, h('tr', null,
+              h('th', null, 'T (SEC)'),
+              h('th', null, 'HEARTBEAT / INCIDENT EVENT'),
+              h('th', null, 'SHIELD STATE'),
+              h('th', null, 'ACTIVE HOST'),
+              h('th', null, 'BURN RATE'),
+              h('th', null, 'PRORATED TOTAL'))),
+            h('tbody', null, watcher.steps.map(function (st) {
+              var isCloudStep = st.state === 'CloudFailoverActive' || st.state === 'DrainingBackToLocal';
+              return h('tr', { key: st.timestamp_sec },
+                h('td', null, st.timestamp_sec + ' s'),
+                h('td', null, st.event_description),
+                h('td', null, h(K.Badge, { tone: isCloudStep ? 'cloud' : 'local', dot: true }, st.state)),
+                h('td', null, st.active_middle_shard_host),
+                h('td', { style: { color: isCloudStep ? 'var(--cherenkov)' : 'var(--cadmium-text)' } }, '$' + st.instantaneous_hourly_burn_usd.toFixed(2) + ' / hr'),
+                h('td', null, '$' + st.cumulative_incident_cost_usd.toFixed(2)));
             })))) : null));
   }
 

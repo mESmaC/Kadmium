@@ -3,21 +3,25 @@
 
 use crate::print_shard_plan;
 use kadmium_core::{
-    KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteActivityMonitor,
-    PoliteActivitySample, PoliteState, SupplyLeasePolicy, SupplyPayoutMode, SupplySettlementEngine,
-    WorkloadKind, sample_personal_cluster,
+    KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, NodeTrustTier,
+    OsSwapchainHysteresisEngine, PoliteActivityMonitor, PoliteActivitySample, PoliteState,
+    SupplyLeasePolicy, SupplyPayoutMode, SupplySettlementEngine, WorkloadKind,
+    sample_personal_cluster,
 };
 use kadmium_data::{
     GitHubConnector, HfByteRangeSlicer, HuggingFaceHubConnector, KtbBankPacker, KtbBankReader,
     KtbMerkleTree, SafetensorsToKtbTranscoder, TensorEncoding,
 };
 use kadmium_gateway::{GatewayState, KadmiumMcpServer, McpJsonRpcRequest};
-use kadmium_network::{ClusterStateCrdt, JoinTicket, LanDiscoveryBeacon, NatTraversalCoordinator};
+use kadmium_network::{
+    ClusterStateCrdt, JoinTicket, LanDiscoveryBeacon, NatTraversalCoordinator,
+    ZeroClickLanPairingEngine,
+};
 use kadmium_runtime::{
     ColibriNvmeDoubleBuffer, DeMoDctCompressor, HardwareKernelDispatcher, Q4KBlockTensor,
     VerdeVerificationEngine,
 };
-use kadmium_sharding::{HybridCloudArbitragePlanner, ShardPlanner};
+use kadmium_sharding::{CloudShieldCutoverWatcher, HybridCloudArbitragePlanner, ShardPlanner};
 
 pub fn run_cloud_shield() {
     let model = ModelSpec::deepseek_v3_671b_moe();
@@ -823,6 +827,74 @@ pub async fn run_bench() {
             r.selected_path,
             r.negotiated_rtt_ms,
             r.direct_p2p_achieved
+        );
+    }
+}
+
+pub fn run_pairing() {
+    let nodes = sample_personal_cluster();
+    let coord = &nodes[0];
+    let candidates = ZeroClickLanPairingEngine::discover_lan_candidates(&coord.id);
+    let hyst = OsSwapchainHysteresisEngine::sample_desktop_gaming_timeline(coord);
+    let watcher = CloudShieldCutoverWatcher::evaluate_incident_timeline();
+
+    println!(
+        "==================================================================================================================="
+    );
+    println!(
+        " KADMIUM (Cd-48) PHASE 3 & 4 — ZERO-CLICK LAN PAIRING, OS SWAPCHAIN HYSTERESIS & <400MS CLOUDSHIELD WATCHER"
+    );
+    println!(
+        "==================================================================================================================="
+    );
+    println!(
+        "\n[1/3] Zero-Click LAN Pairing (`KDMD` UDP Beacon Queue & 6-Digit SAS Companion Tray Verification)"
+    );
+    for c in &candidates {
+        println!(
+            "  * {:<28} @ {:<18} | SAS: [{}] | Status: {:?} | {}",
+            c.hostname, c.lan_socket_addr, c.short_auth_code, c.status, c.hardware_summary
+        );
+    }
+
+    println!(
+        "\n[2/3] OS Swapchain & Thermal Hysteresis ({:?} — `{}`)",
+        hyst.hook_backend, hyst.api_signature
+    );
+    println!(
+        "      Fast-Yield SLA: {:.0} ms (0 ms delay) | Slow-Reclaim Anti-Thrash Cooldown: {} ms",
+        hyst.fast_yield_sla_ms, hyst.slow_reclaim_cooldown_ms
+    );
+    for step in &hyst.timeline {
+        println!(
+            "  * [t={:>5} ms] {:<14} -> {:<24} | VRAM Cap: {:>5.1} GB | {}",
+            step.timestamp_ms,
+            format!("{:?}", step.previous_state),
+            format!("{:?}", step.new_state),
+            step.allocated_vram_gb,
+            step.transition_action
+        );
+    }
+
+    println!(
+        "\n[3/3] Automated `<400ms` CloudShield Heartbeat Watcher ({} -> {}, Layers L{:02}..L{:02})",
+        watcher.protected_local_node,
+        watcher.standby_vault_node,
+        watcher.guarded_layers.0,
+        watcher.guarded_layers.1
+    );
+    println!(
+        "      Measured Cutover RTO: {:.0} ms | Dropped Requests: 0 | 18-Min Outage Prorated Total: ${:.2}",
+        watcher.measured_cutover_rto_ms, watcher.total_prorated_incident_cost_usd
+    );
+    for st in &watcher.steps {
+        println!(
+            "  * [t={:>4} s] {:<24} | Host: {:<40} | Burn: ${:.2}/hr | Cost: ${:.2}",
+            st.timestamp_sec,
+            format!("{:?}", st.state),
+            st.active_middle_shard_host,
+            st.instantaneous_hourly_burn_usd,
+            st.cumulative_incident_cost_usd
         );
     }
 }

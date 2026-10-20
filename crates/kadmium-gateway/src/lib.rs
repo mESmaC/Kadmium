@@ -11,14 +11,15 @@ use axum::{
     routing::{get, post},
 };
 use kadmium_core::{
-    HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteState, SupplyLeasePolicy,
-    SupplyMarketplaceSnapshot, SupplySettlementEngine, WorkloadKind, sample_cloud_burst_gpu_node,
-    sample_node_pool, sample_personal_cluster,
+    HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, OsHookHysteresisReport,
+    OsSwapchainHysteresisEngine, PoliteState, SupplyLeasePolicy, SupplyMarketplaceSnapshot,
+    SupplySettlementEngine, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
+    sample_personal_cluster,
 };
 use kadmium_data::{EcosystemIntegrationsOverview, Fts3TransferScheduler, ThirdPartyTransferJob};
 use kadmium_network::{
-    CoordinatorFailoverQuorum, HolePunchNegotiationResult, JoinTicket, NatTraversalCoordinator,
-    PeerLinkMetrics, build_mesh_link_matrix,
+    CoordinatorFailoverQuorum, HolePunchNegotiationResult, JoinTicket, LanPairingCandidate,
+    NatTraversalCoordinator, PeerLinkMetrics, ZeroClickLanPairingEngine, build_mesh_link_matrix,
 };
 use kadmium_rl::{
     DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, GrpoEpochExecutor,
@@ -30,9 +31,10 @@ use kadmium_runtime::{
     Pipeline1F1BScheduler, TrainingJobTelemetry, sample_boinc_workunits,
 };
 use kadmium_sharding::{
-    ClusterPoolSliceLayout, ClusterShardPlan, DataflowComparisonReport, DataflowStreamPlanner,
-    FailoverShieldSimulation, HybridCloudArbitragePlanner, MultiProviderArbitragePlan,
-    ResponsibilityShiftPlan, ShardPlanner, ShiftTriggerReason, SubClusterPartitioner,
+    CloudShieldCutoverWatcher, CloudShieldWatcherReport, ClusterPoolSliceLayout, ClusterShardPlan,
+    DataflowComparisonReport, DataflowStreamPlanner, FailoverShieldSimulation,
+    HybridCloudArbitragePlanner, MultiProviderArbitragePlan, ResponsibilityShiftPlan, ShardPlanner,
+    ShiftTriggerReason, SubClusterPartitioner,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -422,6 +424,8 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/pipeline/execute", get(get_pipeline_execution))
         .route("/api/v1/runtime/kernels", get(get_runtime_kernels))
         .route("/api/v1/network/nat", get(get_network_nat_matrix))
+        .route("/api/v1/companion/pairing", get(get_companion_pairing))
+        .route("/api/v1/cloud-shield/watcher", get(get_cloud_shield_watcher))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .with_state(state)
@@ -697,6 +701,30 @@ async fn get_network_nat_matrix(
 ) -> Json<Vec<HolePunchNegotiationResult>> {
     let guard = state.lock().expect("gateway state lock");
     Json(NatTraversalCoordinator::probe_cluster_nat_mesh(&guard.nodes))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompanionPairingApiResponse {
+    pub lan_candidates: Vec<LanPairingCandidate>,
+    pub os_hysteresis: OsHookHysteresisReport,
+}
+
+async fn get_companion_pairing(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<CompanionPairingApiResponse> {
+    let guard = state.lock().expect("gateway state lock");
+    let coord_id = &guard.coordinator_quorum.active_leader;
+    let lan_candidates = ZeroClickLanPairingEngine::discover_lan_candidates(coord_id);
+    let os_hysteresis =
+        OsSwapchainHysteresisEngine::sample_desktop_gaming_timeline(&guard.nodes[0]);
+    Json(CompanionPairingApiResponse {
+        lan_candidates,
+        os_hysteresis,
+    })
+}
+
+async fn get_cloud_shield_watcher() -> Json<CloudShieldWatcherReport> {
+    Json(CloudShieldCutoverWatcher::evaluate_incident_timeline())
 }
 
 async fn get_grpo_verified_step() -> Json<GrpoVerifiedStepReport> {

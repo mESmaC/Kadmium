@@ -132,6 +132,8 @@ enum Commands {
     },
     /// Benchmark Phase 2 fused Transformer/MoE kernels (RMSNorm+RoPE, Flash-GQA PagedAttention, Q4_K SwiGLU), HTTP Range Slicer, and STUN/DERP NAT traversal
     Bench,
+    /// Inspect Phase 3/4 Zero-Click LAN Pairing (6-digit SAS), OS Swapchain Hysteresis (<200ms yield / 15s cooldown), and <400ms CloudShield Watcher
+    Pairing,
 }
 
 #[tokio::main]
@@ -169,6 +171,7 @@ async fn main() {
         Commands::Inspect { path } => run_inspect(path.as_deref()),
         Commands::Lease { hours, payout } => run_lease(hours, &payout),
         Commands::Bench => run_bench().await,
+        Commands::Pairing => run_pairing(),
     }
 }
 

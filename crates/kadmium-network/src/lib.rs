@@ -9,7 +9,9 @@ use kadmium_core::{HardwareNode, NodeId, NodeRole, NodeTrustTier, PoliteState};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+pub mod lan_pairing;
 pub mod nat_traversal;
+pub use lan_pairing::*;
 pub use nat_traversal::*;
 
 /// Transport path classification between two peers in the Kadmium mesh.
@@ -603,6 +605,22 @@ mod tests {
             .await
             .expect("recv udp beacon");
         assert_eq!(received_beacon, beacon);
+
+        // Verify ZeroClickLanPairingEngine 6-digit SAS code & one-click ticket approval
+        let mut cands = ZeroClickLanPairingEngine::discover_lan_candidates(&cluster[0].id);
+        assert_eq!(cands.len(), 3);
+        assert_eq!(cands[0].status, PairingApprovalStatus::ApprovedTrustedCore);
+        assert_eq!(cands[1].short_auth_code.len(), 7); // "XXX-YYY"
+        let issued = ZeroClickLanPairingEngine::approve_candidate(
+            &cluster[0].id,
+            &mut cands[2],
+            NodeTrustTier::VerifiedPeerMiddleLayersOnly,
+        );
+        assert_eq!(
+            cands[2].status,
+            PairingApprovalStatus::ApprovedVerifiedMiddleOnly
+        );
+        assert!(JoinTicket::decode_and_verify(&issued.encode_token()).is_ok());
     }
 
     #[test]

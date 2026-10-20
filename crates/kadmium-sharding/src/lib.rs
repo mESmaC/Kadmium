@@ -801,9 +801,11 @@ impl SubClusterPartitioner {
 }
 
 pub mod arbitrage;
+pub mod cloud_shield_watcher;
 pub mod optimizer;
 
 pub use arbitrage::*;
+pub use cloud_shield_watcher::*;
 pub use optimizer::*;
 
 #[cfg(test)]
@@ -926,6 +928,15 @@ mod tests {
         let shield_events = HybridCloudArbitragePlanner::simulate_bidirectional_failover_shield();
         assert_eq!(shield_events.len(), 3);
         assert!(shield_events.iter().all(|e| e.zero_downtime_preserved));
+
+        let watcher = CloudShieldCutoverWatcher::evaluate_incident_timeline();
+        assert!(watcher.measured_cutover_rto_ms < 400.0);
+        assert!(watcher.zero_dropped_requests);
+        assert!((watcher.total_prorated_incident_cost_usd - 0.27).abs() < 0.01);
+        assert_eq!(
+            watcher.steps.last().map(|s| s.state),
+            Some(CloudShieldState::HealthyLocalZeroBurn)
+        );
     }
 
     #[test]

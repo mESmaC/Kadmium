@@ -705,9 +705,11 @@ pub fn sample_node_pool(total_nodes: usize) -> Vec<HardwareNode> {
 }
 
 pub mod governance;
+pub mod os_hooks;
 pub mod supply;
 
 pub use governance::*;
+pub use os_hooks::*;
 pub use supply::*;
 
 #[cfg(test)]
@@ -753,5 +755,14 @@ mod tests {
         assert!(decision.state_changed);
         assert!(decision.vram_to_evict_gb >= 15.0);
         assert!(decision.estimated_yield_latency_ms < 200.0);
+
+        // Verify OsSwapchainHysteresisEngine fast-yield (0ms delay) and slow-reclaim (15,000ms cooldown)
+        let hyst = OsSwapchainHysteresisEngine::sample_desktop_gaming_timeline(&idle_pc);
+        assert_eq!(hyst.timeline[1].new_state, PoliteState::GamingOrHeavyApp);
+        // Step 2 (at 8,000ms, 6s after game launch) holds GamingOrHeavyApp due to 15s hysteresis window!
+        assert_eq!(hyst.timeline[2].new_state, PoliteState::GamingOrHeavyApp);
+        assert!(hyst.timeline[2].cooldown_remaining_ms > 0);
+        // Step 3 (at 25,000ms, >15s after game activity) reclaims IdleDedicated
+        assert_eq!(hyst.timeline[3].new_state, PoliteState::IdleDedicated);
     }
 }
