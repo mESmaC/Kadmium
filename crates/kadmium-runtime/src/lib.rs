@@ -1068,6 +1068,131 @@ impl ColibriNvmeDoubleBuffer {
     }
 }
 
+/// Distributed QLoRA Adapter Layer combining a frozen 4-bit `Q4KBlockTensor` base weight matrix
+/// with trainable low-rank FP32 matrices $A \in \mathbb{R}^{r \times d_{\text{in}}}$ and $B \in \mathbb{R}^{d_{\text{out}} \times r}$:
+/// $$y = W_{\text{Q4K}} x + \frac{\alpha}{r} B (A x)$$
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DistributedQLoRAAdapter {
+    pub d_out: usize,
+    pub d_in: usize,
+    pub rank: usize,
+    pub alpha: f32,
+    pub frozen_base_q4k: Q4KBlockTensor,
+    /// Row-major `rank x d_in` adapter down-projection.
+    pub lora_a: Vec<f32>,
+    /// Row-major `d_out x rank` adapter up-projection.
+    pub lora_b: Vec<f32>,
+}
+
+impl DistributedQLoRAAdapter {
+    pub fn new(base_weights: &[f32], d_out: usize, d_in: usize, rank: usize, alpha: f32) -> Self {
+        let frozen_base_q4k = Q4KBlockTensor::quantize_matrix(base_weights, d_out, d_in);
+        // Deterministic Kaiming-like initialization for A and small non-zero for B so 1st step moves both
+        let lora_a = (0..(rank * d_in))
+            .map(|i| (((i * 13 + 7) % 31) as f32 - 15.0) * 0.01)
+            .collect();
+        let lora_b = (0..(d_out * rank))
+            .map(|i| (((i * 17 + 3) % 19) as f32 - 9.0) * 0.002)
+            .collect();
+
+        Self {
+            d_out,
+            d_in,
+            rank,
+            alpha,
+            frozen_base_q4k,
+            lora_a,
+            lora_b,
+        }
+    }
+
+    /// Computes forward output $y = W_{\text{Q4K}} x + \frac{\alpha}{r} B (A x)$ and intermediate $h = A x$.
+    pub fn forward(&self, x: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        assert_eq!(x.len(), self.d_in);
+        let mut y = self.frozen_base_q4k.matvec_f32(x);
+        let scale = self.alpha / (self.rank.max(1) as f32);
+
+        // h = A * x (len = rank)
+        let mut h = vec![0.0f32; self.rank];
+        for (r, h_val) in h.iter_mut().enumerate() {
+            let mut sum = 0.0f32;
+            for (c, &x_val) in x.iter().enumerate() {
+                sum += self.lora_a[r * self.d_in + c] * x_val;
+            }
+            *h_val = sum;
+        }
+
+        // y += scale * B * h
+        for (o, y_val) in y.iter_mut().enumerate() {
+            let mut delta = 0.0f32;
+            for (r, &h_val) in h.iter().enumerate() {
+                delta += self.lora_b[o * self.rank + r] * h_val;
+            }
+            *y_val += scale * delta;
+        }
+
+        (y, h)
+    }
+
+    /// Executes one analytical backward + SGD step on MSE loss $\mathcal{L} = \frac{1}{2} \|y - y_{\text{target}}\|_2^2$,
+    /// returning `(loss_before, flattened_lora_gradients)`.
+    pub fn backward_and_step(
+        &mut self,
+        x: &[f32],
+        y_target: &[f32],
+        learning_rate: f32,
+    ) -> (f32, Vec<f32>) {
+        let (y, h) = self.forward(x);
+        let scale = self.alpha / (self.rank.max(1) as f32);
+
+        // dy[o] = y[o] - y_target[o]
+        let mut dy = vec![0.0f32; self.d_out];
+        let mut loss = 0.0f32;
+        for o in 0..self.d_out {
+            let diff = y[o] - y_target[o];
+            dy[o] = diff;
+            loss += 0.5 * diff * diff;
+        }
+
+        // grad_B[o, r] = scale * dy[o] * h[r]
+        let mut grad_b = vec![0.0f32; self.d_out * self.rank];
+        for (o, &dy_val) in dy.iter().enumerate() {
+            for (r, &h_val) in h.iter().enumerate() {
+                grad_b[o * self.rank + r] = scale * dy_val * h_val;
+            }
+        }
+
+        // dh[r] = scale * sum_o B[o, r] * dy[o]
+        let mut dh = vec![0.0f32; self.rank];
+        for (r, dh_val) in dh.iter_mut().enumerate() {
+            let mut acc = 0.0f32;
+            for (o, &dy_val) in dy.iter().enumerate() {
+                acc += self.lora_b[o * self.rank + r] * dy_val;
+            }
+            *dh_val = scale * acc;
+        }
+
+        // grad_A[r, c] = dh[r] * x[c]
+        let mut grad_a = vec![0.0f32; self.rank * self.d_in];
+        for (r, &dh_val) in dh.iter().enumerate() {
+            for (c, &x_val) in x.iter().enumerate() {
+                grad_a[r * self.d_in + c] = dh_val * x_val;
+            }
+        }
+
+        for (b_val, &gb) in self.lora_b.iter_mut().zip(grad_b.iter()) {
+            *b_val -= learning_rate * gb;
+        }
+        for (a_val, &ga) in self.lora_a.iter_mut().zip(grad_a.iter()) {
+            *a_val -= learning_rate * ga;
+        }
+
+        let mut flat_grads = grad_a;
+        flat_grads.extend_from_slice(&grad_b);
+        (loss, flat_grads)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1252,5 +1377,30 @@ mod tests {
         for t in &traces {
             assert_eq!(t.effective_pipeline_stall_ms, 0.0);
         }
+    }
+
+    #[test]
+    fn test_distributed_qlora_adapter_forward_backward_reduces_loss() {
+        let d_out = 8usize;
+        let d_in = 32usize;
+        let base_w: Vec<f32> = (0..(d_out * d_in))
+            .map(|i| ((i as f32) * 0.04).sin() * 0.3)
+            .collect();
+        let x: Vec<f32> = (0..d_in).map(|j| ((j as f32) * 0.1).cos() * 0.6).collect();
+        let target: Vec<f32> = vec![0.5, -0.4, 0.3, -0.2, 0.6, -0.5, 0.2, 0.1];
+
+        let mut qlora = DistributedQLoRAAdapter::new(&base_w, d_out, d_in, 4, 8.0);
+        let (initial_loss, grads_0) = qlora.backward_and_step(&x, &target, 0.05);
+        assert!(!grads_0.is_empty());
+
+        let mut last_loss = initial_loss;
+        for _ in 0..8 {
+            let (loss, _) = qlora.backward_and_step(&x, &target, 0.05);
+            last_loss = loss;
+        }
+        assert!(
+            last_loss < initial_loss,
+            "QLoRA backward step must reduce loss ({last_loss} < {initial_loss})"
+        );
     }
 }

@@ -370,6 +370,8 @@ pub struct ShiftRequest {
 pub struct ChatCompletionRequest {
     pub model: Option<String>,
     pub messages: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub stream: Option<bool>,
 }
 
 /// Builds the Axum router serving both the Unified Dashboard and all Backend REST/AI Gateway APIs.
@@ -775,10 +777,48 @@ async fn post_cluster_shift(
     Json(guard.snapshot())
 }
 
+/// Formats an OpenAI-compatible `text/event-stream` SSE payload (`chat.completion.chunk` + `[DONE]`).
+pub fn format_openai_sse_stream(epoch: u64, model_name: &str, tokens: &[&str]) -> String {
+    let mut sse = String::new();
+    let req_id = format!("chatcmpl-kadmium-e{epoch}");
+
+    for (idx, tok) in tokens.iter().enumerate() {
+        let delta = if idx == 0 {
+            serde_json::json!({ "role": "assistant", "content": tok })
+        } else {
+            serde_json::json!({ "content": tok })
+        };
+        let chunk = serde_json::json!({
+            "id": req_id,
+            "object": "chat.completion.chunk",
+            "model": model_name,
+            "choices": [{
+                "index": 0,
+                "delta": delta,
+                "finish_reason": serde_json::Value::Null
+            }]
+        });
+        sse.push_str(&format!("data: {chunk}\n\n"));
+    }
+
+    let final_chunk = serde_json::json!({
+        "id": req_id,
+        "object": "chat.completion.chunk",
+        "model": model_name,
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": "stop"
+        }]
+    });
+    sse.push_str(&format!("data: {final_chunk}\n\ndata: [DONE]\n\n"));
+    sse
+}
+
 async fn openai_chat_completions(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ChatCompletionRequest>,
-) -> Json<serde_json::Value> {
+) -> axum::response::Response {
     let guard = state.lock().expect("gateway state lock");
     let model_name = req
         .model
@@ -791,6 +831,34 @@ async fn openai_chat_completions(
         .unwrap_or("Kadmium distributed inference");
     let exec_report =
         DistributedMoEPipelineExecutor::execute_forward_pass(&guard.inference_plan, prompt_sample);
+
+    if req.stream == Some(true) {
+        let sse_body = format_openai_sse_stream(
+            guard.epoch,
+            &model_name,
+            &[
+                "Executed ",
+                "across ",
+                "the ",
+                "Kadmium ",
+                "(Cd-48) ",
+                "heterogeneous ",
+                "fabric ",
+                "(Asymmetric ",
+                "Q* ",
+                "Sharding ",
+                "+ ",
+                "Colibri ",
+                "Double-Buffered ",
+                "NVMe).",
+            ],
+        );
+        return (
+            [(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")],
+            sse_body,
+        )
+            .into_response();
+    }
 
     let active_stages: Vec<String> = guard
         .inference_plan
@@ -828,6 +896,7 @@ async fn openai_chat_completions(
             "finish_reason": "stop"
         }]
     }))
+    .into_response()
 }
 
 async fn anthropic_messages(
@@ -932,5 +1001,9 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(false)
         );
+
+        let sse = format_openai_sse_stream(1, "deepseek-v3-671b-moe", &["Hello ", "Kadmium"]);
+        assert!(sse.contains("\"object\":\"chat.completion.chunk\""));
+        assert!(sse.ends_with("data: [DONE]\n\n"));
     }
 }
