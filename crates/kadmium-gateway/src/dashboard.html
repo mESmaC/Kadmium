@@ -246,6 +246,7 @@
     var cloudState = React.useState(null), cloud = cloudState[0], setCloud = cloudState[1];
     var probeState = React.useState(null), probe = probeState[0], setProbe = probeState[1];
     var companionState = React.useState(null), companion = companionState[0], setCompanion = companionState[1];
+    var integrationsState = React.useState(null), integrations = integrationsState[0], setIntegrations = integrationsState[1];
     var gatewayReplyState = React.useState(null), gatewayReply = gatewayReplyState[0], setGatewayReply = gatewayReplyState[1];
 
     React.useEffect(function () {
@@ -260,6 +261,7 @@
       fetch('/api/v1/cloud-shield').then(function (r) { return r.json(); }).then(setCloud);
       fetch('/api/v1/host/probe').then(function (r) { return r.json(); }).then(setProbe);
       fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setCompanion);
+      fetch('/api/v1/integrations').then(function (r) { return r.json(); }).then(setIntegrations);
     }, []);
 
     function triggerScenario(scenario) {
@@ -387,6 +389,7 @@
             items: [
               { id: 'nodes', label: 'Nodes', count: nodes.length },
               { id: 'shards', label: 'Shard plan' },
+              { id: 'integrations', label: 'HF & GitHub', count: integrations ? integrations.connectors.length : 5 },
               { id: 'dream', label: 'Dream-RSI & RL' },
               { id: 'slices', label: 'Sub-cluster slices', count: slices ? slices.slices.length : 5 },
               { id: 'cloud', label: 'Kadmium Cloud' },
@@ -442,6 +445,46 @@
                     h('td', null, t.estimated_bandwidth_gbps + ' Gbps'),
                     h('td', null, h(K.Badge, { tone: 'ok', dot: true }, 'resident')));
                 }))))) : null,
+
+          tab === 'integrations' && integrations ? h('div', { className: 'kd-stack' },
+            h('div', { className: 'kd-grid' },
+              integrations.connectors.map(function (c) {
+                return h(K.NodeCard, {
+                  key: c.id,
+                  name: c.provider,
+                  hardware: c.uri_scheme + ' · ' + c.example_uri,
+                  kind: c.placement === 'cloud' ? 'cloud' : 'nas',
+                  placement: c.placement === 'cloud' ? 'cloud' : 'local',
+                  status: 'resident',
+                  shards: c.capabilities[0]
+                });
+              })),
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Hugging Face Hub selective layer-range pull · ' + integrations.sample_hf_pull_plan.hf_ref.repo_id),
+              h('table', { className: 'mono-table' },
+                h('thead', null, h('tr', null,
+                  h('th', null, 'WORKER NODE'),
+                  h('th', null, 'LAYERS'),
+                  h('th', null, 'REQUIRED SAFETENSORS SHARDS'),
+                  h('th', null, 'SELECTIVE PULL'),
+                  h('th', null, 'AVOIDED DOWNLOAD'),
+                  h('th', null, 'COMPILED .KTB BANK'))),
+                h('tbody', null, integrations.sample_hf_pull_plan.node_pulls.map(function (np) {
+                  return h('tr', { key: np.hostname },
+                    h('td', null, np.hostname),
+                    h('td', null, np.start_layer + '–' + np.end_layer),
+                    h('td', null, np.required_safetensors_files.join(', ')),
+                    h('td', null, np.selective_download_gb + ' GB'),
+                    h('td', null, h(K.Badge, { tone: 'ok' }, np.full_repo_avoided_gb + ' GB saved')),
+                    h('td', null, np.output_ktb_bank_path));
+                })))),
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'GitHub commit-pinned RL & Slice-on-PR evaluation · gh://' + integrations.sample_github_ci_run.gh_ref.owner + '/' + integrations.sample_github_ci_run.gh_ref.repo),
+              h('div', { className: 'kd-row' },
+                h(K.Badge, { tone: 'local' }, 'slice: ' + integrations.sample_github_ci_run.assigned_slice_id),
+                h(K.Badge, { tone: 'ok', dot: true }, integrations.sample_github_ci_run.github_check_conclusion),
+                h(K.Badge, { tone: 'neutral' }, 'sha: ' + integrations.sample_github_ci_run.pinned_commit_sha),
+                h(K.Badge, { tone: 'local' }, 'dream-rsi speedup: ' + integrations.sample_github_ci_run.dream_rsi_best_speedup + '×')))) : null,
 
           tab === 'dream' && dream ? h('div', { className: 'kd-stack' },
             h('div', { className: 'panel' },

@@ -14,7 +14,7 @@ use kadmium_core::{
     HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteState, WorkloadKind,
     sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
-use kadmium_data::{Fts3TransferScheduler, ThirdPartyTransferJob};
+use kadmium_data::{EcosystemIntegrationsOverview, Fts3TransferScheduler, ThirdPartyTransferJob};
 use kadmium_network::{
     CoordinatorFailoverQuorum, JoinTicket, PeerLinkMetrics, build_mesh_link_matrix,
 };
@@ -79,6 +79,7 @@ const DOC_TRAINING_DREAM_RSI_MD: &str =
     include_str!("../../../docs/guides/training-and-dream-rsi.md");
 const DOC_SUBCLUSTERS_CLOUD_MD: &str =
     include_str!("../../../docs/guides/subclusters-and-cloud-shield.md");
+const DOC_INTEGRATIONS_MD: &str = include_str!("../../../docs/guides/integrations-hf-github.md");
 const DOC_ARCHITECTURE_MD: &str = include_str!("../../../docs/ARCHITECTURE.md");
 
 /// Structured entry for a public documentation page served from `docs/` via `/api/v1/docs` and `/docs`.
@@ -150,6 +151,14 @@ pub fn build_documentation_catalog() -> Vec<DocumentationPage> {
             file_path: "docs/guides/subclusters-and-cloud-shield.md".into(),
             summary: "Partitioning 100-node pools into isolated sub-clusters, Desktop Companion OSS/Cloud switching, and <400ms Bidirectional Failover.".into(),
             markdown: DOC_SUBCLUSTERS_CLOUD_MD.into(),
+        },
+        DocumentationPage {
+            slug: "integrations-hf-github".into(),
+            title: "Hugging Face (hf://), GitHub (gh://) & Ecosystem Integrations".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/integrations-hf-github.md".into(),
+            summary: "Layer-aware selective Safetensors/GGUF pulling, dataset streaming, commit-pinned GitHub RL/Dream-RSI worlds, and S3/OCI connectors.".into(),
+            markdown: DOC_INTEGRATIONS_MD.into(),
         },
         DocumentationPage {
             slug: "architecture".into(),
@@ -413,6 +422,7 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/host/probe", get(get_local_host_probe))
         .route("/api/v1/companion/status", get(get_companion_status))
         .route("/api/v1/companion/mode", post(post_companion_mode))
+        .route("/api/v1/integrations", get(get_integrations_overview))
         .route("/api/v1/pipeline/execute", get(get_pipeline_execution))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
@@ -663,6 +673,15 @@ async fn get_grpo_verified_step() -> Json<GrpoVerifiedStepReport> {
     Json(GrpoEpochExecutor::run_verified_grpo_step())
 }
 
+async fn get_integrations_overview(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<EcosystemIntegrationsOverview> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(EcosystemIntegrationsOverview::build_for_plan(
+        &guard.inference_plan,
+    ))
+}
+
 async fn post_cluster_shift(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ShiftRequest>,
@@ -846,7 +865,7 @@ mod tests {
 
         // Verify embedded public documentation catalog from `docs/`
         let docs = build_documentation_catalog();
-        assert_eq!(docs.len(), 8);
+        assert_eq!(docs.len(), 9);
         assert!(docs.iter().all(|d| !d.markdown.is_empty()));
     }
 }

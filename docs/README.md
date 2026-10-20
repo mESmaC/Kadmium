@@ -22,6 +22,7 @@ Kadmium turns every piece of silicon you can reach—your main gaming desktop, A
 | [**Hardware Setup, Asymmetric Sharding & Polite Governance**](./guides/hardware-and-sharding.md) | Combine GPUs, Apple Silicon unified memory, NAS vaults, and SBCs; compile GGUF/Safetensors to `.ktb`; configure `<200ms` Gaming Auto-Yield and 3-Tier Trust Zones. |
 | [**Distributed Training, RL & Dream-RSI Evolving Worlds**](./guides/training-and-dream-rsi.md) | Run Sharded-Island DiLoCo + `DeMo` training over consumer broadband, and use SBCs/legacy laptops to run **Dream-RSI** offline causal replay at zero GPU cost. |
 | [**Sub-Cluster Slicing, Desktop Companion & CloudShield**](./guides/subclusters-and-cloud-shield.md) | Partition a 100-node pool into isolated sub-clusters (Prod, Staging, Training, RL), switch the Companion App between Self-Hosted OSS and `kadmium.ai` Cloud, and configure Bidirectional Failover Shield. |
+| [**Hugging Face (`hf://`), GitHub (`gh://`) & Ecosystem Integrations**](./guides/integrations-hf-github.md) | Pull selective Safetensors/GGUF shards and datasets from Hugging Face Hub, mount commit-pinned RL/Dream-RSI worlds from GitHub, and configure `oci://`, `s3://`, and `wandb://` connectors. |
 
 ---
 

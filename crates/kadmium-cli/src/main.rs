@@ -4,7 +4,8 @@ use kadmium_core::{
     sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::{
-    Fts3TransferScheduler, KtbBankPacker, KtbBankReader, SafetensorsToKtbTranscoder, TensorEncoding,
+    Fts3TransferScheduler, GitHubConnector, HuggingFaceHubConnector, KtbBankPacker, KtbBankReader,
+    SafetensorsToKtbTranscoder, TensorEncoding,
 };
 use kadmium_gateway::{GatewayState, build_router};
 use kadmium_network::{JoinTicket, LanDiscoveryBeacon};
@@ -81,6 +82,12 @@ enum Commands {
         #[arg(short, long)]
         ticket: Option<String>,
     },
+    /// Pull and stage a Hugging Face model/dataset (hf://...) or GitHub RL/Dream-RSI world (gh://...)
+    Pull {
+        /// Ecosystem URI (e.g., hf://deepseek-ai/DeepSeek-V3@main or gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt)
+        #[arg(default_value = "hf://deepseek-ai/DeepSeek-V3@main")]
+        uri: String,
+    },
 }
 
 #[tokio::main]
@@ -105,6 +112,7 @@ async fn main() {
         Commands::Plan { model, workload } => run_plan(&model, &workload),
         Commands::Serve { port } => run_server(port).await,
         Commands::Join { ticket } => run_join(ticket).await,
+        Commands::Pull { uri } => run_pull(&uri),
     }
 }
 
@@ -907,4 +915,63 @@ async fn run_join(ticket_arg: Option<String>) {
     let model = ModelSpec::deepseek_v3_671b_moe();
     let plan = ShardPlanner::compute_plan(2, &model, WorkloadKind::Inference, &cluster);
     print_shard_plan(&plan);
+}
+
+fn run_pull(uri: &str) {
+    println!(
+        "===================================================================================="
+    );
+    println!(" Kadmium (Cd-48) — Ecosystem Connector (`hf://` & `gh://` Selective Staging)");
+    println!(
+        "===================================================================================="
+    );
+
+    if uri.starts_with("gh://") || uri.contains("github.com") {
+        let gh_run =
+            GitHubConnector::evaluate_repo_on_slice(uri).expect("Failed to parse GitHub URI");
+        println!(
+            "  * GitHub Repo Mounted:    {}/{} @ {} (SHA: {})",
+            gh_run.gh_ref.owner,
+            gh_run.gh_ref.repo,
+            gh_run.gh_ref.git_ref,
+            gh_run.pinned_commit_sha
+        );
+        println!("  * Subpath / World:        {:?}", gh_run.gh_ref.subpath);
+        println!("  * Target Slice Assigned:  {}", gh_run.assigned_slice_id);
+        println!("  * Sandbox Runtime:        {}", gh_run.sandbox_runtime);
+        println!(
+            "  * Verde Check Conclusion: {} ({:.1} tok/s, {:.2}x Dream-RSI speedup)",
+            gh_run.github_check_conclusion,
+            gh_run.measured_tokens_per_sec,
+            gh_run.dream_rsi_best_speedup
+        );
+    } else {
+        let cluster = sample_personal_cluster();
+        let model = ModelSpec::deepseek_v3_671b_moe();
+        let plan = ShardPlanner::compute_plan(1, &model, WorkloadKind::Inference, &cluster);
+        let hf_plan = HuggingFaceHubConnector::plan_selective_model_pull(uri, &plan)
+            .expect("Failed to parse Hugging Face URI");
+        println!(
+            "  * Hugging Face Repo:      {} (rev: {}, kind: {:?})",
+            hf_plan.hf_ref.repo_id, hf_plan.hf_ref.revision, hf_plan.hf_ref.kind
+        );
+        println!("  * Index Manifest URL:     {}", hf_plan.index_manifest_url);
+        println!("  * Primary .ktb Seed Node: {}", hf_plan.seed_vault_node);
+        println!(
+            "\n{:<22} {:<10} {:<12} {:<14} {:<42}",
+            "WORKER HOSTNAME", "LAYERS", "SELECTIVE", "AVOIDED DL", "COMPILED .KTB BANK"
+        );
+        println!("{}", "-".repeat(104));
+        for np in &hf_plan.node_pulls {
+            println!(
+                "{:<22} L{:02}..L{:02}   {:>6.2} GB   {:>8.2} GB   {}",
+                np.hostname,
+                np.start_layer,
+                np.end_layer,
+                np.selective_download_gb,
+                np.full_repo_avoided_gb,
+                np.output_ktb_bank_path
+            );
+        }
+    }
 }
