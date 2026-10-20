@@ -124,6 +124,7 @@
     var statusState = React.useState(null), status = statusState[0], setStatus = statusState[1];
     var probeState = React.useState(null), probe = probeState[0], setProbe = probeState[1];
     var execState = React.useState(null), execReport = execState[0], setExecReport = execState[1];
+    var supplyState = React.useState(null), supply = supplyState[0], setSupply = supplyState[1];
     var workspaceState = React.useState('cameron-lab'), workspace = workspaceState[0], setWorkspace = workspaceState[1];
     var budgetState = React.useState('2.50'), budget = budgetState[0], setBudget = budgetState[1];
 
@@ -135,7 +136,24 @@
       fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
       fetch('/api/v1/host/probe').then(function (r) { return r.json(); }).then(setProbe);
       fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
+      fetch('/api/v1/supply/marketplace').then(function (r) { return r.json(); }).then(setSupply);
     }, []);
+
+    function updateSupplyPolicy(nextEnabled, nextHours, nextPayoutCredits) {
+      if (!supply) return;
+      var updated = Object.assign({}, supply.policy, {
+        enabled: nextEnabled,
+        daily_lease_hours: nextHours,
+        payout_mode: nextPayoutCredits
+          ? { KadmiumCloudCredits: { bonus_multiplier: 1.25 } }
+          : 'UsdDirectPayout'
+      });
+      fetch('/api/v1/supply/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updated)
+      }).then(function (r) { return r.json(); }).then(setSupply);
+    }
 
     function switchMode(useCloud) {
       var payload = useCloud
@@ -247,6 +265,47 @@
               defaultValue: probe.join_ticket_token,
               hint: 'UDP LAN beacon active on port 7849 (KDMD magic).'
             }))) : null,
+
+        supply ? h('section', { className: 'panel' },
+          h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
+            h('div', null,
+              h('p', { className: 'eyebrow' }, 'Kadmium Supply Grid · lease idle local silicon'),
+              h('div', { className: 'title' }, 'Earn direct USD or 1.25× Kadmium Cloud credits while idle')),
+            h('div', { className: 'kd-row' },
+              h(K.Badge, { tone: supply.policy.enabled ? 'local' : 'neutral', dot: true },
+                supply.policy.enabled
+                  ? 'Leasing active · $' + supply.total_hourly_cloud_credits_usd.toFixed(2) + '/hr credits'
+                  : 'Leasing paused'),
+              h(K.Button, {
+                variant: supply.policy.enabled ? 'primary' : 'default',
+                size: 'sm',
+                onClick: function () { updateSupplyPolicy(!supply.policy.enabled, supply.policy.daily_lease_hours, true); }
+              }, supply.policy.enabled ? 'Pause leasing' : 'Enable leasing'),
+              h(K.Button, {
+                variant: supply.policy.payout_mode && supply.policy.payout_mode.KadmiumCloudCredits ? 'primary' : 'quiet',
+                size: 'sm',
+                onClick: function () { updateSupplyPolicy(true, supply.policy.daily_lease_hours, true); }
+              }, '1.25× Cloud credits ($' + supply.total_projected_monthly_cloud_credits_usd.toFixed(0) + '/mo)'),
+              h(K.Button, {
+                variant: supply.policy.payout_mode === 'UsdDirectPayout' ? 'primary' : 'quiet',
+                size: 'sm',
+                onClick: function () { updateSupplyPolicy(true, supply.policy.daily_lease_hours, false); }
+              }, 'Direct USD ($' + supply.total_projected_monthly_usd.toFixed(0) + '/mo)'))),
+          h('table', { className: 'mono-table' },
+            h('thead', null, h('tr', null,
+              h('th', null, 'LOCAL NODE'),
+              h('th', null, 'HARDWARE'),
+              h('th', null, 'USD / HR'),
+              h('th', null, '1.25× CREDITS / HR'),
+              h('th', null, 'PROJECTED MONTHLY (1.25×)'))),
+            h('tbody', null, supply.node_quotes.map(function (q) {
+              return h('tr', { key: q.node_id },
+                h('td', null, q.hostname),
+                h('td', null, q.hardware_summary),
+                h('td', null, '$' + q.usd_rate_per_hour.toFixed(2)),
+                h('td', { style: { color: 'var(--cadmium-text)' } }, '$' + q.cloud_credit_rate_per_hour_usd.toFixed(2)),
+                h('td', null, '$' + q.projected_monthly_cloud_credits_usd.toFixed(2)));
+            })))) : null,
 
         execReport ? h('section', { className: 'panel' },
           h('p', { className: 'eyebrow' }, 'Live pipeline execution trace · Top-4 MoE router + Speculative draft verification'),

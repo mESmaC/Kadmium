@@ -11,8 +11,9 @@ use axum::{
     routing::{get, post},
 };
 use kadmium_core::{
-    HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteState, WorkloadKind,
-    sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
+    HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteState, SupplyLeasePolicy,
+    SupplyMarketplaceSnapshot, SupplySettlementEngine, WorkloadKind, sample_cloud_burst_gpu_node,
+    sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::{EcosystemIntegrationsOverview, Fts3TransferScheduler, ThirdPartyTransferJob};
 use kadmium_network::{
@@ -263,6 +264,7 @@ pub struct CompanionAppStatus {
 pub struct GatewayState {
     pub epoch: u64,
     pub companion_mode: CompanionConnectionMode,
+    pub supply_policy: SupplyLeasePolicy,
     pub coordinator_quorum: CoordinatorFailoverQuorum,
     pub nodes: Vec<HardwareNode>,
     pub inference_model: ModelSpec,
@@ -301,6 +303,7 @@ impl GatewayState {
             companion_mode: CompanionConnectionMode::SelfHostedOpenSource {
                 local_coordinator_url: "http://127.0.0.1:7848".into(),
             },
+            supply_policy: SupplyLeasePolicy::default(),
             coordinator_quorum,
             nodes,
             inference_model,
@@ -310,6 +313,10 @@ impl GatewayState {
             fts3_transfers,
             last_shift: None,
         }
+    }
+
+    pub fn supply_marketplace(&self) -> SupplyMarketplaceSnapshot {
+        SupplySettlementEngine::evaluate_cluster_supply(&self.nodes, &self.supply_policy)
     }
 
     pub fn companion_status(&self) -> CompanionAppStatus {
@@ -520,6 +527,8 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/host/probe", get(get_local_host_probe))
         .route("/api/v1/companion/status", get(get_companion_status))
         .route("/api/v1/companion/mode", post(post_companion_mode))
+        .route("/api/v1/supply/marketplace", get(get_supply_marketplace))
+        .route("/api/v1/supply/configure", post(post_supply_configure))
         .route("/api/v1/integrations", get(get_integrations_overview))
         .route("/api/v1/mcp", get(get_mcp_manifest))
         .route("/mcp", post(post_mcp_rpc))
@@ -759,6 +768,22 @@ async fn post_companion_mode(
     let mut guard = state.lock().expect("gateway state lock");
     guard.companion_mode = new_mode;
     Json(guard.companion_status())
+}
+
+async fn get_supply_marketplace(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<SupplyMarketplaceSnapshot> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(guard.supply_marketplace())
+}
+
+async fn post_supply_configure(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(new_policy): Json<SupplyLeasePolicy>,
+) -> Json<SupplyMarketplaceSnapshot> {
+    let mut guard = state.lock().expect("gateway state lock");
+    guard.supply_policy = new_policy;
+    Json(guard.supply_marketplace())
 }
 
 async fn get_pipeline_execution(
@@ -1071,9 +1096,13 @@ mod tests {
 
         // Verify Kadmium MCP Server (JSON-RPC 2.0 initialize, tools/list, tools/call, resources/read)
         let manifest = KadmiumMcpServer::manifest();
-        assert_eq!(manifest.tools.len(), 6);
+        assert_eq!(manifest.tools.len(), 7);
         assert_eq!(manifest.resources.len(), 5);
         assert_eq!(manifest.prompts.len(), 2);
+
+        let supply = state.supply_marketplace();
+        assert!(supply.total_hourly_usd > 0.0);
+        assert!(supply.total_hourly_cloud_credits_usd > supply.total_hourly_usd);
 
         let init_resp = KadmiumMcpServer::handle_request(
             &mut state,

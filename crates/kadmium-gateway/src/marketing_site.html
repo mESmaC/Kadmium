@@ -539,7 +539,7 @@
       code: '{\n  "mcpServers": {\n    "kadmium": {\n      "command": "kadmium",\n      "args": ["mcp"],\n      "env": {\n        "KADMIUM_COORDINATOR_URL": "http://127.0.0.1:7848"\n      }\n    }\n  }\n}',
       rows: [
         ['MCP transports', 'stdio (kadmium mcp) + Streamable HTTP (POST http://127.0.0.1:7848/mcp)'],
-        ['Exposed MCP tools', 'cluster_status, plan_sharding, pull_artifact, run_inference, verify_rl_sandbox, cloud_shield_arbitrage'],
+        ['Exposed MCP tools', 'cluster_status, plan_sharding, pull_artifact, run_inference, verify_rl_sandbox, cloud_shield_arbitrage, supply_marketplace'],
         ['Hugging Face (hf://)', 'Selective byte-range .safetensors pull per node (avoids 200+ GB redundant DL)'],
         ['GitHub (gh://)', 'Commit-pinned RL worlds & Sub-Cluster Slice-on-PR evaluations'],
         ['Observability', 'Prometheus /metrics + Weights & Biases (wandb://) telemetry exporter']
@@ -547,10 +547,73 @@
     }
   };
 
+  var SUPPLY_NODES = [
+    {
+      id: 'rig-alpha-rtx4090',
+      name: 'rig-alpha-rtx4090',
+      hardware: 'rtx 4090 · 24 gb vram · 82.6 tflops',
+      workload: 'Blind middle layers (1..N-2) & DiLoCo island',
+      usdPerHour: 0.38
+    },
+    {
+      id: 'mac-mini-m4-pro',
+      name: 'mac-mini-m4-pro',
+      hardware: 'apple m4 pro · 48 gb unified · 273 gb/s',
+      workload: 'Contiguous middle MoE layers (q* = 0.96)',
+      usdPerHour: 0.29
+    },
+    {
+      id: 'zephyrus-g16-rtx4070',
+      name: 'zephyrus-g16-rtx4070',
+      hardware: 'rtx 4070m · 8 gb vram · 32 gb ddr5',
+      workload: 'Middle attention blocks & DeMo DCT outer steps',
+      usdPerHour: 0.14
+    },
+    {
+      id: 'rk3588-sbc-bramble',
+      name: 'rk3588-sbc-bramble',
+      hardware: '4× rk3588 arm64 + 24 tops npu',
+      workload: 'Fuel-capped WASI RL verification & Dream-RSI MCTS',
+      usdPerHour: 0.06
+    },
+    {
+      id: 'synology-nas-vault',
+      name: 'synology-nas-vault',
+      hardware: '16 tb zfs · 10 gbe · merkle .ktb seed cache',
+      workload: 'CERN FTS3 64 KiB page-aligned P2P shard seeding',
+      usdPerHour: 0.05
+    }
+  ];
+
   function Site() {
     var themeState = React.useState('dark'), theme = themeState[0], setTheme = themeState[1];
     var scenarioState = React.useState('local_mesh'), activeScenarioKey = scenarioState[0], setScenarioKey = scenarioState[1];
     var workloadTabState = React.useState('inference'), workloadTab = workloadTabState[0], setWorkloadTab = workloadTabState[1];
+    var leaseHoursState = React.useState(12), leaseHours = leaseHoursState[0], setLeaseHours = leaseHoursState[1];
+    var payoutModeState = React.useState('credits'), payoutMode = payoutModeState[0], setPayoutMode = payoutModeState[1];
+    var enabledSupplyState = React.useState({
+      'rig-alpha-rtx4090': true,
+      'mac-mini-m4-pro': true,
+      'zephyrus-g16-rtx4070': true,
+      'rk3588-sbc-bramble': true,
+      'synology-nas-vault': true
+    }), enabledSupply = enabledSupplyState[0], setEnabledSupply = enabledSupplyState[1];
+
+    function toggleSupplyNode(id) {
+      setEnabledSupply(function (prev) {
+        var next = Object.assign({}, prev);
+        next[id] = !prev[id];
+        return next;
+      });
+    }
+
+    var hourlyUsdTotal = SUPPLY_NODES.reduce(function (acc, nd) {
+      return acc + (enabledSupply[nd.id] ? nd.usdPerHour : 0);
+    }, 0);
+    var hourlyCreditsTotal = hourlyUsdTotal * 1.25;
+    var monthlyUsdTotal = hourlyUsdTotal * leaseHours * 30;
+    var monthlyCreditsTotal = hourlyCreditsTotal * leaseHours * 30;
+    var monthlyBurstHoursL40s = monthlyCreditsTotal / 0.89;
 
     React.useEffect(function () {
       document.documentElement.setAttribute('data-theme', theme);
@@ -770,13 +833,86 @@
                 h('td', null, 'CERN FTS3 third-party P2P staging & < 400 ms failover shield'),
                 h('td', null, h(K.Badge, { tone: 'cloud' }, 'hybrid')))))),
 
-        /* 6. Open Source vs. Kadmium Cloud Plan Cards + Arbitrage Table */
+        /* 6. Kadmium Supply Grid: Lease Your Idle Silicon */
+        h('section', { className: 'kd-stack' },
+          h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'flex-end' } },
+            h('div', null,
+              h('p', { className: 'eyebrow' }, 'Kadmium Supply Grid · two-sided compute fabric'),
+              h('h2', { className: 'headline', style: { margin: 0 } }, 'Lease idle silicon while you sleep. Yield in under 200 ms when you sit down.')),
+            h('div', { className: 'kd-row' },
+              h(K.Button, {
+                variant: payoutMode === 'credits' ? 'primary' : 'default',
+                size: 'sm',
+                onClick: function () { setPayoutMode('credits'); }
+              }, '1.25× Cloud credits'),
+              h(K.Button, {
+                variant: payoutMode === 'usd' ? 'primary' : 'default',
+                size: 'sm',
+                onClick: function () { setPayoutMode('usd'); }
+              }, 'Direct USD payout'),
+              [8, 12, 16, 24].map(function (hrs) {
+                return h(K.Button, {
+                  key: hrs,
+                  variant: leaseHours === hrs ? 'primary' : 'default',
+                  size: 'sm',
+                  onClick: function () { setLeaseHours(hrs); }
+                }, hrs + ' hr / day');
+              }))),
+
+          h('div', { className: 'two' },
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Select local machines to lease when idle'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 var(--space-4)' } },
+                'Renters keep Layer 0 and Layer N-1 pinned to their own TrustedCore hardware. Your nodes execute blind middle-layer activations, DeMo DCT outer steps, or fuel-capped WASI sandboxes audited by Gensyn Verde RepOps.'),
+              h('table', { className: 'mono-table' },
+                h('thead', null, h('tr', null,
+                  h('th', null, 'NODE'),
+                  h('th', null, 'BLIND WORKLOAD ROLE'),
+                  h('th', null, 'USD / HR'),
+                  h('th', null, '1.25× CREDITS'),
+                  h('th', null, 'LEASE'))),
+                h('tbody', null, SUPPLY_NODES.map(function (nd) {
+                  var active = !!enabledSupply[nd.id];
+                  return h('tr', { key: nd.id, style: { opacity: active ? 1 : 0.48 } },
+                    h('td', null,
+                      h('div', { style: { color: 'var(--ink)', fontWeight: 500 } }, nd.name),
+                      h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, nd.hardware)),
+                    h('td', null, nd.workload),
+                    h('td', null, '$' + nd.usdPerHour.toFixed(2)),
+                    h('td', { style: { color: 'var(--cadmium-text)' } }, '$' + (nd.usdPerHour * 1.25).toFixed(2)),
+                    h('td', null,
+                      h(K.Button, {
+                        variant: active ? 'primary' : 'default',
+                        size: 'sm',
+                        onClick: function () { toggleSupplyNode(nd.id); }
+                      }, active ? 'Leasing' : 'Paused')));
+                })))),
+
+            h('div', { className: 'kd-stack' },
+              h('div', { className: 'stat-strip', style: { gridTemplateColumns: '1fr 1fr' } },
+                h('div', { className: 'stat-card' },
+                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'HOURLY CLOUD CREDITS (1.25×)' : 'HOURLY DIRECT USD'),
+                  h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } },
+                    '$' + (payoutMode === 'credits' ? hourlyCreditsTotal : hourlyUsdTotal).toFixed(2) + ' / hr'),
+                  h('span', { className: 'meta' }, leaseHours + ' hr/day polite idle window')),
+                h('div', { className: 'stat-card' },
+                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'MONTHLY CLOUD CREDITS' : 'MONTHLY DIRECT PAYOUT'),
+                  h('span', { className: 'metric' },
+                    '$' + (payoutMode === 'credits' ? monthlyCreditsTotal : monthlyUsdTotal).toFixed(2) + ' / mo'),
+                  h('span', { className: 'meta' }, '≈ ' + monthlyBurstHoursL40s.toFixed(1) + ' hrs of L40S 48 GB burst / mo'))),
+              h(K.CodeBlock, {
+                title: 'terminal · quote & enable polite compute leasing',
+                language: 'shell',
+                code: '$ kadmium lease --hours ' + leaseHours + ' --payout ' + payoutMode + '\n# Polite Auto-Yield: < 200 ms shard handoff on game launch (0 % penalty)\n# Privacy: Blind middle-shard execution (Layer 0 & Layer N-1 stay on renter)\n# Settlement: Gensyn Verde RepOps FNV-1a digest + O(log L) refereed bisection'
+              })))),
+
+        /* 7. Open Source vs. Kadmium Cloud vs. Supply Grid Plan Cards + Arbitrage Table */
         h('section', { className: 'kd-stack' },
           h('div', null,
-            h('p', { className: 'eyebrow' }, 'Open source and Kadmium Cloud'),
-            h('h2', { className: 'headline', style: { margin: '0 0 var(--space-2)' } }, 'Free to self-host, forever. MIT or Apache-2.0, your choice.'),
+            h('p', { className: 'eyebrow' }, 'Open source, Kadmium Cloud and Supply Grid'),
+            h('h2', { className: 'headline', style: { margin: '0 0 var(--space-2)' } }, 'Free to self-host, forever. Rent burst GPUs or lease out your own.'),
             h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-              'Kadmium Cloud wraps the cluster you already run with a managed WAN relay, multi-provider spot GPU arbitrage, and a pre-warmed .ktb failover vault.')),
+              'Run 100 % locally at $0, attach spot burst GPUs when a deadline hits, or lease your idle rig overnight to bank Cloud credits and USD.')),
 
           h('div', { className: 'plans' },
             h(K.PlanCard, {
@@ -810,6 +946,22 @@
                 'Usage billing, no minimum'
               ],
               cta: 'Configure in Desktop Companion',
+              onSelect: function () { window.location.href = '/companion'; }
+            }),
+            h(K.PlanCard, {
+              product: 'self-hosted',
+              name: 'Kadmium Supply Grid',
+              price: '+$1.15',
+              period: '/ hr earned (1.25× credits)',
+              summary: 'Lease idle local GPUs, M4 Mac Minis, SBCs and NAS vaults with < 200 ms Polite auto-yield.',
+              features: [
+                'Earn direct USD or 1.25× Kadmium Cloud burst credits',
+                'Blind middle-layer execution (renter keeps Layer 0 & N-1)',
+                '< 200 ms token-boundary yield on game launch (0 % penalty)',
+                'Fuel-capped WASI sandboxes for CPU / ARM SBC verification',
+                'Cryptographic Gensyn Verde RepOps settlement receipts'
+              ],
+              cta: 'Enable leasing in Companion',
               onSelect: function () { window.location.href = '/companion'; }
             })),
 

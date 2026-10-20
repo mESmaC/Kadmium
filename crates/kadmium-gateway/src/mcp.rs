@@ -214,6 +214,24 @@ impl KadmiumMcpServer {
                     "required": []
                 }),
             },
+            McpToolDescriptor {
+                name: "kadmium_supply_marketplace".into(),
+                description: "Evaluate or update host compute leasing on the Kadmium Supply Grid (renting out idle local GPUs, M4 Mac Minis, SBCs, and NAS vaults for direct USD payouts or 1.25x Kadmium Cloud credits with <200ms Polite auto-yield).".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "daily_lease_hours": {
+                            "type": "number",
+                            "description": "Optional daily idle lease window in hours (0.0 to 24.0)."
+                        },
+                        "payout_mode": {
+                            "type": "string",
+                            "description": "Optional payout mode: 'credits' (1.25x Kadmium Cloud credits) or 'usd' (Direct USD payout)."
+                        }
+                    },
+                    "required": []
+                }),
+            },
         ]
     }
 
@@ -510,6 +528,27 @@ impl KadmiumMcpServer {
                 Ok(json!({
                     "content": [{ "type": "text", "text": text }],
                     "structuredContent": payload,
+                    "isError": false
+                }))
+            }
+            "kadmium_supply_marketplace" => {
+                if let Some(hours) = args.get("daily_lease_hours").and_then(|v| v.as_f64()) {
+                    state.supply_policy.daily_lease_hours = hours.clamp(0.0, 24.0);
+                }
+                if let Some(mode) = args.get("payout_mode").and_then(|v| v.as_str()) {
+                    state.supply_policy.payout_mode = if mode.eq_ignore_ascii_case("usd") {
+                        kadmium_core::SupplyPayoutMode::UsdDirectPayout
+                    } else {
+                        kadmium_core::SupplyPayoutMode::KadmiumCloudCredits {
+                            bonus_multiplier: 1.25,
+                        }
+                    };
+                }
+                let snap = state.supply_marketplace();
+                let text = serde_json::to_string_pretty(&snap).unwrap_or_default();
+                Ok(json!({
+                    "content": [{ "type": "text", "text": text }],
+                    "structuredContent": snap,
                     "isError": false
                 }))
             }

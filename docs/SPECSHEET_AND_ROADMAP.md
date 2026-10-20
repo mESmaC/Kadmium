@@ -62,8 +62,9 @@
 | :--- | :--- | :--- |
 | **OpenAI Gateway** | `POST /v1/chat/completions` | Drop-in OpenAI API supporting both standard JSON and **`text/event-stream` SSE (`"stream": true`)** |
 | **Anthropic Gateway** | `POST /v1/messages` | Drop-in Anthropic Messages API for Claude Code and agentic harnesses |
-| **Model Context Protocol** | `kadmium mcp` (stdio) & `POST /mcp` (HTTP) | Full **MCP `2025-03-26`** JSON-RPC 2.0 server exposing 6 tools, 5 `kadmium://` resources, and 2 workflow prompts |
+| **Model Context Protocol** | `kadmium mcp` (stdio) & `POST /mcp` (HTTP) | Full **MCP `2025-03-26`** JSON-RPC 2.0 server exposing 7 tools, 5 `kadmium://` resources, and 2 workflow prompts |
 | **Ecosystem Connectors** | `kadmium pull <URI>` & `GET /api/v1/integrations` | Native **`hf://`** (selective byte-range `.safetensors` $\to$ `.ktb`), **`gh://`** (commit-pinned RL/Dream-RSI slices), **`oci://`**, **`s3://`**, **`wandb://`** |
+| **Kadmium Supply Grid** | `kadmium lease` & `GET /api/v1/supply/marketplace` | Two-sided compute leasing: rent out idle local GPUs, M4 Mac Minis, SBCs, and NAS vaults for **direct USD** or **1.25× Kadmium Cloud credits** with `<200ms` Polite auto-yield, blind middle-layer privacy (`Layer 0` & `N-1` stay on renter), and `Verde RepOps` cryptographic settlement |
 | **Observability** | `GET /metrics` & `GET /api/v1/telemetry/wandb` | Prometheus / OpenMetrics (`text/plain; version=0.0.4`) + structured Weights & Biases / OpenTelemetry run summaries |
 | **P2P Wire & Discovery** | `kadmium join` · Port `7848` | `"KDMW"` binary frames + `"KDMD"` UDP LAN auto-discovery beacons + `kdm1_...` HMAC-SHA256 Join Tickets + `ClusterStateCrdt` |
 

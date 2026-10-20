@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
 use kadmium_core::{
     HardwareNode, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, NodeTrustTier,
-    PoliteActivityMonitor, PoliteActivitySample, PoliteState, WorkloadKind,
-    sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
+    PoliteActivityMonitor, PoliteActivitySample, PoliteState, SupplyLeasePolicy, SupplyPayoutMode,
+    SupplySettlementEngine, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
+    sample_personal_cluster,
 };
 use kadmium_data::{
     Fts3TransferScheduler, GitHubConnector, HuggingFaceHubConnector, KtbBankPacker, KtbBankReader,
@@ -126,6 +127,15 @@ enum Commands {
         /// Optional path to a `.ktb` file on disk (compiles an in-memory archive if omitted)
         path: Option<String>,
     },
+    /// Quote and configure leasing idle local compute to the Kadmium Supply Grid (earn USD or 1.25x Cloud Credits)
+    Lease {
+        /// Daily idle lease hours (0.0 to 24.0)
+        #[arg(long, default_value_t = 12.0)]
+        hours: f64,
+        /// Compensation mode: credits (1.25x Kadmium Cloud credits) | usd (Direct USD payout)
+        #[arg(short, long, default_value = "credits")]
+        payout: String,
+    },
 }
 
 #[tokio::main]
@@ -161,6 +171,7 @@ async fn main() {
             out,
         } => run_compile(&model, start_layer, end_layer, out.as_deref()),
         Commands::Inspect { path } => run_inspect(path.as_deref()),
+        Commands::Lease { hours, payout } => run_lease(hours, &payout),
     }
 }
 
@@ -1371,4 +1382,72 @@ fn run_inspect(path: Option<&str>) {
             e.checksum_fnv64
         );
     }
+}
+
+fn run_lease(hours: f64, payout: &str) {
+    let nodes = sample_personal_cluster();
+    let payout_mode = if payout.eq_ignore_ascii_case("usd") {
+        SupplyPayoutMode::UsdDirectPayout
+    } else {
+        SupplyPayoutMode::KadmiumCloudCredits {
+            bonus_multiplier: 1.25,
+        }
+    };
+    let policy = SupplyLeasePolicy {
+        enabled: true,
+        payout_mode,
+        daily_lease_hours: hours.clamp(0.0, 24.0),
+        only_when_polite_idle: true,
+        max_vram_lease_fraction: 0.80,
+        workload_mask: Default::default(),
+    };
+    let snap = SupplySettlementEngine::evaluate_cluster_supply(&nodes, &policy);
+
+    println!(
+        "====================================================================================================="
+    );
+    println!(" KADMIUM SUPPLY GRID (Cd-48) — IDLE COMPUTE LEASING & SETTLEMENT QUOTE");
+    println!(
+        "====================================================================================================="
+    );
+    println!(
+        "  * Daily Idle Lease Window:    {:.1} hrs/day ({:.0} hrs/month)",
+        snap.policy.daily_lease_hours,
+        snap.policy.daily_lease_hours * 30.0
+    );
+    println!(
+        "  * Polite Auto-Yield Guard:    ACTIVE (< 200 ms instant shard eviction on game launch, 0% penalty)"
+    );
+    println!(
+        "  * Privacy Isolation:          Blind Middle-Shard Execution (Layer 0 & Layer N-1 stay on renter)"
+    );
+    println!(
+        "  * Cryptographic Settlement:   Gensyn Verde RepOps FNV-1a digest + O(log L) refereed bisection"
+    );
+    println!(
+        "\n{:<24} {:<36} {:>12} {:>14} {:>14}",
+        "HOSTNAME", "HARDWARE PROFILE", "USD / HR", "CREDITS / HR", "MONTHLY (1.25x)"
+    );
+    println!("{}", "-".repeat(104));
+    for q in &snap.node_quotes {
+        println!(
+            "{:<24} {:<36} ${:>10.2}   ${:>11.2}   ${:>11.2}",
+            q.hostname,
+            q.hardware_summary,
+            q.usd_rate_per_hour,
+            q.cloud_credit_rate_per_hour_usd,
+            q.projected_monthly_cloud_credits_usd
+        );
+    }
+    println!("{}", "-".repeat(104));
+    println!(
+        "  * Cluster Hourly Rate:        ${:.2}/hr direct USD  |  ${:.2}/hr Kadmium Cloud Credits (1.25x)",
+        snap.total_hourly_usd, snap.total_hourly_cloud_credits_usd
+    );
+    println!(
+        "  * Projected Monthly Return:   ${:.2}/mo direct USD  |  ${:.2}/mo Cloud Credits (~{:.1} hrs L40S 48GB burst)",
+        snap.total_projected_monthly_usd,
+        snap.total_projected_monthly_cloud_credits_usd,
+        snap.equivalent_l40s_burst_hours_per_month
+    );
 }
