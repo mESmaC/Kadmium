@@ -7,7 +7,7 @@ use kadmium_data::{
     Fts3TransferScheduler, GitHubConnector, HuggingFaceHubConnector, KtbBankPacker, KtbBankReader,
     SafetensorsToKtbTranscoder, TensorEncoding,
 };
-use kadmium_gateway::{GatewayState, build_router};
+use kadmium_gateway::{GatewayState, KadmiumMcpServer, McpJsonRpcRequest, build_router};
 use kadmium_network::{JoinTicket, LanDiscoveryBeacon};
 use kadmium_rl::{
     DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, RlEnvironmentSuiteSpec,
@@ -88,11 +88,18 @@ enum Commands {
         #[arg(default_value = "hf://deepseek-ai/DeepSeek-V3@main")]
         uri: String,
     },
+    /// Launch the Kadmium Model Context Protocol (MCP) Server over stdio (or --inspect to view manifest & IDE config)
+    Mcp {
+        /// Print the MCP Server manifest, tools, resources, prompts, and .mcp.json snippet instead of blocking on stdio
+        #[arg(short, long)]
+        inspect: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
@@ -113,6 +120,7 @@ async fn main() {
         Commands::Serve { port } => run_server(port).await,
         Commands::Join { ticket } => run_join(ticket).await,
         Commands::Pull { uri } => run_pull(&uri),
+        Commands::Mcp { inspect } => run_mcp(inspect),
     }
 }
 
@@ -972,6 +980,76 @@ fn run_pull(uri: &str) {
                 np.full_repo_avoided_gb,
                 np.output_ktb_bank_path
             );
+        }
+    }
+}
+
+fn run_mcp(inspect: bool) {
+    let mut state = GatewayState::new();
+
+    if inspect {
+        let manifest = KadmiumMcpServer::manifest();
+        println!(
+            "===================================================================================="
+        );
+        println!(
+            " Kadmium (Cd-48) — Model Context Protocol (MCP) Server ({} v{})",
+            manifest.server_name, manifest.server_version
+        );
+        println!(
+            "===================================================================================="
+        );
+        println!("  * Protocol Version:       {}", manifest.protocol_version);
+        println!(
+            "  * Transports:             {}",
+            manifest.transports.join(" | ")
+        );
+        println!("  * HTTP Endpoint:          {}", manifest.http_endpoint);
+        println!("\n  [IDE / Agent `.mcp.json` Configuration]:");
+        for line in manifest.stdio_config_json.lines() {
+            println!("    {line}");
+        }
+
+        println!("\n  [Exposed MCP Tools ({})]:", manifest.tools.len());
+        for t in &manifest.tools {
+            println!("    - {:<30} {}", t.name, t.description);
+        }
+
+        println!(
+            "\n  [Exposed MCP Resources ({})]:",
+            manifest.resources.len()
+        );
+        for r in &manifest.resources {
+            println!("    - {:<30} [{}] {}", r.uri, r.mime_type, r.name);
+        }
+
+        println!("\n  [Exposed MCP Prompts ({})]:", manifest.prompts.len());
+        for p in &manifest.prompts {
+            println!("    - {:<30} {}", p.name, p.description);
+        }
+        return;
+    }
+
+    // Standard I/O (stdio) JSON-RPC 2.0 loop for MCP clients
+    use std::io::{BufRead, Write};
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+
+    for line_res in stdin.lock().lines() {
+        let Ok(line) = line_res else {
+            break;
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(req) = serde_json::from_str::<McpJsonRpcRequest>(trimmed) {
+            let is_notification = req.id.is_none();
+            let resp = KadmiumMcpServer::handle_request(&mut state, req);
+            if !is_notification && let Ok(json_out) = serde_json::to_string(&resp) {
+                let _ = writeln!(stdout, "{json_out}");
+                let _ = stdout.flush();
+            }
         }
     }
 }

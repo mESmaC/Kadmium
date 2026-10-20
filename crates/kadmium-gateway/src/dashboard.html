@@ -247,6 +247,8 @@
     var probeState = React.useState(null), probe = probeState[0], setProbe = probeState[1];
     var companionState = React.useState(null), companion = companionState[0], setCompanion = companionState[1];
     var integrationsState = React.useState(null), integrations = integrationsState[0], setIntegrations = integrationsState[1];
+    var mcpManifestState = React.useState(null), mcpManifest = mcpManifestState[0], setMcpManifest = mcpManifestState[1];
+    var mcpReplyState = React.useState(null), mcpReply = mcpReplyState[0], setMcpReply = mcpReplyState[1];
     var gatewayReplyState = React.useState(null), gatewayReply = gatewayReplyState[0], setGatewayReply = gatewayReplyState[1];
 
     React.useEffect(function () {
@@ -262,6 +264,7 @@
       fetch('/api/v1/host/probe').then(function (r) { return r.json(); }).then(setProbe);
       fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setCompanion);
       fetch('/api/v1/integrations').then(function (r) { return r.json(); }).then(setIntegrations);
+      fetch('/api/v1/mcp').then(function (r) { return r.json(); }).then(setMcpManifest);
     }, []);
 
     function triggerScenario(scenario) {
@@ -304,6 +307,19 @@
           messages: [{ role: 'user', content: 'Verify asymmetric pipeline route across the local mesh.' }]
         })
       }).then(function (r) { return r.json(); }).then(setGatewayReply);
+    }
+
+    function invokeMcpTool(toolName, args) {
+      fetch('/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: Date.now(),
+          method: 'tools/call',
+          params: { name: toolName, arguments: args || {} }
+        })
+      }).then(function (r) { return r.json(); }).then(setMcpReply);
     }
 
     var wordmark = theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg';
@@ -389,7 +405,7 @@
             items: [
               { id: 'nodes', label: 'Nodes', count: nodes.length },
               { id: 'shards', label: 'Shard plan' },
-              { id: 'integrations', label: 'HF & GitHub', count: integrations ? integrations.connectors.length : 5 },
+              { id: 'integrations', label: 'HF, GitHub & MCP', count: integrations ? integrations.connectors.length + 1 : 6 },
               { id: 'dream', label: 'Dream-RSI & RL' },
               { id: 'slices', label: 'Sub-cluster slices', count: slices ? slices.slices.length : 5 },
               { id: 'cloud', label: 'Kadmium Cloud' },
@@ -484,7 +500,33 @@
                 h(K.Badge, { tone: 'local' }, 'slice: ' + integrations.sample_github_ci_run.assigned_slice_id),
                 h(K.Badge, { tone: 'ok', dot: true }, integrations.sample_github_ci_run.github_check_conclusion),
                 h(K.Badge, { tone: 'neutral' }, 'sha: ' + integrations.sample_github_ci_run.pinned_commit_sha),
-                h(K.Badge, { tone: 'local' }, 'dream-rsi speedup: ' + integrations.sample_github_ci_run.dream_rsi_best_speedup + '×')))) : null,
+                h(K.Badge, { tone: 'local' }, 'dream-rsi speedup: ' + integrations.sample_github_ci_run.dream_rsi_best_speedup + '×'))),
+            mcpManifest ? h('div', { className: 'two' },
+              h('div', { className: 'panel' },
+                h('p', { className: 'eyebrow' }, 'Model Context Protocol (' + mcpManifest.server_name + ' · ' + mcpManifest.protocol_version + ')'),
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'MCP TOOL'),
+                    h('th', null, 'DESCRIPTION'))),
+                  h('tbody', null, mcpManifest.tools.map(function (t) {
+                    return h('tr', { key: t.name },
+                      h('td', null, h(K.Badge, { tone: 'local' }, t.name)),
+                      h('td', null, t.description));
+                  }))),
+                h('div', { className: 'kd-row', style: { marginTop: 'var(--space-4)' } },
+                  h(K.Button, { variant: 'primary', size: 'sm', icon: 'rods', onClick: function () { invokeMcpTool('kadmium_cluster_status', {}); } }, 'Call kadmium_cluster_status'),
+                  h(K.Button, { size: 'sm', onClick: function () { invokeMcpTool('kadmium_verify_rl_sandbox', { candidate_code: 'fn fused_moe_gate() { /* simd */ }' }); } }, 'Call kadmium_verify_rl_sandbox'))),
+              h('div', { className: 'kd-stack' },
+                h(K.CodeBlock, {
+                  title: '.mcp.json / claude_desktop_config.json (stdio)',
+                  language: 'json',
+                  code: mcpManifest.stdio_config_json
+                }),
+                mcpReply ? h(K.CodeBlock, {
+                  title: 'live POST /mcp JSON-RPC 2.0 response',
+                  language: 'json',
+                  code: JSON.stringify(mcpReply, null, 2)
+                }) : null)) : null) : null,
 
           tab === 'dream' && dream ? h('div', { className: 'kd-stack' },
             h('div', { className: 'panel' },

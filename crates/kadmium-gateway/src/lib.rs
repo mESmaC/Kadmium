@@ -34,6 +34,9 @@ use kadmium_sharding::{
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
+pub mod mcp;
+pub use mcp::{KadmiumMcpManifest, KadmiumMcpServer, McpJsonRpcRequest, McpJsonRpcResponse};
+
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 const DOCS_PORTAL_HTML: &str = include_str!("docs_portal.html");
 const MARKETING_SITE_HTML: &str = include_str!("marketing_site.html");
@@ -69,7 +72,7 @@ const DS_LOGO_TILE_GRAPHITE: &str =
 const DS_LOGO_TILE_CADMIUM: &str =
     include_str!("../../../design-system/assets/Logos/kadmium-tile-cadmium.svg");
 
-const DOC_OVERVIEW_MD: &str = include_str!("../../../docs/README.md");
+pub(crate) const DOC_OVERVIEW_MD: &str = include_str!("../../../docs/README.md");
 const DOC_GETTING_STARTED_MD: &str = include_str!("../../../docs/getting-started.md");
 const DOC_CLI_REFERENCE_MD: &str = include_str!("../../../docs/cli-reference.md");
 const DOC_API_REFERENCE_MD: &str = include_str!("../../../docs/api-reference.md");
@@ -80,6 +83,7 @@ const DOC_TRAINING_DREAM_RSI_MD: &str =
 const DOC_SUBCLUSTERS_CLOUD_MD: &str =
     include_str!("../../../docs/guides/subclusters-and-cloud-shield.md");
 const DOC_INTEGRATIONS_MD: &str = include_str!("../../../docs/guides/integrations-hf-github.md");
+const DOC_MCP_MD: &str = include_str!("../../../docs/guides/mcp-server.md");
 const DOC_ARCHITECTURE_MD: &str = include_str!("../../../docs/ARCHITECTURE.md");
 
 /// Structured entry for a public documentation page served from `docs/` via `/api/v1/docs` and `/docs`.
@@ -159,6 +163,14 @@ pub fn build_documentation_catalog() -> Vec<DocumentationPage> {
             file_path: "docs/guides/integrations-hf-github.md".into(),
             summary: "Layer-aware selective Safetensors/GGUF pulling, dataset streaming, commit-pinned GitHub RL/Dream-RSI worlds, and S3/OCI connectors.".into(),
             markdown: DOC_INTEGRATIONS_MD.into(),
+        },
+        DocumentationPage {
+            slug: "mcp-server".into(),
+            title: "Model Context Protocol (kadmium-mcp) Server".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/mcp-server.md".into(),
+            summary: "Connect Claude Code, Cursor, Antigravity, Windsurf, or any MCP client via kadmium mcp (stdio) or POST /mcp.".into(),
+            markdown: DOC_MCP_MD.into(),
         },
         DocumentationPage {
             slug: "architecture".into(),
@@ -423,6 +435,8 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/companion/status", get(get_companion_status))
         .route("/api/v1/companion/mode", post(post_companion_mode))
         .route("/api/v1/integrations", get(get_integrations_overview))
+        .route("/api/v1/mcp", get(get_mcp_manifest))
+        .route("/mcp", post(post_mcp_rpc))
         .route("/api/v1/pipeline/execute", get(get_pipeline_execution))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
@@ -682,6 +696,18 @@ async fn get_integrations_overview(
     ))
 }
 
+async fn get_mcp_manifest() -> Json<KadmiumMcpManifest> {
+    Json(KadmiumMcpServer::manifest())
+}
+
+async fn post_mcp_rpc(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(req): Json<McpJsonRpcRequest>,
+) -> Json<McpJsonRpcResponse> {
+    let mut guard = state.lock().expect("gateway state lock");
+    Json(KadmiumMcpServer::handle_request(&mut guard, req))
+}
+
 async fn post_cluster_shift(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ShiftRequest>,
@@ -865,7 +891,46 @@ mod tests {
 
         // Verify embedded public documentation catalog from `docs/`
         let docs = build_documentation_catalog();
-        assert_eq!(docs.len(), 9);
+        assert_eq!(docs.len(), 10);
         assert!(docs.iter().all(|d| !d.markdown.is_empty()));
+
+        // Verify Kadmium MCP Server (JSON-RPC 2.0 initialize, tools/list, tools/call, resources/read)
+        let manifest = KadmiumMcpServer::manifest();
+        assert_eq!(manifest.tools.len(), 6);
+        assert_eq!(manifest.resources.len(), 5);
+        assert_eq!(manifest.prompts.len(), 2);
+
+        let init_resp = KadmiumMcpServer::handle_request(
+            &mut state,
+            McpJsonRpcRequest {
+                jsonrpc: "2.0".into(),
+                id: Some(serde_json::json!(1)),
+                method: "initialize".into(),
+                params: None,
+            },
+        );
+        assert!(init_resp.error.is_none());
+
+        let call_resp = KadmiumMcpServer::handle_request(
+            &mut state,
+            McpJsonRpcRequest {
+                jsonrpc: "2.0".into(),
+                id: Some(serde_json::json!(2)),
+                method: "tools/call".into(),
+                params: Some(serde_json::json!({
+                    "name": "kadmium_cluster_status",
+                    "arguments": {}
+                })),
+            },
+        );
+        assert!(call_resp.error.is_none());
+        assert_eq!(
+            call_resp
+                .result
+                .as_ref()
+                .and_then(|r| r.get("isError"))
+                .and_then(|v| v.as_bool()),
+            Some(false)
+        );
     }
 }
