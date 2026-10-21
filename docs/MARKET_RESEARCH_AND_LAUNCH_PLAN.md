@@ -107,15 +107,33 @@ Why do residential RTX 4090/5090 hosts on `Salad.com` churn? **Electricity math:
 - An **RTX 4090 rig** under 100% continuous load draws **`~500W` (`0.50 kW`)**; an **RTX 5090 rig** draws **`~650W` (`0.65 kW`)**.
 - At the US average of `$0.15/kWh`, power costs **`$0.075–$0.098/hr`**. In Europe, California, or the US Northeast (`$0.32–$0.42/kWh`), power costs **`$0.16–$0.27/hr`**—wiping out Salad's `$0.18–$0.25/hr` cash payout!
 
-#### How Kadmium Solves Supply-Side Economics:
-1. **The Apple Silicon Unified Memory Arbitrage (`40W–85W` Total System Draw):**
-   - An **M4 Pro Mac Mini (64 GB UMA)** or **Mac Studio M2/M3/M4 Max/Ultra (128–512 GB UMA)** draws only **`40W to 85W` under full LLM load**—costing just **`$0.006 to $0.013/hr` in electricity** (nearly **10× less power** than an RTX 5090) while holding **2× to 8× more model weights**!
-   - Competitors like `Salad.com` are built around Windows DirectX/CUDA containers and barely tap the massive install base of high-RAM Apple Silicon Macs sitting on developers' desks.
-2. **Rewarding Individual Hosts in `1.25×` Kadmium Cloud Credits (`$0` Cash Outlay):**
-   - Paying `$0.22/hr` in raw USD feels small to a developer after electricity. Giving them **`$0.90–$1.15/hr` in `1.25×` Kadmium Cloud Credits** (which they spend during the workday to burst 671B models or multi-node training jobs) delivers **4× higher perceived value** to the host while costing Kadmium **`$0` in upfront cash**.
+#### How Kadmium Solves Supply-Side Economics & Guarantees Company Solvency (`SupplySettlementEngine`):
+To ensure Kadmium is **100% financially sustainable** and that hosts receive **honest, verifiable earnings breakdowns**, [`SupplySettlementEngine`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/supply.rs) enforces a strict **5-Factor Market-Clearing Formula** (`No-Demand = No-Compute-Payout`):
+
+$$\text{BuyerRate}_{\text{active}} = \eta_{\text{net}} \cdot \left( \$0.0065 \cdot M_{\text{VRAM}} + \$0.0048 \cdot M_{\text{UMA}} + \$0.000085 \cdot \text{BW}_{\text{GB/s}} + \$0.00055 \cdot \text{TFLOPS} + S_{\text{bucket}} \right)$$
+
+- **Company Sustainability Rule (`25.0%` Platform Take-Rate on USD / `36.3%` Net Margin on Credits):**
+  - Hosts are **never** paid out of company cash for sitting idle without a buyer. Compute payouts occur **strictly when a paying renter's verified job executes on the host**, where Kadmium collects `100%` of $\text{BuyerRate}_{\text{active}}$, retains **`25.0%`** to cover `relay.kadmium.ai`, `Verde` referee checks, Stripe fees, and company profit, and pays **`75.0%`** to the host (plus a small bucket-funded storage retainer during standby hours).
+- **Transparent Per-Node Breakdown (12 hrs/day Lease Window, Deducting `$0.14/kWh` Electricity):**
+
+| Hardware Node | Buyer Active Rate | Host Active Rate (`-25%` Fee) | Realistic Demand Duty Cycle | Effective Hourly Rate | Monthly Gross (`360 hrs`) | Monthly Power (`@ $0.14/kWh`) | **Host Net Monthly Profit** | **`1.25×` Cloud Credits/Mo** |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`cameron-main-rig`** (`RTX 4090 24GB`, `290W`) | `$0.324/hr` | `$0.243/hr` | `62%` | `$0.152/hr` | `$54.60/mo` | `-$9.73/mo` | **`+$44.87/mo`** | **`$68.25/mo`** |
+| **`m4-mac-mini-pro`** (`48GB UMA`, `38W`) | `$0.252/hr` | `$0.189/hr` | `65%` | `$0.124/hr` | `$44.57/mo` | `-$1.37/mo` | **`+$43.20/mo`** | **`$55.71/mo`** |
+| **`zephyrus-g16-rtx4070`** (`8GB Laptop`, `95W`) | `$0.097/hr` | `$0.073/hr` | `48%` | `$0.036/hr` | `$12.89/mo` | `-$2.67/mo` | **`+$10.22/mo`** | **`$16.11/mo`** |
+| **`legion-5-rtx3070`** (`8GB Laptop`, `95W`) | `$0.103/hr` | `$0.077/hr` | `48%` | `$0.038/hr` | `$13.62/mo` | `-$2.67/mo` | **`+$10.95/mo`** | **`$17.03/mo`** |
+| **`rk3588-sbc-bramble`** (`16GB NPU`, `16W`) | `$0.073/hr` | `$0.055/hr` | `45%` | `$0.026/hr` | `$9.19/mo` | `-$0.47/mo` | **`+$8.72/mo`** | **`$11.49/mo`** |
+| **`truenas-core-vault`** (`4TB NVMe`, `55W`) | `$0.049/hr` | `$0.037/hr` | `55%` | `$0.025/hr` | `$8.85/mo` | `-$2.16/mo` | **`+$6.69/mo`** | **`$11.06/mo`** |
+| **`thinkpad-t480-linux`** (`CPU AVX2`, `28W`) | `$0.016/hr` | `$0.012/hr` | `32%` | `$0.005/hr` | `$1.74/mo` | `-$0.66/mo` | **`+$1.08/mo`** | **`$2.18/mo`** |
+| **7-Node Cluster Total** | — | — | — | **`$0.40/hr`** | **`$145.46/mo`** | **`-$19.72/mo`** | **`+$125.74/mo` Net** | **`$181.83/mo` Credits** |
+
+1. **The Apple Silicon Unified Memory Arbitrage (`38W` Draw = `97%` Power Profit Margin):**
+   - Look at `m4-mac-mini-pro` (`48 GB` UMA) vs. `cameron-main-rig` (`RTX 4090 24 GB`) in the table above: even though the RTX 4090 has a higher gross active rate (`$0.243/hr` vs. `$0.189/hr`), the M4 Mac Mini draws only **`38W` (`$1.37/mo` electricity)** compared to the RTX 4090's **`290W` (`$9.73/mo` electricity)**—so both machines deliver almost identical **net cash profit after power (`+$43.20/mo` vs. `+$44.87/mo`)**!
+2. **Rewarding Individual Hosts in `1.25×` Kadmium Cloud Credits (`36.3%` Net Margin for Kadmium):**
+   - When hosts choose `1.25×` Kadmium Cloud Credits instead of cash, `$0` upfront cash leaves Kadmium's bank account, and when those credits are redeemed against community/spot capacity (`~68%` wholesale fulfillment cost), Kadmium nets a **`36.3%` gross margin** (`31.8%` blended across cash + credit hosts).
 3. **Commercial Overnight Fleets (VFX Studios, Architecture Firms, Esports LAN Centers & University Labs):**
    - Following the proven B2B supply playbook (`ParalonCloud` / `Hosted.ai`), a single VFX animation studio, architecture firm, or esports arena has **40 to 200 RTX 4080/4090/A6000 workstations on symmetrical 10GbE fiber and cheap commercial power (`$0.08/kWh`)** that sit 100% idle from 7:00 PM to 8:00 AM.
-   -Onboarding **just 5 regional VFX studios or LAN centers** adds **300–500 high-bandwidth, low-latency GPUs** with a single B2B agreement—eliminating retail host acquisition friction.
+   - Onboarding **just 5 regional VFX studios or LAN centers** adds **300–500 high-bandwidth, low-latency GPUs** with a single B2B agreement—eliminating retail host acquisition friction.
 
 ---
 

@@ -68,30 +68,53 @@ pub fn run_lease(hours: f64, payout: &str) {
         snap.datacenter_avoidance.embodied_carbon_avoided_kg_co2e
     );
     println!(
-        "\n{:<24} {:<36} {:>12} {:>14} {:>14}",
-        "HOSTNAME", "HARDWARE PROFILE", "USD / HR", "CREDITS / HR", "MONTHLY (1.25x)"
+        "\n{:<22} {:<30} {:>10} {:>10} {:>7} {:>10} {:>11} {:>10} {:>11}",
+        "HOSTNAME", "HARDWARE PROFILE", "BUYER/HR", "HOST ACT", "DUTY%", "EFF $/HR", "GROSS/MO", "POWER/MO", "NET PROFIT"
     );
-    println!("{}", "-".repeat(104));
+    println!("{}", "-".repeat(128));
     for q in &snap.node_quotes {
+        let b = &q.valuation_breakdown;
         println!(
-            "{:<24} {:<36} ${:>10.2}   ${:>11.2}   ${:>11.2}",
+            "{:<22} {:<30} ${:>8.3}   ${:>8.3} {:>6.0}%   ${:>8.3}   ${:>8.2}  -${:>7.2}   +${:>8.2}",
             q.hostname,
             q.hardware_summary,
+            b.gross_buyer_clearing_rate_usd_hr,
+            b.host_active_job_usd_per_hr,
+            b.expected_active_utilization_pct,
             q.usd_rate_per_hour,
-            q.cloud_credit_rate_per_hour_usd,
-            q.projected_monthly_cloud_credits_usd
+            q.projected_monthly_usd,
+            b.estimated_monthly_electricity_cost_usd,
+            b.net_monthly_profit_after_power_usd
         );
     }
-    println!("{}", "-".repeat(104));
+    println!("{}", "-".repeat(128));
+    println!("  [Transparent 5-Factor Formula Breakdown per Node (Mem + BW + TFLOPS + Storage/Uplink x Reliability - 25% Kadmium Fee)]:");
+    for q in &snap.node_quotes {
+        println!(
+            "    * {:<20}: {}",
+            q.hostname, q.valuation_breakdown.formula_explanation
+        );
+    }
+    println!("{}", "-".repeat(128));
     println!(
-        "  * Cluster Hourly Rate:        ${:.2}/hr direct USD  |  ${:.2}/hr Kadmium Cloud Credits (1.25x)",
+        "  * Cluster Demand-Weighted Rate: ${:.2}/hr direct USD  |  ${:.2}/hr Kadmium Cloud Credits (1.25x)",
         snap.total_hourly_usd, snap.total_hourly_cloud_credits_usd
     );
     println!(
-        "  * Projected Monthly Return:   ${:.2}/mo direct USD  |  ${:.2}/mo Cloud Credits (~{:.1} hrs L40S 48GB burst)",
+        "  * Host Monthly Gross -> Net:    ${:.2}/mo Gross USD - ${:.2}/mo Electricity (@ $0.14/kWh) = +${:.2}/mo Net Cash Profit (or ${:.2}/mo in 1.25x Credits)",
         snap.total_projected_monthly_usd,
-        snap.total_projected_monthly_cloud_credits_usd,
-        snap.equivalent_l40s_burst_hours_per_month
+        snap.total_estimated_monthly_electricity_usd,
+        snap.total_net_monthly_profit_after_power_usd,
+        snap.total_projected_monthly_cloud_credits_usd
+    );
+    println!(
+        "  * Company Sustainability Proof: Buyer Billings=${:.2}/mo | Host USD Liability=${:.2}/mo | Kadmium Net Platform Margin=${:.2}/mo (25.0% USD / {:.1}% Credits / {:.1}% Blended | Zero Unfunded Subsidy={})",
+        snap.company_sustainability.gross_monthly_buyer_billings_usd,
+        snap.company_sustainability.host_direct_usd_payout_liability_usd,
+        snap.company_sustainability.kadmium_net_revenue_on_usd_payout_usd,
+        snap.company_sustainability.kadmium_gross_margin_on_credit_payout_pct,
+        snap.company_sustainability.blended_company_gross_margin_pct,
+        snap.company_sustainability.zero_unfunded_subsidy_invariant_verified
     );
 
     let boost = ElasticLocalBoostPlanner::evaluate_desktop_just_enough_boost();

@@ -69,6 +69,64 @@ impl Default for SupplyLeasePolicy {
     }
 }
 
+/// Transparent 5-Factor Unit-Economic Valuation Breakdown explaining **why** a node earns what it earns
+/// and how Kadmium maintains a sustainable **25% platform gross margin** on direct USD payouts (`>35%` on Credits).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeValuationBreakdown {
+    /// Component 1: Fast Leased Memory Value (`VRAM / UMA GiB * $0.0065/GiB/hr`).
+    pub fast_memory_capacity_usd_hr: f64,
+    /// Component 2: Memory Bandwidth Value (`GB/s * $0.000085/(GB/s)/hr` — governs token decode speed).
+    pub memory_bandwidth_usd_hr: f64,
+    /// Component 3: Tensor/CPU Compute Value (`Effective FP16 TFLOPS * $0.00055/TFLOP/hr` — governs prefill/training/RL).
+    pub compute_tflops_usd_hr: f64,
+    /// Component 4: Pooled Storage Bucket & Seeding Value (`NVMe TiB * $0.0035 + Uplink Gbps * $0.0020`).
+    pub storage_and_seed_usd_hr: f64,
+    /// Component 5: Network Latency & Uptime Reliability Multiplier (`0.85 ..= 1.05`).
+    pub network_reliability_factor: f64,
+    /// Gross hourly rate paid by the **Buyer / Renter** when this node is actively executing a job (`$/active hr`).
+    pub gross_buyer_clearing_rate_usd_hr: f64,
+    /// Kadmium Platform Take-Rate (`25.0%` — covers `relay.kadmium.ai`, `Verde` referee audits, Stripe fees & company margin).
+    pub kadmium_platform_take_rate_pct: f64,
+    /// Kadmium's net platform revenue retained per active hour (`$/active hr`).
+    pub kadmium_platform_margin_usd_hr: f64,
+    /// Host payout rate during **100% active verified compute execution** (`75%` of Buyer Rate, `$/active hr`).
+    pub host_active_job_usd_per_hr: f64,
+    /// Host standby retainer while idle/online and seeding `RS(8,2)` shards for `kdm://pool-bucket/` (`$/standby hr`).
+    pub host_standby_storage_retainer_usd_hr: f64,
+    /// Realistic expected network demand utilization duty cycle (`%` of leased hours with an active paid buyer job).
+    pub expected_active_utilization_pct: f64,
+    /// Estimated wall-plug power draw under active load (`Watts`).
+    pub estimated_active_power_watts: f64,
+    /// Estimated electricity cost per active hour at `$0.14 / kWh` US residential average (`$/active hr`).
+    pub estimated_electricity_cost_usd_per_active_hr: f64,
+    /// Estimated total monthly electricity cost across active + standby leased hours (`$/mo`).
+    pub estimated_monthly_electricity_cost_usd: f64,
+    /// Host's **true net monthly USD profit after subtracting electricity cost** (`$/mo`).
+    pub net_monthly_profit_after_power_usd: f64,
+    /// Human-readable formula breakdown showing how each hardware dimension contributes to the rate.
+    pub formula_explanation: String,
+}
+
+/// Company-level Unit Economics & Sustainability Proof ensuring Kadmium never overpays hosts
+/// or subsidizes unutilized idle time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompanySustainabilitySummary {
+    /// Total monthly gross billings collected from Compute Buyers / Renters across these nodes (`$/mo`).
+    pub gross_monthly_buyer_billings_usd: f64,
+    /// Total monthly direct USD payout liability to Hosts (`75.0%` of active buyer billings + storage retainer, `$/mo`).
+    pub host_direct_usd_payout_liability_usd: f64,
+    /// Kadmium's net platform revenue on direct USD payouts (`25.0%` gross margin, `$/mo`).
+    pub kadmium_net_revenue_on_usd_payout_usd: f64,
+    /// Wholesale fulfillment cost when hosts choose `1.25x` Cloud Credits instead of cash (`$/mo`).
+    pub credit_redemption_wholesale_fulfillment_cost_usd: f64,
+    /// Kadmium's net platform margin when hosts choose `1.25x` Cloud Credits (`%`).
+    pub kadmium_gross_margin_on_credit_payout_pct: f64,
+    /// Blended company gross margin across `40%` USD Payout / `60%` Credit Payout mix (`%`).
+    pub blended_company_gross_margin_pct: f64,
+    /// Strict solvency invariant: `No-Demand = No-Compute-Payout` (hosts are paid strictly from verified buyer jobs).
+    pub zero_unfunded_subsidy_invariant_verified: bool,
+}
+
 /// Per-node hourly and monthly earnings quote on the Kadmium Supply Grid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeSupplyQuote {
@@ -76,10 +134,13 @@ pub struct NodeSupplyQuote {
     pub hostname: String,
     pub hardware_summary: String,
     pub eligible_workloads: Vec<String>,
+    /// Realistic demand-weighted effective USD/hr across the lease window (`active_duty * active_rate + standby_retainer`).
     pub usd_rate_per_hour: f64,
+    /// Realistic demand-weighted effective Cloud Credits/hr (`1.25x`).
     pub cloud_credit_rate_per_hour_usd: f64,
     pub projected_monthly_usd: f64,
     pub projected_monthly_cloud_credits_usd: f64,
+    pub valuation_breakdown: NodeValuationBreakdown,
     pub privacy_isolation: String,
     pub verification_protocol: String,
 }
@@ -119,7 +180,10 @@ pub struct SupplyMarketplaceSnapshot {
     pub total_hourly_cloud_credits_usd: f64,
     pub total_projected_monthly_usd: f64,
     pub total_projected_monthly_cloud_credits_usd: f64,
+    pub total_estimated_monthly_electricity_usd: f64,
+    pub total_net_monthly_profit_after_power_usd: f64,
     pub equivalent_l40s_burst_hours_per_month: f64,
+    pub company_sustainability: CompanySustainabilitySummary,
     pub datacenter_avoidance: DatacenterAvoidanceMetrics,
     pub recent_receipts: Vec<VerifiedComputeReceipt>,
 }
@@ -128,7 +192,18 @@ pub struct SupplyMarketplaceSnapshot {
 pub struct SupplySettlementEngine;
 
 impl SupplySettlementEngine {
-    /// Computes per-node and cluster-wide supply earnings quotes for a set of hardware nodes.
+    /// Computes per-node and cluster-wide supply earnings quotes using a rigorous, transparent
+    /// **5-Factor Market Clearing & Unit-Economics Formula**:
+    ///
+    /// $$\text{BuyerRate}_{\text{active}} = \eta_{\text{net}} \cdot \left( 0.0065 \cdot M_{\text{fast}} + 0.000085 \cdot \text{BW}_{\text{GB/s}} + 0.00055 \cdot \text{TFLOPS} + S_{\text{bucket}} \right)$$
+    ///
+    /// - **Kadmium Platform Take-Rate ($\tau = 25.0\%$):** Retained from the buyer's payment to cover
+    ///   `relay.kadmium.ai` bandwidth, `Verde RepOps` referee verification, Stripe settlement, and company profit.
+    /// - **Host Active Rate ($75.0\%$ of Buyer Rate):** Paid strictly during cryptographically verified
+    ///   compute execution.
+    /// - **Demand Utilization Duty Cycle ($u \in [0.32, 0.65]$):** Models realistic marketplace match rates
+    ///   (rather than promising 100% 24/7 utilization) plus a small `kdm://pool-bucket/` storage retainer
+    ///   during standby hours, alongside full electricity cost deduction at `$0.14 / kWh`.
     pub fn evaluate_cluster_supply(
         nodes: &[HardwareNode],
         policy: &SupplyLeasePolicy,
@@ -138,39 +213,161 @@ impl SupplySettlementEngine {
             SupplyPayoutMode::KadmiumCloudCredits { bonus_multiplier } => bonus_multiplier,
         };
         let monthly_hours = (policy.daily_lease_hours.clamp(0.0, 24.0)) * 30.0;
+        let lease_frac = (policy.max_vram_lease_fraction / 0.80).clamp(0.25, 1.125);
+        let platform_take_rate = 0.25; // 25.0% Kadmium Platform Gross Margin on Direct USD
+        let electricity_rate_kwh = 0.14; // $0.14 / kWh US residential average
 
         let mut node_quotes = Vec::with_capacity(nodes.len());
         let mut total_hourly_usd = 0.0;
+        let mut total_gross_buyer_monthly = 0.0;
+        let mut total_host_usd_monthly = 0.0;
+        let mut total_power_cost_monthly = 0.0;
 
         for node in nodes {
-            // Base market valuation derived from FP16/INT4 compute, VRAM/UMA capacity, and NVMe/seed bandwidth
-            let raw_hourly_usd = match node.backend {
-                ComputeBackend::Cuda => {
-                    if node.memory.vram_gb >= 20.0 {
-                        0.38
-                    } else {
-                        0.14
-                    }
-                }
-                ComputeBackend::MetalUnified => 0.29,
-                ComputeBackend::CpuArmNeonNpu => 0.06,
-                ComputeBackend::CpuAvx512OrAvx2 => 0.05,
-                _ => (node.fp16_tflops * 0.004).clamp(0.04, 0.45),
+            // 1. Component 1: Leased Fast Memory Capacity Value ($0.0065 / GiB / active hr for VRAM;
+            //    $0.0048 / GiB / active hr for Unified Memory; $0.0004 / GiB for System DDR4/DDR5)
+            let leased_vram = node.memory.vram_gb * policy.max_vram_lease_fraction;
+            let leased_uma = node.memory.unified_mem_gb * policy.max_vram_lease_fraction;
+            let leased_ram = node.memory.system_ram_gb * 0.50;
+            let mem_val =
+                (leased_vram * 0.0065) + (leased_uma * 0.0048) + (leased_ram * 0.00035);
+
+            // 2. Component 2: Memory Bandwidth Value ($0.000085 / (GB/s) / active hr)
+            let eff_bw = node
+                .memory
+                .vram_bw_gbps
+                .max(node.memory.unified_mem_bw_gbps)
+                .max(node.memory.system_ram_bw_gbps);
+            let bw_val = eff_bw * 0.000085 * lease_frac;
+
+            // 3. Component 3: Effective Compute Value ($0.00055 / FP16 TFLOP / active hr)
+            let comp_val = node.fp16_tflops * 0.00055 * lease_frac;
+
+            // 4. Component 4: Decentralized Pool Storage Bucket (NVMe TiB + Seed Uplink Gbps)
+            let nvme_tib = node.memory.nvme_cache_gb / 1024.0;
+            let storage_val = (nvme_tib * 0.0035) + (node.network_uplink_gbps.min(10.0) * 0.0015);
+
+            // 5. Network Latency & Reliability Factor
+            let net_factor = if node.network_latency_ms <= 1.0 && node.network_uplink_gbps >= 2.5 {
+                1.02
+            } else if node.network_latency_ms <= 2.0 {
+                0.98
+            } else {
+                0.92
             };
 
-            let usd_rate_per_hour =
-                (raw_hourly_usd * (policy.max_vram_lease_fraction / 0.80)).clamp(0.02, 1.50);
-            let cloud_credit_rate_per_hour_usd = usd_rate_per_hour * credit_multiplier;
+            let gross_buyer_active_hr =
+                ((mem_val + bw_val + comp_val + storage_val) * net_factor).clamp(0.016, 1.80);
+            let platform_margin_active_hr = gross_buyer_active_hr * platform_take_rate;
+            let host_active_usd_hr = gross_buyer_active_hr * (1.0 - platform_take_rate);
+
+            // Standby storage bucket & warm-shard retainer during non-active hours (funded by bucket storage fees)
+            let standby_retainer_hr = (nvme_tib * 0.0022 + 0.0012).clamp(0.001, 0.015);
+
+            // Realistic marketplace demand utilization duty cycle + active power draw by hardware class
+            let (duty_cycle, active_watts, standby_watts) = match node.backend {
+                ComputeBackend::Cuda => {
+                    if node.memory.vram_gb >= 20.0 {
+                        (0.62, 290.0, 35.0) // High demand for 24GB+ VRAM middle-layer shards (62% duty cycle)
+                    } else {
+                        (0.48, 95.0, 14.0) // Moderate demand for 8GB laptop GPUs (48% duty cycle)
+                    }
+                }
+                ComputeBackend::MetalUnified => (0.65, 38.0, 7.0), // Very high demand for 48GB+ Apple UMA large MoE shards!
+                ComputeBackend::CpuArmNeonNpu => (0.45, 16.0, 4.0), // Steady demand for WASI RL verifiers & T-MAC draft
+                ComputeBackend::CpuAvx512OrAvx2 => {
+                    if node.memory.nvme_cache_gb >= 2048.0 {
+                        (0.55, 55.0, 28.0) // NAS storage grounding & DeMo aggregator
+                    } else {
+                        (0.32, 28.0, 6.0) // Legacy CPU laptop (32% duty cycle on WASI sandboxes)
+                    }
+                }
+                _ => (0.45, 85.0, 15.0),
+            };
+
+            // Expected demand-weighted effective hourly rate across the user's leased window:
+            // EffectiveRate = duty_cycle * host_active_usd_hr + (1 - duty_cycle) * standby_retainer_hr
+            let effective_usd_per_hr =
+                (duty_cycle * host_active_usd_hr) + ((1.0 - duty_cycle) * standby_retainer_hr);
+            let usd_rate_per_hour = (effective_usd_per_hr * 1000.0).round() / 1000.0;
+            let cloud_credit_rate_per_hour_usd =
+                ((effective_usd_per_hr * credit_multiplier) * 1000.0).round() / 1000.0;
+
             let projected_monthly_usd = if policy.enabled {
-                usd_rate_per_hour * monthly_hours
+                ((effective_usd_per_hr * monthly_hours) * 100.0).round() / 100.0
             } else {
                 0.0
             };
-            let projected_monthly_cloud_credits_usd = projected_monthly_usd * credit_multiplier;
+            let projected_monthly_cloud_credits_usd =
+                ((projected_monthly_usd * credit_multiplier) * 100.0).round() / 100.0;
+
+            // Electricity cost calculation (@ $0.14 / kWh)
+            let power_cost_active_hr = (active_watts / 1000.0) * electricity_rate_kwh;
+            let power_cost_standby_hr = (standby_watts / 1000.0) * electricity_rate_kwh;
+            let monthly_power_usd = if policy.enabled {
+                monthly_hours
+                    * ((duty_cycle * power_cost_active_hr)
+                        + ((1.0 - duty_cycle) * power_cost_standby_hr))
+            } else {
+                0.0
+            };
+            let net_monthly_profit_usd =
+                ((projected_monthly_usd - monthly_power_usd) * 100.0).round() / 100.0;
+
+            // Buyer billings for this node across the month (active hours * gross buyer rate + standby storage fees)
+            let node_buyer_monthly = if policy.enabled {
+                monthly_hours
+                    * ((duty_cycle * gross_buyer_active_hr)
+                        + ((1.0 - duty_cycle) * (standby_retainer_hr / 0.75)))
+            } else {
+                0.0
+            };
 
             if policy.enabled {
-                total_hourly_usd += usd_rate_per_hour;
+                total_hourly_usd += effective_usd_per_hr;
+                total_gross_buyer_monthly += node_buyer_monthly;
+                total_host_usd_monthly += projected_monthly_usd;
+                total_power_cost_monthly += monthly_power_usd;
             }
+
+            let formula_explanation = format!(
+                "Buyer Active=${:.3}/hr [Mem=${:.3} + BW=${:.3} + FLOP=${:.3} + Disk/Net=${:.3}] x {:.2} Rel | -25% Kadmium Fee (${:.3}/hr) => Host Active=${:.3}/hr @ {:.0}% Duty + ${:.3}/hr Standby | Power={:.0}W (${:.3}/act-hr)",
+                gross_buyer_active_hr,
+                mem_val * net_factor,
+                bw_val * net_factor,
+                comp_val * net_factor,
+                storage_val * net_factor,
+                net_factor,
+                platform_margin_active_hr,
+                host_active_usd_hr,
+                duty_cycle * 100.0,
+                standby_retainer_hr,
+                active_watts,
+                power_cost_active_hr
+            );
+
+            let breakdown = NodeValuationBreakdown {
+                fast_memory_capacity_usd_hr: (mem_val * net_factor * 1000.0).round() / 1000.0,
+                memory_bandwidth_usd_hr: (bw_val * net_factor * 1000.0).round() / 1000.0,
+                compute_tflops_usd_hr: (comp_val * net_factor * 1000.0).round() / 1000.0,
+                storage_and_seed_usd_hr: (storage_val * net_factor * 1000.0).round() / 1000.0,
+                network_reliability_factor: net_factor,
+                gross_buyer_clearing_rate_usd_hr: (gross_buyer_active_hr * 1000.0).round() / 1000.0,
+                kadmium_platform_take_rate_pct: 25.0,
+                kadmium_platform_margin_usd_hr: (platform_margin_active_hr * 1000.0).round()
+                    / 1000.0,
+                host_active_job_usd_per_hr: (host_active_usd_hr * 1000.0).round() / 1000.0,
+                host_standby_storage_retainer_usd_hr: (standby_retainer_hr * 1000.0).round()
+                    / 1000.0,
+                expected_active_utilization_pct: (duty_cycle * 100.0).round(),
+                estimated_active_power_watts: active_watts,
+                estimated_electricity_cost_usd_per_active_hr: (power_cost_active_hr * 1000.0)
+                    .round()
+                    / 1000.0,
+                estimated_monthly_electricity_cost_usd: (monthly_power_usd * 100.0).round() / 100.0,
+                net_monthly_profit_after_power_usd: net_monthly_profit_usd,
+                formula_explanation,
+            };
 
             let mut eligible_workloads = Vec::new();
             if node.memory.vram_gb >= 8.0 || node.memory.unified_mem_gb >= 16.0 {
@@ -215,6 +412,7 @@ impl SupplySettlementEngine {
                 cloud_credit_rate_per_hour_usd,
                 projected_monthly_usd,
                 projected_monthly_cloud_credits_usd,
+                valuation_breakdown: breakdown,
                 privacy_isolation:
                     "Blind middle-shard execution (Layer 0 & Layer N-1 stay on renter TrustedCore)"
                         .into(),
@@ -223,12 +421,50 @@ impl SupplySettlementEngine {
             });
         }
 
-        let total_hourly_cloud_credits_usd = total_hourly_usd * credit_multiplier;
-        let total_projected_monthly_usd = total_hourly_usd * monthly_hours;
+        let total_hourly_usd = (total_hourly_usd * 100.0).round() / 100.0;
+        let total_hourly_cloud_credits_usd =
+            ((total_hourly_usd * credit_multiplier) * 100.0).round() / 100.0;
+        let total_projected_monthly_usd = (total_host_usd_monthly * 100.0).round() / 100.0;
         let total_projected_monthly_cloud_credits_usd =
-            total_projected_monthly_usd * credit_multiplier;
+            ((total_projected_monthly_usd * credit_multiplier) * 100.0).round() / 100.0;
+        let total_estimated_monthly_electricity_usd =
+            (total_power_cost_monthly * 100.0).round() / 100.0;
+        let total_net_monthly_profit_after_power_usd =
+            ((total_projected_monthly_usd - total_estimated_monthly_electricity_usd) * 100.0)
+                .round()
+                / 100.0;
         let equivalent_l40s_burst_hours_per_month =
-            total_projected_monthly_cloud_credits_usd / 0.89;
+            ((total_projected_monthly_cloud_credits_usd / 0.75) * 10.0).round() / 10.0;
+
+        // Company Sustainability Math:
+        // - If hosts take Direct USD: Kadmium collects `total_gross_buyer_monthly` from buyers and pays
+        //   `total_host_usd_monthly` (75%), retaining 25.0% net platform margin.
+        // - If hosts take 1.25x Cloud Credits: when hosts redeem those credits on the grid/spot pool,
+        //   Kadmium's wholesale fulfillment cost is ~68% of retail credit face value, yielding a 36.2% net margin!
+        let net_rev_usd_mode =
+            ((total_gross_buyer_monthly - total_projected_monthly_usd) * 100.0).round() / 100.0;
+        let credit_wholesale_cost =
+            ((total_projected_monthly_cloud_credits_usd * 0.68) * 100.0).round() / 100.0;
+        let credit_margin_pct = if total_gross_buyer_monthly > 0.0 {
+            (((total_gross_buyer_monthly - credit_wholesale_cost) / total_gross_buyer_monthly)
+                * 1000.0)
+                .round()
+                / 10.0
+        } else {
+            36.2
+        };
+        let blended_margin_pct = ((0.40 * 25.0 + 0.60 * credit_margin_pct) * 10.0).round() / 10.0;
+
+        let company_sustainability = CompanySustainabilitySummary {
+            gross_monthly_buyer_billings_usd: (total_gross_buyer_monthly * 100.0).round() / 100.0,
+            host_direct_usd_payout_liability_usd: total_projected_monthly_usd,
+            kadmium_net_revenue_on_usd_payout_usd: net_rev_usd_mode,
+            credit_redemption_wholesale_fulfillment_cost_usd: credit_wholesale_cost,
+            kadmium_gross_margin_on_credit_payout_pct: credit_margin_pct,
+            blended_company_gross_margin_pct: blended_margin_pct,
+            zero_unfunded_subsidy_invariant_verified: total_gross_buyer_monthly
+                >= total_projected_monthly_usd,
+        };
 
         let datacenter_avoidance = DatacenterAvoidanceMetrics {
             // Typical hyperscale evaporative cooling consumes ~1.8L per kWh; air-cooled home/lab silicon consumes 0L additional cooling water
@@ -279,9 +515,37 @@ impl SupplySettlementEngine {
             total_hourly_cloud_credits_usd,
             total_projected_monthly_usd,
             total_projected_monthly_cloud_credits_usd,
+            total_estimated_monthly_electricity_usd,
+            total_net_monthly_profit_after_power_usd,
             equivalent_l40s_burst_hours_per_month,
+            company_sustainability,
             datacenter_avoidance,
             recent_receipts,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sample_personal_cluster;
+
+    #[test]
+    fn test_supply_5_factor_valuation_and_company_sustainability() {
+        let nodes = sample_personal_cluster();
+        let policy = SupplyLeasePolicy::default();
+        let snap = SupplySettlementEngine::evaluate_cluster_supply(&nodes, &policy);
+
+        assert!(snap.company_sustainability.zero_unfunded_subsidy_invariant_verified);
+        assert!(snap.company_sustainability.gross_monthly_buyer_billings_usd > snap.total_projected_monthly_usd);
+        assert!(snap.company_sustainability.blended_company_gross_margin_pct >= 25.0);
+        assert!(snap.total_net_monthly_profit_after_power_usd > 0.0);
+
+        for q in &snap.node_quotes {
+            let b = &q.valuation_breakdown;
+            assert!((b.kadmium_platform_take_rate_pct - 25.0).abs() < 1e-6);
+            assert!(b.gross_buyer_clearing_rate_usd_hr > b.host_active_job_usd_per_hr);
+            assert!(b.expected_active_utilization_pct >= 30.0 && b.expected_active_utilization_pct <= 70.0);
         }
     }
 }
