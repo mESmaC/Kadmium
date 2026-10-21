@@ -3,453 +3,159 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kadmium (kadmium.ai) — Your own hardware as a private AI cloud.</title>
+  <title>Kadmium — Your own hardware, unified into one private AI cloud</title>
+  <meta name="description" content="Kadmium turns the GPUs, Macs, laptops, SBCs and NAS you already own into one self-balancing supercomputer for inference, training and RL. One Rust binary. Free to self-host, forever.">
   <link rel="icon" href="/assets/Logos/kadmium-favicon.svg">
   <link rel="stylesheet" href="/tokens.css">
   <link rel="stylesheet" href="/components/bundle.css">
   <style>
+    /* ============================================================
+       kadmium.ai — homepage. Tokens only; prefix: s-
+       ============================================================ */
     *, *::before, *::after { box-sizing: border-box; }
     html { scroll-behavior: smooth; }
     html, body { margin: 0; overflow-x: hidden; }
-    body {
-      background: var(--graphite-0);
-      color: var(--ink);
-      font-family: var(--font-sans);
-      -webkit-font-smoothing: antialiased;
-    }
+    body { background: var(--graphite-0); color: var(--ink); font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+    a { color: var(--cadmium-text); }
+    .s-wrap { width: min(1180px, 100% - 2 * clamp(16px, 4vw, 48px)); margin: 0 auto; }
+    .s-eyebrow { font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; color: var(--cadmium-text); margin: 0 0 var(--space-3); }
+    .s-eyebrow.cloud { color: var(--cherenkov-text); }
+    .s-eyebrow.muted { color: var(--ink-muted); }
+    .s-h2 { font-size: clamp(30px, 3.6vw, 40px); line-height: 1.08; font-weight: 650; letter-spacing: -0.03em; margin: 0 0 var(--space-4); max-width: 22ch; }
+    .s-lede { font-size: 17px; line-height: 26px; color: var(--ink-muted); margin: 0; max-width: 60ch; }
+    .s-lede b { color: var(--ink); font-weight: 600; }
+    .s-section { padding: clamp(56px, 8vw, 96px) 0; }
+    .s-section + .s-section { border-top: 1px solid var(--line); }
+    .s-head { margin-bottom: clamp(28px, 4vw, 44px); display: grid; gap: var(--space-2); }
 
-    /* ---- Fluid Typography ---- */
-    .display-xl {
-      font-size: clamp(34px, 4vw, 54px);
-      line-height: 1.06;
-      letter-spacing: -0.035em;
-      font-weight: 650;
-    }
-    .headline {
-      font-size: clamp(24px, 2.5vw, 32px);
-      line-height: 1.16;
-      letter-spacing: -0.022em;
-      font-weight: 600;
-    }
-    .title {
-      font-size: clamp(18px, 1.8vw, 21px);
-      line-height: 1.28;
-      font-weight: 600;
-    }
+    /* nav */
+    .s-nav { position: sticky; top: 0; z-index: 20; background: color-mix(in srgb, var(--graphite-0) 86%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--line); }
+    .s-nav .s-row { display: flex; align-items: center; gap: var(--space-5); height: 60px; }
+    .s-nav img { height: 24px; display: block; }
+    .s-nav .cd { font-family: var(--font-mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); margin-left: -8px; }
+    .s-links { display: flex; gap: 2px; margin-left: var(--space-3); }
+    .s-links a { color: var(--ink-muted); text-decoration: none; font-size: 14px; font-weight: 500; padding: 6px 10px; border-radius: var(--radius-sm); }
+    .s-links a:hover { color: var(--ink); background: var(--graphite-2); }
+    .s-nav .right { margin-left: auto; display: flex; gap: var(--space-2); align-items: center; }
+    .s-burger { display: none; }
+    .s-mobile { display: none; }
+    .s-mobile.open { display: grid; gap: 2px; padding: var(--space-2) 0 var(--space-3); border-top: 1px solid var(--line); }
+    .s-mobile a { color: var(--ink); text-decoration: none; font-size: 15px; padding: 10px 12px; border-radius: var(--radius-sm); }
+    .s-mobile a:hover { background: var(--graphite-2); }
 
-    /* ---- Wide, Breathable Container (1440px) ---- */
-    .top-wrap {
-      position: sticky;
-      top: 0;
-      z-index: 40;
-      background: var(--graphite-1);
-      border-bottom: 1px solid var(--line);
-    }
-    .top {
-      max-width: 1440px;
-      margin: 0 auto;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--space-4);
-      min-height: 68px;
-      padding: var(--space-2) var(--space-8);
-    }
-    .brand-cluster {
-      display: flex;
-      align-items: center;
-      gap: var(--space-3);
-      text-decoration: none;
-      color: inherit;
-      flex-shrink: 0;
-    }
-    .brand-cluster img { height: 24px; display: block; }
-    .brand-tag {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      color: var(--ink-muted);
-      text-transform: uppercase;
-      padding: 3px 9px;
-      border-radius: var(--radius-full);
-      border: 1px solid var(--line);
-      background: var(--graphite-2);
-    }
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: var(--space-2);
-    }
-    .nav-link {
-      font-family: var(--font-sans);
-      font-size: 14px;
-      font-weight: 500;
-      color: var(--ink-muted);
-      text-decoration: none;
-      padding: 8px 14px;
-      border-radius: var(--radius-sm);
-      transition: color 0.12s ease, background-color 0.12s ease;
-      white-space: nowrap;
-    }
-    .nav-link:hover {
-      color: var(--ink);
-      background: var(--graphite-2);
-    }
-    .nav-actions {
-      display: flex;
-      align-items: center;
-      gap: var(--space-3);
-      flex-shrink: 0;
-    }
-    .mobile-menu-btn { display: none; }
-    .mobile-drawer {
-      display: none;
-      border-top: 1px solid var(--line);
-      background: var(--graphite-1);
-      padding: var(--space-4) var(--space-6);
-    }
-    .mobile-drawer.open {
-      display: grid;
-      gap: var(--space-2);
-    }
+    /* hero */
+    .s-hero { padding: clamp(48px, 7vw, 88px) 0 clamp(40px, 6vw, 72px); }
+    .s-hero .s-wrap { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: clamp(32px, 5vw, 72px); align-items: center; }
+    .s-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-bottom: var(--space-5); }
+    .s-h1 { font-size: clamp(38px, 5.4vw, 60px); line-height: 1.02; font-weight: 650; letter-spacing: -0.035em; margin: 0 0 var(--space-5); max-width: 15ch; }
+    .s-hero .s-lede { margin-bottom: var(--space-6); }
+    .s-ctas { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-6); }
+    .s-install { display: grid; gap: var(--space-2); }
+    .s-art { position: relative; background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: var(--space-5); box-shadow: var(--shadow-sm); overflow: hidden; }
+    .s-art svg { display: block; width: 100%; height: auto; }
+    .s-art .slab { fill: var(--cadmium); } .s-art .tint { fill: var(--cadmium-soft); } .s-art .deep { fill: var(--graphite-3); }
+    .s-art .rail { stroke: var(--ink); stroke-width: 4; stroke-linecap: round; fill: none; }
+    .s-art .rod { stroke: var(--cadmium); stroke-width: 8; stroke-linecap: round; fill: none; }
+    .s-art .rod.cut { stroke: var(--on-cadmium); } .s-art .rod.cloud { stroke: var(--cherenkov); }
+    .s-art .caption { display: flex; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-4); font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); }
+    .s-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); margin-top: var(--space-5); }
+    .s-stat { background: var(--graphite-0); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 12px 14px; display: grid; gap: 3px; min-width: 0; }
+    .s-stat .l { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); }
+    .s-stat .v { font-family: var(--font-mono); font-size: 22px; line-height: 26px; font-weight: 500; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--cadmium-text); }
+    .s-stat.cloud .v { color: var(--cherenkov-text); }
+    .s-stat .m { font-size: 12px; color: var(--ink-muted); }
 
-    /* ---- Main Page Canvas ---- */
-    .page {
-      max-width: 1440px;
-      margin: 0 auto;
-      padding: var(--space-10) var(--space-8) 96px;
-      display: grid;
-      gap: 80px;
-    }
-    .page > *, .kd-stack > *, .two > *, .three > *, .plans > *, .node-grid > *, .stat-strip > * {
-      min-width: 0;
-    }
-    .section-block {
-      display: grid;
-      gap: var(--space-6);
-    }
+    /* generic blocks */
+    .s-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-5); }
+    .s-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); }
+    .s-card { background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-5); box-shadow: var(--shadow-sm); min-width: 0; display: flex; flex-direction: column; gap: var(--space-3); }
+    .s-card h3 { margin: 0; font-size: 20px; line-height: 26px; font-weight: 600; letter-spacing: -0.01em; }
+    .s-card p { margin: 0; font-size: 15px; line-height: 22px; color: var(--ink-muted); }
+    .s-card p b { color: var(--ink); font-weight: 600; }
+    .s-step { font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--cadmium-text); display: flex; align-items: center; gap: 8px; }
+    .s-step::before { content: ""; width: 3px; height: 14px; border-radius: var(--radius-full); background: var(--cadmium); }
+    .s-hw { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-3); margin-top: var(--space-6); }
+    .s-hw div { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px 12px; display: grid; gap: 8px; justify-items: center; text-align: center; color: var(--ink-muted); font-size: 12.5px; background: var(--graphite-1); }
+    .s-hw div b { color: var(--ink); font-weight: 600; font-size: 13px; }
+    .s-hw svg { width: 24px; height: 24px; color: var(--cadmium-text); }
+    .s-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+    .s-rows li { display: grid; grid-template-columns: 150px 1fr; gap: var(--space-4); padding: 10px 0; border-top: 1px solid var(--line); font-size: 14px; line-height: 20px; }
+    .s-rows li:first-child { border-top: 0; }
+    .s-rows li span:first-child { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-muted); padding-top: 3px; }
+    .s-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12.5px; }
+    .s-table th { text-align: left; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .s-table td { padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .s-table tbody tr:last-child td { border-bottom: 0; }
+    .s-table td.sans { font-family: var(--font-sans); font-size: 14px; }
+    .s-table .cad { color: var(--cadmium-text); font-weight: 600; } .s-table .cher { color: var(--cherenkov-text); font-weight: 600; } .s-table .mut { color: var(--ink-muted); }
+    .s-tablewrap { overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--graphite-1); }
+    .s-plans { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-5); align-items: stretch; }
+    .s-plans .kd-plan { width: 100%; }
+    .s-sim { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: var(--space-5); align-items: start; }
+    .s-sim .kd-rail { width: 100%; }
+    .s-nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--space-4); margin-top: var(--space-5); }
+    .s-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); }
+    .s-tile { background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-5); display: grid; gap: 6px; }
+    .s-tile .v { font-family: var(--font-mono); font-size: 34px; line-height: 38px; font-weight: 500; letter-spacing: -0.03em; }
+    .s-tile .l { font-size: 14px; line-height: 20px; color: var(--ink-muted); }
+    .s-calc { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(280px, 1fr); gap: var(--space-5); }
+    .s-seg { display: inline-flex; gap: 2px; padding: 2px; background: var(--graphite-2); border-radius: var(--radius-sm); }
+    .s-seg button { -webkit-appearance: none; appearance: none; border: 0; background: transparent; color: var(--ink-muted); font: inherit; font-size: 13px; font-weight: 500; height: 28px; padding: 0 12px; border-radius: 4px; cursor: pointer; }
+    .s-seg button.active { background: var(--graphite-1); color: var(--ink); box-shadow: var(--shadow-sm); }
+    .s-seg button:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+    .s-total { background: var(--graphite-0); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-4); display: grid; gap: 4px; }
+    .s-total .v { font-family: var(--font-mono); font-size: 30px; line-height: 34px; font-weight: 500; letter-spacing: -0.02em; color: var(--cadmium-text); }
+    .s-total.cloud .v { color: var(--cherenkov-text); }
+    .s-faq { display: grid; gap: var(--space-3); }
+    .s-faq details { background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 0 var(--space-5); }
+    .s-faq summary { cursor: pointer; font-size: 16px; font-weight: 600; padding: 16px 0; list-style: none; display: flex; justify-content: space-between; gap: var(--space-3); }
+    .s-faq summary::-webkit-details-marker { display: none; }
+    .s-faq summary::after { content: "+"; font-family: var(--font-mono); color: var(--ink-muted); }
+    .s-faq details[open] summary::after { content: "–"; }
+    .s-faq details p { margin: 0 0 16px; font-size: 15px; line-height: 22px; color: var(--ink-muted); }
+    .s-cta { background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: clamp(28px, 4vw, 48px); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-6); align-items: center; }
+    .s-cta h2 { margin: 0 0 var(--space-2); font-size: clamp(24px, 3vw, 32px); line-height: 1.1; letter-spacing: -0.02em; font-weight: 650; }
+    .s-cta p { margin: 0; color: var(--ink-muted); font-size: 15px; }
+    .s-foot { border-top: 1px solid var(--line); padding: var(--space-8) 0; }
+    .s-foot .s-wrap { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: var(--space-6); }
+    .s-foot h4 { margin: 0 0 var(--space-3); font-family: var(--font-mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-muted); }
+    .s-foot a { display: block; color: var(--ink-muted); text-decoration: none; font-size: 14px; padding: 3px 0; }
+    .s-foot a:hover { color: var(--ink); }
+    .s-foot p { margin: 0; color: var(--ink-muted); font-size: 13px; line-height: 20px; max-width: 36ch; }
+    .s-foot .legal { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: var(--space-4); font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-faint); border-top: 1px solid var(--line); padding-top: var(--space-5); }
+    .s-banner { background: var(--cadmium-soft); color: var(--cadmium-text); border-radius: var(--radius-md); padding: 12px 16px; font-size: 14px; display: flex; justify-content: space-between; gap: var(--space-3); align-items: center; }
 
-    /* ---- Spacious Hero ---- */
-    .hero-card {
-      background: var(--graphite-1);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-lg);
-      padding: 44px;
-      box-shadow: var(--shadow-sm);
-      display: grid;
-      grid-template-columns: 1.12fr 0.88fr;
-      gap: 48px;
-      align-items: center;
+    @media (max-width: 1000px) {
+      .s-hero .s-wrap { grid-template-columns: 1fr; }
+      .s-grid3, .s-plans, .s-tiles { grid-template-columns: 1fr 1fr; }
+      .s-hw { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .s-nodes { grid-template-columns: 1fr 1fr; }
+      .s-sim, .s-calc { grid-template-columns: 1fr; }
+      .s-foot .s-wrap { grid-template-columns: 1fr 1fr; }
     }
-    .hero-left {
-      display: grid;
-      gap: var(--space-6);
-      min-width: 0;
-    }
-    .hero-right {
-      display: grid;
-      gap: var(--space-5);
-      background: var(--graphite-2);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: var(--space-6);
-      min-width: 0;
-    }
-    .hero-svg-box {
-      width: 100%;
-      overflow: hidden;
-      border-radius: var(--radius-sm);
-      border: 1px solid var(--line);
-      background: var(--graphite-1);
-      padding: var(--space-4);
-    }
-    .hero-svg-box svg {
-      width: 100%;
-      height: auto;
-      display: block;
-    }
-    .hero-mini-stats {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: var(--space-3);
-    }
-    .hero-mini-stat {
-      background: var(--graphite-1);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      padding: var(--space-4);
-      display: grid;
-      gap: 4px;
-    }
-    .hero-mini-stat .val {
-      font-family: var(--font-mono);
-      font-size: 20px;
-      font-weight: 600;
-      letter-spacing: -0.02em;
-    }
-    .slab { fill: var(--cadmium); }
-    .tint { fill: var(--cadmium-soft); }
-    .deep { fill: var(--graphite-3); }
-    .rail { stroke: var(--ink); stroke-width: 4; stroke-linecap: round; fill: none; }
-    .rod { stroke: var(--cadmium); stroke-width: 8; stroke-linecap: round; fill: none; }
-    .rod.cut { stroke: var(--on-cadmium); }
-    .rod.cloud { stroke: var(--cherenkov); }
-
-    /* ---- Eyebrow, Panels & Section Headers ---- */
-    .eyebrow {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--ink-muted);
-      margin: 0 0 var(--space-2);
-    }
-    .section-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      gap: var(--space-6);
-      flex-wrap: wrap;
-    }
-    .section-head-copy {
-      max-width: 680px;
-    }
-    .panel {
-      background: var(--graphite-1);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: 32px;
-      box-shadow: var(--shadow-sm);
-      min-width: 0;
-    }
-    .well {
-      background: var(--graphite-2);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: var(--space-5);
-      min-width: 0;
-    }
-
-    /* ---- Grids ---- */
-    .two {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: var(--space-8);
-      align-items: start;
-    }
-    .node-grid {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: var(--space-5);
-    }
-    .stat-strip {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: var(--space-5);
-    }
-    .stat-strip-3 {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: var(--space-5);
-    }
-    .stat-strip-2 {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: var(--space-5);
-    }
-    .stat-card {
-      background: var(--graphite-1);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: var(--space-6);
-      box-shadow: var(--shadow-sm);
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: var(--space-2);
-    }
-    .stat-card .meta {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      line-height: 18px;
-      color: var(--ink-muted);
-      font-variant-numeric: tabular-nums;
-    }
-
-    /* ---- Pricing & Product Cards ---- */
-    .plans {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: var(--space-6);
-      align-items: stretch;
-    }
-    .plan-featured-wrap {
-      display: flex;
-      flex-direction: column;
-    }
-    .plan-featured-wrap .kd-plan {
-      border-color: var(--cherenkov);
-      flex: 1;
-    }
-    .plans > .kd-plan {
-      height: 100%;
-      padding: 32px;
-    }
-
-    /* ---- Scrollable Tables ---- */
-    .table-wrap {
-      width: 100%;
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      background: var(--graphite-1);
-    }
-    .mono-table {
-      width: 100%;
-      min-width: 480px;
-      border-collapse: collapse;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      font-variant-numeric: tabular-nums;
-    }
-    .mono-table th {
-      text-align: left;
-      padding: 12px 16px;
-      background: var(--graphite-2);
-      color: var(--ink-muted);
-      border-bottom: 1px solid var(--line);
-      font-weight: 500;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-    .mono-table td {
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--line);
-      color: var(--ink);
-      vertical-align: middle;
-    }
-    .mono-table tr:last-child td { border-bottom: none; }
-
-    /* ---- FAQ Grid ---- */
-    .faq-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: var(--space-5);
-    }
-    .faq-card {
-      background: var(--graphite-1);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: var(--space-6);
-      display: grid;
-      gap: var(--space-2);
-    }
-
-    /* ---- CTA Banner & Commercial Footer ---- */
-    .cta-banner {
-      background: var(--graphite-1);
-      border: 1px solid var(--cadmium-edge);
-      border-radius: var(--radius-lg);
-      padding: 40px 44px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: var(--space-6);
-      flex-wrap: wrap;
-      box-shadow: var(--shadow-sm);
-    }
-    .site-footer {
-      border-top: 1px solid var(--line);
-      padding-top: var(--space-8);
-      display: grid;
-      gap: var(--space-6);
-    }
-    .footer-grid {
-      display: grid;
-      grid-template-columns: 1.5fr repeat(3, 1fr);
-      gap: var(--space-8);
-    }
-    .footer-col {
-      display: grid;
-      align-content: start;
-      gap: var(--space-2);
-    }
-    .footer-col a {
-      color: var(--ink-muted);
-      text-decoration: none;
-      font-size: 14px;
-      line-height: 22px;
-    }
-    .footer-col a:hover { color: var(--ink); }
-    .footer-bottom {
-      border-top: 1px solid var(--line);
-      padding-top: var(--space-4);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: var(--space-3);
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--ink-muted);
-    }
-
-    /* ---- Responsive Breakpoints ---- */
-    @media (max-width: 1200px) {
-      .node-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (max-width: 1040px) {
-      .nav-links { display: none; }
-      .mobile-menu-btn { display: inline-flex; }
-      .hero-card { grid-template-columns: 1fr; padding: var(--space-6); gap: var(--space-6); }
-      .two { grid-template-columns: 1fr; gap: var(--space-6); }
-      .plans { grid-template-columns: 1fr; }
-      .stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .footer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (max-width: 720px) {
-      .top { padding: var(--space-2) var(--space-4); }
-      .brand-tag { display: none; }
-      .page { padding: var(--space-6) var(--space-4) var(--space-12); gap: 48px; }
-      .hero-card, .panel, .cta-banner { padding: var(--space-5); }
-      .hero-mini-stats, .node-grid, .stat-strip, .stat-strip-3, .stat-strip-2, .faq-grid, .footer-grid {
-        grid-template-columns: 1fr;
-      }
-      .nav-actions .hide-sm { display: none; }
+    @media (max-width: 760px) {
+      .s-links { display: none; }
+      .s-burger { display: inline-flex; }
+      .s-nav .right .hide-sm { display: none; }
+      .s-grid3, .s-grid2, .s-plans, .s-tiles, .s-nodes { grid-template-columns: 1fr; }
+      .s-hw { grid-template-columns: 1fr 1fr; }
+      .s-rows li { grid-template-columns: 1fr; gap: 2px; }
+      .s-cta { grid-template-columns: 1fr; }
+      .s-foot .s-wrap { grid-template-columns: 1fr; }
+      .s-stats { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
 <div id="app"></div>
-
 <script src="/components/lib/react.production.min.js"></script>
 <script src="/components/lib/react-dom.production.min.js"></script>
 <script src="/components/bundle.js"></script>
 <script>
 (function () {
-  var K = window.Kadmium, h = React.createElement;
-
-  var QUICKSTART_TABS = {
-    cli: {
-      title: 'terminal · install & launch in 30 seconds',
-      lang: 'shell',
-      code: '$ curl -fsSL https://kadmium.ai/install.sh | sh\n$ kadmium init && kadmium serve --port 7848'
-    },
-    sdk: {
-      title: 'openai / anthropic sdk · drop-in local or hybrid endpoint',
-      lang: 'shell',
-      code: '$ export OPENAI_BASE_URL="http://127.0.0.1:7848/v1"\n$ curl http://127.0.0.1:7848/v1/chat/completions \\\n  -d \'{"model":"deepseek-v3-671b-moe","messages":[{"role":"user","content":"Hello!"}]}\''
-    },
-    lease: {
-      title: 'supply grid · earn USD or 1.25× Cloud credits overnight',
-      lang: 'shell',
-      code: '$ kadmium lease --hours 12 --payout credits\n# < 200 ms auto-yield on game launch · blind middle layers only'
-    }
-  };
-
+  'use strict';
+  const K = window.Kadmium, h = React.createElement, F = React.Fragment;
+  const { useState, useEffect, useMemo } = React;
   var SCENARIOS = {
     local_mesh: {
       id: 'local_mesh',
@@ -734,16 +440,16 @@
 
   var WORKLOAD_TABS = {
     inference: {
-      eyebrow: '01 · EXL3 / QTIP Trellis + RAID-5 Swarm Inference',
-      title: 'Run 671B models across VRAM, Mac UMA, Phone Farm Boxes, and RAID-5 peer swarms.',
-      prose: 'Combines EXL3/QTIP FWHT incoherence trellis quantization (2.0–6.0 bpw), local GGUF/Safetensors to .ktb disk importing, TCP PagedAttention KV migration, and RAID-5 straggler parity.',
-      codeTitle: 'terminal · import local GGUF/EXL3, verify privacy & serve',
+      eyebrow: '01 · 5-Tier MoE Inference + RAID-5 Swarm Striping',
+      title: 'Run 671B models across VRAM, Apple Unified Memory, NVMe, and RAID-5 peer swarms.',
+      prose: 'Hot attention weights stay in VRAM and Unified Memory while cold MoE experts stream from NVMe (.ktb 64 KiB pages) and stripe across parallel seeders with RAID-5 straggler parity.',
+      codeTitle: 'terminal · selective pull, Wireshark privacy check & OpenAI stream',
       codeLang: 'shell',
-      code: '$ kadmium import --model deepseek-v3-671b-exl3 --format exl3\n$ kadmium serve --port 7848 --raid-parity 1',
+      code: '$ kadmium pull hf://deepseek-ai/DeepSeek-V3@main\n$ kadmium serve --port 7848 --raid-parity 1',
       rows: [
-        ['Quantization', 'EXL3 / QTIP FWHT incoherence + Viterbi bitshift trellis (2.0–6.0 bpw)'],
-        ['Swarm & RAID-5', 'Multi-seeder .ktb pull + RAID-5 coded activation striping (8× uplink)'],
-        ['KV & Multimodal', 'Live TCP PagedAttention KV migration + /v1/embeddings & Vision offload'],
+        ['Tensor format', '.ktb v1 (64 KiB pages + O(log N) Merkle proofs)'],
+        ['Swarm & RAID-5', 'Multi-seeder BitTorrent pull + RAID-5 coded activation striping (8× uplink)'],
+        ['Speculative draft', 'ARM SBC 0.6B INT4 draft verifier (2.22× WAN speedup)'],
         ['Privacy boundary', 'Layer 0 & Layer N-1 pinned locally (0 plaintext bytes on wire)']
       ]
     },
@@ -792,757 +498,204 @@
   };
 
   var SUPPLY_NODES = [
-    { id: 'rig-alpha-rtx4090', name: 'Desktop PC (RTX 4090)', hardware: '24 GB VRAM · 290W active · 62% duty', buyerActiveHr: 0.324, hostActiveHr: 0.243, dutyPct: 62, usdPerHour: 0.152, powerPerHr: 0.027 },
-    { id: 'mac-mini-m4-pro', name: 'M4 Mac Mini Pro', hardware: '48 GB Unified · 38W active · 65% duty', buyerActiveHr: 0.252, hostActiveHr: 0.189, dutyPct: 65, usdPerHour: 0.124, powerPerHr: 0.004 },
-    { id: 'phone-farm-s20-box20', name: '20-Slot Phone Farm Box (S20)', hardware: '160 GB LPDDR5 · 115W BMS · 58% duty', buyerActiveHr: 0.360, hostActiveHr: 0.270, dutyPct: 58, usdPerHour: 0.161, powerPerHr: 0.011 },
-    { id: 'zephyrus-g16-rtx4070', name: 'Gaming Laptop (RTX 4070M)', hardware: '8 GB VRAM · 95W active · 48% duty', buyerActiveHr: 0.097, hostActiveHr: 0.073, dutyPct: 48, usdPerHour: 0.036, powerPerHr: 0.007 },
-    { id: 'rk3588-sbc-bramble', name: 'ARM64 SBC Cluster', hardware: '16 GB RAM · 16W active · 45% duty', buyerActiveHr: 0.073, hostActiveHr: 0.055, dutyPct: 45, usdPerHour: 0.026, powerPerHr: 0.001 },
-    { id: 'synology-nas-vault', name: 'Home / Lab NAS Vault', hardware: '4 TB NVMe · 55W · RS(8,2) bucket seed', buyerActiveHr: 0.049, hostActiveHr: 0.037, dutyPct: 55, usdPerHour: 0.025, powerPerHr: 0.006 }
+    { id: 'rig-alpha-rtx4090', name: 'Desktop PC (RTX 4090)', hardware: '24 GB VRAM · Blind middle layers', usdPerHour: 0.38 },
+    { id: 'mac-mini-m4-pro', name: 'M4 Mac Mini Pro', hardware: '48 GB Unified · Contiguous MoE layers', usdPerHour: 0.29 },
+    { id: 'zephyrus-g16-rtx4070', name: 'Gaming Laptop (RTX 4070M)', hardware: '8 GB VRAM · Attention + DeMo sync', usdPerHour: 0.14 },
+    { id: 'rk3588-sbc-bramble', name: 'ARM64 SBC Cluster', hardware: '24 GB RAM · WASI RL sandboxes', usdPerHour: 0.06 },
+    { id: 'synology-nas-vault', name: 'Home / Lab NAS Vault', hardware: '16 TB ZFS · .ktb P2P shard seeding', usdPerHour: 0.05 }
   ];
 
   var FAQS = [
     {
-      q: 'Can cloud or Kadmium Reactor nodes see my prompts or weights?',
-      a: 'No. Layer 0 (token embeddings) and Layer N-1 (final output head) stay pinned strictly to your own local machines, and spilled middle layers are wrapped in a session-keyed Orthogonal FWHT Blind-Activation Shield (Wire CosSim = 0.0489).'
+      q: 'Can cloud or Supply Grid nodes see my prompts or weights?',
+      a: 'No. Layer 0 (token embeddings) and Layer N-1 (final output head) stay pinned strictly to your own local machines. External nodes only process anonymous middle-layer activation tensors.'
     },
     {
-      q: 'How are Kadmium Reactor host payouts calculated, and how does the company stay sustainable?',
-      a: 'Open-book math: No-Demand = No-Compute-Payout. When a buyer rents your node, 75% goes directly to you, 20% scales strictly with modest living-wage employee/founder salaries and relay infrastructure (no 6-figure executive greed), and 5% funds local STEM programs and small businesses. All quotes deduct realistic demand duty cycles (32%–65%) and $0.14/kWh electricity.'
+      q: 'How does RAID-5 P2P tensor striping fix slow residential upload speeds?',
+      a: 'Kadmium stripes 64 KiB .ktb pages and token chunks across k parallel seeders plus a linear-algebraic parity node (Y_p = Σ Y_j), multiplying return bandwidth by 8×–16× while ignoring the slowest straggler node.'
     },
     {
-      q: 'How do students & universities get free compute or stretch grant budgets 3–4×?',
-      a: 'Universities unify existing idle campus lab PCs/Macs at $0 CapEx (<200ms Polite student auto-yield), earn 1.25× Reactor Credits overnight/summer, and give .edu students $50/mo in free off-peak Scholar Compute Credits.'
+      q: 'How do students & universities get free compute or STTR funding?',
+      a: 'Students with a .edu email receive $50/mo in free off-peak Scholar Compute Credits routed to overnight campus/community nodes. University CS labs can partner as NSF STTR Co-PIs ($95k–$400k lab subaward).'
     },
     {
-      q: 'Why say "If AI companies want compute, they can pay the people for it"?',
-      a: 'AI hyperscaler campuses caused PJM grid capacity prices to jump 9.3× ($28.92 -> $269.92–$333/MW-day, adding $16.4B to household utility bills) while 62M tonnes/yr of phones, laptops, and PCs go to e-waste. Paying people for already-manufactured silicon solves both.'
+      q: 'Why say "we don’t need any additional datacenters"?',
+      a: 'Because 30M+ air-cooled GPUs, Macs, and campus computers already sit 85% idle (0 L cooling water, 0 kg new concrete), and decommissioned enterprise servers can be recycled into Sentinel & Scholar nodes.'
     }
   ];
 
-  function Site() {
-    var themeState = React.useState('dark'), theme = themeState[0], setTheme = themeState[1];
-    var menuState = React.useState(false), mobileMenuOpen = menuState[0], setMobileMenuOpen = menuState[1];
-    var quickstartState = React.useState('cli'), quickstartTab = quickstartState[0], setQuickstartTab = quickstartState[1];
-    var pricingTrackState = React.useState('individual'), pricingTrack = pricingTrackState[0], setPricingTrack = pricingTrackState[1];
-    var scenarioState = React.useState('local_mesh'), activeScenarioKey = scenarioState[0], setScenarioKey = scenarioState[1];
-    var workloadTabState = React.useState('inference'), workloadTab = workloadTabState[0], setWorkloadTab = workloadTabState[1];
-    var leaseHoursState = React.useState(12), leaseHours = leaseHoursState[0], setLeaseHours = leaseHoursState[1];
-    var payoutModeState = React.useState('credits'), payoutMode = payoutModeState[0], setPayoutMode = payoutModeState[1];
-    var actionBannerState = React.useState(null), actionBanner = actionBannerState[0], setActionBanner = actionBannerState[1];
-    var enabledSupplyState = React.useState({
-      'rig-alpha-rtx4090': true,
-      'mac-mini-m4-pro': true,
-      'zephyrus-g16-rtx4070': true,
-      'rk3588-sbc-bramble': true,
-      'synology-nas-vault': true
-    }), enabledSupply = enabledSupplyState[0], setEnabledSupply = enabledSupplyState[1];
+  /* ---------- content ---------- */
+  const GITHUB = 'https://github.com/kadmium-ai/kadmium';
+  const QUICKSTARTS = {
+    install: { label: 'Install', title: 'terminal · one binary, every os', lang: 'shell', code: '$ curl -fsSL https://kadmium.ai/install.sh | sh\n$ kadmium init && kadmium serve --port 7848\n# open http://localhost:7848 — the control room' },
+    join: { label: 'Join a machine', title: 'on every other machine you own', lang: 'shell', code: '$ curl -sSL http://<coordinator>:7848/join.sh | sh\n# windows: irm http://<coordinator>:7848/join.ps1 | iex\n$ kadmium join            # or discover it over udp 7849' },
+    api: { label: 'Point your tools', title: 'openai + anthropic compatible · drop-in', lang: 'shell', code: '$ export OPENAI_BASE_URL="http://127.0.0.1:7848/v1"\n$ curl $OPENAI_BASE_URL/chat/completions \\\n  -d \'{"model":"deepseek-v3-671b-moe","messages":[{"role":"user","content":"Hello"}]}\'' }
+  };
+  const STEPS = [
+    { n: '01 · install', title: 'One Rust binary.', text: 'No CUDA toolkit, no Python environment, no Docker. The same `kadmium` binary runs on Windows, macOS and Linux — x86, Apple Silicon, ARM64 and RISC-V — and profiles its own FLOPs, memory tiers and NVMe on first launch.', code: '$ curl -fsSL kadmium.ai/install.sh | sh' },
+    { n: '02 · join', title: 'Join the machines you already own.', text: 'Each one becomes a node: the desktop with the RTX card, the M4 Mac Mini, two gaming laptops, a Raspberry Pi, the NAS. Kadmium computes an asymmetric shard plan — big slices for big GPUs, utility work for small boxes — and seeds .ktb weight banks peer to peer from the NAS.', code: '$ kadmium join   # finds the coordinator' },
+    { n: '03 · run', title: 'Point your tools at localhost.', text: 'Cursor, Claude Code, OpenWebUI, LangChain, your own scripts: anything that speaks the OpenAI or Anthropic API talks to your cluster. When you launch a game, the desktop yields in under 200 ms and the shards move. When you rent a GPU for an afternoon, it joins the same plan.', code: '$ export OPENAI_BASE_URL=localhost:7848/v1' }
+  ];
+  const HARDWARE = [
+    { icon: 'desktop', name: 'Desktops', sub: 'CUDA · ROCm · Vulkan' }, { icon: 'compact', name: 'Apple Silicon', sub: 'M1–M4 unified memory' }, { icon: 'laptop', name: 'Laptops', sub: 'discrete GPU or CPU' },
+    { icon: 'sbc', name: 'SBCs', sub: 'ARM64 · RISC-V · NPU' }, { icon: 'nas', name: 'NAS boxes', sub: '.ktb seed & checkpoints' }, { icon: 'gpu', name: 'Rented GPUs', sub: 'spot, by the hour' }
+  ];
+  const COMPARISON = [
+    ['Kadmium local mesh (4090 + M4 Mini + laptop + NAS)', 'Home / office LAN + Wi-Fi 6E', '$0.00 / hr', '$0.00', '< 200 ms polite auto-yield', 'cad'],
+    ['Kadmium hybrid (local + 1× spot L40S / H100 burst)', 'Standard fiber · 1,000× DeMo compression', '$0.79 – $1.49 / hr', '$18.96 – $35.76', '< 340 ms live .ktb cutover', 'cher'],
+    ['Monolithic hyperscaler (8× H100, AWS p5.48xlarge)', '3,200 Gbps EFA / NVSwitch lock-in', '$32.77 / hr', '$786.48', 'Checkpoint, crash, restart', 'mut']
+  ];
+  const PLANS = {
+    individual: [
+      { product: 'self-hosted', eyebrow: '01 · Self-hosted · open source', name: 'Kadmium Local', price: '$0', period: 'forever · MIT / Apache-2.0', summary: 'Every computer in your home or lab, as one private AI workstation.', features: ['Unlimited CUDA, ROCm, Metal, Vulkan and NPU nodes', 'Asymmetric sharding + RAID-5 P2P tensor striping', '< 200 ms gaming auto-yield · 6-digit pairing', 'Drop-in OpenAI, Anthropic and MCP server'], cta: 'Open the control room', href: '/' },
+      { product: 'cloud', eyebrow: '02 · Hybrid burst + WAN shield · most popular', name: 'CloudShield Pro', price: '$29', period: '/ month · includes $40 of burst credits', summary: 'About 53 hours of middle-layer L40S burst a month, WAN relay and < 340 ms failover.', features: ['$40 / month burst pool ($0.45 / hr 4090 · $0.75 / hr L40S)', 'Or $25 / $100 prepaid burst packs that never expire', 'Blind middle shards only — layer 0 and N−1 stay local', '< 340 ms CloudShield failover on a game launch or fiber drop'], cta: 'Enable in the desktop companion', href: '/companion' },
+      { product: 'self-hosted', eyebrow: '03 · Two-sided compute grid', name: 'Supply Grid Host', price: '+$1.15', period: '/ hr earned · 1.25× in credits', summary: 'Rent out idle GPUs, Macs and NAS vaults overnight with zero gaming lag.', features: ['1.25× closed-loop Cloud credits, or USD', 'Blind middle-layer execution and .ktb seeding only', '< 200 ms OS swapchain auto-yield on game launch', 'Gensyn Verde RepOps settlement proofs'], cta: 'Calculate your earnings', href: '#supply' }
+    ],
+    labs: [
+      { product: 'cloud', eyebrow: '01 · University labs & AI teams', name: 'Kadmium Lab & Team', price: '$199', period: '/ month · includes $250 of burst credits', summary: 'Up to 25 mismatched lab GPUs, Mac Studios and servers, with per-student spend caps.', features: ['$250 / month shared burst credits (+$499 white-glove setup)', 'Sub-cluster slices: prod, train-DiLoCo, RL-Dream-RSI', 'Scoped kdm_live_… keys and hard hourly cloud limits', 'Eligible NSF STTR co-PI ($95k–$400k lab subaward)'], cta: 'Configure lab slices', href: '/#/slices' },
+      { product: 'cloud', eyebrow: '02 · Legal, healthcare & defense SMBs', name: 'Private Office Fabric', price: '$499', period: '/ month · zero-CapEx appliance', summary: 'Existing office Macs and PCs become a HIPAA / ABA Rule 1.6 compliant AI cloud.', features: ['No new servers: runs on 5–50 machines already on desks', 'Air-gapped LAN mode, or blind middle-layer burst', 'HIPAA BAA, CMMC 2.0 CUI boundary, audit log export', 'MSP partner program: 25 % recurring revenue share'], cta: 'Talk to us', href: 'mailto:hello@kadmium.ai' },
+      { product: 'self-hosted', eyebrow: '03 · Plug-and-play hardware', name: 'Cd‑48 Control Rod Node', price: '$699', period: 'one-time · pre-certified dev kit', summary: '32 GB RK3588 ARM64 + 2 TB NVMe, pre-loaded with 1.5 TB of .ktb models and $200 of burst credits.', features: ['24/7 coordinator, .ktb seeder and WASI RL verifier', '0.6B INT4 speculative drafts: 2.22× WAN decode speedup', '$200 of burst credits and a Founder Pro badge', 'Reserve with a refundable $1 deposit (+$100 bonus credits)'], cta: 'Reserve a founder pass', href: '#grid-zero' }
+    ]
+  };
 
-    function toggleSupplyNode(id) {
-      setEnabledSupply(function (prev) {
-        var next = Object.assign({}, prev);
-        next[id] = !prev[id];
-        return next;
-      });
-    }
+  /* ---------- small pieces ---------- */
+  const Icon = (name, size) => h(K.Icon, { name, size: size || 24 });
+  function Stat(label, value, meta, cloud) { return h('div', { className: 's-stat' + (cloud ? ' cloud' : '') }, h('span', { className: 'l' }, label), h('span', { className: 'v' }, value), h('span', { className: 'm' }, meta)); }
+  function Seg(props) { return h('div', { className: 's-seg', role: 'tablist' }, props.items.map(it => h('button', { key: it.id, type: 'button', className: props.value === it.id ? 'active' : '', onClick: () => props.onChange(it.id), 'aria-pressed': props.value === it.id }, it.label))); }
+  function go(href) { if (href.charAt(0) === '#') { const el = document.getElementById(href.slice(1)); if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } else { window.location.href = href; } }
 
-    var hourlyUsdTotal = SUPPLY_NODES.reduce(function (acc, nd) {
-      return acc + (enabledSupply[nd.id] ? nd.usdPerHour : 0);
-    }, 0);
-    var hourlyPowerTotal = SUPPLY_NODES.reduce(function (acc, nd) {
-      return acc + (enabledSupply[nd.id] ? nd.powerPerHr : 0);
-    }, 0);
-    var activeSupplyCount = SUPPLY_NODES.reduce(function (acc, nd) {
-      return acc + (enabledSupply[nd.id] ? 1 : 0);
-    }, 0);
-    var hourlyCreditsTotal = hourlyUsdTotal * 1.25;
-    var monthlyUsdTotal = hourlyUsdTotal * leaseHours * 30;
-    var monthlyPowerTotal = hourlyPowerTotal * leaseHours * 30;
-    var monthlyNetProfitUsd = monthlyUsdTotal - monthlyPowerTotal;
-    var monthlyCreditsTotal = hourlyCreditsTotal * leaseHours * 30;
-    var monthlyBurstHoursL40s = monthlyCreditsTotal / 0.75;
-
-    React.useEffect(function () {
-      document.documentElement.setAttribute('data-theme', theme);
-    }, [theme]);
-
-    var wordmark = theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg';
-    var qs = QUICKSTART_TABS[quickstartTab] || QUICKSTART_TABS.cli;
-    var sc = SCENARIOS[activeScenarioKey] || SCENARIOS.local_mesh;
-    var wk = WORKLOAD_TABS[workloadTab] || WORKLOAD_TABS.inference;
-
-    return h(React.Fragment, null,
-      /* ---- Sticky Commercial Header ---- */
-      h('div', { className: 'top-wrap' },
-        h('header', { className: 'top' },
-          h('a', { href: '#top', className: 'brand-cluster' },
-            h('img', { src: wordmark, alt: 'Kadmium' }),
-            h('span', { className: 'brand-tag' }, 'Cd‑48 · v1.0 GA')),
-          h('nav', { className: 'nav-links', 'aria-label': 'Primary Navigation' },
-            h('a', { href: '#pricing', className: 'nav-link' }, 'Products & Pricing'),
-            h('a', { href: '#simulator', className: 'nav-link' }, 'Live Simulator'),
-            h('a', { href: '#no-new-datacenters', className: 'nav-link' }, 'Grid-Zero'),
-            h('a', { href: '#scholars', className: 'nav-link' }, 'Scholars & Founders'),
-            h('a', { href: '#supply-grid', className: 'nav-link' }, 'Rent Your GPU'),
-            h('a', { href: '#architecture', className: 'nav-link' }, 'Architecture'),
-            h('a', { href: '/docs', className: 'nav-link' }, 'Docs')),
-          h('div', { className: 'nav-actions' },
-            h(K.Button, {
-              variant: 'ghost',
-              size: 'sm',
-              className: 'hide-sm',
-              onClick: function () { setTheme(theme === 'dark' ? 'light' : 'dark'); }
-            }, theme === 'dark' ? 'Light' : 'Dark'),
-            h(K.Button, {
-              variant: 'default',
-              size: 'sm',
-              className: 'hide-sm',
-              onClick: function () { window.location.href = '/companion'; }
-            }, 'Desktop App'),
-            h(K.Button, {
-              variant: 'primary',
-              size: 'sm',
-              icon: 'rods',
-              onClick: function () { window.location.href = '/'; }
-            }, 'Launch Control Room'),
-            h(K.Button, {
-              variant: 'default',
-              size: 'sm',
-              className: 'mobile-menu-btn',
-              onClick: function () { setMobileMenuOpen(!mobileMenuOpen); }
-            }, mobileMenuOpen ? 'Close' : 'Menu'))),
-        h('div', { className: 'mobile-drawer' + (mobileMenuOpen ? ' open' : '') },
-          h('a', { href: '#pricing', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Products & Pricing'),
-          h('a', { href: '#simulator', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Live Cluster Simulator'),
-          h('a', { href: '#no-new-datacenters', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Grid-Zero (No New Datacenters)'),
-          h('a', { href: '#scholars', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Scholars (.edu) & Founders'),
-          h('a', { href: '#supply-grid', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Rent Your GPU (Supply Grid)'),
-          h('a', { href: '#architecture', className: 'nav-link', onClick: function () { setMobileMenuOpen(false); } }, 'Architecture'),
-          h('div', { className: 'kd-row', style: { paddingTop: 'var(--space-2)' } },
-            h(K.Button, { size: 'sm', onClick: function () { window.location.href = '/companion'; } }, 'Companion App'),
-            h(K.Button, { size: 'sm', onClick: function () { window.location.href = '/docs'; } }, 'Docs'),
-            h(K.Button, { size: 'sm', onClick: function () { setTheme(theme === 'dark' ? 'light' : 'dark'); } }, theme === 'dark' ? 'Light' : 'Dark')))),
-
-      h('main', { id: 'top', className: 'page' },
-        /* ---- 1. Clean, Spacious Hero ---- */
-        h('section', { className: 'hero-card' },
-          h('div', { className: 'hero-left' },
-            h('div', null,
-              h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)' } },
-                h(K.Badge, { tone: 'local', dot: true }, 'Local Fabric · $0'),
-                h(K.Badge, { tone: 'cloud', dot: true }, 'Spot Cloud · $0.55/hr'),
-                h(K.Badge, { tone: 'ok' }, 'GPU Leasing · +$345/mo')),
-              h('h1', { className: 'display-xl', style: { margin: '0 0 var(--space-4)' } },
-                'Your own hardware, unified into one private AI cloud.'),
-              h('p', { className: 'body-lg', style: { color: 'var(--ink-muted)', margin: 0, maxWidth: '640px' } },
-                'Pool your desktop GPUs, Apple Silicon Macs, and laptops into a single OpenAI & Anthropic endpoint at $0/hr. Burst to cheap spot GPUs when you need extra speed, or rent out your idle rig overnight.')),
-
-            h('div', { className: 'kd-stack' },
-              h(K.Tabs, {
-                label: 'Quick-start mode',
-                value: quickstartTab,
-                onChange: setQuickstartTab,
-                items: [
-                  { id: 'cli', label: '1. Install CLI (30s)' },
-                  { id: 'sdk', label: '2. Drop-In API' },
-                  { id: 'lease', label: '3. Lease Idle GPU' }
-                ]
-              }),
-              h(K.CodeBlock, {
-                title: qs.title,
-                language: qs.lang,
-                code: qs.code
-              }),
-              h('div', { className: 'kd-row', style: { paddingTop: 'var(--space-1)' } },
-                h(K.Button, { variant: 'primary', size: 'lg', icon: 'rods', onClick: function () { window.location.href = '/'; } }, 'Open Control Room'),
-                h(K.Button, { variant: 'cloud', size: 'lg', icon: 'cloud', onClick: function () { window.location.href = '/companion'; } }, 'Desktop Companion'),
-                h(K.Button, { size: 'lg', onClick: function () { document.getElementById('pricing').scrollIntoView({ behavior: 'smooth' }); } }, 'View Pricing')))),
-
-          h('div', { className: 'hero-right' },
-            h('div', { className: 'kd-row', style: { justifyContent: 'space-between' } },
-              h('span', { className: 'eyebrow', style: { margin: 0 } }, 'Cd‑48 Hybrid Reactor Mesh'),
-              h(K.Badge, { tone: 'ok', dot: true }, '99.99% CloudShield SLA')),
-            h('div', { className: 'hero-svg-box', 'aria-hidden': 'true' },
-              h('svg', { viewBox: '0 0 520 220' },
-                h('rect', { className: 'slab', x: 16, y: 12, width: 176, height: 196, rx: 10 }),
-                h('rect', { className: 'tint', x: 208, y: 68, width: 120, height: 140, rx: 10 }),
-                h('rect', { className: 'deep', x: 344, y: 36, width: 160, height: 172, rx: 10 }),
-                h('line', { className: 'rail', x1: 16, y1: 34, x2: 504, y2: 34 }),
-                h('line', { className: 'rod cut', x1: 40, y1: 26, x2: 40, y2: 112 }),
-                h('line', { className: 'rod cut', x1: 68, y1: 26, x2: 68, y2: 168 }),
-                h('line', { className: 'rod cut', x1: 96, y1: 26, x2: 96, y2: 92 }),
-                h('line', { className: 'rod cut', x1: 124, y1: 26, x2: 124, y2: 144 }),
-                h('line', { className: 'rod cut', x1: 152, y1: 26, x2: 152, y2: 184 }),
-                h('line', { className: 'rod', x1: 236, y1: 26, x2: 236, y2: 88 }),
-                h('line', { className: 'rod', x1: 268, y1: 26, x2: 268, y2: 156 }),
-                h('line', { className: 'rod', x1: 300, y1: 26, x2: 300, y2: 118 }),
-                h('line', { className: 'rod', x1: 372, y1: 26, x2: 372, y2: 140 }),
-                h('line', { className: 'rod cloud', x1: 404, y1: 26, x2: 404, y2: 178 }),
-                h('line', { className: 'rod', x1: 436, y1: 26, x2: 436, y2: 106 }),
-                h('line', { className: 'rod cloud', x1: 468, y1: 26, x2: 468, y2: 152 }))),
-            h('div', { className: 'hero-mini-stats' },
-              h('div', { className: 'hero-mini-stat' },
-                h('span', { className: 'label' }, 'LOCAL TOKENS'),
-                h('span', { className: 'val', style: { color: 'var(--cadmium-text)' } }, '$0.00'),
-                h('span', { className: 'caption', style: { color: 'var(--ink-muted)' } }, '100% private LAN')),
-              h('div', { className: 'hero-mini-stat' },
-                h('span', { className: 'label' }, 'SPOT BURST'),
-                h('span', { className: 'val', style: { color: 'var(--cherenkov-text)' } }, '-78 %'),
-                h('span', { className: 'caption', style: { color: 'var(--ink-muted)' } }, '$0.55/hr middle shards')),
-              h('div', { className: 'hero-mini-stat' },
-                h('span', { className: 'label' }, 'FAILOVER SLA'),
-                h('span', { className: 'val', style: { color: 'var(--ok)' } }, '340 ms'),
-                h('span', { className: 'caption', style: { color: 'var(--ink-muted)' } }, '0 dropped requests'))))),
-
-        /* ---- 2. Products & Pricing (Unified, Non-Repetitive 3-Pillar Showcase) ---- */
-        h('section', { id: 'pricing', className: 'section-block' },
-          h('div', { className: 'section-head' },
-            h('div', { className: 'section-head-copy' },
-              h('p', { className: 'eyebrow' }, 'Products & transparent pricing'),
-              h('h2', { className: 'headline', style: { margin: '0 0 var(--space-1)' } }, 'Start free on your own hardware. Burst, govern, or lease whenever you want.'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'Zero token markups on local silicon. Switch between Individual/Prosumer plans and University Lab / Regulated Enterprise Fabrics.')),
-            h(K.Tabs, {
-              label: 'Pricing track',
-              value: pricingTrack,
-              onChange: setPricingTrack,
-              items: [
-                { id: 'individual', label: 'Individuals & Prosumers' },
-                { id: 'enterprise_labs', label: 'Labs, Regulated SMBs & Hardware' }
-              ]
-            })),
-
-          pricingTrack === 'individual'
-            ? h('div', { className: 'plans' },
-                h(K.PlanCard, {
-                  product: 'self-hosted',
-                  eyebrow: '01 · Self-Hosted Open Source',
-                  name: 'Kadmium Local',
-                  price: '$0',
-                  period: 'forever · MIT / Apache-2.0',
-                  summary: 'Link every computer in your home or lab into one private AI workstation.',
-                  features: [
-                    'Unlimited CUDA, ROCm, Metal, Vulkan & NPU nodes',
-                    'Asymmetric Q* sharding + RAID-5 P2P tensor striping',
-                    '< 200 ms gaming auto-yield & 6-digit SAS pairing',
-                    'Drop-in OpenAI, Anthropic & MCP 2025-03-26 server'
-                  ],
-                  cta: 'Open Local Control Room',
-                  onSelect: function () { window.location.href = '/'; }
-                }),
-                h('div', { className: 'plan-featured-wrap' },
-                  h(K.PlanCard, {
-                    product: 'cloud',
-                    eyebrow: '02 · Hybrid Burst + WAN Shield · Most Popular',
-                    name: 'CloudShield Pro',
-                    price: '$29',
-                    period: '/ mo (includes $40 burst credits)',
-                    summary: 'Includes $40/mo of middle-layer spot burst (~53 hrs L40S), WAN relay, and < 340 ms failover.',
-                    features: [
-                      '$40/mo Burst Credit pool ($0.45/hr 4090 · $0.75/hr L40S)',
-                      'Or buy $25 / $100 Prepaid Burst Packs (non-expiring)',
-                      'Blind middle shards only (Layer 0 & N-1 stay local)',
-                      '< 340 ms CloudShield failover on gaming or fiber drop'
-                    ],
-                    cta: 'Enable in Desktop Companion',
-                    onSelect: function () { window.location.href = '/companion'; }
-                  })),
-                h(K.PlanCard, {
-                  product: 'self-hosted',
-                  eyebrow: '03 · Two-Sided Compute Grid',
-                  name: 'Supply Grid Host',
-                  price: '+$1.15',
-                  period: '/ hr earned (1.25× credits)',
-                  summary: 'Rent out idle GPUs, M4 Macs, and NAS vaults overnight with zero gaming lag.',
-                  features: [
-                    'Earn 1.25× closed-loop Cloud Credits or direct USD',
-                    'Blind middle-layer execution & .ktb BitTorrent seeding',
-                    '< 200 ms OS swapchain auto-yield on game launch',
-                    'Cryptographic Gensyn Verde RepOps settlement proofs'
-                  ],
-                  cta: 'Calculate Your Earnings',
-                  onSelect: function () { document.getElementById('supply-grid').scrollIntoView({ behavior: 'smooth' }); }
-                }))
-            : h('div', { className: 'plans' },
-                h(K.PlanCard, {
-                  product: 'cloud',
-                  eyebrow: '01 · University Labs & AI Teams',
-                  name: 'Kadmium Lab & Team',
-                  price: '$199',
-                  period: '/ mo (includes $250 burst credits)',
-                  summary: 'Unify up to 25 mismatched lab GPUs, Mac Studios, and servers with per-student spend caps.',
-                  features: [
-                    'Includes $250/mo shared Burst Credits (+$499 White-Glove Setup)',
-                    'Sub-Cluster Slices (Prod, Train-DiLoCo, RL-Dream-RSI)',
-                    'Scoped kdm_live_... RBAC keys & hard hourly cloud limits',
-                    'Eligible for NSF STTR Co-PI ($95k–$400k lab subaward)'
-                  ],
-                  cta: 'Configure Lab Slices',
-                  onSelect: function () { window.location.href = '/'; }
-                }),
-                h('div', { className: 'plan-featured-wrap' },
-                  h(K.PlanCard, {
-                    product: 'cloud',
-                    eyebrow: '02 · Legal, Healthcare & Defense SMBs',
-                    name: 'Private Office Fabric',
-                    price: '$499',
-                    period: '/ mo · Zero-CapEx Appliance',
-                    summary: 'Turns existing office Macs & PCs into a HIPAA / ABA Rule 1.6 compliant AI cloud (saves $25k+ CapEx).',
-                    features: [
-                      'Zero new server purchase: runs on 5–50 existing office machines',
-                      'Air-gapped LAN mode or Blind Middle-Layer Burst (L0/LN-1 on-prem)',
-                      'HIPAA BAA, CMMC 2.0 CUI boundary & audit log export',
-                      'MSP Partner Program: 25% recurring rev-share for IT integrators'
-                    ],
-                    cta: 'Launch Compliance View',
-                    onSelect: function () { window.location.href = '/'; }
-                  })),
-                h(K.PlanCard, {
-                  product: 'self-hosted',
-                  eyebrow: '03 · Open-Hardware Embedded Sidecar',
-                  name: 'Cd‑48 Reactor Box',
-                  price: '$249',
-                  period: 'one-time · Cost-Plus Open Linux Box',
-                  summary: '32 GB LPDDR5 + M.2 NVMe + Dual 2.5GbE (16W battery-free). Boosts your PC, runs your home server, and earns on Kadmium Reactor.',
-                  features: [
-                    'Local "Just-Enough-Boost" sidecar (+32 GB for 70B models at $0/hr)',
-                    '100% open Debian/Ubuntu Linux (Home Assistant, NAS, Docker, GPIO)',
-                    '16W battery-free wall power (~$19.40/mo net profit after power)',
-                    'Undercuts $3,500 NVIDIA DGX Spark & $1,999 AMD Strix Halo'
-                  ],
-                  cta: 'Reserve $1 VIP Founder Pass',
-                  onSelect: function () { document.getElementById('scholars').scrollIntoView({ behavior: 'smooth' }); }
-                })),
-
-          h('div', { className: 'panel' },
-            h('div', { className: 'section-head', style: { marginBottom: 'var(--space-4)' } },
-              h('div', null,
-                h('p', { className: 'eyebrow', style: { margin: 0 } }, '24-hour 70B fine-tuning cost comparison'),
-                h('h3', { className: 'title', style: { margin: '4px 0 0' } }, 'Why teams replace $32/hr monolithic racks with Kadmium.'))),
-            h('div', { className: 'table-wrap' },
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'TOPOLOGY'),
-                  h('th', null, 'INTERCONNECT'),
-                  h('th', null, 'HOURLY RATE'),
-                  h('th', null, '24-HR TOTAL'),
-                  h('th', null, 'FAILOVER SLA'))),
-                h('tbody', null,
-                  h('tr', null,
-                    h('td', null, 'Kadmium Local Mesh (4090 + M4 Mini + Laptop + NAS)'),
-                    h('td', null, 'Home / Office LAN + Wi-Fi 6E'),
-                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$0.00 / hr'),
-                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$0.00'),
-                    h('td', null, '< 200 ms Polite auto-yield')),
-                  h('tr', null,
-                    h('td', null, 'Kadmium Hybrid (Local + 1× Spot L40S / H100 Burst)'),
-                    h('td', null, 'Standard Fiber (1,000× DeMo compression)'),
-                    h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$0.79 – $1.49 / hr'),
-                    h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$18.96 – $35.76'),
-                    h('td', null, '< 340 ms live .ktb cutover')),
-                  h('tr', null,
-                    h('td', null, 'Monolithic Hyperscaler 8× H100 (AWS p5.48xlarge)'),
-                    h('td', null, '3,200 Gbps EFA / NVSwitch lock-in'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, '$32.77 / hr'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, '$786.48'),
-                    h('td', null, 'Checkpoint crash & restart'))))))),
-
-        /* ---- 3. Interactive Live Cluster Simulator ---- */
-        h('section', { id: 'simulator', className: 'section-block' },
-          h('div', { className: 'section-head' },
-            h('div', { className: 'section-head-copy' },
-              h('p', { className: 'eyebrow' }, 'Interactive cluster simulator · deepseek-v3-671b-moe'),
-              h('h2', { className: 'headline', style: { margin: 0 } }, 'See how shards rebalance across local and cloud silicon in real time.')),
-            h('div', { className: 'kd-row' },
-              Object.keys(SCENARIOS).map(function (key) {
-                var item = SCENARIOS[key];
-                var isCloud = key === 'cloud_burst' || key === 'failover_shield';
-                var active = activeScenarioKey === key;
-                return h(K.Button, {
-                  key: key,
-                  variant: active ? (isCloud ? 'cloud' : 'primary') : 'default',
-                  size: 'sm',
-                  icon: isCloud ? 'cloud' : undefined,
-                  onClick: function () { setScenarioKey(key); }
-                }, item.buttonLabel);
-              }))),
-
-          h('div', { className: 'panel' },
-            h('div', { className: 'two', style: { alignItems: 'center' } },
-              h('div', { className: 'kd-stack' },
-                h('p', { className: 'eyebrow', style: { margin: 0 } }, sc.eyebrow),
-                h('p', { className: 'body-lg', style: { color: 'var(--ink)', margin: 0 } }, sc.summary),
-                h('div', { className: 'kd-row', style: { paddingTop: 'var(--space-2)' } },
-                  h(K.Badge, { tone: sc.badgeTone, dot: true }, sc.badgeText),
-                  h(K.Badge, { tone: 'neutral' }, sc.throughput),
-                  h(K.Badge, { tone: 'neutral' }, sc.handoff),
-                  h(K.Badge, { tone: sc.cloudBurn === '$0.00 / hr' ? 'local' : 'cloud' }, sc.cloudBurn))),
-              h('div', { className: 'well' },
-                h('p', { className: 'eyebrow' }, 'Asymmetric shard rail · yellow = local · blue = cloud'),
-                h(K.ShardRail, {
-                  label: 'Interactive shard plan for deepseek-v3-671b-moe',
-                  depth: 96,
-                  pitch: 58,
-                  nodes: sc.rail
-                })))),
-
-          h('div', { className: 'node-grid' },
-            sc.nodes.map(function (nd) {
-              return h(K.NodeCard, {
-                key: nd.name,
-                name: nd.name,
-                hardware: nd.hardware,
-                kind: nd.kind,
-                placement: nd.placement,
-                status: nd.status,
-                shards: nd.shards,
-                meters: nd.meters
-              });
-            }))),
-
-        /* ---- 4. "Kadmium Reactor & The People-Powered Compute Charter" ---- */
-        h('section', { id: 'no-new-datacenters', className: 'panel' },
-          h('div', { className: 'two', style: { alignItems: 'center', marginBottom: 'var(--space-6)' } },
-            h('div', { className: 'kd-stack' },
-              h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Kadmium Reactor · Open-Book Steward-Ownership & Grid Physics'),
-              h('h2', { className: 'headline', style: { margin: 0 } }, '\u201CIf AI companies want compute, they can pay the people who would otherwise suffer from scaling operations for it.\u201D'),
-              h('p', { className: 'body-lg', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'New AI hyperscaler mega-campuses drove PJM grid capacity prices up 9.3× ($28.92 \u2192 $269.92–$333/MW-day, adding $16.4B to household utility bills) while creating almost zero permanent local jobs. Meanwhile, 62M tonnes/yr of phones (UFS + LPDDR4/5), laptops, and PCs go to e-waste. Kadmium Reactor pays everyday people, labs, and small businesses for the silicon they already own.')),
-            h('div', { className: 'table-wrap' },
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'METRIC / DOLLAR FLOW'),
-                  h('th', null, 'HYPERSCALER DATACENTER'),
-                  h('th', null, 'KADMIUM REACTOR'))),
-                h('tbody', null,
-                  h('tr', null,
-                    h('td', null, 'Ratepayer Grid Impact'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, '9.3× PJM capacity surge (+$16.4B bills)'),
-                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, 'Pays households & labs directly (75% share)')),
-                  h('tr', null,
-                    h('td', null, 'E-Waste & Silicon Source'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, '62M tonnes/yr discarded (22.3% recycled)'),
-                    h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, 'Upcycles UFS/LPDDR phones, laptops, PCs & servers')),
-                  h('tr', null,
-                    h('td', null, 'Open-Book Revenue Split'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, '65–75% VC/exec margin · 0% to locals'),
-                    h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, '75% Hosts · 20% Fair Living-Wage Ops · 5% STEM Grants')))))),
-
-          h('div', { className: 'stat-strip-3', style: { marginBottom: 'var(--space-6)' } },
-            h('div', { className: 'stat-card' },
-              h('span', { className: 'label' }, '75% TO HARDWARE HOSTS'),
-              h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } }, '75.0 %'),
-              h('span', { className: 'meta' }, 'Paid directly to people, schools & offices contributing active silicon (No-Demand = No-Payout solvency)')),
-            h('div', { className: 'stat-card' },
-              h('span', { className: 'label' }, '20% COST-PLUS FAIR SALARIES & INFRA'),
-              h('span', { className: 'metric', style: { color: 'var(--cherenkov-text)' } }, '20.0 %'),
-              h('span', { className: 'meta' }, 'Strictly proportional to modest family-supporting headcount + core relay/grounding infra (0 exec greed)')),
-            h('div', { className: 'stat-card' },
-              h('span', { className: 'label' }, '5% LOCAL STEM & SMALL-BIZ GRANTS'),
-              h('span', { className: 'metric', style: { color: 'var(--ok)' } }, '5.0 %'),
-              h('span', { className: 'meta' }, 'Reinvested into local STEM classrooms, university labs, and main-street small businesses'))),
-
-          h('div', { className: 'table-wrap' },
-            h('table', { className: 'mono-table' },
-              h('thead', null, h('tr', null,
-                h('th', null, 'CHECK-WRITING BUYER SEGMENT'),
-                h('th', null, 'PRIMARY WORKLOAD WEDGE'),
-                h('th', null, 'WHY THEY BUY KADMIUM REACTOR (HARD ROI)'))),
-              h('tbody', null,
-                h('tr', null,
-                  h('td', { style: { fontWeight: 600 } }, '1. Universities & Research Institutions'),
-                  h('td', null, 'Campus Lab Unification + DiLoCo Training + 70B–671B Evals'),
-                  h('td', { style: { color: 'var(--cadmium-text)' } }, 'Stretches NSF/NIH grants 3.2×–4.0× ($0 CapEx on existing campus PCs/Macs + 1.25× overnight credits)')),
-                h('tr', null,
-                  h('td', { style: { fontWeight: 600 } }, '2. Small & Mid-Sized Businesses'),
-                  h('td', null, 'Zero-CapEx Private Office AI + $0.07/hr "Just-Enough-Boost"'),
-                  h('td', { style: { color: 'var(--ok)' } }, '-94.1% vs. full cloud GPU ($0.07/hr vs $1.19/hr); Layer 0 & N-1 + FWHT Blind Shield stay 100% on-prem')),
-                h('tr', null,
-                  h('td', { style: { fontWeight: 600 } }, '3. AI Startups & Agentic SaaS'),
-                  h('td', null, 'Disaggregated GRPO RL (100K WASI Sandboxes) + Batch Pool'),
-                  h('td', { style: { color: 'var(--cherenkov-text)' } }, '55%–75% lower RL & batch compute burn on upcycled Phone Farm Boxes + "People-Powered" goodwill')),
-                h('tr', null,
-                  h('td', { style: { fontWeight: 600 } }, '4. Government & Municipal Facilities'),
-                  h('td', null, 'Air-Gapped Pure-Rust Sovereign Mesh + E-Waste Circularity'),
-                  h('td', { style: { color: 'var(--ok)' } }, '$0 new datacenter CapEx, ITAR/CMMC/CJIS sovereign boundary, repurposes retired municipal IT')))))),
-
-        /* ---- 4B. Kadmium Scholar (.edu), University STTR & Crowdfunding Founder Pass ---- */
-        h('section', { id: 'scholars', className: 'section-block' },
-          h('div', { className: 'section-head' },
-            h('div', { className: 'section-head-copy' },
-              h('p', { className: 'eyebrow' }, 'Academic grants · crowdfunding · circular hardware'),
-              h('h2', { className: 'headline', style: { margin: 0 } }, 'Free .edu student compute, university STTR grants, and Founder Passes.')),
-            h('div', { className: 'kd-row' },
-              h(K.Badge, { tone: 'local', dot: true }, '$50/mo .edu Scholar Grant'),
-              h(K.Badge, { tone: 'cloud', dot: true }, 'NSF STTR / NAIRR Ready'),
-              h(K.Badge, { tone: 'ok' }, '$1 VIP Founder Pass'))),
-
-          actionBanner && h('div', { className: 'well', style: { borderColor: 'var(--cadmium-edge)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 'var(--space-4)', flexWrap: 'wrap' } },
-            h('span', { className: 'body-strong', style: { color: 'var(--cadmium-text)' } }, actionBanner),
-            h(K.Button, { size: 'sm', onClick: function () { setActionBanner(null); } }, 'Dismiss')),
-
-          h('div', { className: 'two' },
-            h('div', { className: 'panel kd-stack' },
-              h('div', null,
-                h('p', { className: 'eyebrow', style: { margin: 0 } }, '01 · Kadmium Scholar (.edu) & University Campus Fabrics'),
-                h('h3', { className: 'title', style: { margin: '4px 0 var(--space-2)' } }, 'Turn idle campus labs into a zero-CapEx supercomputer.'),
-                h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                  'Students apply with a .edu email for $50/mo in free off-peak burst credits powered by overnight campus and community nodes. University CS labs partnering with Kadmium on NSF STTR Phase I/II proposals receive 30%–40% ($95k–$400k) in direct lab subawards.')),
-              h('div', { className: 'table-wrap' },
-                h('table', { className: 'mono-table' },
-                  h('thead', null, h('tr', null,
-                    h('th', null, 'ACADEMIC TRACK'),
-                    h('th', null, 'ALLOCATION / GRANT'),
-                    h('th', null, 'ELIGIBILITY'))),
-                  h('tbody', null,
-                    h('tr', null,
-                      h('td', null, 'Kadmium Scholar (.edu)'),
-                      h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$50/mo Free Credits + Pro'),
-                      h('td', null, 'Any verified .edu student / researcher')),
-                    h('tr', null,
-                      h('td', null, 'Campus Overnight Fabric'),
-                      h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, '$0 CapEx Department Mesh'),
-                      h('td', null, 'University CS / Engineering labs (10–500 PCs)')),
-                    h('tr', null,
-                      h('td', null, 'NSF STTR / DOE Co-PI'),
-                      h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$95k–$400k Lab Subaward'),
-                      h('td', null, 'U.S. accredited research institutions'))))),
-              h('div', { className: 'kd-row' },
-                h(K.Button, {
-                  variant: 'primary',
-                  size: 'sm',
-                  onClick: function () {
-                    setActionBanner('Scholar (.edu) Pass Activated: Run `kadmium login --scholar user@university.edu` in the CLI to claim $50/mo off-peak credits.');
-                  }
-                }, 'Apply with .edu Email'),
-                h(K.Button, {
-                  size: 'sm',
-                  onClick: function () {
-                    window.location.href = '/docs?page=market-research-and-launch-plan';
-                  }
-                }, 'View STTR & Grant Prospectus'))),
-
-            h('div', { className: 'panel kd-stack' },
-              h('div', null,
-                h('p', { className: 'eyebrow', style: { margin: 0 } }, '02 · Crowdfunding Founder Pass & Sentinel Hardware Recycling'),
-                h('h3', { className: 'title', style: { margin: '4px 0 var(--space-2)' } }, 'Back the Grid-Zero fabric or donate retired drive-less servers.'),
-                h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                  'Lock in a refundable $1 VIP Founder Reservation for our upcoming campaign (+$100 bonus Burst Credits or $200 off the pre-certified Cd-48 32GB RK3588 Control Rod node). Datacenters and trading firms can also donate retired drive-less servers for Scope 3 ESG impact.')),
-              h('div', { className: 'table-wrap' },
-                h('table', { className: 'mono-table' },
-                  h('thead', null, h('tr', null,
-                    h('th', null, 'TIER / PROGRAM'),
-                    h('th', null, 'COMMITMENT'),
-                    h('th', null, 'REWARD / IMPACT'))),
-                  h('tbody', null,
-                    h('tr', null,
-                      h('td', null, '$1 VIP Founder Pass'),
-                      h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$1 (100% Refundable)'),
-                      h('td', null, '+$100 Bonus Credits + Early-Bird Lock')),
-                    h('tr', null,
-                      h('td', null, 'Lifetime Personal Pro'),
-                      h('td', { style: { color: 'var(--cherenkov-text)', fontWeight: 600 } }, '$299 Crowdfunding Tier'),
-                      h('td', null, 'Lifetime CloudShield WAN + $200 Credits')),
-                    h('tr', null,
-                      h('td', null, 'Drive-Less Server Donation'),
-                      h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, 'Retired Xeon/EPYC/GPU'),
-                      h('td', null, 'Scope 3 ESG Cert + Scholar Grid Branding'))))),
-              h('div', { className: 'kd-row' },
-                h(K.Button, {
-                  variant: 'cloud',
-                  size: 'sm',
-                  icon: 'cloud',
-                  onClick: function () {
-                    setActionBanner('$1 VIP Founder Reservation Selected: Locks in +$100 bonus Burst Credits and Super-Early-Bird pricing on the Cd-48 Control Rod node.');
-                  }
-                }, 'Reserve $1 VIP Pass'),
-                h(K.Button, {
-                  size: 'sm',
-                  onClick: function () {
-                    setActionBanner('Sentinel Server Donation Program: We accept drive-less (zero-data-risk) Dell/Supermicro/HPE blades & GPUs for the University & Scholar Grid.');
-                  }
-                }, 'Donate Retired Servers'))))),
-
-        /* ---- 5. Supply Grid Calculator ("Rent Out Your Idle Compute") ---- */
-        h('section', { id: 'supply-grid', className: 'section-block' },
-          h('div', { className: 'section-head' },
-            h('div', { className: 'section-head-copy' },
-              h('p', { className: 'eyebrow' }, 'Kadmium Reactor Supply Grid · honest 5-factor valuation & electricity-deducted calculator'),
-              h('h2', { className: 'headline', style: { margin: 0 } }, 'Open-book payouts: 75% to you, realistic demand duty cycles, and $0.14/kWh power deducted.')),
-            h('div', { className: 'kd-row' },
-              h(K.Button, {
-                variant: payoutMode === 'credits' ? 'primary' : 'default',
-                size: 'sm',
-                onClick: function () { setPayoutMode('credits'); }
-              }, '1.25× Cloud Credits'),
-              h(K.Button, {
-                variant: payoutMode === 'usd' ? 'primary' : 'default',
-                size: 'sm',
-                onClick: function () { setPayoutMode('usd'); }
-              }, 'Direct USD'),
-              [8, 12, 16, 24].map(function (hrs) {
-                return h(K.Button, {
-                  key: hrs,
-                  variant: leaseHours === hrs ? 'primary' : 'default',
-                  size: 'sm',
-                  onClick: function () { setLeaseHours(hrs); }
-                }, hrs + 'h / day');
-              }))),
-
-          h('div', { className: 'two' },
-            h('div', { className: 'panel' },
-              h('div', { className: 'table-wrap' },
-                h('table', { className: 'mono-table' },
-                  h('thead', null, h('tr', null,
-                    h('th', null, 'MACHINE'),
-                    h('th', null, 'BUYER / HOST (75%)'),
-                    h('th', null, 'EFF $/HR'),
-                    h('th', null, 'NET / MO (AFTER POWER)'),
-                    h('th', null, 'LEASE'))),
-                  h('tbody', null, SUPPLY_NODES.map(function (nd) {
-                    var active = !!enabledSupply[nd.id];
-                    var nodeGrossMo = nd.usdPerHour * leaseHours * 30;
-                    var nodePwrMo = nd.powerPerHr * leaseHours * 30;
-                    var nodeNetMo = nodeGrossMo - nodePwrMo;
-                    var nodeCreditsMo = nodeGrossMo * 1.25;
-                    return h('tr', { key: nd.id, style: { opacity: active ? 1 : 0.48 } },
-                      h('td', null,
-                        h('div', { style: { color: 'var(--ink)', fontWeight: 600 } }, nd.name),
-                        h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, nd.hardware)),
-                      h('td', null, '$' + nd.buyerActiveHr.toFixed(3) + ' \u2192 $' + nd.hostActiveHr.toFixed(3)),
-                      h('td', null, '$' + nd.usdPerHour.toFixed(3)),
-                      h('td', { style: { color: 'var(--ok)', fontWeight: 600 } },
-                        payoutMode === 'credits'
-                          ? '$' + nodeCreditsMo.toFixed(2) + ' cr'
-                          : '+$' + nodeNetMo.toFixed(2) + ' (-$' + nodePwrMo.toFixed(2) + ' pwr)'),
-                      h('td', null,
-                        h(K.Button, {
-                          variant: active ? 'primary' : 'default',
-                          size: 'sm',
-                          onClick: function () { toggleSupplyNode(nd.id); }
-                        }, active ? 'Leasing' : 'Paused')));
-                  }))))),
-
-            h('div', { className: 'kd-stack' },
-              h('div', { className: 'stat-strip-2' },
-                h('div', { className: 'stat-card' },
-                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'MONTHLY 1.25× REACTOR CREDITS' : 'GROSS USD vs ELECTRICITY (@ $0.14/kWh)'),
-                  h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } },
-                    payoutMode === 'credits'
-                      ? '$' + monthlyCreditsTotal.toFixed(2) + ' / mo'
-                      : '$' + monthlyUsdTotal.toFixed(2) + ' - $' + monthlyPowerTotal.toFixed(2)),
-                  h('span', { className: 'meta' }, activeSupplyCount + ' nodes · ' + leaseHours + ' hr/day · 75% Host / 20% Fair Ops / 5% STEM')),
-                h('div', { className: 'stat-card' },
-                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'EQUIVALENT L40S BURST HOURS' : 'TRUE NET CASH PROFIT AFTER POWER'),
-                  h('span', { className: 'metric', style: { color: 'var(--ok)' } },
-                    payoutMode === 'credits'
-                      ? monthlyBurstHoursL40s.toFixed(0) + ' hrs / mo'
-                      : '+$' + monthlyNetProfitUsd.toFixed(2) + ' / mo'),
-                  h('span', { className: 'meta' }, 'No-Demand = No-Payout solvency · 0% penalty <200ms gaming yield'))),
-              h(K.CodeBlock, {
-                title: 'terminal · inspect transparent 5-factor breakdown & start leasing',
-                language: 'shell',
-                code: '$ kadmium lease --hours ' + leaseHours + ' --payout ' + payoutMode + '\n# -> Gross: $' + monthlyUsdTotal.toFixed(2) + '/mo - Power: $' + monthlyPowerTotal.toFixed(2) + '/mo = +$' + monthlyNetProfitUsd.toFixed(2) + '/mo Net Cash (or $' + monthlyCreditsTotal.toFixed(2) + '/mo in 1.25× Credits)'
-              }),
-              h('div', { className: 'well', style: { borderColor: 'var(--cadmium-edge)' } },
-                h('p', { className: 'eyebrow', style: { margin: '0 0 4px', color: 'var(--cadmium-text)' } }, '⚠️ Battery & Power Safety Advisory at Time of Leasing'),
-                h('p', { className: 'body', style: { margin: 0, color: 'var(--ink-muted)' } },
-                  'If your device has a removable battery, we recommend removing the battery and plugging into a stable AC/DC power source before leasing compute to avoid additional battery wear and potential risks of swelling. Most battery-powered devices operate normally without a battery when plugged into wall power.')))),
-
-        /* ---- 6. Under the Hood (Clean Tabbed Architecture) ---- */
-        h('section', { id: 'architecture', className: 'section-block' },
-          h('div', { className: 'section-head' },
-            h('div', null,
-              h('p', { className: 'eyebrow' }, 'Under the hood · 100% safe Rust'),
-              h('h2', { className: 'headline', style: { margin: 0 } }, 'Four workloads on one heterogeneous mesh.')),
-            h(K.Tabs, {
-              label: 'Kadmium workloads',
-              value: workloadTab,
-              onChange: setWorkloadTab,
-              items: [
-                { id: 'inference', label: 'MoE Inference' },
-                { id: 'training', label: 'DiLoCo + DeMo Training' },
-                { id: 'dream_rsi', label: 'RL & Dream-RSI' },
-                { id: 'mcp_ecosystem', label: 'MCP & Team RBAC' }
-              ]
-            })),
-
-          h('div', { className: 'two' },
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, wk.eyebrow),
-              h('h3', { className: 'title', style: { margin: '0 0 var(--space-2)' } }, wk.title),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 var(--space-4)' } }, wk.prose),
-              h('div', { className: 'table-wrap' },
-                h('table', { className: 'mono-table' },
-                  h('thead', null, h('tr', null,
-                    h('th', null, 'SUBSYSTEM'),
-                    h('th', null, 'MECHANISM'))),
-                  h('tbody', null, wk.rows.map(function (r) {
-                    return h('tr', { key: r[0] },
-                      h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 500 } }, r[0]),
-                      h('td', null, r[1]));
-                  }))))),
-            h(K.CodeBlock, {
-              title: wk.codeTitle,
-              language: wk.codeLang,
-              code: wk.code
-            }))),
-
-        /* ---- 7. Concise FAQ ---- */
-        h('section', { className: 'section-block' },
-          h('div', null,
-            h('p', { className: 'eyebrow' }, 'FAQ'),
-            h('h2', { className: 'headline', style: { margin: 0 } }, 'Common questions.')),
-          h('div', { className: 'faq-grid' },
-            FAQS.map(function (item) {
-              return h('article', { key: item.q, className: 'faq-card' },
-                h('h3', { className: 'body-strong', style: { margin: 0, color: 'var(--ink)' } }, item.q),
-                h('p', { className: 'body', style: { margin: 0, color: 'var(--ink-muted)' } }, item.a));
-            }))),
-
-        /* ---- 8. Bottom Conversion Banner ---- */
-        h('section', { className: 'cta-banner' },
-          h('div', { style: { maxWidth: '620px' } },
-            h('p', { className: 'eyebrow' }, 'Get started in 30 seconds · Cd‑48'),
-            h('h2', { className: 'headline', style: { margin: '0 0 var(--space-1)' } }, 'Ignite your local cluster at $0/hour.'),
-            h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-              'Open the live Control Room, configure CloudShield in the Desktop Companion, or start leasing idle GPUs tonight.')),
-          h('div', { className: 'kd-row' },
-            h(K.Button, { variant: 'primary', size: 'lg', icon: 'rods', onClick: function () { window.location.href = '/'; } }, 'Launch Control Room'),
-            h(K.Button, { variant: 'cloud', size: 'lg', icon: 'cloud', onClick: function () { window.location.href = '/companion'; } }, 'Desktop Companion'),
-            h(K.Button, { size: 'lg', onClick: function () { window.location.href = '/docs'; } }, 'Read Docs'))),
-
-        /* ---- Commercial Footer ---- */
-        h('footer', { className: 'site-footer' },
-          h('div', { className: 'footer-grid' },
-            h('div', { className: 'footer-col' },
-              h('div', { className: 'brand-cluster' },
-                h('img', { src: wordmark, alt: 'Kadmium' }),
-                h('span', { className: 'brand-tag' }, 'Cd‑48')),
-              h('p', { className: 'caption', style: { color: 'var(--ink-muted)', margin: 'var(--space-2) 0 0', maxWidth: '300px' } },
-                'Consolidated, Aggregate & Distributed AI/ML Compute Fabric in Pure Rust.')),
-            h('div', { className: 'footer-col' },
-              h('span', { className: 'label', style: { color: 'var(--ink)' } }, 'PRODUCTS'),
-              h('a', { href: '/' }, 'Local Control Room'),
-              h('a', { href: '/companion' }, 'Desktop Companion'),
-              h('a', { href: '#pricing' }, 'Kadmium Cloud & Shield'),
-              h('a', { href: '#supply-grid' }, 'Supply Grid Leasing')),
-            h('div', { className: 'footer-col' },
-              h('span', { className: 'label', style: { color: 'var(--ink)' } }, 'DEVELOPERS'),
-              h('a', { href: '/docs' }, 'Documentation & CLI'),
-              h('a', { href: '/design-system' }, 'Design System'),
-              h('a', { href: '/metrics' }, 'Prometheus /metrics'),
-              h('a', { href: '/api/v1/ga/governance' }, 'v1.0 GA Governance API')),
-            h('div', { className: 'footer-col' },
-              h('span', { className: 'label', style: { color: 'var(--ink)' } }, 'GRID'),
-              h('a', { href: '#no-new-datacenters' }, 'Zero New Datacenters'),
-              h('a', { href: '#simulator' }, 'Live Shard Simulator'),
-              h('a', { href: '/api/v1/supply/marketplace' }, 'Verde Fraud Proofs'),
-              h('a', { href: '/api/v1/runtime/kernels' }, 'Kernel Benchmarks'))),
-          h('div', { className: 'footer-bottom' },
-            h('span', null, '© 2026 Kadmium · Cd‑48 · https://kadmium.ai'),
-            h('span', null, 'One Rust binary. Free to self-host, forever. MIT or Apache-2.0.')))));
+  function HeroArt() {
+    /* the design-system cover composition: three slabs, one rail, seventeen rods — one of them cloud */
+    const cut = [[40, 120], [64, 184], [88, 96], [112, 152], [136, 212], [160, 128]], over = [[232, 72], [256, 160], [280, 112], [304, 200]], deep = [[368, 144], [392, 88], [416, 208], [440, 120], [464, 168, true], [488, 100], [512, 152]];
+    return h('div', { className: 's-art' },
+      h('div', { className: 'caption' }, h('span', null, 'asymmetric shard plan · yellow is local, blue is cloud'), h('span', null, 'cd‑48')),
+      h('svg', { viewBox: '0 0 536 272', role: 'img', 'aria-label': 'Rods hanging from a rail at unequal depths — an asymmetric shard plan' },
+        h('rect', { className: 'slab', x: 16, y: -16, width: 176, height: 256, rx: 10 }), h('rect', { className: 'tint', x: 208, y: 96, width: 120, height: 144, rx: 10 }), h('rect', { className: 'deep', x: 344, y: 48, width: 192, height: 192, rx: 10 }),
+        h('line', { className: 'rail', x1: 16, y1: 36, x2: 536, y2: 36 }),
+        cut.map(r => h('line', { key: 'c' + r[0], className: 'rod cut', x1: r[0], y1: 28, x2: r[0], y2: r[1] })),
+        over.map(r => h('line', { key: 'o' + r[0], className: 'rod', x1: r[0], y1: 28, x2: r[0], y2: r[1] })),
+        deep.map(r => h('line', { key: 'd' + r[0], className: 'rod' + (r[2] ? ' cloud' : ''), x1: r[0], y1: 28, x2: r[0], y2: r[1] }))),
+      h('div', { className: 's-stats' }, Stat('local tokens', '$0.00', 'per token, forever'), Stat('spot burst', '−78 %', 'vs hyperscaler, middle layers only', true), Stat('failover', '340 ms', '0 dropped requests', true)));
   }
 
+  /* ---------- the page ---------- */
+  function Site() {
+    const [theme, setThemeState] = useState(() => { try { return localStorage.getItem('kd-theme') || 'dark'; } catch (e) { return 'dark'; } });
+    const setTheme = t => { setThemeState(t); try { localStorage.setItem('kd-theme', t); } catch (e) { /* private window */ } };
+    const [menu, setMenu] = useState(false);
+    const [qs, setQs] = useState('install');
+    const [track, setTrack] = useState('individual');
+    const [scenario, setScenario] = useState('local_mesh');
+    const [workload, setWorkload] = useState('inference');
+    const [hours, setHours] = useState(12), [payout, setPayout] = useState('credits');
+    const [enabled, setEnabled] = useState(() => SUPPLY_NODES.reduce((m, n) => { m[n.id] = true; return m; }, {}));
+    const [banner, setBanner] = useState(null);
+    useEffect(() => { document.documentElement.setAttribute('data-theme', theme); }, [theme]);
+    const wordmark = theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg';
+    const sc = SCENARIOS[scenario], wk = WORKLOAD_TABS[workload], q = QUICKSTARTS[qs];
+    const usdHr = SUPPLY_NODES.filter(n => enabled[n.id]).reduce((s, n) => s + n.usdPerHour, 0);
+    const hourly = payout === 'credits' ? usdHr * 1.25 : usdHr, monthly = hourly * hours * 30;
+    const NAVLINKS = [['#how', 'How it works'], ['#simulator', 'Simulator'], ['#pricing', 'Pricing'], ['#grid-zero', 'Grid-Zero'], ['/docs', 'Docs']];
+
+    return h(F, null,
+      /* ---- nav ---- */
+      h('nav', { className: 's-nav', 'aria-label': 'Site' },
+        h('div', { className: 's-wrap s-row' },
+          h('a', { href: '/site', 'aria-label': 'Kadmium home' }, h('img', { src: wordmark, alt: 'Kadmium' })), h('span', { className: 'cd' }, 'Cd‑48'),
+          h('div', { className: 's-links' }, NAVLINKS.map(l => h('a', { key: l[0], href: l[0], onClick: e => { if (l[0].charAt(0) === '#') { e.preventDefault(); go(l[0]); } } }, l[1]))),
+          h('div', { className: 'right' },
+            h(K.Button, { variant: 'ghost', size: 'sm', className: 'hide-sm', onClick: () => { window.location.href = GITHUB; } }, 'GitHub'),
+            h(K.Button, { variant: 'ghost', size: 'sm', className: 'hide-sm', onClick: () => setTheme(theme === 'dark' ? 'light' : 'dark') }, theme === 'dark' ? 'Light' : 'Dark'),
+            h(K.Button, { variant: 'primary', size: 'sm', icon: 'rods', className: 'hide-sm', onClick: () => { window.location.href = '/'; } }, 'Control room'),
+            h(K.Button, { variant: 'ghost', size: 'sm', className: 's-burger', 'aria-label': 'Menu', onClick: () => setMenu(!menu) }, menu ? 'Close' : 'Menu'))),
+        h('div', { className: 's-wrap' }, h('div', { className: 's-mobile' + (menu ? ' open' : '') }, NAVLINKS.concat([['/', 'Open the control room'], [GITHUB, 'GitHub'], ['/companion', 'Desktop companion']]).map(l => h('a', { key: l[0], href: l[0], onClick: e => { if (l[0].charAt(0) === '#') { e.preventDefault(); setMenu(false); go(l[0]); } } }, l[1])), h('a', { href: '#', onClick: e => { e.preventDefault(); setTheme(theme === 'dark' ? 'light' : 'dark'); } }, theme === 'dark' ? 'Light theme' : 'Dark theme')))),
+
+      h('main', null,
+        /* ---- hero ---- */
+        h('header', { className: 's-hero' }, h('div', { className: 's-wrap' },
+          h('div', null,
+            h('div', { className: 's-chips' }, h(K.Badge, { tone: 'local' }, 'open source · $0 self-hosted'), h(K.Badge, { tone: 'cloud' }, 'cloud from $0.55 / gpu-hr'), h(K.Badge, null, 'earn +$1.15 / hr leasing')),
+            h('h1', { className: 's-h1' }, 'Your own hardware, unified into one private AI cloud.'),
+            h('p', { className: 's-lede' }, 'Kadmium turns the desktop GPU, the Apple Silicon Mac, the laptops, the SBCs and the NAS you already own into one self-balancing cluster that serves and trains frontier models behind an OpenAI- and Anthropic-compatible endpoint — at ', h('b', null, '$0 / hr'), '. Burst to cheap spot GPUs when you want speed. Rent your idle rig out when you don’t.'),
+            h('div', { className: 's-ctas' }, h(K.Button, { variant: 'primary', size: 'lg', icon: 'rods', onClick: () => { window.location.href = '/'; } }, 'Open the control room'), h(K.Button, { size: 'lg', onClick: () => { window.location.href = '/docs'; } }, 'Read the docs')),
+            h('div', { className: 's-install' }, h(K.Tabs, { label: 'Quickstart', value: qs, onChange: setQs, items: Object.keys(QUICKSTARTS).map(k => ({ id: k, label: QUICKSTARTS[k].label })) }), h(K.CodeBlock, { title: q.title, language: q.lang, code: q.code }))),
+          h(HeroArt))),
+
+        /* ---- how it works ---- */
+        h('section', { className: 's-section', id: 'how' }, h('div', { className: 's-wrap' },
+          h('div', { className: 's-head' }, h('p', { className: 's-eyebrow' }, 'How it works'), h('h2', { className: 's-h2' }, 'Three commands between a pile of computers and a cluster.'), h('p', { className: 's-lede' }, 'Distributed scientific computing solved this decades ago — BOINC, CERN’s FTS3 — and modern AI frameworks forgot, assuming every node is an identical server on InfiniBand. Kadmium is written for the hardware that actually exists.')),
+          h('div', { className: 's-grid3' }, STEPS.map(s => h('div', { key: s.n, className: 's-card' }, h('span', { className: 's-step' }, s.n), h('h3', null, s.title), h('p', null, s.text), h(K.CodeBlock, { code: s.code, copy: false, title: 'shell' })))),
+          h('div', { className: 's-hw' }, HARDWARE.map(hw => h('div', { key: hw.name }, Icon(hw.icon), h('b', null, hw.name), h('span', null, hw.sub)))))),
+
+        /* ---- simulator ---- */
+        h('section', { className: 's-section', id: 'simulator' }, h('div', { className: 's-wrap' },
+          h('div', { className: 's-head' }, h('p', { className: 's-eyebrow' }, 'Live rebalancing · deepseek-v3-671b-moe'), h('h2', { className: 's-h2' }, 'Watch shards move when the real world happens.'), h('p', { className: 's-lede' }, 'A 671B mixture-of-experts model, sharded across a desktop, a Mac Mini, two laptops, a Pi cluster and a NAS. Launch a game, attach a spot GPU, lose your fiber — the plan recomputes, the .ktb banks are prestaged in the background, and only the compact boundary state moves at the handoff.')),
+          h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-5)' } }, Object.keys(SCENARIOS).map(k => { const it = SCENARIOS[k], active = scenario === k, cloud = k === 'cloud_burst' || k === 'failover_shield'; return h(K.Button, { key: k, size: 'sm', variant: active ? (cloud ? 'cloud' : 'primary') : 'quiet', icon: cloud ? 'cloud' : undefined, onClick: () => setScenario(k) }, it.buttonLabel); })),
+          h('div', { className: 's-sim' },
+            h('div', { className: 's-card' }, h('p', { className: 's-eyebrow ' + (sc.badgeTone === 'cloud' ? 'cloud' : (sc.badgeTone === 'warn' ? 'muted' : '')), style: { margin: 0 } }, sc.eyebrow), h('h3', null, sc.summary), h('div', { className: 'kd-row' }, h(K.Badge, { tone: sc.badgeTone, dot: true }, sc.badgeText), h(K.Badge, null, sc.throughput), h(K.Badge, null, sc.handoff), h(K.Badge, { tone: sc.cloudBurn.indexOf('$0.00') === 0 ? 'local' : 'cloud' }, sc.cloudBurn))),
+            h('div', { className: 's-card' }, h('p', { className: 's-eyebrow muted', style: { margin: 0 } }, 'asymmetric shard rail · yellow = local · blue = cloud'), h(K.ShardRail, { label: 'Shard plan · ' + sc.eyebrow, depth: 120, pitch: 60, nodes: sc.rail }))),
+          h('div', { className: 's-nodes' }, sc.nodes.map(nd => h(K.NodeCard, { key: nd.name, name: nd.name, hardware: nd.hardware, kind: nd.kind, placement: nd.placement, status: nd.status, shards: nd.shards, meters: nd.meters }))))),
+
+        /* ---- under the hood ---- */
+        h('section', { className: 's-section', id: 'workloads' }, h('div', { className: 's-wrap' },
+          h('div', { className: 's-head' }, h('p', { className: 's-eyebrow' }, 'Under the hood'), h('h2', { className: 's-h2' }, 'Four workloads on one heterogeneous mesh.'), h('p', { className: 's-lede' }, 'Each one borrows a proven idea — DiLoCo and DeMo for training over home internet, SWARM and Petals for pipelining through unreliable peers, Gensyn Verde for catching a node whose maths drift, Dream-RSI for improving RL policies on hardware that would otherwise sit idle.')),
+          h(K.Tabs, { label: 'Workloads', value: workload, onChange: setWorkload, items: Object.keys(WORKLOAD_TABS).map(k => ({ id: k, label: WORKLOAD_TABS[k].eyebrow.split(' · ')[1] })) }),
+          h('div', { className: 's-grid2', style: { marginTop: 'var(--space-5)' } },
+            h('div', { className: 's-card' }, h('p', { className: 's-eyebrow', style: { margin: 0 } }, wk.eyebrow), h('h3', null, wk.title), h('p', null, wk.prose), h('ul', { className: 's-rows' }, wk.rows.map(r => h('li', { key: r[0] }, h('span', null, r[0]), h('span', null, r[1]))))),
+            h('div', { className: 'kd-stack', style: { gap: 'var(--space-4)' } }, h(K.CodeBlock, { title: wk.codeTitle, language: wk.codeLang, code: wk.code }), h('div', { className: 's-card' }, h('p', { className: 's-eyebrow muted', style: { margin: 0 } }, 'Heritage'), h('p', null, 'Kadmium stands on open work: FreeToken’s bandwidth-adaptive q* policy, Colibri’s NVMe expert streaming, BOINC’s polite scheduling and workunit verification, CERN FTS3’s third-party transfers, Nous DisTrO / DeMo, PrimeIntellect’s OpenDiLoCo, Hivemind and Petals, Gensyn Verde and RepOps, and Dream-RSI. The architecture document lists every borrowed idea and what Kadmium changed.'), h('div', null, h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => { window.location.href = '/docs'; } }, 'Read the architecture'))))))),
+
+        /* ---- pricing ---- */
+        h('section', { className: 's-section', id: 'pricing' }, h('div', { className: 's-wrap' },
+          h('div', { className: 's-head', style: { gridTemplateColumns: 'minmax(0,1fr) auto', display: 'grid', alignItems: 'end' } },
+            h('div', null, h('p', { className: 's-eyebrow' }, 'Products & pricing'), h('h2', { className: 's-h2' }, 'Start free on your own hardware. Burst, govern or lease when you want to.'), h('p', { className: 's-lede' }, 'No token markup on local silicon, ever. The paid plans add what a home or lab can’t provide for itself: rented GPUs, a failover vault, team governance.')),
+            h(Seg, { value: track, onChange: setTrack, items: [{ id: 'individual', label: 'Individuals & prosumers' }, { id: 'labs', label: 'Labs, SMBs & hardware' }] })),
+          h('div', { className: 's-plans' }, PLANS[track].map(p => h(K.PlanCard, { key: p.name, product: p.product, eyebrow: p.eyebrow, name: p.name, price: p.price, period: p.period, summary: p.summary, features: p.features, cta: p.cta, onSelect: () => go(p.href) }))),
+          h('div', { style: { marginTop: 'var(--space-8)' } },
+            h('p', { className: 's-eyebrow muted' }, '24-hour 70B fine-tuning · cost comparison'),
+            h('h3', { style: { margin: '0 0 var(--space-4)', fontSize: '22px', letterSpacing: '-0.015em', fontWeight: 600 } }, 'Why teams replace $32 / hr monolithic racks with a mesh of what they own.'),
+            h('div', { className: 's-tablewrap' }, h('table', { className: 's-table' }, h('thead', null, h('tr', null, ['topology', 'interconnect', 'hourly', '24-hour total', 'failover'].map(x => h('th', { key: x }, x)))),
+              h('tbody', null, COMPARISON.map(r => h('tr', { key: r[0] }, h('td', { className: 'sans' }, r[0]), h('td', null, r[1]), h('td', { className: r[5] }, r[2]), h('td', { className: r[5] }, r[3]), h('td', null, r[4]))))))))),
+
+        /* ---- grid-zero ---- */
+        h('section', { className: 's-section', id: 'grid-zero' }, h('div', { className: 's-wrap' },
+          h('div', { className: 's-head' }, h('p', { className: 's-eyebrow' }, 'Grid-Zero · civic and grid physics'), h('h2', { className: 's-h2' }, 'We don’t need any additional datacenters.'), h('p', { className: 's-lede' }, 'New hyperscale datacenters strain municipal grids and evaporate millions of liters of cooling water, while tens of millions of GPUs and Macs already sit on desks, plugged in, under 10 % utilised. Kadmium uses those first, and reaches for already-built spot capacity only when local silicon overflows.')),
+          h('div', { className: 's-tiles' }, h('div', { className: 's-tile' }, h('span', { className: 'v' }, '30M+'), h('span', { className: 'l' }, 'air-cooled GPUs, Macs and campus computers already on desks, ~85 % idle')), h('div', { className: 's-tile' }, h('span', { className: 'v' }, '0 L'), h('span', { className: 'l' }, 'of new cooling water and 0 kg of new concrete for a cluster made of hardware you already own')), h('div', { className: 's-tile' }, h('span', { className: 'v' }, '~2.7 t'), h('span', { className: 'l' }, 'CO₂e of embodied carbon avoided per 5-node cluster by reusing manufactured silicon'))),
+          banner ? h('div', { className: 's-banner', style: { marginTop: 'var(--space-5)' } }, h('span', null, banner), h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => setBanner(null) }, 'Close')) : null,
+          h('div', { className: 's-grid2', style: { marginTop: 'var(--space-5)' } },
+            h('div', { className: 's-card' }, h('span', { className: 's-step' }, '01 · scholars & campus fabrics'), h('h3', null, 'Turn idle campus labs into a zero-CapEx supercomputer.'), h('p', null, 'Students apply with a .edu address for ', h('b', null, '$50 / month'), ' of free off-peak burst credits, served by overnight campus and community nodes. CS and engineering labs partnering on NSF STTR Phase I / II proposals receive 30–40 % of the award ($95k–$400k) as a lab subaward.'), h('div', { className: 'kd-row', style: { marginTop: 'auto' } }, h(K.Button, { variant: 'primary', size: 'sm', onClick: () => setBanner('Scholar applications open with the v1.0 release — join the waitlist from the docs portal and we’ll email your .edu address.') }, 'Apply as a scholar'), h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => { window.location.href = '/docs'; } }, 'STTR partnership'))),
+            h('div', { className: 's-card' }, h('span', { className: 's-step' }, '02 · founder pass & sentinel recycling'), h('h3', null, 'Back the Grid-Zero fabric, or donate retired servers.'), h('p', null, 'A refundable ', h('b', null, '$1 founder reservation'), ' locks in $100 of bonus burst credits, or $200 off the pre-certified Cd‑48 32 GB RK3588 Control Rod node. Datacenters and trading firms can donate drive-less retired servers to become Sentinel and Scholar nodes, with Scope 3 ESG certification and Scholar Grid branding.'), h('div', { className: 'kd-row', style: { marginTop: 'auto' } }, h(K.Button, { variant: 'primary', size: 'sm', onClick: () => setBanner('Founder reservations open with the crowdfunding campaign — the $1 deposit is refundable and locks in the bonus credits.') }, 'Reserve a founder pass'), h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => setBanner('Sentinel donations: email hello@kadmium.ai with the server models and count; we handle pickup, drive-less certification and the ESG letter.') }, 'Donate hardware')))))),
+
+        /* ---- supply grid calculator ---- */
+        h('section', { className: 's-section', id: 'supply' }, h('div', { className: 's-wrap' },
+          h('div', { className: 's-head' }, h('p', { className: 's-eyebrow' }, 'Supply grid · earnings calculator'), h('h2', { className: 's-h2' }, 'Lease idle silicon overnight. Yield in under 200 ms when you play.'), h('p', { className: 's-lede' }, 'Only blind middle layers and verification sandboxes run on your machine — layer 0 and layer N−1 never leave the renter’s own hardware, so no prompt and no output ever touches yours. Every job settles with a Verde RepOps proof.')),
+          h('div', { className: 's-calc' },
+            h('div', { className: 's-card' },
+              h('div', { className: 'kd-row', style: { justifyContent: 'space-between' } }, h(Seg, { value: payout, onChange: setPayout, items: [{ id: 'credits', label: 'Cloud credits · 1.25×' }, { id: 'usd', label: 'USD' }] }), h(Seg, { value: String(hours), onChange: v => setHours(Number(v)), items: [8, 12, 16, 24].map(n => ({ id: String(n), label: n + ' h / day' })) })),
+              h('div', { className: 's-tablewrap', style: { background: 'var(--graphite-0)' } }, h('table', { className: 's-table' }, h('thead', null, h('tr', null, h('th', null, 'machine'), h('th', null, 'usd / hr'), h('th', null, 'credits / hr'), h('th', null, ''))),
+                h('tbody', null, SUPPLY_NODES.map(n => { const on = !!enabled[n.id]; return h('tr', { key: n.id, style: { opacity: on ? 1 : 0.5 } }, h('td', { className: 'sans' }, h('div', { style: { fontWeight: 600 } }, n.name), h('div', { style: { fontSize: '12px', color: 'var(--ink-muted)', fontFamily: 'var(--font-mono)' } }, n.hardware)), h('td', { className: 'cad' }, '$' + n.usdPerHour.toFixed(2)), h('td', { className: 'cher' }, '$' + (n.usdPerHour * 1.25).toFixed(2)), h('td', null, h(K.Button, { size: 'sm', variant: on ? 'quiet' : 'ghost', onClick: () => setEnabled(Object.assign({}, enabled, { [n.id]: !on })) }, on ? 'Leased' : 'Off'))); }))))),
+            h('div', { className: 'kd-stack', style: { gap: 'var(--space-4)' } },
+              h('div', { className: 's-total' + (payout === 'credits' ? ' cloud' : '') }, h('span', { className: 's-eyebrow muted', style: { margin: 0 } }, 'while leased'), h('span', { className: 'v' }, '$' + hourly.toFixed(2) + ' / hr'), h('span', { style: { fontSize: '13px', color: 'var(--ink-muted)' } }, (payout === 'credits' ? 'in Kadmium Cloud credits' : 'paid out in USD') + ' · ' + SUPPLY_NODES.filter(n => enabled[n.id]).length + ' machines')),
+              h('div', { className: 's-total' + (payout === 'credits' ? ' cloud' : '') }, h('span', { className: 's-eyebrow muted', style: { margin: 0 } }, 'per month'), h('span', { className: 'v' }, '$' + monthly.toFixed(0)), h('span', { style: { fontSize: '13px', color: 'var(--ink-muted)' } }, hours + ' h / day × 30 days' + (payout === 'credits' ? ' · ≈ ' + Math.round(monthly / 0.75) + ' L40S burst hours' : ''))),
+              h(K.CodeBlock, { title: 'supply grid · the whole setup', language: 'shell', code: '$ kadmium lease --hours ' + hours + ' --payout ' + payout + '\n# < 200 ms auto-yield on game launch · blind middle layers only' }))))),
+
+        /* ---- faq ---- */
+        h('section', { className: 's-section', id: 'faq' }, h('div', { className: 's-wrap' },
+          h('div', { className: 's-head' }, h('p', { className: 's-eyebrow' }, 'Questions'), h('h2', { className: 's-h2' }, 'The ones people ask first.')),
+          h('div', { className: 's-faq' }, FAQS.map((f, i) => h('details', { key: i, open: i === 0 }, h('summary', null, f.q), h('p', null, f.a)))))),
+
+        /* ---- cta ---- */
+        h('section', { className: 's-section' }, h('div', { className: 's-wrap' }, h('div', { className: 's-cta' },
+          h('div', null, h('h2', null, 'Every machine you own, as one reactor.'), h('p', null, 'Open the live control room, arm CloudShield in the desktop companion, or start leasing idle GPUs tonight.')),
+          h('div', { className: 'kd-row' }, h(K.Button, { variant: 'primary', size: 'lg', icon: 'rods', onClick: () => { window.location.href = '/'; } }, 'Open the control room'), h(K.Button, { size: 'lg', onClick: () => { window.location.href = '/companion'; } }, 'Desktop companion')))))),
+
+      /* ---- footer ---- */
+      h('footer', { className: 's-foot' }, h('div', { className: 's-wrap' },
+        h('div', null, h('img', { src: wordmark, alt: 'Kadmium', style: { height: '22px', marginBottom: '12px' } }), h('p', null, 'Consolidated, aggregate and distributed AI/ML compute fabric in pure Rust. One binary. Free to self-host, forever. MIT or Apache-2.0.')),
+        h('div', null, h('h4', null, 'Product'), h('a', { href: '/' }, 'Control room'), h('a', { href: '/companion' }, 'Desktop companion'), h('a', { href: '#pricing', onClick: e => { e.preventDefault(); go('#pricing'); } }, 'Pricing'), h('a', { href: '/design-system' }, 'Design system')),
+        h('div', null, h('h4', null, 'Developers'), h('a', { href: '/docs' }, 'Documentation'), h('a', { href: GITHUB }, 'GitHub'), h('a', { href: '/api/v1/mcp' }, 'MCP manifest'), h('a', { href: '/metrics' }, 'Prometheus metrics')),
+        h('div', null, h('h4', null, 'Grid-Zero'), h('a', { href: '#grid-zero', onClick: e => { e.preventDefault(); go('#grid-zero'); } }, 'Scholars & campus fabrics'), h('a', { href: '#supply', onClick: e => { e.preventDefault(); go('#supply'); } }, 'Supply grid'), h('a', { href: 'mailto:hello@kadmium.ai' }, 'hello@kadmium.ai')),
+        h('div', { className: 'legal' }, h('span', null, '© 2026 Kadmium · Cd‑48 · kadmium.ai'), h('span', null, 'A YY (YinYangAI) company'), h('span', null, 'Prices shown are launch pricing and may change.')))));
+  }
   ReactDOM.createRoot(document.getElementById('app')).render(h(Site));
 })();
 </script>
