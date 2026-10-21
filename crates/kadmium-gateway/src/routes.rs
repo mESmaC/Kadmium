@@ -15,7 +15,8 @@ use axum::{
 };
 use kadmium_core::{
     LiveHardwareProfiler, ModelSpec, NodeTrustTier, OsHookHysteresisReport,
-    OsSwapchainHysteresisEngine, PoliteState, ScopedApiKey, SubClusterQuotaPolicy,
+    OsSwapchainHysteresisEngine, PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmChassisSpec,
+    PhoneFarmTopologyMode, PhoneFarmTransportMode, PoliteState, ScopedApiKey, SubClusterQuotaPolicy,
     SubClusterRbacEngine, SupplyLeasePolicy, SupplyMarketplaceSnapshot, WorkloadKind,
     sample_cloud_burst_gpu_node, sample_node_pool,
 };
@@ -90,6 +91,20 @@ pub struct ShiftRequest {
 pub struct ModelSwapRequest {
     pub inference_model_id: Option<String>,
     pub training_model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PhoneFarmAttachRequest {
+    pub preset: Option<String>,
+    pub disaggregated: Option<bool>,
+    pub include_standalone_phone: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhoneFarmApiResponse {
+    pub active_spec: PhoneFarmChassisSpec,
+    pub available_presets: Vec<PhoneFarmChassisSpec>,
+    pub overview: ClusterOverviewResponse,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -251,6 +266,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/cluster/overview", get(get_cluster_overview))
         .route("/api/v1/cluster/shift", post(post_cluster_shift))
         .route("/api/v1/cluster/model", post(post_cluster_model))
+        .route(
+            "/api/v1/cluster/phone-farm",
+            get(get_phone_farm_status).post(post_attach_phone_farm),
+        )
         .route("/api/v1/cluster/workers", get(get_cluster_workers))
         .route("/api/v1/cluster/register", post(post_cluster_register))
         .route("/api/v1/cluster/heartbeat", post(post_cluster_heartbeat))
@@ -476,6 +495,105 @@ async fn post_cluster_model(
     guard.epoch += 1;
     guard.recompute_plans();
     Json(guard.snapshot())
+}
+
+async fn get_phone_farm_status(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<PhoneFarmApiResponse> {
+    let guard = state.lock().expect("gateway state lock");
+    let active_spec = PhoneFarmBoxController::build_chassis_spec(
+        PhoneFarmBoxPreset::Snapdragon865S20Box20,
+        PhoneFarmTransportMode::Usb3AdbMultiplexedTunnel,
+        PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray,
+    );
+    let available_presets = vec![
+        PhoneFarmBoxController::build_chassis_spec(
+            PhoneFarmBoxPreset::Snapdragon845S9Box20,
+            PhoneFarmTransportMode::Usb3AdbMultiplexedTunnel,
+            PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray,
+        ),
+        active_spec.clone(),
+        PhoneFarmBoxController::build_chassis_spec(
+            PhoneFarmBoxPreset::Snapdragon8Gen2S23Box20,
+            PhoneFarmTransportMode::OtgHardwiredEthernetLan,
+            PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray,
+        ),
+    ];
+    Json(PhoneFarmApiResponse {
+        active_spec,
+        available_presets,
+        overview: guard.snapshot(),
+    })
+}
+
+async fn post_attach_phone_farm(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    req: Option<Json<PhoneFarmAttachRequest>>,
+) -> Json<PhoneFarmApiResponse> {
+    let params = req.map(|Json(r)| r).unwrap_or_default();
+    let preset = params
+        .preset
+        .as_deref()
+        .map(PhoneFarmBoxPreset::from_slug)
+        .unwrap_or(PhoneFarmBoxPreset::Snapdragon865S20Box20);
+    let topology = if params.disaggregated.unwrap_or(false) {
+        PhoneFarmTopologyMode::DisaggregatedMicroWorkerSwarm
+    } else {
+        PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray
+    };
+    let active_spec = PhoneFarmBoxController::build_chassis_spec(
+        preset,
+        PhoneFarmTransportMode::Usb3AdbMultiplexedTunnel,
+        topology,
+    );
+
+    let mut guard = state.lock().expect("gateway state lock");
+    guard.epoch += 1;
+    if params.disaggregated.unwrap_or(false) {
+        for slot_node in PhoneFarmBoxController::to_individual_slot_nodes(&active_spec) {
+            if !guard.nodes.iter().any(|n| n.id == slot_node.id) {
+                guard.nodes.push(slot_node);
+            }
+        }
+    } else {
+        let agg = PhoneFarmBoxController::to_aggregated_hardware_node(&active_spec);
+        if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == agg.id) {
+            *existing = agg;
+        } else {
+            guard.nodes.push(agg);
+        }
+    }
+    if params.include_standalone_phone.unwrap_or(false) {
+        let phone = PhoneFarmBoxController::sample_standalone_mobile_phone();
+        if !guard.nodes.iter().any(|n| n.id == phone.id) {
+            guard.nodes.push(phone);
+        }
+    }
+    guard.recompute_plans();
+
+    let available_presets = vec![
+        PhoneFarmBoxController::build_chassis_spec(
+            PhoneFarmBoxPreset::Snapdragon845S9Box20,
+            PhoneFarmTransportMode::Usb3AdbMultiplexedTunnel,
+            PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray,
+        ),
+        PhoneFarmBoxController::build_chassis_spec(
+            PhoneFarmBoxPreset::Snapdragon865S20Box20,
+            PhoneFarmTransportMode::Usb3AdbMultiplexedTunnel,
+            PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray,
+        ),
+        PhoneFarmBoxController::build_chassis_spec(
+            PhoneFarmBoxPreset::Snapdragon8Gen2S23Box20,
+            PhoneFarmTransportMode::OtgHardwiredEthernetLan,
+            PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray,
+        ),
+    ];
+
+    Json(PhoneFarmApiResponse {
+        active_spec,
+        available_presets,
+        overview: guard.snapshot(),
+    })
 }
 
 async fn get_pool_slices() -> Json<ClusterPoolSliceLayout> {
@@ -1249,6 +1367,36 @@ async fn post_cluster_shift(
                 guard.nodes.push(burst.clone());
             }
             let trigger = ShiftTriggerReason::CloudBurstNodeJoined { node_id: burst.id };
+            let shift = ShardPlanner::plan_responsibility_shift(
+                &guard.inference_plan,
+                &guard.inference_model,
+                &guard.nodes,
+                trigger,
+            );
+            guard.fts3_transfers =
+                Fts3TransferScheduler::plan_live_shift_transfers(&shift, &guard.nodes);
+            guard.inference_plan = shift.new_plan.clone();
+            guard.training_plan = ShardPlanner::compute_plan(
+                guard.epoch,
+                &guard.training_model,
+                WorkloadKind::DistributedTraining,
+                &guard.nodes,
+            );
+            guard.last_shift = Some(shift);
+        }
+        "phone_farm_box" => {
+            let spec = PhoneFarmBoxController::build_chassis_spec(
+                PhoneFarmBoxPreset::Snapdragon865S20Box20,
+                PhoneFarmTransportMode::Usb3AdbMultiplexedTunnel,
+                PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray,
+            );
+            let pfb_node = PhoneFarmBoxController::to_aggregated_hardware_node(&spec);
+            if !guard.nodes.iter().any(|n| n.id == pfb_node.id) {
+                guard.nodes.push(pfb_node.clone());
+            }
+            let trigger = ShiftTriggerReason::CloudBurstNodeJoined {
+                node_id: pfb_node.id,
+            };
             let shift = ShardPlanner::plan_responsibility_shift(
                 &guard.inference_plan,
                 &guard.inference_model,

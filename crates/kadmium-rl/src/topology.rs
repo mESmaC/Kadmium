@@ -141,7 +141,11 @@ impl RlTopologyPlanner {
             let mut policy_layer_range = None;
 
             let spare_cpu_threads = match node.device_kind {
-                DeviceKind::LinuxSbc | DeviceKind::LegacyLaptop | DeviceKind::HomeNas => {
+                DeviceKind::LinuxSbc
+                | DeviceKind::MobilePhone
+                | DeviceKind::PhoneFarmChassis
+                | DeviceKind::LegacyLaptop
+                | DeviceKind::HomeNas => {
                     ((node.cpu_threads as f64) * rho).floor() as u32
                 }
                 _ => ((node.cpu_threads as f64) * 0.35 * rho).floor() as u32,
@@ -153,7 +157,11 @@ impl RlTopologyPlanner {
                 if is_dream_rsi
                     || matches!(
                         node.device_kind,
-                        DeviceKind::LinuxSbc | DeviceKind::LegacyLaptop | DeviceKind::HomeNas
+                        DeviceKind::LinuxSbc
+                            | DeviceKind::MobilePhone
+                            | DeviceKind::PhoneFarmChassis
+                            | DeviceKind::LegacyLaptop
+                            | DeviceKind::HomeNas
                     )
                 {
                     rl_roles.push(RlNodeRole::DreamRsiReplaySimulatorHost);

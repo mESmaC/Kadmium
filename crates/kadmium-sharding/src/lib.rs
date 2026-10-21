@@ -312,7 +312,10 @@ impl ShardPlanner {
             {
                 auxiliary_tasks.push(AuxiliaryResponsibility::Fts3WeightSeedAndCheckpointVault);
             }
-            if node.device_kind == DeviceKind::LinuxSbc {
+            if matches!(
+                node.device_kind,
+                DeviceKind::LinuxSbc | DeviceKind::MobilePhone | DeviceKind::PhoneFarmChassis
+            ) {
                 auxiliary_tasks.push(AuxiliaryResponsibility::TokenizationAndStreamIngress);
                 if workload == WorkloadKind::Inference {
                     auxiliary_tasks.push(AuxiliaryResponsibility::SpeculativeDecodingDraftEngine);

@@ -472,7 +472,11 @@ impl DreamRsiSimulator {
             .filter(|n| {
                 matches!(
                     n.device_kind,
-                    DeviceKind::LinuxSbc | DeviceKind::LegacyLaptop | DeviceKind::HomeNas
+                    DeviceKind::LinuxSbc
+                        | DeviceKind::MobilePhone
+                        | DeviceKind::PhoneFarmChassis
+                        | DeviceKind::LegacyLaptop
+                        | DeviceKind::HomeNas
                 )
             })
             .map(|n| n.id.clone())

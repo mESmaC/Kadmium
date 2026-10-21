@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use kadmium_core::{
-    HardwareNode, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, PoliteState,
-    WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
+    HardwareNode, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, PhoneFarmBoxController,
+    PhoneFarmBoxPreset, PhoneFarmTopologyMode, PhoneFarmTransportMode, PoliteState, WorkloadKind,
+    sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::Fts3TransferScheduler;
 use kadmium_gateway::{GatewayState, build_router};
@@ -185,6 +186,15 @@ enum Commands {
         #[arg(short, long, default_value = "all")]
         scope: String,
     },
+    /// Profile, scan USB-ADB (`adb devices -l`), and simulate attaching a 20-Slot Phone Farm Box (`phonefarmbox.com`) or mobile phone swarm
+    PhoneFarm {
+        /// Hardware preset: sd845 (Galaxy S9 20x) | sd865 (Galaxy S20 20x) | sd8gen2 (Galaxy S23 20x)
+        #[arg(short, long, default_value = "sd865")]
+        preset: String,
+        /// Expose each of the 20 motherboards as an individual micro-worker instead of a coherent 160 GB UMA MoE array
+        #[arg(short, long)]
+        disaggregated: bool,
+    },
 }
 
 #[tokio::main]
@@ -253,6 +263,10 @@ async fn main() {
             kind,
             scope,
         } => run_update(coordinator, version, kind, scope).await,
+        Commands::PhoneFarm {
+            preset,
+            disaggregated,
+        } => run_phone_farm(&preset, disaggregated),
     }
 }
 
@@ -962,4 +976,96 @@ async fn run_server(
         .await
         .expect("failed to bind TCP listener");
     axum::serve(listener, app).await.expect("server error");
+}
+
+fn run_phone_farm(preset_slug: &str, disaggregated: bool) {
+    let preset = PhoneFarmBoxPreset::from_slug(preset_slug);
+    let topology = if disaggregated {
+        PhoneFarmTopologyMode::DisaggregatedMicroWorkerSwarm
+    } else {
+        PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray
+    };
+    let spec = PhoneFarmBoxController::build_chassis_spec(
+        preset,
+        PhoneFarmTransportMode::Usb3AdbMultiplexedTunnel,
+        topology,
+    );
+
+    println!("====================================================================================");
+    println!("  KADMIUM (Cd-48) — 20-SLOT PHONE FARM BOX & MOBILE SWARM PROFILER");
+    println!("====================================================================================");
+    println!("  Chassis Model:        {}", spec.display_name);
+    println!("  Slot Count:           {} stripped ARM64 motherboards (battery-free BMS cables)", spec.slot_count);
+    println!("  Power & Cooling:      {} | {:.0}W avg wall draw | {}", spec.psu_rating, spec.average_wall_power_watts, spec.cooling_system);
+    println!("  Est. Hardware Cost:   ~${:.0} USD", spec.estimated_hardware_cost_usd);
+    println!("  Aggregate CPU:        {} ARM64 cores", spec.aggregate_cpu_cores);
+    println!(
+        "  Aggregate Memory:     {:.0} GB Unified LPDDR ({:.1} GB/s aggregate parallel MoE bandwidth)",
+        spec.aggregate_lpddr_unified_gb, spec.aggregate_parallel_mem_bw_gbps
+    );
+    println!(
+        "  Aggregate UFS Flash:  {:.0} GB UFS ({:.1} GB/s aggregate sequential read for Colibri MoE)",
+        spec.aggregate_ufs_flash_gb, spec.aggregate_ufs_read_bw_gbps
+    );
+    println!(
+        "  Aggregate Compute:    {:.1} FP16 TFLOPS | {:.1} INT4/NPU TOPS",
+        spec.aggregate_fp16_tflops, spec.aggregate_int4_tops
+    );
+    println!(
+        "  USB-ADB Bridge Scan:  adb_installed={} | physical_usb_devices={}",
+        spec.adb_discovery.adb_binary_detected,
+        spec.adb_discovery.connected_physical_devices.len()
+    );
+    println!("------------------------------------------------------------------------------------");
+    println!("  Sample Motherboard Slots (1..=5 of 20):");
+    for slot in spec.slots.iter().take(5) {
+        println!(
+            "    [Slot {:02}] {} ({}) | {:.0}GB LPDDR + {:.0}GB UFS | TCP :{} | MoE Experts E{:03}..E{:03} | {:.1}°C",
+            slot.slot_index,
+            slot.hostname,
+            slot.adb_serial,
+            slot.lpddr_unified_gb,
+            slot.ufs_flash_gb,
+            slot.host_forwarded_tcp_port,
+            slot.pinned_moe_expert_range.0,
+            slot.pinned_moe_expert_range.1,
+            slot.board_temp_c
+        );
+    }
+
+    let mut cluster = sample_personal_cluster();
+    if disaggregated {
+        cluster.extend(PhoneFarmBoxController::to_individual_slot_nodes(&spec));
+    } else {
+        cluster.push(PhoneFarmBoxController::to_aggregated_hardware_node(&spec));
+    }
+    cluster.push(PhoneFarmBoxController::sample_standalone_mobile_phone());
+
+    let model = ModelSpec::deepseek_v3_671b_moe();
+    let inf_plan = ShardPlanner::compute_plan(1, &model, WorkloadKind::Inference, &cluster);
+    let env_suite = RlEnvironmentSuiteSpec::dream_rsi_evolving_world();
+    let rl_plan = RlTopologyPlanner::compute_rl_plan(1, &model, &env_suite, &cluster);
+
+    println!("------------------------------------------------------------------------------------");
+    println!(
+        "  DeepSeek-V3 671B MoE Shard Plan with Phone Farm Box Attached ({:.1} tok/s):",
+        inf_plan.estimated_throughput
+    );
+    for assign in &inf_plan.assignments {
+        println!(
+            "    - {:<28} ({:?}) -> Layers {:?}..={:?} ({} layers, {:.1}% share) | Aux: {:?}",
+            assign.hostname,
+            assign.device_kind,
+            assign.start_layer,
+            assign.end_layer,
+            assign.layer_count,
+            assign.compute_share_pct,
+            assign.auxiliary_tasks
+        );
+    }
+    println!(
+        "  Dream-RSI & RL Arena Capacity: {} parallel WASI/MCTS env slots ({:.1} rollouts/min)",
+        rl_plan.total_vectorized_env_slots, rl_plan.estimated_cluster_episodes_per_min
+    );
+    println!("====================================================================================");
 }

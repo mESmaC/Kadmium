@@ -37,6 +37,10 @@ pub enum DeviceKind {
     RemotePeerWorkstation,
     /// Ephemeral rented datacenter GPU joined for temporary workflow boosting.
     CloudBurstGpu,
+    /// Individual Android / iOS smartphone (Termux / Native Worker / ADB) with LPDDR Unified Memory & NPU.
+    MobilePhone,
+    /// High-density 20-Slot Phone Farm Box (stripped ARM64 Snapdragon motherboards, battery-eliminator PSU, USB/OTG switch).
+    PhoneFarmChassis,
 }
 
 /// Primary compute acceleration backend available on a node.
@@ -734,11 +738,13 @@ pub fn sample_node_pool(total_nodes: usize) -> Vec<HardwareNode> {
 
 pub mod governance;
 pub mod os_hooks;
+pub mod phone_farm;
 pub mod rbac;
 pub mod supply;
 
 pub use governance::*;
 pub use os_hooks::*;
+pub use phone_farm::*;
 pub use rbac::*;
 pub use supply::*;
 
