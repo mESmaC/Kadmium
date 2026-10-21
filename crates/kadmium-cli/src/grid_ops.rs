@@ -477,6 +477,28 @@ pub async fn run_bench() {
         storage_pool.wire_token_carousel.pre_staged_on_wire_hit_rate_pct
     );
     println!(
+        "  * Bucket Grounding (NAS + Donated SAN + S3/R2): 50% Mass Dropout {:?} (Ungrounded={}) -> Grounded Recovery={} (Diff={} B, {:.1}% P2P / {:.1}% Spillover, -{}% p99)",
+        storage_pool.bucket_grounding.simulated_mass_dropout_indices,
+        storage_pool.bucket_grounding.ungrounded_survives_mass_dropout,
+        storage_pool.bucket_grounding.grounded_survives_mass_dropout,
+        storage_pool.bucket_grounding.grounded_recovery_max_byte_diff,
+        storage_pool.bucket_grounding.steady_state_p2p_swarm_read_share_pct,
+        storage_pool.bucket_grounding.steady_state_ground_spillover_share_pct,
+        storage_pool.bucket_grounding.p99_tail_read_latency_reduction_pct
+    );
+    for anchor in &storage_pool.bucket_grounding.configured_anchors {
+        println!(
+            "    - [Tier {} {:?}] {:<46} | {:>6.1} TiB | {:>4.1} Gbps | Policy: {:?} ({:.0}% Grounded)",
+            anchor.priority_tier,
+            anchor.anchor_kind,
+            anchor.anchor_uri,
+            anchor.capacity_tb,
+            anchor.sustained_bandwidth_gbps,
+            anchor.sync_policy,
+            anchor.merkle_grounded_coverage_pct
+        );
+    }
+    println!(
         "\n{:<52} {:<24} {:>9} {:>10} {:>12} {:>12}",
         "VIRTUAL BUCKET URI (DRAG-AND-DROP)", "OBJECT KIND", "LOG (GB)", "PHYS (GB)", "BLOCKS", "READ (GBPS)"
     );
