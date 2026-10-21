@@ -258,7 +258,7 @@ pub fn run_lease(hours: f64, payout: &str) {
         reactor.sla_fault_tolerance.unhedged_p99_latency_ms,
         reactor.sla_fault_tolerance.hedged_p99_latency_ms
     );
-    println!("  [3/3] Closet-Silicon & E-Waste Longevity Governor (Zero Battery Swell & Zero Flash Wear):");
+    println!("  [3/4] Closet-Silicon & E-Waste Longevity Governor (Zero Battery Swell & Zero Flash Wear):");
     for p in &reactor.closet_silicon_longevity.protected_profiles {
         println!(
             "    - {:<68} | {} | {:.1}°C (+{:.1}% GFLOPS/W) | Flash Wear: {:.2} -> {:.2} TBW/yr (-{:.2}%, {:.1} yr life)",
@@ -270,6 +270,26 @@ pub fn run_lease(hours: f64, payout: &str) {
             p.kadmium_zero_wear_annual_flash_writes_tbw,
             p.flash_wear_reduction_pct,
             p.estimated_hardware_lifespan_years
+        );
+    }
+    println!(
+        "  [4/4] {} — ${:.0} Cost-Plus Retail (BOM ~${:.0}, {} GB LPDDR5, 16W Battery-Free):",
+        reactor.embedded_reactor_box.product_name,
+        reactor.embedded_reactor_box.honest_cost_plus_retail_price_usd,
+        reactor.embedded_reactor_box.estimated_bom_cost_usd,
+        reactor.embedded_reactor_box.unified_memory_gb
+    );
+    for cap in &reactor.embedded_reactor_box.multi_purpose_capabilities {
+        println!("    * {}", cap);
+    }
+    for cmp in &reactor.embedded_reactor_box.market_comparison {
+        println!(
+            "    - {:<52} | Price: ${:>7.0} | {:>5.0}W | Net Reactor Earnings: +${:>5.2}/mo | Payback: ~{:.1} mo",
+            cmp.system_name,
+            cmp.retail_price_usd,
+            cmp.wall_power_watts,
+            cmp.net_monthly_reactor_earnings_after_power_usd,
+            cmp.estimated_payback_months.unwrap_or(0.0)
         );
     }
 }

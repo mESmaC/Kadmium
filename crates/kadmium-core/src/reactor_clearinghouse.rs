@@ -168,12 +168,44 @@ pub struct ClosetSiliconLongevityReport {
     pub average_flash_wear_reduction_pct: f64,
 }
 
+/// Embedded Systems Engineer Open-Hardware Compute Box comparison against hyperscaler/giant mini-ML systems.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MiniMlBoxComparisonEntry {
+    pub system_name: String,
+    pub retail_price_usd: f64,
+    pub est_bom_cost_usd: Option<f64>,
+    pub memory_and_storage: String,
+    pub wall_power_watts: f64,
+    pub general_purpose_open_linux: bool,
+    pub primary_role: String,
+    pub net_monthly_reactor_earnings_after_power_usd: f64,
+    pub estimated_payback_months: Option<f64>,
+}
+
+/// Specification for the **Kadmium `Cd-48` Reactor Box** — an inexpensive, open-hardware,
+/// battery-free embedded compute sidecar & home server designed by an Embedded Systems Engineer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddedReactorBoxSpec {
+    pub product_name: String,
+    pub tagline: String,
+    pub soc_and_npu: String,
+    pub unified_memory_gb: u32,
+    pub nvme_slot_spec: String,
+    pub networking_and_io: String,
+    pub power_delivery: String,
+    pub estimated_bom_cost_usd: f64,
+    pub honest_cost_plus_retail_price_usd: f64,
+    pub multi_purpose_capabilities: Vec<String>,
+    pub market_comparison: Vec<MiniMlBoxComparisonEntry>,
+}
+
 /// Full production readiness bundle for **Kadmium Reactor (`Cd-48`)**.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KadmiumReactorInfrastructureReport {
     pub ledger: ReactorClearinghouseLedgerReport,
     pub sla_fault_tolerance: ReactorSlaFaultToleranceReport,
     pub closet_silicon_longevity: ClosetSiliconLongevityReport,
+    pub embedded_reactor_box: EmbeddedReactorBoxSpec,
 }
 
 /// Double-Entry Cryptographic Escrow & Cost-Plus Steward Clearinghouse Engine.
@@ -539,12 +571,72 @@ impl ClosetSiliconLongevityGovernor {
         }
     }
 
-    /// Runs the complete 3-part **Kadmium Reactor Infrastructure Suite**.
+    /// Builds the Embedded Systems Engineer specification for the **Kadmium `Cd-48` Reactor Box**
+    /// (`$249` Cost-Plus Open-Hardware Compute Sidecar, Home Server & Reactor Earner) vs.
+    /// NVIDIA DGX Spark (`$3,500`) and AMD Strix Halo (`$1,999`).
+    pub fn evaluate_embedded_reactor_box() -> EmbeddedReactorBoxSpec {
+        let market_comparison = vec![
+            MiniMlBoxComparisonEntry {
+                system_name: "NVIDIA DGX Spark (Project DIGITS)".into(),
+                retail_price_usd: 3_500.0,
+                est_bom_cost_usd: None,
+                memory_and_storage: "128 GB LPDDR5x (273 GB/s) · 4 TB NVMe".into(),
+                wall_power_watts: 170.0,
+                general_purpose_open_linux: true,
+                primary_role: "Monolithic single-box workstation ($3,500 upfront CapEx wall)".into(),
+                net_monthly_reactor_earnings_after_power_usd: 42.50,
+                estimated_payback_months: Some(82.4),
+            },
+            MiniMlBoxComparisonEntry {
+                system_name: "AMD Ryzen AI Max+ 395 Mini-PC (Strix Halo)".into(),
+                retail_price_usd: 1_999.0,
+                est_bom_cost_usd: None,
+                memory_and_storage: "128 GB LPDDR5x (256 GB/s) · 2 TB NVMe".into(),
+                wall_power_watts: 120.0,
+                general_purpose_open_linux: true,
+                primary_role: "High-end prosumer mini-PC ($2,000 upfront CapEx)".into(),
+                net_monthly_reactor_earnings_after_power_usd: 38.20,
+                estimated_payback_months: Some(52.3),
+            },
+            MiniMlBoxComparisonEntry {
+                system_name: "Kadmium Cd-48 Reactor Box (32GB Open-Hardware Node)".into(),
+                retail_price_usd: 249.0,
+                est_bom_cost_usd: Some(185.0),
+                memory_and_storage: "32 GB LPDDR5 + M.2 PCIe 3.0x4 NVMe Slot (BYO or 1TB)".into(),
+                wall_power_watts: 16.0,
+                general_purpose_open_linux: true,
+                primary_role: "3-in-1: Local 'Just-Enough-Boost' Sidecar + General Home Linux Server + 24/7 Reactor Earner".into(),
+                net_monthly_reactor_earnings_after_power_usd: 19.40,
+                estimated_payback_months: Some(12.8),
+            },
+        ];
+
+        EmbeddedReactorBoxSpec {
+            product_name: "Kadmium Cd-48 Reactor Box (Open-Hardware Embedded Node)".into(),
+            tagline: "Designed by an Embedded Systems Engineer: An affordable $249 general-purpose Linux mini-box that boosts your local PC, runs your home services, and earns on Kadmium Reactor 24/7.".into(),
+            soc_and_npu: "8-Core ARM64 (4x Cortex-A76 + 4x Cortex-A55) + 6 TOPS INT4/INT8 NPU + T-MAC LUT Ternary Engine".into(),
+            unified_memory_gb: 32,
+            nvme_slot_spec: "M.2 2280 PCIe 3.0 x4 NVMe (Zero-Wear Read-Only .ktb mmap + RS(8,2) Bucket Seeder)".into(),
+            networking_and_io: "Dual 2.5GbE RJ45 (Direct PC Sidecar Bridge + LAN Switch) + USB-C 3.2 + 40-Pin GPIO/I2C/UART Header".into(),
+            power_delivery: "Battery-Free 12V DC / USB-C PD Wall Supply (16W active / 4W idle — 0% battery swelling risk)".into(),
+            estimated_bom_cost_usd: 185.0,
+            honest_cost_plus_retail_price_usd: 249.0,
+            multi_purpose_capabilities: vec![
+                "1. Local 'Just-Enough-Boost' Sidecar: Plugs into your desktop PC via 2.5GbE to hold 24 GB of overflow 70B layers (L56..L75) or cold MoE experts at $0/hr.".into(),
+                "2. 100% Open General-Purpose Linux Box: Full mainline Debian/Ubuntu root access, Docker, Home Assistant, TrueNAS/Samba, Pi-hole, WireGuard, or GPIO embedded lab work—zero lock-in.".into(),
+                "3. Silent 16W 24/7 Kadmium Reactor Earner: Draws only ~$1.61/mo in electricity (@ $0.14/kWh) while earning ~$19.40/mo net cash or $26.25/mo in 1.25x Reactor Credits.".into(),
+            ],
+            market_comparison,
+        }
+    }
+
+    /// Runs the complete 4-part **Kadmium Reactor Infrastructure & Hardware Suite**.
     pub fn evaluate_full_reactor_infrastructure() -> KadmiumReactorInfrastructureReport {
         KadmiumReactorInfrastructureReport {
             ledger: ReactorEscrowAndStewardLedgerEngine::evaluate_clearinghouse_ledger(),
             sla_fault_tolerance: ReactorSlaFaultToleranceEngine::evaluate_sla_fault_tolerance(),
             closet_silicon_longevity: Self::evaluate_longevity_governor(),
+            embedded_reactor_box: Self::evaluate_embedded_reactor_box(),
         }
     }
 }
@@ -591,5 +683,12 @@ mod tests {
         assert!(longevity.zero_battery_swelling_guarantee);
         assert!(longevity.read_only_ktb_flash_pinning_active);
         assert!(longevity.average_flash_wear_reduction_pct > 99.8);
+
+        // 4. Verify Embedded Reactor Box ($249 Cost-Plus vs $3,500 DGX Spark)
+        let hw = &report.embedded_reactor_box;
+        assert!((hw.honest_cost_plus_retail_price_usd - 249.0).abs() < 1e-6);
+        assert_eq!(hw.unified_memory_gb, 32);
+        assert_eq!(hw.multi_purpose_capabilities.len(), 3);
+        assert_eq!(hw.market_comparison.len(), 3);
     }
 }
