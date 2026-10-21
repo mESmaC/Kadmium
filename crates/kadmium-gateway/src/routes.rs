@@ -14,11 +14,12 @@ use axum::{
     routing::{get, post},
 };
 use kadmium_core::{
-    LiveHardwareProfiler, ModelSpec, NodeTrustTier, OsHookHysteresisReport,
-    OsSwapchainHysteresisEngine, PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmChassisSpec,
-    PhoneFarmTopologyMode, PhoneFarmTransportMode, PoliteState, ScopedApiKey, SubClusterQuotaPolicy,
-    SubClusterRbacEngine, SupplyLeasePolicy, SupplyMarketplaceSnapshot, WorkloadKind,
-    sample_cloud_burst_gpu_node, sample_node_pool,
+    ClosetSiliconLongevityGovernor, KadmiumReactorInfrastructureReport, LiveHardwareProfiler,
+    ModelSpec, NodeTrustTier, OsHookHysteresisReport, OsSwapchainHysteresisEngine,
+    PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmChassisSpec, PhoneFarmTopologyMode,
+    PhoneFarmTransportMode, PoliteState, ScopedApiKey, SubClusterQuotaPolicy, SubClusterRbacEngine,
+    SupplyLeasePolicy, SupplyMarketplaceSnapshot, WorkloadKind, sample_cloud_burst_gpu_node,
+    sample_node_pool,
 };
 use kadmium_data::{
     DecentralizedStoragePoolEngine, DecentralizedStoragePoolReport, EcosystemIntegrationsOverview,
@@ -397,6 +398,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/cluster/elastic-boost",
             get(get_elastic_local_boost_report).post(get_elastic_local_boost_report),
+        )
+        .route(
+            "/api/v1/reactor/clearinghouse",
+            get(get_reactor_clearinghouse_report).post(get_reactor_clearinghouse_report),
         )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -2041,6 +2046,10 @@ pub struct ThroughputBoostApiResponse {
 
 async fn get_elastic_local_boost_report() -> Json<ElasticLocalBoostReport> {
     Json(ElasticLocalBoostPlanner::evaluate_desktop_just_enough_boost())
+}
+
+async fn get_reactor_clearinghouse_report() -> Json<KadmiumReactorInfrastructureReport> {
+    Json(ClosetSiliconLongevityGovernor::evaluate_full_reactor_infrastructure())
 }
 
 async fn get_hyper_inference_report() -> Json<HyperInferenceComputeReport> {

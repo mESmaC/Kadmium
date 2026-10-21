@@ -762,12 +762,14 @@ pub mod governance;
 pub mod os_hooks;
 pub mod phone_farm;
 pub mod rbac;
+pub mod reactor_clearinghouse;
 pub mod supply;
 
 pub use governance::*;
 pub use os_hooks::*;
 pub use phone_farm::*;
 pub use rbac::*;
+pub use reactor_clearinghouse::*;
 pub use supply::*;
 
 #[cfg(test)]

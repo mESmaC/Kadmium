@@ -2,8 +2,8 @@
 //! and World Registry CLI handlers (`kadmium-cli::grid_ops`).
 
 use kadmium_core::{
-    OsSwapchainHysteresisEngine, SubClusterRbacEngine, SupplyLeasePolicy, SupplyPayoutMode,
-    SupplySettlementEngine, sample_personal_cluster,
+    ClosetSiliconLongevityGovernor, OsSwapchainHysteresisEngine, SubClusterRbacEngine,
+    SupplyLeasePolicy, SupplyPayoutMode, SupplySettlementEngine, sample_personal_cluster,
 };
 use kadmium_data::{
     DecentralizedStoragePoolEngine, HfByteRangeSlicer, SafetensorsToKtbTranscoder,
@@ -192,6 +192,82 @@ pub fn run_lease(hours: f64, payout: &str) {
         );
     }
     println!("\n{}", boost.summary_scorecard);
+
+    let reactor = ClosetSiliconLongevityGovernor::evaluate_full_reactor_infrastructure();
+    println!(
+        "\n====================================================================================================="
+    );
+    println!(
+        " KADMIUM REACTOR (Cd-48) — DOUBLE-ENTRY ESCROW, SLA FAULT-TOLERANCE & CLOSET-SILICON LONGEVITY"
+    );
+    println!(
+        "====================================================================================================="
+    );
+    println!(
+        "  [1/3] Open-Book Clearinghouse & Automatic Cost-Plus Ceiling Sweep ({}):",
+        reactor.ledger.accounting_period_label
+    );
+    println!(
+        "    * Verified Buyer Escrow Billings: ${:>10.2}/mo | Rejected Spoofed Slices: {} ($0.00 billed to buyer)",
+        reactor.ledger.total_verified_buyer_billings_usd,
+        reactor.ledger.rejected_unverified_slices_count
+    );
+    println!(
+        "    * 75% Host Payouts (Gross -> Net): ${:>10.2}/mo Gross - ${:.2}/mo Power = +${:.2}/mo Net Cash Profit",
+        reactor.ledger.total_host_gross_payout_usd,
+        reactor.ledger.total_host_electricity_cost_usd,
+        reactor.ledger.total_host_net_profit_after_power_usd
+    );
+    println!(
+        "    * 20% Cost-Plus Ceiling Sweep:     ${:>10.2}/mo Raw 20% -> Capped at ${:.2}/mo ({} staff @ ${:.0}/mo + ${:.0} infra) -> +${:.2}/mo Swept to Grants!",
+        reactor.ledger.raw_20pct_ops_allocation_usd,
+        reactor.ledger.retained_cost_plus_ops_usd,
+        reactor.ledger.active_team_headcount,
+        reactor.ledger.monthly_living_wage_per_person_usd,
+        reactor.ledger.monthly_core_relay_and_grounding_infra_usd,
+        reactor.ledger.cost_plus_surplus_swept_to_grants_usd
+    );
+    println!(
+        "    * Total Community STEM & SMB Pool: ${:>10.2}/mo (Base 5% ${:.2} + Swept Surplus ${:.2} | Double-Entry Verified={})",
+        reactor.ledger.total_community_grant_pool_usd,
+        reactor.ledger.base_5pct_stem_grant_pool_usd,
+        reactor.ledger.cost_plus_surplus_swept_to_grants_usd,
+        reactor.ledger.double_entry_conservation_verified
+    );
+    println!("  [2/3] 99.996% SLA Fault-Tolerant 'People's Silicon' Orchestrator:");
+    println!(
+        "    * Wire-Resident Activation Ring:   Stride={} layers ({:.0} KiB INT8) | Node '{}' dropped at L{} -> Resumed from L{} in {:.1} ms vs {:.1} ms restart ({:.2}x faster, 0 lost tokens)",
+        reactor.sla_fault_tolerance.checkpoint_ring_stride_layers,
+        reactor.sla_fault_tolerance.ring_checkpoint_payload_kb,
+        reactor.sla_fault_tolerance.dropped_node_hostname,
+        reactor.sla_fault_tolerance.failure_injected_at_layer,
+        reactor.sla_fault_tolerance.nearest_upstream_ring_checkpoint_layer,
+        reactor.sla_fault_tolerance.wire_ring_mid_pass_recovery_latency_ms,
+        reactor.sla_fault_tolerance.naive_full_pass_restart_latency_ms,
+        reactor.sla_fault_tolerance.mid_pass_recovery_speedup_x
+    );
+    println!(
+        "    * Blind FWHT Honey-Token Canary:   {:.1}% rate (Wire CosSim={:.4}) | 1-Pass Poisoning Host Caught={} | Tail-Hedged p99: {:.1} ms -> {:.1} ms",
+        reactor.sla_fault_tolerance.blind_canary_injection_rate_pct,
+        reactor.sla_fault_tolerance.canary_wire_indistinguishability_cos_sim,
+        reactor.sla_fault_tolerance.single_pass_poisoning_host_caught,
+        reactor.sla_fault_tolerance.unhedged_p99_latency_ms,
+        reactor.sla_fault_tolerance.hedged_p99_latency_ms
+    );
+    println!("  [3/3] Closet-Silicon & E-Waste Longevity Governor (Zero Battery Swell & Zero Flash Wear):");
+    for p in &reactor.closet_silicon_longevity.protected_profiles {
+        println!(
+            "    - {:<68} | {} | {:.1}°C (+{:.1}% GFLOPS/W) | Flash Wear: {:.2} -> {:.2} TBW/yr (-{:.2}%, {:.1} yr life)",
+            p.device_label,
+            p.power_supply_mode,
+            p.target_dvfs_sweet_spot_temp_c,
+            p.sustained_gflops_per_watt_gain_pct,
+            p.naive_annual_flash_writes_tbw,
+            p.kadmium_zero_wear_annual_flash_writes_tbw,
+            p.flash_wear_reduction_pct,
+            p.estimated_hardware_lifespan_years
+        );
+    }
 }
 
 pub async fn run_bench() {
