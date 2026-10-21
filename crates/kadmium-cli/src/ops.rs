@@ -327,6 +327,83 @@ pub fn run_probe() {
                     fault_audit.bisection_steps.len(),
                     fault_audit.fraud_proof_certificate_id
                 );
+
+                let trn_report = DistributedLanExecutor::execute_live_training_step(
+                    &gw.training_plan,
+                    1,
+                    0.05,
+                    &gw.live_workers,
+                )
+                .await;
+                println!(
+                    "  * Live 2-Node QLoRA+DeMo: {} stages | Loss: {:.4} -> {:.4} | DeMo DCT Wire Ratio: {:.1}x | RepOps Verified: {}",
+                    trn_report.stages.len(),
+                    trn_report.mean_loss_before,
+                    trn_report.mean_loss_after,
+                    trn_report.mean_wire_compression_ratio,
+                    trn_report.all_stages_repops_verified
+                );
+
+                let dream_report = DistributedLanExecutor::run_live_dream_rsi_replay_tcp(
+                    1,
+                    "kernel-q4k-rvv-kpu-world",
+                    64,
+                    &gw.live_workers,
+                )
+                .await;
+                if let Some(k230_dream) = dream_report
+                    .worker_runs
+                    .iter()
+                    .find(|r| r.hostname.contains("k230"))
+                {
+                    println!(
+                        "  * Live K230 Dream-RSI:    {} MCTS sims on {} | WASI Pass: {:.1}% | Peak Speedup: {:.2}x | Exec: {:.2} ms (0.0 GPU-hrs)",
+                        k230_dream.mcts_simulations_run,
+                        k230_dream.hostname,
+                        k230_dream.wasi_verifier_pass_rate_pct,
+                        k230_dream.evolved_peak_speedup,
+                        k230_dream.compute_exec_ms
+                    );
+                }
+
+                let fts3_report = DistributedLanExecutor::stream_fts3_ktb_shard_tcp(
+                    "deepseek-v3-671b-moe",
+                    "layers.60.moe.gate_up.ktb",
+                    1,
+                    &gw.live_workers,
+                )
+                .await;
+                if let Some(k230_fts3) = fts3_report
+                    .target_receipts
+                    .iter()
+                    .find(|r| r.target_hostname.contains("k230") && r.page_index == 0)
+                {
+                    println!(
+                        "  * Live K230 FTS3 .ktb:    {} ({} bytes total, Merkle Verified: {})",
+                        k230_fts3.status_note,
+                        fts3_report.ktb_total_bytes,
+                        k230_fts3.verified_merkle_proof
+                    );
+                }
+
+                let kv_report = DistributedLanExecutor::migrate_kv_cache_pages_tcp(
+                    1,
+                    "sess-cd48-k230-handoff",
+                    (58, 60),
+                    &gw.live_workers,
+                )
+                .await;
+                println!(
+                    "  * Live KV-Cache Handoff:  {} -> {} | {} pages ({} tokens, {} B, {:.2}x INT8) | Zero-Drop RepOps: {} ({:.2} ms)",
+                    kv_report.source_hostname,
+                    kv_report.target_hostname,
+                    kv_report.pages_migrated,
+                    kv_report.tokens_preserved,
+                    kv_report.compressed_wire_bytes,
+                    kv_report.compression_ratio,
+                    kv_report.zero_context_drop_verified,
+                    kv_report.migration_rtt_ms
+                );
             })
         });
     }

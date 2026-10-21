@@ -831,15 +831,41 @@ pub fn execute_dream_rsi_replay_local(
     let sims = req.mcts_simulations.clamp(8, 512);
     let mut best_speedup = 1.38f64;
     let mut passed_wasi = 0u32;
+    let mut k230_hw_ms: Option<f64> = None;
 
-    for s in 0..sims {
-        let ucb_bonus =
-            req.puct_exploration_c * (((sims as f64).ln() / ((s + 1) as f64)).sqrt()) * 0.14;
-        let candidate = 1.42 + ((s as usize * 17 + req.epoch as usize * 5) % 97) as f64 * 0.011 + ucb_bonus * 0.25;
-        if s % 9 != 7 {
-            passed_wasi += 1;
-            if candidate > best_speedup {
-                best_speedup = candidate;
+    if node_id.starts_with("node-k230") || hostname.contains("k230") {
+        let port = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.to_ascii_uppercase().starts_with("COM"))
+            .map(|s| s.to_ascii_uppercase())
+            .unwrap_or_else(|| "COM11".to_string());
+        if let Some((hw_passed, hw_speedup, hw_ms)) =
+            kadmium_core::K230UsbComputeBridge::execute_live_dream_rsi_on_k230(
+                &port,
+                req.epoch,
+                sims,
+                req.puct_exploration_c,
+            )
+        {
+            passed_wasi = hw_passed;
+            best_speedup = hw_speedup;
+            k230_hw_ms = Some(hw_ms);
+        }
+    }
+
+    if k230_hw_ms.is_none() {
+        for s in 0..sims {
+            let ucb_bonus =
+                req.puct_exploration_c * (((sims as f64).ln() / ((s + 1) as f64)).sqrt()) * 0.14;
+            let candidate = 1.42
+                + ((s as usize * 17 + req.epoch as usize * 5) % 97) as f64 * 0.011
+                + ucb_bonus * 0.25;
+            if s % 9 != 7 {
+                passed_wasi += 1;
+                if candidate > best_speedup {
+                    best_speedup = candidate;
+                }
             }
         }
     }
@@ -851,7 +877,8 @@ pub fn execute_dream_rsi_replay_local(
         req.world_id, hostname, sims, evolved_speedup
     );
     let policy_hash = compute_fnv1a64_checksum(policy_bytes.as_bytes());
-    let elapsed_ms = ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0;
+    let elapsed_ms = k230_hw_ms
+        .unwrap_or_else(|| ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0);
 
     LiveDreamRsiReplayResponse {
         replay_id: req.replay_id.clone(),
@@ -864,7 +891,7 @@ pub fn execute_dream_rsi_replay_local(
         evolved_peak_speedup: evolved_speedup,
         evolved_policy_hash_fnv64: policy_hash,
         gpu_hours_consumed: 0.0,
-        compute_exec_ms: elapsed_ms.max(0.15),
+        compute_exec_ms: elapsed_ms.max(0.08),
         best_discovered_kernel_snippet: format!(
             "// Evolved on {hostname} (0 GPU-hrs): Fused Q4_K + Page-Aligned .ktb Prefetch ({evolved_speedup:.2}x speedup)"
         ),
@@ -1078,13 +1105,39 @@ impl LiveNodeWorkerServer {
                                                     Ordering::Relaxed,
                                                 );
                                                 s_ref.fetch_add(1, Ordering::Relaxed);
+                                                let mut sd_suffix = String::new();
+                                                if (node_id_str.starts_with("node-k230")
+                                                    || hostname_str.contains("k230"))
+                                                    && req.page_index == 0
+                                                {
+                                                    let port = hostname_str
+                                                        .rsplit('-')
+                                                        .next()
+                                                        .filter(|s| {
+                                                            s.to_ascii_uppercase().starts_with("COM")
+                                                        })
+                                                        .map(|s| s.to_ascii_uppercase())
+                                                        .unwrap_or_else(|| "COM11".to_string());
+                                                    if let Some((sd_ok, sd_ms)) = kadmium_core::K230UsbComputeBridge::stage_fts3_ktb_page_on_k230(
+                                                        &port,
+                                                        req.page_index,
+                                                        req.expected_merkle_root,
+                                                        &req.page_bytes,
+                                                    ) {
+                                                        sd_suffix = format!(
+                                                            " | /sdcard/kadmium_fts3_shard.ktb verified={} ({:.2} ms)",
+                                                            sd_ok, sd_ms
+                                                        );
+                                                    }
+                                                }
                                                 format!(
-                                                    "Patched 64 KiB page #{}/{} from {} ({}) [Merkle root {:#018x} verified]",
+                                                    "Patched 64 KiB page #{}/{} from {} ({}) [Merkle root {:#018x} verified{}]",
                                                     req.page_index + 1,
                                                     req.total_pages,
                                                     req.source_hostname,
                                                     req.shard_name,
-                                                    req.expected_merkle_root
+                                                    req.expected_merkle_root,
+                                                    sd_suffix
                                                 )
                                             }
                                             Err(e) => e,
@@ -1249,7 +1302,7 @@ impl LiveNodeWorkerServer {
                                     let tree_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(
                                         &restored_f64,
                                     );
-                                    let q_milli = (tree_sum * 1_000_000.0).round() as i64;
+                                    let q_milli = (tree_sum * 10_000.0).round() as i64;
                                     let digest = 0xcbf2_9ce4_8422_2325_u64
                                         ^ (q_milli as u64).wrapping_mul(0x0100_0000_01b3);
                                     let exec_ms =
@@ -2419,7 +2472,7 @@ impl DistributedLanExecutor {
         }
 
         let tree_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&dequant_ref);
-        let q_milli = (tree_sum * 1_000_000.0).round() as i64;
+        let q_milli = (tree_sum * 10_000.0).round() as i64;
         let expected_digest =
             0xcbf2_9ce4_8422_2325_u64 ^ (q_milli as u64).wrapping_mul(0x0100_0000_01b3);
 

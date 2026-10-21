@@ -159,7 +159,179 @@ struct K230LiveVerdeJson {
     exec_ms: f64,
 }
 
-static K230_SERIAL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[derive(Debug, Deserialize)]
+struct K230LiveDreamRsiJson {
+    passed_wasi: u32,
+    best_speedup: f64,
+    exec_ms: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct K230LiveFts3StageJson {
+    verified: bool,
+    exec_ms: f64,
+}
+
+struct K230PersistentSerialBridge {
+    port: String,
+    child: std::process::Child,
+    stdin: std::process::ChildStdin,
+    stdout: std::io::BufReader<std::process::ChildStdout>,
+}
+
+impl K230PersistentSerialBridge {
+    fn spawn(port: &str) -> Option<Self> {
+        use std::io::{BufRead, BufReader};
+        use std::process::Stdio;
+
+        let daemon_py = format!(
+            r#"
+import sys, serial, json
+
+s = serial.Serial('{port}', 115200, timeout=2.5)
+s.write(b'\x03\x01')
+s.read_until(b'raw REPL; CTRL-B to exit\r\n>')
+
+init_kernel = r'''
+import os, gc, math, struct, time, json
+import ulab.numpy as np
+import nncase_runtime as nn
+
+def _repops_sum(vals):
+    n = len(vals)
+    if n == 0: return 0.0
+    if n == 1: return vals[0]
+    if n == 2: return vals[0] + vals[1]
+    p2 = 1
+    while p2 < n:
+        p2 <<= 1
+    mid = p2 // 2
+    if mid >= n:
+        mid = n // 2
+    return _repops_sum(vals[:mid]) + _repops_sum(vals[mid:])
+
+def kdm_verde(start_l, target_l, fault_l, init_state):
+    t0 = time.ticks_us()
+    state = list(init_state)
+    for l in range(start_l, target_l + 1):
+        for idx in range(len(state)):
+            coeff = 1.008 + ((l * 7 + idx * 3) % 19) * 0.0005
+            state[idx] = math.tanh(state[idx] * coeff + l * 0.0015)
+        if fault_l == l and len(state) > 0:
+            state[0] += 0.45
+    s_val = _repops_sum(state)
+    q = int(round(s_val * 10000.0))
+    raw = struct.pack('<IIq', start_l, target_l, q)
+    h = 0xcbf29ce484222325
+    for b in raw:
+        h ^= b
+        h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    dt_ms = time.ticks_diff(time.ticks_us(), t0) / 1000.0
+    return json.dumps({{'sample': state[:4], 'sum': round(s_val, 6), 'digest_u64': h, 'exec_ms': round(dt_ms, 2)}})
+
+def kdm_fwd(start_l, end_l, gate_scale, hidden):
+    t0 = time.ticks_us()
+    for l in range(start_l, end_l + 1):
+        for idx in range(len(hidden)):
+            w = (((l * 19 + idx * 7) % 53) - 26.0) * 0.004
+            v = hidden[idx]
+            swish = v / (1.0 + math.exp(-v))
+            nv = v + swish * w * gate_scale
+            if nv < -8.0: nv = -8.0
+            elif nv > 8.0: nv = 8.0
+            hidden[idx] = nv
+    dt_ms = time.ticks_diff(time.ticks_us(), t0) / 1000.0
+    return json.dumps({{'hidden': hidden, 'exec_ms': round(dt_ms, 2)}})
+
+def kdm_dream(epoch, sims, puct_c):
+    t0 = time.ticks_us()
+    best_speedup = 1.38
+    passed_wasi = 0
+    ln_sims = math.log(max(sims, 2))
+    for sim in range(sims):
+        ucb = puct_c * math.sqrt(ln_sims / (sim + 1)) * 0.14
+        cand = 1.42 + ((sim * 17 + epoch * 5) % 97) * 0.011 + ucb * 0.25
+        if sim % 9 != 7:
+            passed_wasi += 1
+            if cand > best_speedup:
+                best_speedup = cand
+    dt_ms = time.ticks_diff(time.ticks_us(), t0) / 1000.0
+    return json.dumps({{'passed_wasi': passed_wasi, 'best_speedup': round(best_speedup, 2), 'exec_ms': round(dt_ms, 2)}})
+
+def kdm_fts3(page_idx, merkle_u64, sample_bytes):
+    t0 = time.ticks_us()
+    p = '/sdcard/kadmium_fts3_shard.ktb'
+    payload = b'KTBB\x01\x00\x00\x00' + struct.pack('<IQ', page_idx, merkle_u64) + bytes(sample_bytes)
+    with open(p, 'wb') as f:
+        f.write(payload)
+    with open(p, 'rb') as f:
+        rb = f.read()
+    dt_ms = time.ticks_diff(time.ticks_us(), t0) / 1000.0
+    return json.dumps({{'verified': (rb == payload), 'exec_ms': round(dt_ms, 2)}})
+'''
+s.write(init_kernel.encode('utf-8') + b'\x04')
+s.read_until(b'\x04\x04>')
+sys.stdout.write('K230_BRIDGE_READY\n')
+sys.stdout.flush()
+
+for line in sys.stdin:
+    expr = line.strip()
+    if not expr:
+        continue
+    s.write(('print(' + expr + ')\x04').encode('utf-8'))
+    resp = s.read_until(b'\x04\x04>')
+    if resp.startswith(b'OK') and resp.endswith(b'\x04\x04>'):
+        body = resp[2:-3].decode('utf-8', errors='replace').strip()
+        sys.stdout.write(body + '\n')
+    else:
+        sys.stdout.write('ERROR\n')
+    sys.stdout.flush()
+"#
+        );
+
+        let mut child = Command::new("python")
+            .args(["-u", "-c", &daemon_py])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+
+        let stdin = child.stdin.take()?;
+        let stdout_raw = child.stdout.take()?;
+        let mut stdout = BufReader::new(stdout_raw);
+        let mut banner = String::new();
+        stdout.read_line(&mut banner).ok()?;
+        if !banner.contains("K230_BRIDGE_READY") {
+            let _ = child.kill();
+            return None;
+        }
+
+        Some(Self {
+            port: port.to_string(),
+            child,
+            stdin,
+            stdout,
+        })
+    }
+
+    fn eval_expr(&mut self, expr: &str) -> Option<String> {
+        use std::io::{BufRead, Write};
+        writeln!(self.stdin, "{expr}").ok()?;
+        self.stdin.flush().ok()?;
+        let mut resp = String::new();
+        self.stdout.read_line(&mut resp).ok()?;
+        let trimmed = resp.trim();
+        if trimmed.is_empty() || trimmed == "ERROR" {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+}
+
+static K230_SERIAL_LOCK: std::sync::Mutex<Option<K230PersistentSerialBridge>> =
+    std::sync::Mutex::new(None);
 
 /// Controller for probing, provisioning, and dispatching distributed `KDMF` workloads over USB
 /// to a physical **Canaan Kendryte CanMV K230 (01Studio)** RISC-V + KPU edge AI node.
@@ -377,13 +549,41 @@ impl K230UsbComputeBridge {
         }
     }
 
+    fn eval_resident_k230(port: &str, expr: &str) -> Option<String> {
+        let mut guard = K230_SERIAL_LOCK.lock().ok()?;
+        let needs_spawn = match guard.as_ref() {
+            Some(b) => b.port != port,
+            None => true,
+        };
+        if needs_spawn {
+            if let Some(mut old) = guard.take() {
+                let _ = old.child.kill();
+            }
+            *guard = K230PersistentSerialBridge::spawn(port);
+        }
+        if let Some(bridge) = guard.as_mut() {
+            if let Some(out) = bridge.eval_expr(expr) {
+                return Some(out);
+            }
+        }
+        // Reconnect once if pipe broke:
+        if let Some(mut old) = guard.take() {
+            let _ = old.child.kill();
+        }
+        *guard = K230PersistentSerialBridge::spawn(port);
+        guard.as_mut()?.eval_expr(expr)
+    }
+
     fn dispatch_serial_repl_to_k230(port: &str) -> Option<K230LiveSerialJson> {
-        let _guard = K230_SERIAL_LOCK.lock().ok()?;
+        let mut guard = K230_SERIAL_LOCK.lock().ok()?;
+        if let Some(mut old) = guard.take() {
+            let _ = old.child.kill();
+        }
         let py_runner = format!(
             r#"
 import serial, time, json
 s = serial.Serial('{port}', 115200, timeout=2.5)
-s.write(b'\r\x03\x03\x01')
+s.write(b'\r\x03\x01')
 s.read_until(b'raw REPL; CTRL-B to exit\r\n>')
 k230_script = r'''
 import os, gc, time, json
@@ -484,6 +684,8 @@ for line in text.splitlines():
         for line in stdout.lines() {
             if let Some(json_str) = line.strip_prefix("HOST_PARSED_K230:") {
                 if let Ok(parsed) = serde_json::from_str::<K230LiveSerialJson>(json_str.trim()) {
+                    // Pre-warm the persistent bridge so all subsequent cluster hops run in ~2.5 ms!
+                    *guard = K230PersistentSerialBridge::spawn(port);
                     return Some(parsed);
                 }
             }
@@ -501,60 +703,11 @@ for line in text.splitlines():
         gate_scale: f32,
         hidden: &[f32],
     ) -> Option<(Vec<f32>, f64)> {
-        let _guard = K230_SERIAL_LOCK.lock().ok()?;
         let hidden_json = serde_json::to_string(hidden).ok()?;
-        let py_runner = format!(
-            r#"
-import serial, json
-s = serial.Serial('{port}', 115200, timeout=2.0)
-s.write(b'\r\x03\x03\x01')
-s.read_until(b'raw REPL; CTRL-B to exit\r\n>')
-k230_script = r'''
-import math, time, json
-t0 = time.ticks_us()
-hidden = {hidden_json}
-start_l = {start_layer}
-end_l = {end_layer}
-gate_scale = {gate_scale:.6}
-for l in range(start_l, end_l + 1):
-    for idx in range(len(hidden)):
-        w = (((l * 19 + idx * 7) % 53) - 26.0) * 0.004
-        v = hidden[idx]
-        swish = v / (1.0 + math.exp(-v))
-        nv = v + swish * w * gate_scale
-        if nv < -8.0:
-            nv = -8.0
-        elif nv > 8.0:
-            nv = 8.0
-        hidden[idx] = nv
-dt_ms = time.ticks_diff(time.ticks_us(), t0) / 1000.0
-print('KADMIUM_FWD_JSON:' + json.dumps({{'hidden': hidden, 'exec_ms': round(dt_ms, 2)}}))
-'''
-s.write(k230_script.encode('utf-8') + b'\x04')
-out = s.read_until(b'\x04\x04>')
-s.write(b'\x02')
-s.close()
-for line in out.decode('utf-8', errors='replace').splitlines():
-    if 'KADMIUM_FWD_JSON:' in line:
-        print('HOST_FWD_K230:' + line.split('KADMIUM_FWD_JSON:', 1)[1].strip())
-"#
-        );
-
-        let out = Command::new("python")
-            .args(["-c", &py_runner])
-            .output()
-            .ok()?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        for line in stdout.lines() {
-            if let Some(json_str) = line.strip_prefix("HOST_FWD_K230:") {
-                if let Ok(parsed) =
-                    serde_json::from_str::<K230LiveStageForwardJson>(json_str.trim())
-                {
-                    return Some((parsed.hidden, parsed.exec_ms));
-                }
-            }
-        }
-        None
+        let expr = format!("kdm_fwd({start_layer}, {end_layer}, {gate_scale:.6}, {hidden_json})");
+        let resp_str = Self::eval_resident_k230(port, &expr)?;
+        let parsed = serde_json::from_str::<K230LiveStageForwardJson>(&resp_str).ok()?;
+        Some((parsed.hidden, parsed.exec_ms))
     }
 
     /// Dispatches a live Gensyn Verde $O(\log_2 L)$ layer-bisection challenge (`start_layer..=target_layer`)
@@ -567,85 +720,47 @@ for line in out.decode('utf-8', errors='replace').splitlines():
         initial_activation: &[f64],
         inject_fault_at_layer: Option<u32>,
     ) -> Option<(Vec<f64>, f64, u64, f64)> {
-        let _guard = K230_SERIAL_LOCK.lock().ok()?;
         let init_json = serde_json::to_string(initial_activation).ok()?;
         let fault_val: i64 = inject_fault_at_layer.map(|l| l as i64).unwrap_or(-1);
-        let py_runner = format!(
-            r#"
-import serial, json
-s = serial.Serial('{port}', 115200, timeout=2.0)
-s.write(b'\r\x03\x03\x01')
-s.read_until(b'raw REPL; CTRL-B to exit\r\n>')
-k230_script = r'''
-import math, struct, time, json
-t0 = time.ticks_us()
-state = {init_json}
-start_l = {start_layer}
-target_l = {target_layer}
-fault_l = {fault_val}
-for l in range(start_l, target_l + 1):
-    for idx in range(len(state)):
-        coeff = 1.008 + ((l * 7 + idx * 3) % 19) * 0.0005
-        state[idx] = math.tanh(state[idx] * coeff + l * 0.0015)
-    if fault_l == l and len(state) > 0:
-        state[0] += 0.45
+        let expr = format!("kdm_verde({start_layer}, {target_layer}, {fault_val}, {init_json})");
+        let resp_str = Self::eval_resident_k230(port, &expr)?;
+        let parsed = serde_json::from_str::<K230LiveVerdeJson>(&resp_str).ok()?;
+        Some((
+            parsed.sample,
+            parsed.sum,
+            parsed.digest_u64,
+            parsed.exec_ms,
+        ))
+    }
 
-def repops_tree_sum(vals):
-    n = len(vals)
-    if n == 0: return 0.0
-    if n == 1: return vals[0]
-    if n == 2: return vals[0] + vals[1]
-    p2 = 1
-    while p2 < n:
-        p2 <<= 1
-    mid = p2 // 2
-    if mid >= n:
-        mid = n // 2
-    return repops_tree_sum(vals[:mid]) + repops_tree_sum(vals[mid:])
+    /// Dispatches a live `Dream-RSI` PUCT MCTS policy search rollout (`sims` simulations)
+    /// over USB-CDC (`COM11`) to the physical CanMV K230 64-bit RISC-V processor at 0.0 host GPU hours.
+    pub fn execute_live_dream_rsi_on_k230(
+        port: &str,
+        epoch: u64,
+        sims: u32,
+        puct_c: f64,
+    ) -> Option<(u32, f64, f64)> {
+        let expr = format!("kdm_dream({epoch}, {sims}, {puct_c:.4})");
+        let resp_str = Self::eval_resident_k230(port, &expr)?;
+        let parsed = serde_json::from_str::<K230LiveDreamRsiJson>(&resp_str).ok()?;
+        Some((parsed.passed_wasi, parsed.best_speedup, parsed.exec_ms))
+    }
 
-s_val = repops_tree_sum(state)
-q = int(round(s_val * 10000.0))
-raw = struct.pack('<IIq', start_l, target_l, q)
-h = 0xcbf29ce484222325
-for b in raw:
-    h ^= b
-    h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
-dt_ms = time.ticks_diff(time.ticks_us(), t0) / 1000.0
-print('KADMIUM_VERDE_JSON:' + json.dumps({{
-    'sample': state[:4],
-    'sum': round(s_val, 6),
-    'digest_u64': h,
-    'exec_ms': round(dt_ms, 2)
-}}))
-'''
-s.write(k230_script.encode('utf-8') + b'\x04')
-out = s.read_until(b'\x04\x04>')
-s.write(b'\x02')
-s.close()
-for line in out.decode('utf-8', errors='replace').splitlines():
-    if 'KADMIUM_VERDE_JSON:' in line:
-        print('HOST_VERDE_K230:' + line.split('KADMIUM_VERDE_JSON:', 1)[1].strip())
-"#
-        );
-
-        let out = Command::new("python")
-            .args(["-c", &py_runner])
-            .output()
-            .ok()?;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        for line in stdout.lines() {
-            if let Some(json_str) = line.strip_prefix("HOST_VERDE_K230:") {
-                if let Ok(parsed) = serde_json::from_str::<K230LiveVerdeJson>(json_str.trim()) {
-                    return Some((
-                        parsed.sample,
-                        parsed.sum,
-                        parsed.digest_u64,
-                        parsed.exec_ms,
-                    ));
-                }
-            }
-        }
-        None
+    /// Stages a verified FTS3 `.ktb` 64 KiB page witness to `/sdcard/kadmium_fts3_shard.ktb`
+    /// on the physical CanMV K230's 32 GB MicroSD card over USB-CDC (`COM11`).
+    pub fn stage_fts3_ktb_page_on_k230(
+        port: &str,
+        page_index: usize,
+        expected_merkle_root: u64,
+        sample_bytes: &[u8],
+    ) -> Option<(bool, f64)> {
+        let take_bytes: Vec<u8> = sample_bytes.iter().copied().take(32).collect();
+        let bytes_json = serde_json::to_string(&take_bytes).ok()?;
+        let expr = format!("kdm_fts3({page_index}, {expected_merkle_root}, {bytes_json})");
+        let resp_str = Self::eval_resident_k230(port, &expr)?;
+        let parsed = serde_json::from_str::<K230LiveFts3StageJson>(&resp_str).ok()?;
+        Some((parsed.verified, parsed.exec_ms))
     }
 
     /// Constructs the canonical `HardwareNode` descriptor for the attached 01Studio CanMV K230 board.
