@@ -17,7 +17,8 @@ use kadmium_runtime::{
     TrainingComputeAcceleratorSuite, VerdeFraudProofEngine,
 };
 use kadmium_sharding::{
-    CloudShieldCutoverWatcher, HierarchicalPoolPlanner, SpotOrderbookBidEngine,
+    CloudShieldCutoverWatcher, ElasticLocalBoostPlanner, HierarchicalPoolPlanner,
+    SpotOrderbookBidEngine,
 };
 
 pub fn run_lease(hours: f64, payout: &str) {
@@ -92,6 +93,42 @@ pub fn run_lease(hours: f64, payout: &str) {
         snap.total_projected_monthly_cloud_credits_usd,
         snap.equivalent_l40s_burst_hours_per_month
     );
+
+    let boost = ElasticLocalBoostPlanner::evaluate_desktop_just_enough_boost();
+    println!(
+        "\n====================================================================================================="
+    );
+    println!(
+        " KADMIUM 'JUST-ENOUGH-BOOST' — SEAMLESS LOCAL-FIRST FRACTIONAL SPILLOVER ({})",
+        boost.target_model_id
+    );
+    println!(
+        "====================================================================================================="
+    );
+    println!(
+        "  * Primary Desktop Anchor:     {} (Need {:.1} GB -> Only {:.1} GB Deficit!)",
+        boost.primary_desktop_gpu, boost.total_model_and_kv_vram_gb, boost.vram_deficit_gb
+    );
+    println!(
+        "  * Local Blind-Privacy Layers: {} (Overflow Middle: L{:02}..L{:02})",
+        boost.local_pinned_layers, boost.overflow_middle_layers.0, boost.overflow_middle_layers.1
+    );
+    println!(
+        "\n{:<58} {:>10} {:>10} {:>10} {:>12}",
+        "SPILLOVER OPTION", "DECODE", "SPEEDUP", "COST/HR", "CLOUD SAVED"
+    );
+    println!("{}", "-".repeat(104));
+    for opt in &boost.evaluated_options {
+        println!(
+            "{:<58} {:>7.1} t/s {:>8.2}x   ${:>6.2}/hr {:>10.1}%",
+            opt.mode_label,
+            opt.effective_decode_tok_s,
+            opt.speedup_vs_cpu_offload_x,
+            opt.hourly_cost_usd,
+            opt.cost_savings_vs_full_cloud_pct
+        );
+    }
+    println!("\n{}", boost.summary_scorecard);
 }
 
 pub async fn run_bench() {

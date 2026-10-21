@@ -47,9 +47,10 @@ use kadmium_runtime::{
 };
 use kadmium_sharding::{
     CloudShieldCutoverWatcher, CloudShieldWatcherReport, ClusterPoolSliceLayout,
-    DataflowComparisonReport, DataflowStreamPlanner, HierarchicalPoolBenchmarkReport,
-    HierarchicalPoolPlanner, HybridCloudArbitragePlanner, ProvisionedSpotContainer, ShardPlanner,
-    ShiftTriggerReason, SpotOrderbookBidEngine, SpotOrderbookQuote, SubClusterPartitioner,
+    DataflowComparisonReport, DataflowStreamPlanner, ElasticLocalBoostPlanner,
+    ElasticLocalBoostReport, HierarchicalPoolBenchmarkReport, HierarchicalPoolPlanner,
+    HybridCloudArbitragePlanner, ProvisionedSpotContainer, ShardPlanner, ShiftTriggerReason,
+    SpotOrderbookBidEngine, SpotOrderbookQuote, SubClusterPartitioner,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -392,6 +393,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/storage/pool-bucket",
             get(get_storage_pool_bucket_report).post(get_storage_pool_bucket_report),
+        )
+        .route(
+            "/api/v1/cluster/elastic-boost",
+            get(get_elastic_local_boost_report).post(get_elastic_local_boost_report),
         )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -2032,6 +2037,10 @@ pub struct ThroughputBoostApiResponse {
     pub storage_pool_report: DecentralizedStoragePoolReport,
     pub raid5_striping_report: RaidStripedPassReport,
     pub multipath_schedule: MultiPathStripedSchedule,
+}
+
+async fn get_elastic_local_boost_report() -> Json<ElasticLocalBoostReport> {
+    Json(ElasticLocalBoostPlanner::evaluate_desktop_just_enough_boost())
 }
 
 async fn get_hyper_inference_report() -> Json<HyperInferenceComputeReport> {
