@@ -166,6 +166,7 @@ pub enum WireFrameKind {
     VerdeBisectionChallenge = 6,
     FleetUpdatePush = 7,
     DreamRsiRolloutReplay = 8,
+    KvCachePageMigration = 9,
 }
 
 impl WireFrameKind {
@@ -179,6 +180,7 @@ impl WireFrameKind {
             6 => Some(Self::VerdeBisectionChallenge),
             7 => Some(Self::FleetUpdatePush),
             8 => Some(Self::DreamRsiRolloutReplay),
+            9 => Some(Self::KvCachePageMigration),
             _ => None,
         }
     }

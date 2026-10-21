@@ -4,7 +4,7 @@ use kadmium_core::{
     PhoneFarmBoxPreset, PhoneFarmTopologyMode, PhoneFarmTransportMode, PoliteState, WorkloadKind,
     sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
-use kadmium_data::Fts3TransferScheduler;
+use kadmium_data::{Fts3TransferScheduler, LocalModelDiskImporter};
 use kadmium_gateway::{GatewayState, build_router};
 use kadmium_network::{
     DEFAULT_LAN_DISCOVERY_UDP_PORT, DEFAULT_WORKER_TCP_PORT, LanCoordinatorAnnouncement,
@@ -195,6 +195,24 @@ enum Commands {
         #[arg(short, long)]
         disaggregated: bool,
     },
+    /// Import and transcode a local `.gguf` v3 or `.safetensors` model file into a 64 KiB page-aligned `.ktb` weight bank on disk
+    Import {
+        /// Model identifier
+        #[arg(short, long, default_value = "qwen2.5-coder-32b-instruct")]
+        model: String,
+        /// Optional path to a `.gguf` or `.safetensors` file on disk (synthesizes a reference binary in target/kadmium-models/ if omitted)
+        #[arg(short, long)]
+        path: Option<String>,
+        /// Format hint when synthesizing a reference file: gguf | safetensors
+        #[arg(short, long, default_value = "gguf")]
+        format: String,
+        /// Start layer index (inclusive)
+        #[arg(long, default_value_t = 0)]
+        start_layer: u32,
+        /// End layer index (inclusive)
+        #[arg(long, default_value_t = 3)]
+        end_layer: u32,
+    },
 }
 
 #[tokio::main]
@@ -267,6 +285,13 @@ async fn main() {
             preset,
             disaggregated,
         } => run_phone_farm(&preset, disaggregated),
+        Commands::Import {
+            model,
+            path,
+            format,
+            start_layer,
+            end_layer,
+        } => run_import(&model, path.as_deref(), &format, start_layer, end_layer),
     }
 }
 
@@ -1068,4 +1093,38 @@ fn run_phone_farm(preset_slug: &str, disaggregated: bool) {
         rl_plan.total_vectorized_env_slots, rl_plan.estimated_cluster_episodes_per_min
     );
     println!("====================================================================================");
+}
+
+fn run_import(
+    model_id: &str,
+    source_path: Option<&str>,
+    format_hint: &str,
+    start_layer: u32,
+    end_layer: u32,
+) {
+    match LocalModelDiskImporter::import_or_transcode_to_disk(
+        model_id,
+        source_path,
+        Some(format_hint),
+        start_layer,
+        end_layer,
+        None,
+    ) {
+        Ok(m) => {
+            println!("====================================================================================");
+            println!("  KADMIUM (Cd-48) — LOCAL GGUF / SAFETENSORS -> 64 KiB .KTB DISK IMPORTER");
+            println!("====================================================================================");
+            println!("  Model Identifier:     {} ({})", m.model_id, m.derived_model_spec.display_name);
+            println!("  Source Format:        {:?}", m.source_format);
+            println!("  Source File Path:     {} ({} KiB)", m.source_file_path, m.source_file_bytes / 1024);
+            println!("  Compiled .ktb Path:   {} ({} KiB, {} x 64KiB pages)", m.compiled_ktb_path, m.ktb_size_bytes / 1024, m.ktb_page_count);
+            println!("  Transcoded Layers:    L{}..=L{} ({} tensor banks)", m.start_layer, m.end_layer, m.parsed_tensor_count);
+            println!("  Merkle Root (FNV64):  {:#018x}", m.merkle_root_fnv64);
+            println!("  64 KiB Alignment:     {}", if m.zero_copy_alignment_verified { "VERIFIED (mmap / io_uring / IoRing ready)" } else { "FAILED" });
+            println!("====================================================================================");
+        }
+        Err(e) => {
+            eprintln!("Failed to import model '{}': {}", model_id, e);
+        }
+    }
 }

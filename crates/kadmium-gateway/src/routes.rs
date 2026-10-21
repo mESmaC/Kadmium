@@ -20,7 +20,10 @@ use kadmium_core::{
     SubClusterRbacEngine, SupplyLeasePolicy, SupplyMarketplaceSnapshot, WorkloadKind,
     sample_cloud_burst_gpu_node, sample_node_pool,
 };
-use kadmium_data::{EcosystemIntegrationsOverview, Fts3TransferScheduler, Fts3TransferState};
+use kadmium_data::{
+    EcosystemIntegrationsOverview, Fts3TransferScheduler, Fts3TransferState, ImportedModelManifest,
+    LocalModelDiskImporter,
+};
 use kadmium_network::{
     FleetUpdatePushSummary, HolePunchNegotiationResult, JoinTicket, LanPairingCandidate,
     LiveClusterWorkersOverview, NatTraversalCoordinator, UpdatePayloadKind, UpdateTargetScope,
@@ -34,9 +37,10 @@ use kadmium_rl::{
 use kadmium_runtime::{
     DistributedLanExecutor, DistributedPipelineExecutionReport, HardwareKernelDispatcher,
     HardwareKernelSuiteReport, KtbCheckpointExportReport, LiveDistributedTrainingStepReport,
-    LiveDreamRsiSwarmReport, LiveFts3SwarmStreamReport, LiveHopTelemetry, LiveVerdeAuditReport,
-    LocalFleetSpawner, Pipeline1F1BSchedule, Pipeline1F1BScheduler, VerdeFraudProofCertificate,
-    VerdeFraudProofEngine, apply_ota_update_manifest_local,
+    LiveDreamRsiSwarmReport, LiveFts3SwarmStreamReport, LiveHopTelemetry,
+    LiveKvCacheMigrationReport, LiveVerdeAuditReport, LocalFleetSpawner, Pipeline1F1BSchedule,
+    Pipeline1F1BScheduler, VerdeFraudProofCertificate, VerdeFraudProofEngine,
+    apply_ota_update_manifest_local,
 };
 use kadmium_sharding::{
     CloudShieldCutoverWatcher, CloudShieldWatcherReport, ClusterPoolSliceLayout,
@@ -139,6 +143,22 @@ pub struct DreamRsiReplayRequest {
     pub world_id: Option<String>,
     #[serde(default)]
     pub mcts_simulations: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelImportRequest {
+    pub model_id: Option<String>,
+    pub source_path: Option<String>,
+    pub format_hint: Option<String>,
+    pub start_layer: Option<u32>,
+    pub end_layer: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KvCacheMigrateRequest {
+    pub session_id: Option<String>,
+    pub start_layer: Option<u32>,
+    pub end_layer: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -331,6 +351,14 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/rl/dream-replay",
             get(post_live_dream_rsi_replay).post(post_live_dream_rsi_replay),
+        )
+        .route(
+            "/api/v1/runtime/kv-migrate",
+            get(post_live_kv_migrate).post(post_live_kv_migrate),
+        )
+        .route(
+            "/api/v1/models/import",
+            get(post_import_local_model).post(post_import_local_model),
         )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -1860,4 +1888,70 @@ async fn anthropic_messages(
         }
     }))
     .into_response()
+}
+
+async fn post_live_kv_migrate(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    req: Option<Json<KvCacheMigrateRequest>>,
+) -> Json<LiveKvCacheMigrationReport> {
+    let params = req.map(|Json(r)| r).unwrap_or_default();
+    let session_id = params
+        .session_id
+        .unwrap_or_else(|| "chatcmpl-session-polite-yield".to_string());
+    let start_layer = params.start_layer.unwrap_or(0);
+    let end_layer = params.end_layer.unwrap_or(13);
+
+    let (epoch, workers) = {
+        let guard = state.lock().expect("gateway state lock");
+        (guard.epoch, guard.live_workers.clone())
+    };
+
+    let report = DistributedLanExecutor::migrate_kv_cache_pages_tcp(
+        epoch,
+        &session_id,
+        (start_layer, end_layer),
+        &workers,
+    )
+    .await;
+
+    {
+        let mut guard = state.lock().expect("gateway state lock");
+        guard.last_kv_migration_report = Some(report.clone());
+    }
+
+    Json(report)
+}
+
+async fn post_import_local_model(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    req: Option<Json<ModelImportRequest>>,
+) -> Json<ImportedModelManifest> {
+    let params = req.map(|Json(r)| r).unwrap_or_default();
+    let model_id = params
+        .model_id
+        .unwrap_or_else(|| "qwen2.5-coder-32b-instruct".to_string());
+    let start_layer = params.start_layer.unwrap_or(0);
+    let end_layer = params.end_layer.unwrap_or(3);
+
+    let manifest = LocalModelDiskImporter::import_or_transcode_to_disk(
+        &model_id,
+        params.source_path.as_deref(),
+        params.format_hint.as_deref(),
+        start_layer,
+        end_layer,
+        None,
+    )
+    .expect("import local model to disk KTB");
+
+    {
+        let mut guard = state.lock().expect("gateway state lock");
+        guard.active_ktb_merkle_root_fnv64 = manifest.merkle_root_fnv64;
+        guard
+            .imported_models
+            .retain(|m| m.model_id != manifest.model_id);
+        guard.imported_models.push(manifest.clone());
+        let _ = guard.save_persistent_state();
+    }
+
+    Json(manifest)
 }

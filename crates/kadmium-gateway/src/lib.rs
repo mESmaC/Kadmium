@@ -7,7 +7,7 @@ use kadmium_core::{
     HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteState, SupplyLeasePolicy,
     SupplyMarketplaceSnapshot, SupplySettlementEngine, WorkloadKind, sample_personal_cluster,
 };
-use kadmium_data::{Fts3TransferScheduler, ThirdPartyTransferJob};
+use kadmium_data::{Fts3TransferScheduler, ImportedModelManifest, ThirdPartyTransferJob};
 use kadmium_network::{
     CoordinatorFailoverQuorum, DEFAULT_KADMIUM_RUNTIME_VERSION, FleetUpdateManifest,
     FleetUpdatePushSummary, JoinTicket, LiveClusterWorkersOverview, LiveWorkerRegistration,
@@ -20,8 +20,8 @@ use kadmium_rl::{
 };
 use kadmium_runtime::{
     BoincWorkunit, DEFAULT_INITIAL_KTB_MERKLE_ROOT, KtbCheckpointExportReport,
-    LiveFts3SwarmStreamReport, SpawnedLocalWorkerInstance, TrainingJobTelemetry,
-    sample_boinc_workunits,
+    LiveFts3SwarmStreamReport, LiveKvCacheMigrationReport, SpawnedLocalWorkerInstance,
+    TrainingJobTelemetry, sample_boinc_workunits,
 };
 use kadmium_sharding::{
     ClusterShardPlan, FailoverShieldSimulation, MultiProviderArbitragePlan,
@@ -141,6 +141,24 @@ pub struct GatewayState {
     pub last_checkpoint_step: u64,
     pub last_checkpoint_report: Option<KtbCheckpointExportReport>,
     pub last_fts3_stream_report: Option<LiveFts3SwarmStreamReport>,
+    pub last_kv_migration_report: Option<LiveKvCacheMigrationReport>,
+    pub imported_models: Vec<ImportedModelManifest>,
+}
+
+/// On-disk persistent journal written to `target/kadmium-state/cluster_state.json`
+/// so active models, training progress, checkpoints, and OTA versions survive restarts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistentClusterStateJournal {
+    pub epoch: u64,
+    pub inference_model_id: String,
+    pub training_model_id: String,
+    pub training_step_counter: u64,
+    pub last_training_loss: f64,
+    pub training_loss_history: Vec<(u64, f64)>,
+    pub active_cluster_version: String,
+    pub active_ktb_merkle_root_fnv64: u64,
+    pub last_checkpoint_step: u64,
+    pub imported_models: Vec<ImportedModelManifest>,
 }
 
 impl Default for GatewayState {
@@ -202,7 +220,34 @@ impl GatewayState {
             last_checkpoint_step: 1_400,
             last_checkpoint_report: None,
             last_fts3_stream_report: None,
+            last_kv_migration_report: None,
+            imported_models: Vec::new(),
         }
+    }
+
+    /// Writes a crash-safe JSON state journal to `target/kadmium-state/cluster_state.json`.
+    pub fn save_persistent_state(&self) -> Result<String, String> {
+        let dir = std::path::Path::new("target/kadmium-state");
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create state directory: {e}"))?;
+        let path = dir.join("cluster_state.json");
+        let journal = PersistentClusterStateJournal {
+            epoch: self.epoch,
+            inference_model_id: self.inference_model.id.clone(),
+            training_model_id: self.training_model.id.clone(),
+            training_step_counter: self.training_step_counter,
+            last_training_loss: self.last_training_loss,
+            training_loss_history: self.training_loss_history.clone(),
+            active_cluster_version: self.active_cluster_version.clone(),
+            active_ktb_merkle_root_fnv64: self.active_ktb_merkle_root_fnv64,
+            last_checkpoint_step: self.last_checkpoint_step,
+            imported_models: self.imported_models.clone(),
+        };
+        let bytes = serde_json::to_vec_pretty(&journal)
+            .map_err(|e| format!("Failed to serialize state journal: {e}"))?;
+        std::fs::write(&path, bytes)
+            .map_err(|e| format!("Failed to write state journal: {e}"))?;
+        Ok(path.display().to_string())
     }
 
     /// Recomputes `coordinator_quorum`, `inference_plan`, `training_plan`, and `fts3_transfers`
