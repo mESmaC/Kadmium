@@ -15,11 +15,13 @@ use axum::{
 };
 use kadmium_core::{
     ClosetSiliconLongevityGovernor, K230HardwareProbeReport, K230UsbComputeBridge,
-    KadmiumReactorInfrastructureReport, LiveHardwareProfiler, ModelSpec, NodeTrustTier,
-    OsHookHysteresisReport, OsSwapchainHysteresisEngine, PhoneFarmBoxController,
-    PhoneFarmBoxPreset, PhoneFarmChassisSpec, PhoneFarmTopologyMode, PhoneFarmTransportMode,
-    PoliteState, ScopedApiKey, SubClusterQuotaPolicy, SubClusterRbacEngine, SupplyLeasePolicy,
-    SupplyMarketplaceSnapshot, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
+    KadmiumReactorInfrastructureReport, LiveHardwareProfiler, ModdedSwitchController,
+    ModdedSwitchNodeSpec, ModelSpec, NodeTrustTier, OsHookHysteresisReport,
+    OsSwapchainHysteresisEngine, PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmChassisSpec,
+    PhoneFarmTopologyMode, PhoneFarmTransportMode, PoliteState, ScopedApiKey,
+    SubClusterQuotaPolicy, SubClusterRbacEngine, SupplyLeasePolicy, SupplyMarketplaceSnapshot,
+    SwitchRuntimeEnvironment, SwitchSiliconRevision, WorkloadKind, sample_cloud_burst_gpu_node,
+    sample_node_pool,
 };
 use kadmium_data::{
     DecentralizedStoragePoolEngine, DecentralizedStoragePoolReport, EcosystemIntegrationsOverview,
@@ -406,6 +408,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/k230/probe",
             get(get_k230_usb_probe_report).post(get_k230_usb_probe_report),
+        )
+        .route(
+            "/api/v1/cluster/switch-tegra",
+            get(post_switch_tegra_node).post(post_switch_tegra_node),
         )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -2155,5 +2161,65 @@ async fn get_throughput_boost_report(
         storage_pool_report,
         raid5_striping_report,
         multipath_schedule,
+    })
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SwitchTegraAttachRequest {
+    pub revision: Option<String>,
+    pub attach_to_cluster: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwitchTegraApiResponse {
+    pub active_spec: ModdedSwitchNodeSpec,
+    pub available_revisions: Vec<ModdedSwitchNodeSpec>,
+    pub overview: ClusterOverviewResponse,
+}
+
+async fn post_switch_tegra_node(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    req: Option<Json<SwitchTegraAttachRequest>>,
+) -> Json<SwitchTegraApiResponse> {
+    let params = req.map(|Json(r)| r).unwrap_or_default();
+    let rev = params
+        .revision
+        .as_deref()
+        .map(SwitchSiliconRevision::from_slug)
+        .unwrap_or(SwitchSiliconRevision::MarikoT210B01_16nm4Gb);
+    let active_spec =
+        ModdedSwitchController::build_spec(rev, SwitchRuntimeEnvironment::SwitchrootL4tJetPackCuda);
+
+    let mut guard = state.lock().expect("gateway state lock");
+    if params.attach_to_cluster.unwrap_or(false) {
+        let hw_node = ModdedSwitchController::to_hardware_node(&active_spec);
+        if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == hw_node.id) {
+            *existing = hw_node;
+        } else {
+            guard.nodes.push(hw_node);
+        }
+        guard.epoch += 1;
+        guard.recompute_plans();
+    }
+
+    let available_revisions = vec![
+        ModdedSwitchController::build_spec(
+            SwitchSiliconRevision::MarikoT210B01_16nm4Gb,
+            SwitchRuntimeEnvironment::SwitchrootL4tJetPackCuda,
+        ),
+        ModdedSwitchController::build_spec(
+            SwitchSiliconRevision::EristaT210_20nm4Gb,
+            SwitchRuntimeEnvironment::SwitchrootL4tJetPackCuda,
+        ),
+        ModdedSwitchController::build_spec(
+            SwitchSiliconRevision::MarikoT210B01_16nm8GbMod,
+            SwitchRuntimeEnvironment::SwitchrootL4tJetPackCuda,
+        ),
+    ];
+
+    Json(SwitchTegraApiResponse {
+        active_spec,
+        available_revisions,
+        overview: guard.snapshot(),
     })
 }

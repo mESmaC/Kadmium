@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand};
 use kadmium_core::{
-    HardwareNode, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, PhoneFarmBoxController,
-    PhoneFarmBoxPreset, PhoneFarmTopologyMode, PhoneFarmTransportMode, PoliteState, WorkloadKind,
+    HardwareNode, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModdedSwitchController, ModelSpec,
+    PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmTopologyMode, PhoneFarmTransportMode,
+    PoliteState, SwitchRuntimeEnvironment, SwitchSiliconRevision, WorkloadKind,
     sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::{Fts3TransferScheduler, LocalModelDiskImporter};
@@ -222,6 +223,12 @@ enum Commands {
         #[arg(short, long, default_value_t = 2.55)]
         bpw: f32,
     },
+    /// Profile and attach a modded Nintendo Switch 1 (Mariko T210B01 16nm / Erista T210 Jetson Nano equivalent) e-waste node
+    Switch {
+        /// Silicon revision: mariko (16nm T210B01 4GB) | erista (20nm T210 4GB) | mariko-8gb (8GB LPDDR4X BGA mod)
+        #[arg(short, long, default_value = "mariko")]
+        revision: String,
+    },
 }
 
 #[tokio::main]
@@ -302,6 +309,7 @@ async fn main() {
             end_layer,
         } => run_import(&model, path.as_deref(), &format, start_layer, end_layer),
         Commands::Exl3 { model, bpw } => run_exl3(&model, bpw),
+        Commands::Switch { revision } => run_switch(&revision),
     }
 }
 
@@ -1284,6 +1292,50 @@ fn run_exl3(model_name: &str, target_bpw: f32) {
             shard.output_ktb_shard_gb,
             shard.estimated_conversion_seconds / 60.0
         );
+    }
+    println!("====================================================================================");
+}
+
+fn run_switch(revision_slug: &str) {
+    let rev = SwitchSiliconRevision::from_slug(revision_slug);
+    let spec =
+        ModdedSwitchController::build_spec(rev, SwitchRuntimeEnvironment::SwitchrootL4tJetPackCuda);
+    let node = ModdedSwitchController::to_hardware_node(&spec);
+
+    println!("====================================================================================");
+    println!("  KADMIUM (Cd-48) — MODDED NINTENDO SWITCH (TEGRA X1 / X1+) E-WASTE NODE PROFILER");
+    println!("====================================================================================");
+    println!("  Device Revision:      {} ({}nm TSMC)", spec.display_name, spec.process_node_nm);
+    println!("  Jetson Equivalency:   {}", spec.jetson_equivalent);
+    println!("  Runtime Stack:        {:?}", spec.runtime_env);
+    println!(
+        "  CPU & Maxwell GPU:    {}x ARM Cortex-A57 @ {} MHz | {} CUDA cores (sm_53 FP16) @ {} MHz",
+        spec.cpu_cores_a57, spec.cpu_clock_mhz, spec.maxwell_cuda_cores, spec.gpu_clock_mhz
+    );
+    println!(
+        "  Unified Memory:       {:.1} GB LPDDR4X @ {} MHz ({:.1} GB/s bandwidth | q* = {:.2})",
+        spec.unified_lpddr_gb,
+        spec.emc_memory_clock_mhz,
+        spec.unified_mem_bw_gbps,
+        node.compute_q_star_ratio()
+    );
+    println!(
+        "  Compute & Efficiency: {:.2} FP16 TFLOPS ({:.2} FP32) @ {:.1}W docked ({:.2}x Tokens/Wh vs desktop)",
+        spec.fp16_tflops,
+        spec.fp32_tflops,
+        spec.dock_safety.wall_power_watts,
+        spec.tokens_per_watt_hour_advantage_vs_desktop
+    );
+    println!(
+        "  Dock & Battery Guard: BQ24193 80% Charge-Limit/Bypass={} | SoC {:.1}°C | Fan {}%",
+        spec.dock_safety.bq24193_charge_limit_or_bypass_active,
+        spec.dock_safety.soc_temp_celsius,
+        spec.dock_safety.fan_duty_pct
+    );
+    println!("------------------------------------------------------------------------------------");
+    println!("  Optimal Kadmium Workloads for Switch 1 ({}):", node.hostname);
+    for w in &spec.recommended_kadmium_workloads {
+        println!("    * {}", w);
     }
     println!("====================================================================================");
 }

@@ -765,6 +765,7 @@ pub mod phone_farm;
 pub mod rbac;
 pub mod reactor_clearinghouse;
 pub mod supply;
+pub mod tegra_switch;
 
 pub use governance::*;
 pub use k230_bridge::*;
@@ -773,6 +774,7 @@ pub use phone_farm::*;
 pub use rbac::*;
 pub use reactor_clearinghouse::*;
 pub use supply::*;
+pub use tegra_switch::*;
 
 #[cfg(test)]
 mod tests {
