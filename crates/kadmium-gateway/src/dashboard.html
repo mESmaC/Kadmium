@@ -180,6 +180,7 @@
     if (id.indexOf('friend-remote') >= 0) return 'wan';
     if (id.indexOf('legacy-thinkpad') >= 0) return 'old';
     if (id.indexOf('rk3588') >= 0) return 'sbc';
+    if (id.indexOf('k230') >= 0) return 'k230';
     if (id.indexOf('home-nas') >= 0) return 'nas';
     if (id.indexOf('cloud-burst') >= 0) return 'h100';
     return id.slice(0, 6);
@@ -190,7 +191,7 @@
     if (id.indexOf('cloud') >= 0) return 'gpu';
     if (id.indexOf('mac-mini') >= 0) return 'compact';
     if (id.indexOf('laptop') >= 0 || id.indexOf('thinkpad') >= 0) return 'laptop';
-    if (id.indexOf('sbc') >= 0) return 'sbc';
+    if (id.indexOf('sbc') >= 0 || id.indexOf('k230') >= 0) return 'sbc';
     if (id.indexOf('nas') >= 0) return 'nas';
     return 'desktop';
   }
@@ -286,6 +287,7 @@
     var ckptState = React.useState(null), ckptReply = ckptState[0], setCkptReply = ckptState[1];
     var verdeState = React.useState(null), verdeReply = verdeState[0], setVerdeReply = verdeState[1];
     var dreamReplayState = React.useState(null), dreamReplayReply = dreamReplayState[0], setDreamReplayReply = dreamReplayState[1];
+    var k230ProbeState = React.useState(null), k230Probe = k230ProbeState[0], setK230Probe = k230ProbeState[1];
 
     function refreshWorkersAndOverview() {
       fetch('/api/v1/cluster/workers').then(function (r) { return r.json(); }).then(setWorkersOverview);
@@ -311,6 +313,7 @@
       fetch('/api/v1/mcp').then(function (r) { return r.json(); }).then(setMcpManifest);
       fetch('/api/v1/ga/governance').then(function (r) { return r.json(); }).then(setGa);
       fetch('/api/v1/runtime/kernels').then(function (r) { return r.json(); }).then(setKernels);
+      fetch('/api/v1/k230/probe').then(function (r) { return r.json(); }).then(setK230Probe);
     }, []);
 
     function triggerScenario(scenario) {
@@ -597,6 +600,56 @@
             h('span', { className: 'label' }, 'FTS3 SEED STAGING'),
             h('span', { className: 'metric' }, '0.0 GB'),
             h('span', { className: 'meta' }, 'coordinator relay · direct NAS P2P'))),
+
+        k230Probe && k230Probe.physical_board_detected ? h('div', { className: 'panel', style: { borderColor: 'var(--cadmium)' } },
+          h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)', flexWrap: 'wrap' } },
+            h('div', null,
+              h('p', { className: 'eyebrow', style: { margin: 0, color: 'var(--cadmium)' } },
+                'Physical USB Edge RISC-V + 6 TOPS KPU Co-Processor · ' + (k230Probe.detected_serial_port || 'COM11') + ' · Die ' + k230Probe.chip_unique_die_id),
+              h('div', { className: 'code', style: { marginTop: '4px' } },
+                k230Probe.board_model + ' — ' + k230Probe.soc_architecture)),
+            h('div', { className: 'kd-row', style: { flexWrap: 'wrap' } },
+              h(K.Badge, { tone: 'ok', dot: true }, 'ONLINE (' + (k230Probe.detected_serial_port || 'COM11') + ')'),
+              h(K.Badge, { tone: 'local' }, k230Probe.sdcard_storage.capacity_gib + ' GiB MicroSD Vault'),
+              k230Probe.live_execution_proof ? h(K.Badge, { tone: 'cloud' },
+                'RepOps 0x' + k230Probe.live_execution_proof.k230_hardware_checksum_fnv1a.toString(16) + ' (Bit-Exact)') : null,
+              h(K.Button, {
+                variant: 'primary',
+                size: 'sm',
+                icon: 'rods',
+                onClick: function () { setTab('gateway'); runLiveMultiNodeInference(); }
+              }, 'Run Live x86_64 ↔ K230 Hop'),
+              h(K.Button, {
+                variant: 'quiet',
+                size: 'sm',
+                onClick: function () { setTab('gateway'); runLiveVerdeAudit(null); }
+              }, 'Run Cross-ISA Verde Audit'),
+              h(K.Button, {
+                variant: 'cloud',
+                size: 'sm',
+                onClick: function () { setTab('gateway'); runLiveDreamRsiReplay(); }
+              }, 'Run K230 Dream-RSI (64 MCTS)'),
+              h(K.Button, {
+                variant: 'ghost',
+                size: 'sm',
+                onClick: function () { fetch('/api/v1/k230/probe').then(function (r) { return r.json(); }).then(setK230Probe); }
+              }, 'Re-Probe COM11'))),
+          k230Probe.live_execution_proof ? h('div', { className: 'table-wrap' },
+            h('table', { className: 'mono-table' },
+              h('thead', null, h('tr', null,
+                h('th', null, '3RD-GEN KPU NPU'),
+                h('th', null, 'ZERO-COPY AI2D→KPU DMA'),
+                h('th', null, 'FASTSPEECH 50-TOK TRANSFORMER'),
+                h('th', null, 'ULAB RVV 64×64 GEMM'),
+                h('th', null, '64 KiB .KTB MICROSD I/O'),
+                h('th', null, '64-LAYER F32 DRIFT'))),
+              h('tbody', null, h('tr', null,
+                h('td', null, k230Probe.live_execution_proof.kpu_npu_warm_inference_ms + ' ms (' + k230Probe.live_execution_proof.kpu_npu_throughput_fps + ' FPS)'),
+                h('td', null, k230Probe.live_execution_proof.ai2d_plus_kpu_chained_ms + ' ms (' + (1000 / Math.max(k230Probe.live_execution_proof.ai2d_plus_kpu_chained_ms, 0.1)).toFixed(1) + ' FPS)'),
+                h('td', null, k230Probe.live_execution_proof.fastspeech_transformer_50tok_ms + ' ms (' + (50000 / Math.max(k230Probe.live_execution_proof.fastspeech_transformer_50tok_ms, 0.1)).toFixed(1) + ' tok/s)'),
+                h('td', null, k230Probe.live_execution_proof.ulab_rvv_64x64_gemm_ms + ' ms'),
+                h('td', null, 'W: ' + k230Probe.live_execution_proof.ktb_64k_sdcard_write_ms + ' ms / R: ' + k230Probe.live_execution_proof.ktb_64k_sdcard_read_ms + ' ms'),
+                h('td', null, h(K.Badge, { tone: 'ok' }, k230Probe.live_execution_proof.verde_64_layer_max_f32_drift + ' (100% RepOps Match)')))))) : null) : null,
 
         h('section', null,
           h(K.Tabs, {
