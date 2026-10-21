@@ -288,11 +288,16 @@
     var verdeState = React.useState(null), verdeReply = verdeState[0], setVerdeReply = verdeState[1];
     var dreamReplayState = React.useState(null), dreamReplayReply = dreamReplayState[0], setDreamReplayReply = dreamReplayState[1];
     var k230ProbeState = React.useState(null), k230Probe = k230ProbeState[0], setK230Probe = k230ProbeState[1];
+    var storageBucketState = React.useState(null), storageBucket = storageBucketState[0], setStorageBucket = storageBucketState[1];
+    var kvMigrateState = React.useState(null), kvMigrateReply = kvMigrateState[0], setKvMigrateReply = kvMigrateState[1];
+    var importModelState = React.useState(null), importedModelReply = importModelState[0], setImportedModelReply = importModelState[1];
+    var importInputState = React.useState('qwen2.5-coder-32b-instruct'), importModelInput = importInputState[0], setImportModelInput = importInputState[1];
 
     function refreshWorkersAndOverview() {
       fetch('/api/v1/cluster/workers').then(function (r) { return r.json(); }).then(setWorkersOverview);
       fetch('/api/v1/cluster/overview').then(function (r) { return r.json(); }).then(setOverview);
       fetch('/api/v1/update/status').then(function (r) { return r.json(); }).then(setOtaStatus);
+      fetch('/api/v1/storage/pool-bucket').then(function (r) { return r.json(); }).then(setStorageBucket);
     }
 
     React.useEffect(function () {
@@ -303,6 +308,7 @@
       fetch('/api/v1/cluster/overview').then(function (r) { return r.json(); }).then(setOverview);
       fetch('/api/v1/cluster/workers').then(function (r) { return r.json(); }).then(setWorkersOverview);
       fetch('/api/v1/update/status').then(function (r) { return r.json(); }).then(setOtaStatus);
+      fetch('/api/v1/storage/pool-bucket').then(function (r) { return r.json(); }).then(setStorageBucket);
       fetch('/api/v1/slices').then(function (r) { return r.json(); }).then(setSlices);
       fetch('/api/v1/dataflow').then(function (r) { return r.json(); }).then(setDataflow);
       fetch('/api/v1/rl/dream-rsi').then(function (r) { return r.json(); }).then(setDream);
@@ -314,6 +320,7 @@
       fetch('/api/v1/ga/governance').then(function (r) { return r.json(); }).then(setGa);
       fetch('/api/v1/runtime/kernels').then(function (r) { return r.json(); }).then(setKernels);
       fetch('/api/v1/k230/probe').then(function (r) { return r.json(); }).then(setK230Probe);
+      fetch('/api/v1/storage/pool-bucket').then(function (r) { return r.json(); }).then(setStorageBucket);
     }, []);
 
     function triggerScenario(scenario) {
@@ -389,7 +396,7 @@
         body: JSON.stringify({ live_only: liveOnly })
       }).then(function (r) { return r.json(); }).then(function (data) {
         setWorkersOverview(data);
-        fetch('/api/v1/cluster/overview').then(function (r) { return r.json(); }).then(setOverview);
+        refreshWorkersAndOverview();
       });
     }
 
@@ -410,7 +417,7 @@
         body: JSON.stringify({ node_id: nodeId, action: action })
       }).then(function (r) { return r.json(); }).then(function (data) {
         setWorkersOverview(data);
-        fetch('/api/v1/cluster/overview').then(function (r) { return r.json(); }).then(setOverview);
+        refreshWorkersAndOverview();
       });
     }
 
@@ -522,6 +529,36 @@
 
     var wordmark = theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg';
 
+    function refreshStorageBucket(poolSize) {
+      fetch('/api/v1/storage/pool-bucket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(poolSize ? { pool_size: poolSize } : {})
+      }).then(function (r) { return r.json(); }).then(setStorageBucket);
+    }
+
+    function runLiveKvCacheMigration() {
+      fetch('/api/v1/runtime/kv-migrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: 'sess-cd48-live-yield', start_layer: 0, end_layer: 15 })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setKvMigrateReply(data);
+        refreshWorkersAndOverview();
+      });
+    }
+
+    function importLocalModelToBucket(modelId, formatHint) {
+      fetch('/api/v1/models/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: modelId || importModelInput, format_hint: formatHint || 'gguf', start_layer: 0, end_layer: 3 })
+      }).then(function (r) { return r.json(); }).then(function (data) {
+        setImportedModelReply(data);
+        refreshWorkersAndOverview();
+      });
+    }
+
     if (!overview) {
       return h('div', { className: 'page' }, h('p', { className: 'code' }, 'Loading Kadmium control room...'));
     }
@@ -533,6 +570,52 @@
     var trainRailNodes = buildShardRailNodes(nodes, trainPlan);
     var isCloudCompanion = companion && companion.mode && companion.mode.KadmiumCloudManaged;
     var hasCloudNode = nodes.some(function (n) { return n.hostname.indexOf('cloud') >= 0; });
+
+    var totalFp16Tflops = 0, totalInt4Tops = 0, totalCpuThreads = 0, totalCpuTflops = 0;
+    var totalFastMemGb = 0, totalSysRamGb = 0, totalFastBwGbps = 0, totalSysRamBwGbps = 0, sumQStar = 0;
+    var totalNvmeCacheGb = 0, totalNvmeReadBwGbps = 0, totalUplinkGbps = 0, totalInterconnectGbps = 0;
+    var rttSamples = [];
+
+    nodes.forEach(function (n) {
+      var m = n.memory || {};
+      var fastMem = (m.vram_gb || 0) + (m.unified_mem_gb || 0);
+      var fastBw = (m.vram_bw_gbps || 0) + (m.unified_mem_bw_gbps || 0);
+      var sysBw = m.system_ram_bw_gbps || 0;
+      var q = (fastBw + sysBw) > 0 ? (fastBw / (fastBw + sysBw)) : 0.35;
+      totalFp16Tflops += (n.fp16_tflops || 0);
+      totalInt4Tops += (n.int4_tops || 0);
+      totalCpuThreads += (n.cpu_threads || 0);
+      totalCpuTflops += (n.cpu_tflops || 0);
+      totalFastMemGb += fastMem;
+      totalSysRamGb += (m.system_ram_gb || 0);
+      totalFastBwGbps += fastBw;
+      totalSysRamBwGbps += sysBw;
+      sumQStar += q;
+      totalNvmeCacheGb += (m.nvme_cache_gb || 0);
+      totalNvmeReadBwGbps += (m.nvme_read_bw_gbps || 0);
+      totalUplinkGbps += (n.network_uplink_gbps || 0);
+      totalInterconnectGbps += (m.interconnect_bw_gbps || 0);
+      if (n.network_latency_ms !== undefined) rttSamples.push(Number(n.network_latency_ms));
+    });
+
+    var liveWorkersList = (workersOverview && workersOverview.workers) ? workersOverview.workers : [];
+    var liveWorkersByNodeId = {};
+    liveWorkersList.forEach(function (w) {
+      var nid = (w.node && w.node.id) ? w.node.id : w.node.hostname;
+      liveWorkersByNodeId[nid] = w;
+      liveWorkersByNodeId[w.node.hostname] = w;
+      if (w.last_measured_rtt_ms !== undefined && w.last_measured_rtt_ms > 0) {
+        rttSamples.push(Number(w.last_measured_rtt_ms));
+      }
+    });
+
+    var avgQStar = nodes.length > 0 ? (sumQStar / nodes.length).toFixed(2) : '0.35';
+    var avgRttMs = rttSamples.length > 0
+      ? (rttSamples.reduce(function (a, b) { return a + b; }, 0) / rttSamples.length).toFixed(2)
+      : '0.25';
+    var minRttMs = rttSamples.length > 0 ? Math.min.apply(null, rttSamples).toFixed(2) : '0.15';
+    var maxRttMs = rttSamples.length > 0 ? Math.max.apply(null, rttSamples).toFixed(2) : '0.85';
+    var isLiveOnly = workersOverview ? Boolean(workersOverview.live_only_mode) : false;
 
     return h(React.Fragment, null,
       h('header', { className: 'top' },
@@ -599,57 +682,65 @@
           h('div', { className: 'stat-card' },
             h('span', { className: 'label' }, 'FTS3 SEED STAGING'),
             h('span', { className: 'metric' }, '0.0 GB'),
-            h('span', { className: 'meta' }, 'coordinator relay · direct NAS P2P'))),
+            h('span', { className: 'meta' }, 'coordinator relay · direct NAS P2P')),
+          h('div', { className: 'stat-card' },
+            h('span', { className: 'label' }, 'FP16 COMPUTE (FLOPs)'),
+            h('span', { className: 'metric' }, totalFp16Tflops.toFixed(1) + ' TFLOPs'),
+            h('span', { className: 'meta' }, totalCpuTflops.toFixed(1) + ' CPU TF · ' + totalCpuThreads + ' threads')),
+          h('div', { className: 'stat-card' },
+            h('span', { className: 'label' }, 'INT4 / NPU (TOPS)'),
+            h('span', { className: 'metric' }, totalInt4Tops.toFixed(1) + ' TOPS'),
+            h('span', { className: 'meta' }, nodes.length + ' session nodes · ' + (workersOverview ? workersOverview.live_worker_count : 0) + ' live TCP')),
+          h('div', { className: 'stat-card' },
+            h('span', { className: 'label' }, 'MEMORY & STREAM BW'),
+            h('span', { className: 'metric' }, totalFastMemGb.toFixed(1) + ' GB fast + ' + totalSysRamGb.toFixed(0) + ' GB RAM'),
+            h('span', { className: 'meta' }, (totalFastBwGbps + totalSysRamBwGbps).toFixed(1) + ' GB/s stream · avg q* ' + avgQStar)),
+          h('div', { className: 'stat-card' },
+            h('span', { className: 'label' }, 'STORAGE BUCKET & RTT'),
+            h('span', { className: 'metric' }, totalNvmeCacheGb.toFixed(1) + ' GB · ' + avgRttMs + ' ms'),
+            h('span', { className: 'meta' }, totalNvmeReadBwGbps.toFixed(2) + ' GB/s disk · ' + totalUplinkGbps.toFixed(2) + ' Gbps uplink'))),
 
-        k230Probe && k230Probe.physical_board_detected ? h('div', { className: 'panel', style: { borderColor: 'var(--cadmium)' } },
+        h('div', { className: 'panel' },
           h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)', flexWrap: 'wrap' } },
             h('div', null,
-              h('p', { className: 'eyebrow', style: { margin: 0, color: 'var(--cadmium)' } },
-                'Physical USB Edge RISC-V + 6 TOPS KPU Co-Processor · ' + (k230Probe.detected_serial_port || 'COM11') + ' · Die ' + k230Probe.chip_unique_die_id),
+              h('p', { className: 'eyebrow', style: { margin: 0 } },
+                'Active Local Session & Cluster Controls · ' + (workersOverview ? workersOverview.coordinator_http_url : 'http://127.0.0.1:7848')),
               h('div', { className: 'code', style: { marginTop: '4px' } },
-                k230Probe.board_model + ' — ' + k230Probe.soc_architecture)),
+                nodes.length + ' active nodes (' + (workersOverview ? workersOverview.live_worker_count : 0) + ' live TCP workers) · ' +
+                totalFp16Tflops.toFixed(1) + ' FP16 TFLOPs · ' + totalInt4Tops.toFixed(1) + ' INT4 TOPS · ' +
+                (totalFastMemGb + totalSysRamGb).toFixed(1) + ' GB total mem · ' +
+                totalNvmeCacheGb.toFixed(1) + ' GB storage bucket · RTT ' + minRttMs + '–' + maxRttMs + ' ms · Est. BW ' + totalUplinkGbps.toFixed(2) + ' Gbps')),
             h('div', { className: 'kd-row', style: { flexWrap: 'wrap' } },
-              h(K.Badge, { tone: 'ok', dot: true }, 'ONLINE (' + (k230Probe.detected_serial_port || 'COM11') + ')'),
-              h(K.Badge, { tone: 'local' }, k230Probe.sdcard_storage.capacity_gib + ' GiB MicroSD Vault'),
-              k230Probe.live_execution_proof ? h(K.Badge, { tone: 'cloud' },
-                'RepOps 0x' + k230Probe.live_execution_proof.k230_hardware_checksum_fnv1a.toString(16) + ' (Bit-Exact)') : null,
+              h(K.Badge, { tone: isLiveOnly ? 'ok' : 'local', dot: true },
+                isLiveOnly ? 'Live Hardware Only' : 'Hybrid Demo + Live Fleet'),
+              h(K.Badge, { tone: 'local' }, 'Release ' + (workersOverview ? workersOverview.active_cluster_version : 'v0.4.3-cd48')),
               h(K.Button, {
-                variant: 'primary',
+                variant: isLiveOnly ? 'quiet' : 'primary',
                 size: 'sm',
-                icon: 'rods',
-                onClick: function () { setTab('gateway'); runLiveMultiNodeInference(); }
-              }, 'Run Live x86_64 ↔ K230 Hop'),
-              h(K.Button, {
-                variant: 'quiet',
-                size: 'sm',
-                onClick: function () { setTab('gateway'); runLiveVerdeAudit(null); }
-              }, 'Run Cross-ISA Verde Audit'),
-              h(K.Button, {
-                variant: 'cloud',
-                size: 'sm',
-                onClick: function () { setTab('gateway'); runLiveDreamRsiReplay(); }
-              }, 'Run K230 Dream-RSI (64 MCTS)'),
+                onClick: function () { toggleLiveOnlyMode(!isLiveOnly); }
+              }, isLiveOnly ? 'Show Hybrid Demo + Live Fleet' : 'Show Live Hardware Only'),
               h(K.Button, {
                 variant: 'ghost',
                 size: 'sm',
-                onClick: function () { fetch('/api/v1/k230/probe').then(function (r) { return r.json(); }).then(setK230Probe); }
-              }, 'Re-Probe COM11'))),
-          k230Probe.live_execution_proof ? h('div', { className: 'table-wrap' },
-            h('table', { className: 'mono-table' },
-              h('thead', null, h('tr', null,
-                h('th', null, '3RD-GEN KPU NPU'),
-                h('th', null, 'ZERO-COPY AI2D→KPU DMA'),
-                h('th', null, 'FASTSPEECH 50-TOK TRANSFORMER'),
-                h('th', null, 'ULAB RVV 64×64 GEMM'),
-                h('th', null, '64 KiB .KTB MICROSD I/O'),
-                h('th', null, '64-LAYER F32 DRIFT'))),
-              h('tbody', null, h('tr', null,
-                h('td', null, k230Probe.live_execution_proof.kpu_npu_warm_inference_ms + ' ms (' + k230Probe.live_execution_proof.kpu_npu_throughput_fps + ' FPS)'),
-                h('td', null, k230Probe.live_execution_proof.ai2d_plus_kpu_chained_ms + ' ms (' + (1000 / Math.max(k230Probe.live_execution_proof.ai2d_plus_kpu_chained_ms, 0.1)).toFixed(1) + ' FPS)'),
-                h('td', null, k230Probe.live_execution_proof.fastspeech_transformer_50tok_ms + ' ms (' + (50000 / Math.max(k230Probe.live_execution_proof.fastspeech_transformer_50tok_ms, 0.1)).toFixed(1) + ' tok/s)'),
-                h('td', null, k230Probe.live_execution_proof.ulab_rvv_64x64_gemm_ms + ' ms'),
-                h('td', null, 'W: ' + k230Probe.live_execution_proof.ktb_64k_sdcard_write_ms + ' ms / R: ' + k230Probe.live_execution_proof.ktb_64k_sdcard_read_ms + ' ms'),
-                h('td', null, h(K.Badge, { tone: 'ok' }, k230Probe.live_execution_proof.verde_64_layer_max_f32_drift + ' (100% RepOps Match)')))))) : null) : null,
+                onClick: spawnLocalTestFleet
+              }, 'Spawn 5-Node Local Fleet'))),
+          h('div', { className: 'kd-row', style: { flexWrap: 'wrap' } },
+            h(K.Button, { variant: 'primary', size: 'sm', icon: 'rods', onClick: runLiveMultiNodeInference }, 'Execute Live Pipeline Pass'),
+            h(K.Button, { variant: 'cloud', size: 'sm', onClick: runLiveDistributedTrainingStep }, 'Step Live QLoRA + DeMo Training'),
+            h(K.Button, { variant: 'quiet', size: 'sm', onClick: runLiveFts3ShardStream }, 'Stream 64KB .ktb Shard (FTS3)'),
+            h(K.Button, { variant: 'quiet', size: 'sm', onClick: runLiveKvCacheMigration }, 'Migrate KV-Cache (<200ms Yield)'),
+            h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { runLiveVerdeAudit(null); } }, 'Verde O(log L) Audit'),
+            h(K.Button, { variant: 'ghost', size: 'sm', onClick: exportKtbCheckpoint }, 'Save .ktb Checkpoint'),
+            h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { setTab('bucket'); } }, 'Open Storage Bucket'),
+            h(K.Button, { variant: 'ghost', size: 'sm', onClick: refreshWorkersAndOverview }, 'Refresh Session')),
+          (liveInfReply || liveTrainReply || fts3Reply || kvMigrateReply || verdeReply || ckptReply) ? h('div', { className: 'kd-row', style: { marginTop: 'var(--space-3)', flexWrap: 'wrap' } },
+            liveInfReply ? h(K.Badge, { tone: 'ok', dot: true }, 'Pipeline: ' + liveInfReply.total_pipeline_latency_ms + ' ms (' + liveInfReply.effective_tokens_per_sec + ' tok/s · ' + (liveInfReply.live_hops || []).length + ' hops)') : null,
+            liveTrainReply ? h(K.Badge, { tone: 'cloud', dot: true }, 'Train Step #' + liveTrainReply.global_step + ': loss ' + liveTrainReply.mean_loss + ' (' + liveTrainReply.average_compression_ratio + '× DeMo)') : null,
+            fts3Reply ? h(K.Badge, { tone: 'local', dot: true }, 'FTS3 .ktb: ' + (fts3Reply.ktb_total_bytes / 1024) + ' KiB @ ' + fts3Reply.aggregate_goodput_mbps + ' Mbps') : null,
+            kvMigrateReply ? h(K.Badge, { tone: 'ok', dot: true }, 'KV Handoff: ' + kvMigrateReply.pages_migrated + ' pages (' + kvMigrateReply.tokens_preserved + ' tok) in ' + kvMigrateReply.migration_rtt_ms + ' ms') : null,
+            verdeReply ? h(K.Badge, { tone: verdeReply.bit_exact_verified ? 'ok' : 'danger', dot: true },
+              verdeReply.bit_exact_verified ? 'Verde Audit: Bit-Exact (' + verdeReply.total_audit_wall_ms + ' ms)' : 'Verde Fault Isolated: L' + verdeReply.disputed_layer) : null,
+            ckptReply ? h(K.Badge, { tone: 'local', dot: true }, 'Checkpoint: ' + ckptReply.checkpoint_id + ' (' + (ckptReply.file_size_bytes / 1024) + ' KiB)') : null) : null),
 
         h('section', null,
           h(K.Tabs, {
@@ -658,6 +749,7 @@
             onChange: setTab,
             items: [
               { id: 'nodes', label: 'Nodes', count: nodes.length },
+              { id: 'bucket', label: 'Storage bucket', count: storageBucket ? storageBucket.bucket_objects.length : 5 },
               { id: 'shards', label: 'Shard plan' },
               { id: 'ga', label: 'v1.0 GA & Kernels', count: ga ? ga.spot_orderbook.length : 5 },
               { id: 'integrations', label: 'HF, GitHub & MCP', count: integrations ? integrations.connectors.length + 1 : 6 },
@@ -686,6 +778,199 @@
                 meters: buildNodeMeters(node, assign)
               });
             })) : null,
+
+          tab === 'nodes' ? h('div', { className: 'kd-stack', style: { marginTop: 'var(--space-5)' } },
+            h('div', { className: 'panel' },
+              h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)', flexWrap: 'wrap' } },
+                h('p', { className: 'eyebrow', style: { margin: 0 } },
+                  'Active Session Hardware, Memory, Storage, RTT & Bandwidth Matrix (' + nodes.length + ' nodes)'),
+                h('div', { className: 'kd-row', style: { flexWrap: 'wrap' } },
+                  h(K.Badge, { tone: 'local' }, totalFp16Tflops.toFixed(1) + ' FP16 TFLOPs · ' + totalInt4Tops.toFixed(1) + ' INT4 TOPS'),
+                  h(K.Badge, { tone: 'ok' }, totalFastMemGb.toFixed(1) + ' GB VRAM/UMA + ' + totalSysRamGb.toFixed(0) + ' GB RAM'),
+                  h(K.Badge, { tone: 'cloud' }, totalNvmeCacheGb.toFixed(1) + ' GB Storage · ' + totalUplinkGbps.toFixed(2) + ' Gbps Est. BW'))),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'HOSTNAME & BACKEND'),
+                    h('th', null, 'FP16 TFLOPs / INT4 TOPS'),
+                    h('th', null, 'CPU (THREADS / TF)'),
+                    h('th', null, 'MEMORY (VRAM / UMA / RAM)'),
+                    h('th', null, 'MEM BW & q*'),
+                    h('th', null, 'STORAGE (CACHE / READ)'),
+                    h('th', null, 'RTT & EST. BANDWIDTH'),
+                    h('th', null, 'SHARDS & PASSES'),
+                    h('th', null, 'STATE & CONTROLS'))),
+                  h('tbody', null, nodes.map(function (n) {
+                    var m = n.memory || {};
+                    var fastBw = (m.vram_bw_gbps || 0) + (m.unified_mem_bw_gbps || 0);
+                    var sysBw = m.system_ram_bw_gbps || 0;
+                    var q = (fastBw + sysBw) > 0 ? (fastBw / (fastBw + sysBw)).toFixed(2) : '0.35';
+                    var lw = liveWorkersByNodeId[n.id] || liveWorkersByNodeId[n.hostname] || null;
+                    var assign = (infPlan.assignments || []).find(function (a) { return a.hostname === n.hostname || a.node_id === n.id; });
+                    var rttVal = lw && lw.last_measured_rtt_ms ? lw.last_measured_rtt_ms : (n.network_latency_ms || 0.25);
+                    var layerStr = assign && assign.layer_count > 0 ? ('L' + assign.start_layer + '–L' + assign.end_layer + ' (' + assign.compute_share_pct + '%)') : 'Draft / Vault';
+                    var passesStr = lw ? (lw.executed_forward_stages + ' fwd / ' + lw.executed_training_steps + ' trn') : 'Simulated';
+                    var isOnline = lw ? (lw.online !== false) : true;
+                    return h('tr', { key: n.id || n.hostname },
+                      h('td', null,
+                        h('div', null, n.hostname),
+                        h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, (n.device_kind || 'Node') + ' · ' + (n.backend || 'CPU/GPU') + (lw ? ' · ' + lw.network_channel : ''))),
+                      h('td', null, (n.fp16_tflops || 0).toFixed(1) + ' TF / ' + (n.int4_tops || 0).toFixed(1) + ' TOPS'),
+                      h('td', null, (n.cpu_threads || 0) + ' thr / ' + (n.cpu_tflops || 0).toFixed(2) + ' TF'),
+                      h('td', null, (m.vram_gb || 0) + 'G VRAM · ' + (m.unified_mem_gb || 0) + 'G UMA · ' + (m.system_ram_gb || 0) + 'G RAM'),
+                      h('td', null, (fastBw + sysBw).toFixed(1) + ' GB/s (q*=' + q + ')'),
+                      h('td', null, (m.nvme_cache_gb || 0) + ' GB @ ' + (m.nvme_read_bw_gbps || 0) + ' GB/s'),
+                      h('td', null, rttVal + ' ms · ' + (n.network_uplink_gbps || 0) + ' Gbps (bus ' + (m.interconnect_bw_gbps || 0) + ' GB/s)'),
+                      h('td', null, layerStr + ' · ' + passesStr),
+                      h('td', null, h('div', { className: 'kd-row' },
+                        h(K.Badge, { tone: !isOnline ? 'danger' : (n.polite_state === 'GamingOrHeavyApp' ? 'warn' : 'ok'), dot: true }, !isOnline ? 'Offline' : n.polite_state),
+                        lw ? h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { triggerWorkerFault(lw.node.id, 'gaming_yield'); } }, 'Yield') : null,
+                        lw ? h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { triggerWorkerFault(lw.node.id, 'offline'); } }, 'Kill') : null,
+                        lw ? h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { triggerWorkerFault(lw.node.id, 'available'); } }, 'Restore') : null)));
+                  }))))),
+
+            overview.mesh_links && overview.mesh_links.length > 0 ? h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Peer-to-Peer Mesh Links · Measured RTT, Jitter & Estimated Link Bandwidth (' + overview.mesh_links.length + ' links)'),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'SOURCE NODE'),
+                    h('th', null, 'TARGET NODE'),
+                    h('th', null, 'TRANSPORT MEDIUM'),
+                    h('th', null, 'EST. BANDWIDTH'),
+                    h('th', null, 'RTT LATENCY'),
+                    h('th', null, 'JITTER'))),
+                  h('tbody', null, overview.mesh_links.slice(0, 14).map(function (lnk, idx) {
+                    return h('tr', { key: idx },
+                      h('td', null, lnk.from_node || lnk.source_node),
+                      h('td', null, lnk.to_node || lnk.target_node),
+                      h('td', null, h(K.Badge, { tone: String(lnk.medium || '').indexOf('WAN') >= 0 ? 'cloud' : 'local' }, lnk.medium || 'LAN / USB / QUIC')),
+                      h('td', null, (lnk.bandwidth_gbps !== undefined ? lnk.bandwidth_gbps : lnk.estimated_bandwidth_gbps) + ' Gbps'),
+                      h('td', null, (lnk.latency_ms !== undefined ? lnk.latency_ms : lnk.rtt_ms) + ' ms'),
+                      h('td', null, (lnk.jitter_ms !== undefined ? lnk.jitter_ms : 0.15) + ' ms'));
+                  }))))) : null,
+
+            k230Probe && k230Probe.physical_board_detected && k230Probe.live_execution_proof ? h('div', { className: 'panel' },
+              h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-2)', flexWrap: 'wrap' } },
+                h('p', { className: 'eyebrow', style: { margin: 0 } },
+                  'Attached USB/Serial Edge Co-Processor Telemetry · ' + k230Probe.board_model + ' (' + (k230Probe.detected_serial_port || 'COM11') + ' · Die ' + k230Probe.chip_unique_die_id + ')'),
+                h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { fetch('/api/v1/k230/probe').then(function (r) { return r.json(); }).then(setK230Probe); } }, 'Re-Probe USB Co-Processor')),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'NPU WARM PASS'),
+                    h('th', null, 'ZERO-COPY AI2D→KPU DMA'),
+                    h('th', null, '50-TOK TRANSFORMER'),
+                    h('th', null, 'RVV 64×64 GEMM'),
+                    h('th', null, '64 KiB .KTB FLASH I/O'),
+                    h('th', null, 'CROSS-ISA REPOPS'))),
+                  h('tbody', null, h('tr', null,
+                    h('td', null, k230Probe.live_execution_proof.kpu_npu_warm_inference_ms + ' ms (' + k230Probe.live_execution_proof.kpu_npu_throughput_fps + ' FPS)'),
+                    h('td', null, k230Probe.live_execution_proof.ai2d_plus_kpu_chained_ms + ' ms (' + (1000 / Math.max(k230Probe.live_execution_proof.ai2d_plus_kpu_chained_ms, 0.1)).toFixed(1) + ' FPS)'),
+                    h('td', null, k230Probe.live_execution_proof.fastspeech_transformer_50tok_ms + ' ms (' + (50000 / Math.max(k230Probe.live_execution_proof.fastspeech_transformer_50tok_ms, 0.1)).toFixed(1) + ' tok/s)'),
+                    h('td', null, k230Probe.live_execution_proof.ulab_rvv_64x64_gemm_ms + ' ms'),
+                    h('td', null, 'W: ' + k230Probe.live_execution_proof.ktb_64k_sdcard_write_ms + ' ms / R: ' + k230Probe.live_execution_proof.ktb_64k_sdcard_read_ms + ' ms'),
+                    h('td', null, h(K.Badge, { tone: 'ok' }, '0x' + k230Probe.live_execution_proof.k230_hardware_checksum_fnv1a.toString(16) + ' (drift ' + k230Probe.live_execution_proof.verde_64_layer_max_f32_drift + ')'))))))) : null) : null,
+
+          tab === 'bucket' && storageBucket ? h('div', { className: 'kd-stack' },
+            h('div', { className: 'panel' },
+              h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)', flexWrap: 'wrap' } },
+                h('div', null,
+                  h('p', { className: 'eyebrow', style: { margin: 0 } },
+                    'Decentralized Pool Storage Bucket · ' + storageBucket.bucket_uri + ' (' + storageBucket.total_participating_nodes + ' participating nodes)'),
+                  h('div', { className: 'code', style: { marginTop: '4px' } },
+                    storageBucket.total_pooled_disk_capacity_gb + ' GiB pooled NVMe/UFS/NAS · ' +
+                    storageBucket.total_wire_ram_carousel_gb + ' GiB Wire-Resident RAM Carousel · ' +
+                    storageBucket.aggregate_disk_read_bw_gbps + ' GB/s aggregate disk read · ' +
+                    storageBucket.aggregate_network_seed_bw_gbps + ' Gbps P2P seed BW')),
+                h('div', { className: 'kd-row', style: { flexWrap: 'wrap' } },
+                  h(K.Badge, { tone: 'ok', dot: true }, 'RS(k=' + storageBucket.erasure_coding_verification.data_shards_k + ', m=' + storageBucket.erasure_coding_verification.parity_shards_m + ') ' + storageBucket.erasure_coding_verification.storage_overhead_ratio + '× overhead'),
+                  h(K.Badge, { tone: 'local' }, 'Wire Carousel Stall: ' + storageBucket.wire_token_carousel.wire_carousel_data_stall_ms_per_step + ' ms (' + storageBucket.wire_token_carousel.pre_staged_on_wire_hit_rate_pct + '% hit)'),
+                  h(K.Button, { variant: 'primary', size: 'sm', onClick: function () { refreshStorageBucket(null); } }, 'Evaluate Active Session (' + nodes.length + ' Nodes)'),
+                  h(K.Button, { variant: 'cloud', size: 'sm', onClick: function () { refreshStorageBucket(100); } }, 'Benchmark 100-Node Pool Bucket'))),
+              h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)', flexWrap: 'wrap', alignItems: 'flex-end' } },
+                h('div', { style: { flex: '1 1 280px' } },
+                  h(K.Input, {
+                    label: 'Import / Transcode Local Model (.gguf or .safetensors) into 64 KiB .ktb Storage Bucket',
+                    mono: true,
+                    value: importModelInput,
+                    onChange: function (e) { setImportModelInput(e.target.value); }
+                  })),
+                h(K.Button, { variant: 'primary', size: 'sm', icon: 'rods', onClick: function () { importLocalModelToBucket(importModelInput, 'gguf'); } }, 'Import GGUF → .ktb Bucket'),
+                h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { importLocalModelToBucket(importModelInput, 'safetensors'); } }, 'Import Safetensors → .ktb Bucket'),
+                h(K.Button, { variant: 'cloud', size: 'sm', onClick: exportKtbCheckpoint }, 'Export Live .ktb Checkpoint'),
+                h(K.Button, { variant: 'ghost', size: 'sm', onClick: runLiveFts3ShardStream }, 'Stream .ktb Pages (FTS3 P2P)')),
+              importedModelReply ? h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)', flexWrap: 'wrap' } },
+                h(K.Badge, { tone: 'ok', dot: true }, 'Transcoded ' + importedModelReply.model_id + ' (' + (importedModelReply.ktb_size_bytes / 1024) + ' KiB · ' + importedModelReply.ktb_page_count + ' × 64KB pages)'),
+                h(K.Badge, { tone: 'local' }, 'Merkle 0x' + importedModelReply.merkle_root_fnv64.toString(16)),
+                h('span', { className: 'code' }, importedModelReply.compiled_ktb_path)) : null,
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'OBJECT URI (kdm://pool-bucket/)'),
+                    h('th', null, 'KIND'),
+                    h('th', null, 'LOGICAL SIZE'),
+                    h('th', null, 'ERASURE-CODED (RS k+m)'),
+                    h('th', null, 'SUPERBLOCKS'),
+                    h('th', null, 'MERKLE ROOT'),
+                    h('th', null, 'PARALLEL READ BW'))),
+                  h('tbody', null, (storageBucket.bucket_objects || []).map(function (obj) {
+                    return h('tr', { key: obj.object_uri },
+                      h('td', null,
+                        h('div', null, obj.object_uri),
+                        h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, obj.display_name)),
+                      h('td', null, h(K.Badge, { tone: 'local' }, obj.object_kind)),
+                      h('td', null, obj.logical_size_gb + ' GiB'),
+                      h('td', null, obj.physical_erasure_coded_gb + ' GiB (' + obj.data_shards_k + '+' + obj.parity_shards_m + ')'),
+                      h('td', null, obj.total_64mb_superblocks),
+                      h('td', null, '0x' + obj.merkle_root_fnv64.toString(16)),
+                      h('td', null, h(K.Badge, { tone: 'ok' }, obj.parallel_read_bandwidth_gbps + ' Gbps')));
+                  }))))),
+            h('div', { className: 'two' },
+              h('div', { className: 'panel' },
+                h('p', { className: 'eyebrow' }, 'Per-Node Storage Bucket Contributions (HRW Rendezvous Hashing)'),
+                h('div', { className: 'table-wrap' },
+                  h('table', { className: 'mono-table' },
+                    h('thead', null, h('tr', null,
+                      h('th', null, 'HOSTNAME'),
+                      h('th', null, 'KIND'),
+                      h('th', null, 'WIRE RAM'),
+                      h('th', null, 'PLEDGED DISK'),
+                      h('th', null, 'DISK READ BW'),
+                      h('th', null, 'SEED UPLINK'),
+                      h('th', null, 'SHARDS'))),
+                    h('tbody', null, (storageBucket.node_contributions_sample || []).map(function (nc) {
+                      return h('tr', { key: nc.node_id },
+                        h('td', null, nc.hostname),
+                        h('td', null, nc.device_kind),
+                        h('td', null, nc.pledged_wire_ram_gb + ' GiB'),
+                        h('td', null, nc.pledged_disk_gb + ' GiB'),
+                        h('td', null, nc.disk_read_bw_gbps + ' GB/s'),
+                        h('td', null, nc.seed_uplink_gbps + ' Gbps'),
+                        h('td', null, h(K.Badge, { tone: 'local' }, nc.hosted_shard_count)));
+                    }))))),
+              h('div', { className: 'panel' },
+                h('p', { className: 'eyebrow' }, 'Bucket Grounding Anchors (NAS ZFS / Dedicated SAN / Cloud S3-R2 Spillover)'),
+                h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-2)', flexWrap: 'wrap' } },
+                  h(K.Badge, { tone: 'ok', dot: true }, '50% Mass-Dropout Survival: ' + (storageBucket.bucket_grounding.grounded_survives_mass_dropout ? 'VERIFIED (0 B err)' : 'FAILED')),
+                  h(K.Badge, { tone: 'local' }, storageBucket.bucket_grounding.steady_state_p2p_swarm_read_share_pct + '% P2P Swarm + ' + storageBucket.bucket_grounding.steady_state_ground_spillover_share_pct + '% Ground Spillover'),
+                  h(K.Badge, { tone: 'cloud' }, '-' + storageBucket.bucket_grounding.p99_tail_read_latency_reduction_pct + '% p99 Tail Latency')),
+                h('div', { className: 'table-wrap' },
+                  h('table', { className: 'mono-table' },
+                    h('thead', null, h('tr', null,
+                      h('th', null, 'ANCHOR URI'),
+                      h('th', null, 'KIND & POLICY'),
+                      h('th', null, 'CAPACITY'),
+                      h('th', null, 'SUSTAINED BW'),
+                      h('th', null, 'GROUNDED'))),
+                    h('tbody', null, (storageBucket.bucket_grounding.configured_anchors || []).map(function (anc) {
+                      return h('tr', { key: anc.anchor_id },
+                        h('td', null, anc.anchor_uri),
+                        h('td', null, anc.anchor_kind + ' · ' + anc.sync_policy),
+                        h('td', null, anc.capacity_tb + ' TB'),
+                        h('td', null, anc.sustained_bandwidth_gbps + ' Gbps'),
+                        h('td', null, h(K.Badge, { tone: 'ok' }, anc.merkle_grounded_coverage_pct + ' %')));
+                    }))))))) : null,
 
           tab === 'shards' ? h('div', { className: 'kd-stack' },
             h('div', { className: 'two' },

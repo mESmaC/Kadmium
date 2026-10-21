@@ -922,72 +922,6 @@ async fn run_server(
                 },
                 k230_digest
             ));
-
-            // Warm up live session telemetry so the Control Room dashboard shows the live K230 session immediately on load
-            let (_, warm_hops) = DistributedLanExecutor::execute_live_pipeline(
-                &gw_state.inference_plan,
-                "Verify live x86_64 to CanMV K230 RISC-V multi-stage boundary tensor execution over USB",
-                &gw_state.live_workers,
-            )
-            .await;
-            for h in &warm_hops {
-                if let Some(w) = gw_state.live_workers.get_mut(&h.node_id) {
-                    w.executed_forward_stages += 1;
-                    w.last_measured_rtt_ms = h.wire_plus_compute_ms;
-                }
-            }
-            let warm_trn = DistributedLanExecutor::execute_live_training_step(
-                &gw_state.training_plan,
-                1,
-                0.05,
-                &gw_state.live_workers,
-            )
-            .await;
-            for st in &warm_trn.stages {
-                if let Some(w) = gw_state.live_workers.get_mut(&st.node_id) {
-                    w.executed_training_steps += 1;
-                }
-            }
-            let warm_fts3 = DistributedLanExecutor::stream_fts3_ktb_shard_tcp(
-                "deepseek-v3-671b-moe",
-                "layers.60.moe.gate_up.ktb",
-                1,
-                &gw_state.live_workers,
-            )
-            .await;
-            gw_state.last_fts3_stream_report = Some(warm_fts3);
-            let warm_kv = DistributedLanExecutor::migrate_kv_cache_pages_tcp(
-                1,
-                "sess-cd48-k230-handoff",
-                (58, 60),
-                &gw_state.live_workers,
-            )
-            .await;
-            gw_state.last_kv_migration_report = Some(warm_kv);
-            let ota_manifest = gw_state.create_ota_update_manifest(
-                "v0.4.3-k230-kpu-rvv".to_string(),
-                kadmium_network::UpdatePayloadKind::KtbWeightDelta,
-                kadmium_network::UpdateTargetScope::AllNodes,
-                true,
-                "Live USB-CDC OTA delta push to CanMV K230 MicroSD".into(),
-            );
-            let mut ota_acks = Vec::new();
-            let worker_addrs: Vec<String> = gw_state
-                .live_workers
-                .values()
-                .map(|w| w.worker_tcp_addr.clone())
-                .collect();
-            for w_addr in worker_addrs {
-                if let Ok(ack) =
-                    DistributedLanExecutor::push_update_tcp(&w_addr, 1, &ota_manifest).await
-                {
-                    ota_acks.push(ack);
-                }
-            }
-            if !ota_acks.is_empty() {
-                let lan_cnt = ota_acks.len();
-                let _ = gw_state.record_ota_receipts(&ota_manifest, ota_acks, lan_cnt, 0);
-            }
         }
     }
 
@@ -1015,6 +949,75 @@ async fn run_server(
             gw_state.spawned_fleet_instances.push(inst);
         }
         gw_state.set_live_only_mode(true);
+    }
+
+    // Warm up live session telemetry across all registered local/LAN/USB/WAN workers so the Control Room dashboard
+    // displays live measured RTT, forward/training counters, FTS3 stream, KV handoff, and OTA state immediately on load
+    if !gw_state.live_workers.is_empty() {
+        let (_, warm_hops) = DistributedLanExecutor::execute_live_pipeline(
+            &gw_state.inference_plan,
+            "Verify live multi-node boundary tensor execution across active session workers",
+            &gw_state.live_workers,
+        )
+        .await;
+        for h in &warm_hops {
+            if let Some(w) = gw_state.live_workers.get_mut(&h.node_id) {
+                w.executed_forward_stages += 1;
+                w.last_measured_rtt_ms = h.wire_plus_compute_ms;
+            }
+        }
+        let warm_trn = DistributedLanExecutor::execute_live_training_step(
+            &gw_state.training_plan,
+            1,
+            0.05,
+            &gw_state.live_workers,
+        )
+        .await;
+        for st in &warm_trn.stages {
+            if let Some(w) = gw_state.live_workers.get_mut(&st.node_id) {
+                w.executed_training_steps += 1;
+            }
+        }
+        let warm_fts3 = DistributedLanExecutor::stream_fts3_ktb_shard_tcp(
+            &gw_state.inference_plan.model_id,
+            "layers.0.moe.gate_up.ktb",
+            1,
+            &gw_state.live_workers,
+        )
+        .await;
+        gw_state.last_fts3_stream_report = Some(warm_fts3);
+        let warm_kv = DistributedLanExecutor::migrate_kv_cache_pages_tcp(
+            1,
+            "sess-cd48-live-handoff",
+            (0, 15),
+            &gw_state.live_workers,
+        )
+        .await;
+        gw_state.last_kv_migration_report = Some(warm_kv);
+        let ota_manifest = gw_state.create_ota_update_manifest(
+            "v0.4.3-cd48-live".to_string(),
+            kadmium_network::UpdatePayloadKind::KtbWeightDelta,
+            kadmium_network::UpdateTargetScope::AllNodes,
+            true,
+            "Initial live session .ktb weight delta verification".into(),
+        );
+        let mut ota_acks = Vec::new();
+        let worker_addrs: Vec<String> = gw_state
+            .live_workers
+            .values()
+            .map(|w| w.worker_tcp_addr.clone())
+            .collect();
+        for w_addr in worker_addrs {
+            if let Ok(ack) =
+                DistributedLanExecutor::push_update_tcp(&w_addr, 1, &ota_manifest).await
+            {
+                ota_acks.push(ack);
+            }
+        }
+        if !ota_acks.is_empty() {
+            let lan_cnt = ota_acks.len();
+            let _ = gw_state.record_ota_receipts(&ota_manifest, ota_acks, lan_cnt, 0);
+        }
     }
 
     let overview = gw_state.workers_overview();

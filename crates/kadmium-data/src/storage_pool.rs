@@ -481,20 +481,52 @@ impl DecentralizedStoragePoolEngine {
             }
         }
 
+        Self::evaluate_bucket_internal(&nodes, true)
+    }
+
+    /// Evaluates the Decentralized Pool Storage Bucket directly over the active session's `nodes`.
+    pub fn evaluate_bucket_for_nodes(nodes: &[HardwareNode]) -> DecentralizedStoragePoolReport {
+        if nodes.is_empty() {
+            return Self::run_pool_storage_benchmark(9);
+        }
+        Self::evaluate_bucket_internal(nodes, false)
+    }
+
+    fn evaluate_bucket_internal(
+        nodes: &[HardwareNode],
+        apply_synthetic_floors: bool,
+    ) -> DecentralizedStoragePoolReport {
         let mut contributions = Vec::with_capacity(nodes.len());
         let mut total_wire_ram_gb = 0.0f64;
         let mut total_disk_gb = 0.0f64;
         let mut total_disk_bw_gbps = 0.0f64;
         let mut total_seed_uplink_gbps = 0.0f64;
 
-        for nd in &nodes {
-            // Each node pledges ~15% of its RAM/UMA to the Wire Carousel and 80% of its NVMe/UFS cache to the Pool Bucket
-            let wire_ram = ((nd.memory.fast_accelerator_memory_gb() * 0.10)
-                + (nd.memory.system_ram_gb * 0.20))
-                .max(2.0);
-            let pledged_disk = (nd.memory.nvme_cache_gb * 0.85).max(128.0);
-            let disk_bw = nd.memory.nvme_read_bw_gbps.max(1.5);
-            let uplink = nd.network_uplink_gbps.max(0.5);
+        for nd in nodes {
+            // Each node pledges ~15% of its RAM/UMA to the Wire Carousel and 85% of its NVMe/UFS/SD cache to the Pool Bucket
+            let raw_wire_ram = (nd.memory.fast_accelerator_memory_gb() * 0.10)
+                + (nd.memory.system_ram_gb * 0.20);
+            let wire_ram = if apply_synthetic_floors {
+                raw_wire_ram.max(2.0)
+            } else {
+                raw_wire_ram.max(0.25)
+            };
+            let raw_disk = nd.memory.nvme_cache_gb * 0.85;
+            let pledged_disk = if apply_synthetic_floors {
+                raw_disk.max(128.0)
+            } else {
+                raw_disk.max(4.0)
+            };
+            let disk_bw = if apply_synthetic_floors {
+                nd.memory.nvme_read_bw_gbps.max(1.5)
+            } else {
+                nd.memory.nvme_read_bw_gbps.max(0.05)
+            };
+            let uplink = if apply_synthetic_floors {
+                nd.network_uplink_gbps.max(0.5)
+            } else {
+                nd.network_uplink_gbps.max(0.1)
+            };
 
             total_wire_ram_gb += wire_ram;
             total_disk_gb += pledged_disk;

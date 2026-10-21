@@ -2064,8 +2064,25 @@ async fn get_hyper_inference_report() -> Json<HyperInferenceComputeReport> {
     Json(HyperInferenceComputeReport::run_all())
 }
 
-async fn get_storage_pool_bucket_report() -> Json<DecentralizedStoragePoolReport> {
-    Json(DecentralizedStoragePoolEngine::run_pool_storage_benchmark(100))
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StorageBucketRequest {
+    pub pool_size: Option<usize>,
+}
+
+async fn get_storage_pool_bucket_report(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    req: Option<Json<StorageBucketRequest>>,
+) -> Json<DecentralizedStoragePoolReport> {
+    if let Some(Json(r)) = req
+        && let Some(sz) = r.pool_size
+    {
+        return Json(DecentralizedStoragePoolEngine::run_pool_storage_benchmark(sz));
+    }
+    let nodes = {
+        let guard = state.lock().expect("gateway state lock");
+        guard.nodes.clone()
+    };
+    Json(DecentralizedStoragePoolEngine::evaluate_bucket_for_nodes(&nodes))
 }
 
 async fn get_hierarchical_pool_scale_report() -> Json<HierarchicalPoolBenchmarkReport> {
