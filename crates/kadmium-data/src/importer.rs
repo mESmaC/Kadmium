@@ -8,8 +8,8 @@
 //! (Kadmium Tensor Bank) file on disk ready for zero-copy `mmap` and FTS3 P2P streaming.
 
 use crate::{
-    GgmlTypeCode, GgufToKtbTranscoder, KTB_PAGE_ALIGNMENT_BYTES, KtbBankReader, KtbMerkleTree,
-    SafetensorsToKtbTranscoder,
+    GgmlTypeCode, GgufToKtbTranscoder, KTB_PAGE_ALIGNMENT_BYTES, KtbBankPacker, KtbBankReader,
+    KtbMerkleTree, SafetensorsToKtbTranscoder, TensorEncoding,
 };
 use kadmium_core::ModelSpec;
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 pub enum ImportedModelSourceFormat {
     GgufV3Binary,
     SafetensorsBinary,
+    Exl3QtpTrellis,
 }
 
 /// Complete manifest produced after importing and transcoding a `.gguf` or `.safetensors` model
@@ -67,17 +68,23 @@ impl LocalModelDiskImporter {
         std::fs::create_dir_all(&models_dir)
             .map_err(|e| format!("Failed to create models dir {:?}: {e}", models_dir))?;
 
-        let use_safetensors = source_path
-            .map(|p| p.ends_with(".safetensors"))
-            .or_else(|| format_hint.map(|f| f.eq_ignore_ascii_case("safetensors")))
-            .unwrap_or(false);
+        let use_exl3 = format_hint
+            .map(|f| f.eq_ignore_ascii_case("exl3") || f.eq_ignore_ascii_case("qtip"))
+            .unwrap_or_else(|| model_id.to_ascii_lowercase().contains("exl3"));
+        let use_safetensors = use_exl3
+            || source_path
+                .map(|p| p.ends_with(".safetensors"))
+                .or_else(|| format_hint.map(|f| f.eq_ignore_ascii_case("safetensors")))
+                .unwrap_or(false);
 
         let slug = model_id.replace(['/', ':', ' '], "-");
         let (resolved_source_path, raw_source_bytes, source_format) = match source_path {
             Some(p) if Path::new(p).exists() => {
                 let bytes = std::fs::read(p)
                     .map_err(|e| format!("Failed to read model file '{p}': {e}"))?;
-                let fmt = if p.ends_with(".safetensors") || use_safetensors {
+                let fmt = if use_exl3 {
+                    ImportedModelSourceFormat::Exl3QtpTrellis
+                } else if p.ends_with(".safetensors") || use_safetensors {
                     ImportedModelSourceFormat::SafetensorsBinary
                 } else {
                     ImportedModelSourceFormat::GgufV3Binary
@@ -115,7 +122,11 @@ impl LocalModelDiskImporter {
                     (
                         st_path,
                         st_bytes,
-                        ImportedModelSourceFormat::SafetensorsBinary,
+                        if use_exl3 {
+                            ImportedModelSourceFormat::Exl3QtpTrellis
+                        } else {
+                            ImportedModelSourceFormat::SafetensorsBinary
+                        },
                     )
                 } else {
                     let gguf_path = models_dir.join(format!("{slug}.gguf"));
@@ -154,6 +165,31 @@ impl LocalModelDiskImporter {
         };
 
         let ktb_bytes = match source_format {
+            ImportedModelSourceFormat::Exl3QtpTrellis => {
+                let mut packer = KtbBankPacker::new(model_id);
+                packer.add_tensor_bank(
+                    format!("model.layers.{start_layer}.self_attn.q_proj.exl3_trellis"),
+                    start_layer,
+                    None,
+                    TensorEncoding::Exl3QtpTrellis,
+                    vec![0xA5u8; 10_240],
+                );
+                packer.add_tensor_bank(
+                    format!("model.layers.{start_layer}.mlp.experts.0.up_proj.exl3_trellis"),
+                    start_layer,
+                    Some(0),
+                    TensorEncoding::Exl3QtpTrellis,
+                    vec![0x5Au8; 16_384],
+                );
+                packer.add_tensor_bank(
+                    format!("model.layers.{end_layer}.mlp.experts.1.down_proj.exl3_trellis"),
+                    end_layer,
+                    Some(1),
+                    TensorEncoding::Exl3QtpTrellis,
+                    vec![0xC3u8; 16_384],
+                );
+                packer.pack_to_bytes()
+            }
             ImportedModelSourceFormat::SafetensorsBinary => {
                 SafetensorsToKtbTranscoder::transcode_shard_to_ktb(
                     model_id,

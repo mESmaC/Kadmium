@@ -9,9 +9,11 @@ use kadmium_core::{GradientCompressionCodec, NodeId, TrainingStrategy};
 use kadmium_sharding::ClusterShardPlan;
 use serde::{Deserialize, Serialize};
 
+pub mod exl3_qtip;
 pub mod fraud_proof;
 pub mod kernels;
 pub mod live_worker;
+pub use exl3_qtip::*;
 pub use fraud_proof::*;
 pub use kernels::*;
 pub use live_worker::*;
@@ -826,5 +828,40 @@ mod tests {
         assert_eq!(spawned.len(), 5);
         assert!(spawned.iter().any(|s| s.network_channel == "OnlineWAN"));
         assert!(spawned.iter().any(|s| s.network_channel == "LocalLAN"));
+    }
+
+    #[test]
+    fn test_exl3_qtip_fwht_incoherence_and_viterbi_trellis_quantization() {
+        let cluster = sample_personal_cluster();
+        let model = ModelSpec::deepseek_v3_671b_exl3();
+        let report =
+            DistributedExl3ConversionEngine::run_conversion_and_benchmark(&model, 2.55, &cluster);
+
+        // FWHT incoherence must suppress heavy-tailed outlier peak-to-RMS ratio
+        assert!(
+            report.post_fwht_peak_to_rms < report.pre_fwht_peak_to_rms,
+            "FWHT must reduce outlier peak-to-RMS ({} < {})",
+            report.post_fwht_peak_to_rms,
+            report.pre_fwht_peak_to_rms
+        );
+        // EXL3 Viterbi + FWHT must outperform naive scalar quantization on outlier matrices
+        assert!(report.snr_gain_over_scalar_db > 1.5);
+        assert!(report.vram_savings_vs_q4k_gb > 120.0);
+        assert!(!report.node_conversion_shards.is_empty());
+
+        // Also verify Hadamard-domain matvec_f32 matches dequantize() * x
+        let rows = 8usize;
+        let cols = 16usize;
+        let weights: Vec<f32> = (0..(rows * cols))
+            .map(|i| ((i as f32) * 0.13).sin() * 0.4)
+            .collect();
+        let x: Vec<f32> = (0..cols).map(|c| ((c as f32) * 0.21).cos() * 0.5).collect();
+        let q = Exl3TrellisQuantizer::quantize_matrix(&weights, rows, cols, 4.0, None, 42);
+        let y_fast = q.matvec_f32(&x);
+        let deq = q.dequantize();
+        for (r, &yf) in y_fast.iter().enumerate() {
+            let y_ref: f32 = (0..cols).map(|c| deq[r * cols + c] * x[c]).sum();
+            assert!((yf - y_ref).abs() < 1e-3, "matvec mismatch: {yf} vs {y_ref}");
+        }
     }
 }

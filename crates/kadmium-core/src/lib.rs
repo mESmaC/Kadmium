@@ -483,12 +483,34 @@ impl ModelSpec {
         }
     }
 
+    /// Preset: DeepSeek-V3 671B MoE quantized with EXL3 / QTIP Trellis Quantization (`2.55 bpw` hybrid `.ktb`).
+    /// Attention trunks at `4.0 bpw` EXL3; 256 routed MoE experts at `2.4 bpw` EXL3 (~194 GB total vs 351 GB Q4_K).
+    pub fn deepseek_v3_671b_exl3() -> Self {
+        Self {
+            id: "deepseek-v3-671b-exl3-2.5bpw".to_string(),
+            display_name: "DeepSeek-V3 671B MoE (EXL3/QTIP 2.55 bpw Trellis KTB)".to_string(),
+            total_params_billions: 671.0,
+            num_layers: 61,
+            is_moe: true,
+            dense_layer_size_gb: 0.24,
+            experts_per_layer: 64,
+            active_experts_per_token: 6,
+            single_expert_size_gb: 0.046,
+            kv_cache_per_layer_gb: 0.10,
+            training_activation_per_layer_gb: 0.42,
+            lora_state_per_layer_gb: 0.08,
+        }
+    }
+
     /// Resolves a model preset by ID or returns `deepseek_v3_671b_moe()` by default.
     pub fn from_id(id: &str) -> Self {
         match id {
             "qwen3-235b-moe" => Self::qwen3_235b_moe(),
             "llama-3-70b-lora" | "llama-3.3-70b-instruct" => Self::llama_3_70b_lora(),
             "qwen2.5-coder-32b-instruct" | "qwen2.5-coder-32b" => Self::qwen2_5_coder_32b(),
+            "deepseek-v3-671b-exl3-2.5bpw" | "deepseek-v3-exl3" | "exl3" => {
+                Self::deepseek_v3_671b_exl3()
+            }
             _ => Self::deepseek_v3_671b_moe(),
         }
     }

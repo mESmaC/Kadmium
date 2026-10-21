@@ -35,12 +35,12 @@ use kadmium_rl::{
     RegisteredDreamRsiWorld, RlEnvironmentSuiteSpec, RlTopologyPlanner,
 };
 use kadmium_runtime::{
-    DistributedLanExecutor, DistributedPipelineExecutionReport, HardwareKernelDispatcher,
-    HardwareKernelSuiteReport, KtbCheckpointExportReport, LiveDistributedTrainingStepReport,
-    LiveDreamRsiSwarmReport, LiveFts3SwarmStreamReport, LiveHopTelemetry,
-    LiveKvCacheMigrationReport, LiveVerdeAuditReport, LocalFleetSpawner, Pipeline1F1BSchedule,
-    Pipeline1F1BScheduler, VerdeFraudProofCertificate, VerdeFraudProofEngine,
-    apply_ota_update_manifest_local,
+    DistributedExl3ConversionEngine, DistributedLanExecutor, DistributedPipelineExecutionReport,
+    Exl3ConversionReport, HardwareKernelDispatcher, HardwareKernelSuiteReport,
+    KtbCheckpointExportReport, LiveDistributedTrainingStepReport, LiveDreamRsiSwarmReport,
+    LiveFts3SwarmStreamReport, LiveHopTelemetry, LiveKvCacheMigrationReport, LiveVerdeAuditReport,
+    LocalFleetSpawner, Pipeline1F1BSchedule, Pipeline1F1BScheduler, VerdeFraudProofCertificate,
+    VerdeFraudProofEngine, apply_ota_update_manifest_local,
 };
 use kadmium_sharding::{
     CloudShieldCutoverWatcher, CloudShieldWatcherReport, ClusterPoolSliceLayout,
@@ -159,6 +159,12 @@ pub struct KvCacheMigrateRequest {
     pub session_id: Option<String>,
     pub start_layer: Option<u32>,
     pub end_layer: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Exl3ConvertRequest {
+    pub model_id: Option<String>,
+    pub target_bpw: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -359,6 +365,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/models/import",
             get(post_import_local_model).post(post_import_local_model),
+        )
+        .route(
+            "/api/v1/runtime/exl3",
+            get(post_exl3_convert_and_benchmark).post(post_exl3_convert_and_benchmark),
         )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -1558,6 +1568,17 @@ async fn openai_list_models(
                 }
             },
             {
+                "id": "deepseek-v3-671b-exl3-2.5bpw",
+                "object": "model",
+                "created": 1735689600,
+                "owned_by": "kadmium-cd48-fabric",
+                "kadmium_fabric": {
+                    "epoch": epoch,
+                    "live_tcp_workers": live_cnt,
+                    "sharding": "EXL3 QTIP Trellis 2.55 bpw (FWHT Incoherence + Fused Viterbi)"
+                }
+            },
+            {
                 "id": "qwen3-235b-moe",
                 "object": "model",
                 "created": 1735689600,
@@ -1954,4 +1975,27 @@ async fn post_import_local_model(
     }
 
     Json(manifest)
+}
+
+async fn post_exl3_convert_and_benchmark(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    req: Option<Json<Exl3ConvertRequest>>,
+) -> Json<Exl3ConversionReport> {
+    let params = req.map(|Json(r)| r).unwrap_or_default();
+    let model_id = params
+        .model_id
+        .unwrap_or_else(|| "deepseek-v3-671b-exl3-2.5bpw".to_string());
+    let target_bpw = params.target_bpw.unwrap_or(2.55);
+    let model = ModelSpec::from_id(&model_id);
+
+    let nodes = {
+        let guard = state.lock().expect("gateway state lock");
+        guard.nodes.clone()
+    };
+
+    Json(DistributedExl3ConversionEngine::run_conversion_and_benchmark(
+        &model,
+        target_bpw,
+        &nodes,
+    ))
 }

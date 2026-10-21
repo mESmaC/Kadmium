@@ -26,6 +26,8 @@ pub enum TensorEncoding {
     Int8Symmetric,
     Q4KBlock,
     Nf4DoubleQuant,
+    /// EXL3 / QTIP (arXiv:2406.11235) Hadamard Incoherence + Bitshift Trellis-Coded Quantization (`2.0–6.0 bpw`).
+    Exl3QtpTrellis,
 }
 
 /// Metadata descriptor for a pre-merged **Kadmium Tensor Bank (`.ktb`)** shard file.

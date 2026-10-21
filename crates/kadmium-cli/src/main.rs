@@ -15,8 +15,8 @@ use kadmium_rl::{
     RlTopologyPlanner,
 };
 use kadmium_runtime::{
-    DistributedLanExecutor, LiveNodeWorkerServer, LocalFleetSpawner, TrainingJobTelemetry,
-    sample_boinc_workunits,
+    DistributedExl3ConversionEngine, DistributedLanExecutor, LiveNodeWorkerServer,
+    LocalFleetSpawner, TrainingJobTelemetry, sample_boinc_workunits,
 };
 use kadmium_sharding::{
     ClusterShardPlan, DataflowStreamPlanner, DistributedPagedKvPlanner,
@@ -213,6 +213,15 @@ enum Commands {
         #[arg(long, default_value_t = 3)]
         end_layer: u32,
     },
+    /// Convert and benchmark EXL3 / QTIP Trellis Quantization (FWHT Incoherence + On-the-Fly Hessian + Fused Viterbi)
+    Exl3 {
+        /// Model identifier (e.g. deepseek-v3-671b-exl3-2.5bpw | qwen3-235b-moe | llama-3-70b-lora)
+        #[arg(short, long, default_value = "deepseek-v3-671b-exl3-2.5bpw")]
+        model: String,
+        /// Target average bitrate in bits per weight (2.0 to 6.0 bpw)
+        #[arg(short, long, default_value_t = 2.55)]
+        bpw: f32,
+    },
 }
 
 #[tokio::main]
@@ -292,15 +301,12 @@ async fn main() {
             start_layer,
             end_layer,
         } => run_import(&model, path.as_deref(), &format, start_layer, end_layer),
+        Commands::Exl3 { model, bpw } => run_exl3(&model, bpw),
     }
 }
 
 fn resolve_model(name: &str) -> ModelSpec {
-    match name.to_lowercase().as_str() {
-        "qwen3-235b-moe" | "qwen3" => ModelSpec::qwen3_235b_moe(),
-        "llama-3-70b-lora" | "llama" | "llama70b" => ModelSpec::llama_3_70b_lora(),
-        _ => ModelSpec::deepseek_v3_671b_moe(),
-    }
+    ModelSpec::from_id(name)
 }
 
 fn resolve_workload(name: &str) -> WorkloadKind {
@@ -1127,4 +1133,63 @@ fn run_import(
             eprintln!("Failed to import model '{}': {}", model_id, e);
         }
     }
+}
+
+fn run_exl3(model_name: &str, target_bpw: f32) {
+    let cluster = sample_personal_cluster();
+    let model = resolve_model(model_name);
+    let report = DistributedExl3ConversionEngine::run_conversion_and_benchmark(
+        &model,
+        target_bpw,
+        &cluster,
+    );
+
+    println!("====================================================================================");
+    println!("  KADMIUM (Cd-48) — EXL3 / QTIP TRELLIS QUANTIZER & DISTRIBUTED CONVERTER");
+    println!("====================================================================================");
+    println!("  Model:                {} ({})", report.model_name, report.model_id);
+    println!(
+        "  Bitrate:              {:.2} bpw target -> {:.2} bpw effective (Bitshift Trellis L=4, 16 states)",
+        report.target_average_bpw, report.achieved_effective_bpw
+    );
+    println!(
+        "  Footprint Reduction:  {:.1} GB (FP16) -> {:.1} GB (Q4_K) -> {:.1} GB (EXL3 .ktb) [-{:.1} GB vs Q4_K]",
+        report.original_fp16_size_gb,
+        report.legacy_q4k_size_gb,
+        report.exl3_ktb_size_gb,
+        report.vram_savings_vs_q4k_gb
+    );
+    println!(
+        "  FWHT Incoherence:     Outlier Peak/RMS {:.2}x (pre-FWHT) -> {:.2}x (post-FWHT Rademacher + Hadamard)",
+        report.pre_fwht_peak_to_rms, report.post_fwht_peak_to_rms
+    );
+    println!(
+        "  Fused Viterbi SNR:    {:.2} dB (EXL3 Trellis) vs {:.2} dB (Scalar) [+{:.2} dB gain | Hessian Loss: {:.5}]",
+        report.exl3_viterbi_snr_db,
+        report.naive_scalar_snr_db,
+        report.snr_gain_over_scalar_db,
+        report.hessian_proxy_loss
+    );
+    println!(
+        "  Single-Step Cluster:  ~{:.1} minutes across {} active conversion nodes",
+        report.estimated_cluster_conversion_minutes,
+        report.node_conversion_shards.len()
+    );
+    println!("------------------------------------------------------------------------------------");
+    println!("  Distributed Single-Step HF -> EXL3 .ktb Node Conversion Schedule:");
+    for shard in &report.node_conversion_shards {
+        println!(
+            "    - {:<24} ({:<10}) | Layers L{:02}..=L{:02} ({:>2} layers) | Attn {:.2} bpw / MoE {:.2} bpw | {:>6.1} GB .ktb (~{:.1} min)",
+            shard.node_name,
+            shard.hardware_backend,
+            shard.assigned_layer_start,
+            shard.assigned_layer_start + shard.assigned_layer_count.saturating_sub(1),
+            shard.assigned_layer_count,
+            shard.attention_trunk_bpw,
+            shard.routed_experts_bpw,
+            shard.output_ktb_shard_gb,
+            shard.estimated_conversion_seconds / 60.0
+        );
+    }
+    println!("====================================================================================");
 }
