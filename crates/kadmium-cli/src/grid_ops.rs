@@ -128,6 +128,21 @@ pub fn run_lease(hours: f64, payout: &str) {
             opt.cost_savings_vs_full_cloud_pct
         );
     }
+    println!(
+        "\n  * Dynamic Context-Growth Layer Slider (Zero-OOM Boundary Sliding as KV Cache Expands):"
+    );
+    for st in &boost.resilience_and_privacy.dynamic_kv_slider_timeline {
+        println!(
+            "    - {:>2}K Ctx (KV {:>3.1} GB): {:<38} -> Spills L{:02}..L{:02} ({:>4.1} GB, {:.1}ms stall)",
+            st.context_tokens / 1024,
+            st.desktop_kv_cache_gb,
+            st.desktop_hosted_layers,
+            st.spilled_middle_layers.0,
+            st.spilled_middle_layers.1,
+            st.spilled_vram_gb,
+            st.slide_stall_ms
+        );
+    }
     println!("\n{}", boost.summary_scorecard);
 }
 
