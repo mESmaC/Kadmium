@@ -68,6 +68,10 @@ pub fn run_lease(hours: f64, payout: &str) {
         snap.datacenter_avoidance.embodied_carbon_avoided_kg_co2e
     );
     println!(
+        "  * ⚠️  {}",
+        snap.battery_and_power_safety_advisory
+    );
+    println!(
         "\n{:<22} {:<30} {:>10} {:>10} {:>7} {:>10} {:>11} {:>10} {:>11}",
         "HOSTNAME", "HARDWARE PROFILE", "BUYER/HR", "HOST ACT", "DUTY%", "EFF $/HR", "GROSS/MO", "POWER/MO", "NET PROFIT"
     );

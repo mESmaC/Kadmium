@@ -1442,7 +1442,11 @@
                 title: 'terminal · inspect transparent 5-factor breakdown & start leasing',
                 language: 'shell',
                 code: '$ kadmium lease --hours ' + leaseHours + ' --payout ' + payoutMode + '\n# -> Gross: $' + monthlyUsdTotal.toFixed(2) + '/mo - Power: $' + monthlyPowerTotal.toFixed(2) + '/mo = +$' + monthlyNetProfitUsd.toFixed(2) + '/mo Net Cash (or $' + monthlyCreditsTotal.toFixed(2) + '/mo in 1.25× Credits)'
-              })))),
+              }),
+              h('div', { className: 'well', style: { borderColor: 'var(--cadmium-edge)' } },
+                h('p', { className: 'eyebrow', style: { margin: '0 0 4px', color: 'var(--cadmium-text)' } }, '⚠️ Battery & Power Safety Advisory at Time of Leasing'),
+                h('p', { className: 'body', style: { margin: 0, color: 'var(--ink-muted)' } },
+                  'If your device has a removable battery, we recommend removing the battery and plugging into a stable AC/DC power source before leasing compute to avoid additional battery wear and potential risks of swelling. Most battery-powered devices operate normally without a battery when plugged into wall power.')))),
 
         /* ---- 6. Under the Hood (Clean Tabbed Architecture) ---- */
         h('section', { id: 'architecture', className: 'section-block' },

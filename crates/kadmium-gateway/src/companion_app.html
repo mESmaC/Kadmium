@@ -348,7 +348,11 @@
                   h('td', { style: { color: 'var(--ink-muted)' } }, '-$' + (vb.estimated_monthly_electricity_cost_usd || 0).toFixed(2)),
                   h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, '+$' + (vb.net_monthly_profit_after_power_usd || q.projected_monthly_usd).toFixed(2)),
                   h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$' + q.projected_monthly_cloud_credits_usd.toFixed(2)));
-              }))))) : null,
+              })))),
+          h('div', { className: 'well', style: { marginTop: 'var(--space-3)', borderColor: 'var(--cadmium-edge)' } },
+            h('p', { className: 'eyebrow', style: { margin: '0 0 4px', color: 'var(--cadmium-text)' } }, '⚠️ Battery & Power Safety Advisory'),
+            h('p', { className: 'body', style: { margin: 0, color: 'var(--ink-muted)' } },
+              supply.battery_and_power_safety_advisory || 'If your device has a removable battery, we recommend removing the battery and plugging into an alternative stable power source to avoid additional battery wear and potential risks of swelling. Most battery-powered devices operate normally without a battery when plugged into wall power.'))) : null,
 
         execReport ? h('section', { className: 'panel' },
           h('p', { className: 'eyebrow' }, 'Live pipeline execution trace · Top-4 MoE router + Speculative draft verification'),

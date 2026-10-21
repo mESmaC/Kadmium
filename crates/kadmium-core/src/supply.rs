@@ -211,6 +211,8 @@ pub struct SupplyMarketplaceSnapshot {
     pub total_estimated_monthly_electricity_usd: f64,
     pub total_net_monthly_profit_after_power_usd: f64,
     pub equivalent_l40s_burst_hours_per_month: f64,
+    /// Prominent safety advisory displayed at the time of leasing compute regarding removable batteries and stable wall power.
+    pub battery_and_power_safety_advisory: String,
     pub company_sustainability: CompanySustainabilitySummary,
     pub datacenter_avoidance: DatacenterAvoidanceMetrics,
     pub buyer_positioning_matrix: Vec<BuyerSegmentPositioning>,
@@ -585,6 +587,7 @@ impl SupplySettlementEngine {
             total_estimated_monthly_electricity_usd,
             total_net_monthly_profit_after_power_usd,
             equivalent_l40s_burst_hours_per_month,
+            battery_and_power_safety_advisory: "BATTERY & POWER ADVISORY: If your device has a removable battery, we strongly recommend removing the battery and plugging directly into a stable AC/DC power source before leasing compute. Most battery-powered laptops and phones operate normally without a battery when connected to wall power—eliminating unnecessary battery cycle wear and preventing potential lithium-ion swelling risks.".into(),
             company_sustainability,
             datacenter_avoidance,
             buyer_positioning_matrix,
@@ -620,6 +623,10 @@ mod tests {
             snap.datacenter_avoidance
                 .people_powered_compute_thesis
                 .contains("pay the people")
+        );
+        assert!(
+            snap.battery_and_power_safety_advisory
+                .contains("removing the battery")
         );
         assert!(snap.total_net_monthly_profit_after_power_usd > 0.0);
 
