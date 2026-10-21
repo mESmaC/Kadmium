@@ -15,12 +15,14 @@ pub mod kernels;
 pub mod live_worker;
 pub mod throughput_boost;
 pub mod training_compute;
+pub mod training_framework;
 pub use exl3_qtip::*;
 pub use fraud_proof::*;
 pub use kernels::*;
 pub use live_worker::*;
 pub use throughput_boost::*;
 pub use training_compute::*;
+pub use training_framework::*;
 
 /// Telemetry snapshot for a running distributed & decentralized training job in Kadmium.
 #[derive(Debug, Clone, Serialize, Deserialize)]

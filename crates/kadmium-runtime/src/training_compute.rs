@@ -35,7 +35,12 @@
 //!    - Overlaps optimizer parameter updates across host DDR5, Apple UMA, and 20-Slot Phone Farm Box
 //!      LPDDR5 banks asynchronously during GPU forward/backward passes.
 
-use crate::{FastWalshHadamardTransform, ZeroBubblePipelineScheduler};
+use crate::{
+    AuxLossFreeMoEReport, AuxLossFreeMoETrainer, ByzantineAsyncDiLoCoReport,
+    ByzantineRobustAsyncDiLoCoAggregator, DistributedTrainingEpochRunner,
+    FastWalshHadamardTransform, TrainingEpochExecutionReport, ZeroBubblePipelineScheduler,
+    ZigZagRingAttentionReport, ZigZagRingContextParallelEngine,
+};
 use kadmium_core::{
     DeviceKind, HardwareNode, ModelSpec, PhoneFarmBoxController, PhoneFarmBoxPreset,
     PhoneFarmTopologyMode, PhoneFarmTransportMode, sample_cloud_burst_gpu_node,
@@ -896,6 +901,10 @@ pub struct HyperTrainingBenchmarkReport {
     pub packing_and_chunked_ce_report: PackingAndChunkedCeReport,
     pub hadamard_fp8_report: HadamardFp8TrainingReport,
     pub skippipe_offload_report: SkipPipeAndOffloadReport,
+    pub zigzag_ring_report: ZigZagRingAttentionReport,
+    pub aux_loss_free_moe_report: AuxLossFreeMoEReport,
+    pub byzantine_async_diloco_report: ByzantineAsyncDiLoCoReport,
+    pub wsd_epoch_execution_report: TrainingEpochExecutionReport,
     pub node_training_rows: Vec<NodeTrainingComputeRow>,
     /// Cluster-wide baseline training throughput (`tokens/sec`).
     pub baseline_cluster_train_tok_s: f64,
@@ -943,6 +952,10 @@ impl TrainingComputeAcceleratorSuite {
         let packing_ce = SequencePackerAndChunkedCrossEntropy::run_benchmark();
         let fp8_hadamard = HadamardFp8TrainingEngine::run_fp8_hadamard_benchmark();
         let skippipe = SkipPipeAndOffloadCoordinator::evaluate_cluster_schedule(24, 38.0, 145.0);
+        let zigzag_ring = ZigZagRingContextParallelEngine::evaluate_zigzag_ring(8, 131_072);
+        let moe_balance = AuxLossFreeMoETrainer::run_moe_balancing_benchmark();
+        let byzantine_diloco = ByzantineRobustAsyncDiLoCoAggregator::run_byzantine_benchmark();
+        let wsd_epoch = DistributedTrainingEpochRunner::run_resilient_epoch_simulation();
 
         let sample_act: Vec<f32> = (0..256)
             .map(|i| if i % 37 == 0 { 8.5 } else { ((i % 13) as f32 - 6.0) * 0.2 })
@@ -950,7 +963,7 @@ impl TrainingComputeAcceleratorSuite {
         let zb_train = ZeroBubblePipelineScheduler::evaluate_zbh1_schedule(6, 24, &sample_act);
 
         // Combined per-node algorithmic throughput multiplier:
-        // Packing (2.46x) * FWHT-FP8 (1.72x effective) * ZB-H1 (1.158x) * SkipPipe+Offload (1.35x)
+        // Packing (2.67x) * FWHT-FP8 (1.68x) * ZB-H1 (1.158x) * SkipPipe+Offload (1.70x)
         let combined_algo_mult = packing_ce.effective_packing_speedup
             * 1.68
             * (1.0 + zb_train.training_throughput_gain_pct / 100.0)
@@ -1044,6 +1057,9 @@ impl TrainingComputeAcceleratorSuite {
              ║ 2. Varlen Packing + Chunked CE   : {:>4.2}x Token Density  | -{:<4.1}% Logit VRAM  ║\n\
              ║ 3. FWHT-Rotated FP8 (E4M3/E5M2)  : {:>4.2}x GEMM Speedup   | CosSim {:>7.5}     ║\n\
              ║ 4. Zero-Bubble ZB-H1 + SkipPipe  : {:>4.1}% Pipeline Bubble| {:>4.1}% Util         ║\n\
+             ║ 5. Zig-Zag Ring (128K Context)   : {:>4.1}% Causal Imbal   | {:>4.2}x Ring Speedup ║\n\
+             ║ 6. Aux-Loss-Free MoE + Weiszfeld : -{:<4.1}% Load Imbal     | {}/{} Poisoned Cut ║\n\
+             ║ 7. WSD Loop + .ktb Spike Guard   : -{:<4.1}% Epoch Loss    | {} Rollback Saved  ║\n\
              ║ ---------------------------------------------------------------------------- ║\n\
              ║ Cluster Training Tok/s : {:>8.1} -> {:>9.1} tok/s ({:>4.2}x Wall Speedup)   ║\n\
              ║ Convergence Speedup    : {:>4.2}x Faster Time-to-Target-Loss (w/ Muon Ortho)  ║\n\
@@ -1059,6 +1075,13 @@ impl TrainingComputeAcceleratorSuite {
             fp8_hadamard.forward_gemm_cosine_similarity,
             zb_train.zero_bubble_zbh1_bubble_pct,
             skippipe.skippipe_pipeline_utilization_pct,
+            zigzag_ring.zigzag_ring_causal_imbalance_pct,
+            zigzag_ring.zigzag_load_balance_speedup,
+            moe_balance.load_imbalance_reduction_pct,
+            byzantine_diloco.detected_poisoned_island_indices.len(),
+            byzantine_diloco.poisoned_byzantine_islands,
+            wsd_epoch.loss_reduction_pct,
+            wsd_epoch.spike_rollbacks_recovered,
             total_base_tok_s,
             total_boost_tok_s,
             wall_speedup,
@@ -1072,6 +1095,10 @@ impl TrainingComputeAcceleratorSuite {
             packing_and_chunked_ce_report: packing_ce,
             hadamard_fp8_report: fp8_hadamard,
             skippipe_offload_report: skippipe,
+            zigzag_ring_report: zigzag_ring,
+            aux_loss_free_moe_report: moe_balance,
+            byzantine_async_diloco_report: byzantine_diloco,
+            wsd_epoch_execution_report: wsd_epoch,
             node_training_rows: rows,
             baseline_cluster_train_tok_s: (total_base_tok_s * 10.0).round() / 10.0,
             boosted_cluster_train_tok_s: (total_boost_tok_s * 10.0).round() / 10.0,

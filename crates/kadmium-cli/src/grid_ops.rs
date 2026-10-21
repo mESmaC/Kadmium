@@ -329,11 +329,43 @@ pub async fn run_bench() {
         hyper_train.hadamard_fp8_report.fp8_training_compute_speedup
     );
     println!(
-        "  * SkipPipe Straggler Bypass + Async PhoneFarm/UMA Offload: Step {:.1} ms -> {:.1} ms ({:.1}% Pipeline Util, {:.2}x Speedup)\n",
+        "  * SkipPipe Straggler Bypass + Async PhoneFarm/UMA Offload: Step {:.1} ms -> {:.1} ms ({:.1}% Pipeline Util, {:.2}x Speedup)",
         hyper_train.skippipe_offload_report.stalled_pipeline_step_ms,
         hyper_train.skippipe_offload_report.skippipe_active_step_ms,
         hyper_train.skippipe_offload_report.skippipe_pipeline_utilization_pct,
         hyper_train.skippipe_offload_report.skippipe_and_offload_speedup
+    );
+    println!(
+        "  * Zig-Zag Causal Ring Attention ({} nodes, {}K ctx): Imbalance {:.1}% -> {:.1}% ({:.2}x Speedup, LSE Err={:.2e})",
+        hyper_train.zigzag_ring_report.num_ring_nodes,
+        hyper_train.zigzag_ring_report.total_context_tokens / 1024,
+        hyper_train.zigzag_ring_report.naive_ring_causal_imbalance_pct,
+        hyper_train.zigzag_ring_report.zigzag_ring_causal_imbalance_pct,
+        hyper_train.zigzag_ring_report.zigzag_load_balance_speedup,
+        hyper_train.zigzag_ring_report.online_lse_ring_max_abs_error
+    );
+    println!(
+        "  * Aux-Loss-Free MoE Dynamic Bias: Max/Mean Load {:.2}x -> {:.2}x (-{:.1}% Imbalance, 0.0 Aux Grad, -{:.1}% All-to-All)",
+        hyper_train.aux_loss_free_moe_report.initial_max_to_mean_load_ratio,
+        hyper_train.aux_loss_free_moe_report.final_max_to_mean_load_ratio,
+        hyper_train.aux_loss_free_moe_report.load_imbalance_reduction_pct,
+        hyper_train.aux_loss_free_moe_report.hierarchical_all_to_all_traffic_reduction_pct
+    );
+    println!(
+        "  * Weiszfeld Byzantine-Robust Async DiLoCo: Rejected {:?} | Naive Err {:.3} -> Robust Err {:.4} ({:.2}x Async Speedup)",
+        hyper_train.byzantine_async_diloco_report.detected_poisoned_island_indices,
+        hyper_train.byzantine_async_diloco_report.naive_mean_corruption_l2_error,
+        hyper_train.byzantine_async_diloco_report.robust_weiszfeld_l2_error,
+        hyper_train.byzantine_async_diloco_report.async_staleness_damped_speedup
+    );
+    println!(
+        "  * WSD Loop + .ktb Spike Rollback Guard: {} steps | Loss {:.4} -> {:.4} (-{:.1}%, {} Spike Rollback at step {})\n",
+        hyper_train.wsd_epoch_execution_report.total_steps_executed,
+        hyper_train.wsd_epoch_execution_report.initial_loss,
+        hyper_train.wsd_epoch_execution_report.final_loss,
+        hyper_train.wsd_epoch_execution_report.loss_reduction_pct,
+        hyper_train.wsd_epoch_execution_report.spike_rollbacks_recovered,
+        hyper_train.wsd_epoch_execution_report.injected_corrupted_batch_step
     );
     println!(
         "{:<28} {:<38} {:>11} {:>12} {:>10} {:>12}",
