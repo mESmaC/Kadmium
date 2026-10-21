@@ -1087,4 +1087,251 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn test_live_reterminal_cm4_exl3_qlora_kv_vision_and_stress_suite() {
+        use kadmium_core::{
+            DEFAULT_RETERMINAL_CM4_IP, ModelSpec, ReTerminalCm4LanBridge, WorkloadKind,
+            sample_personal_cluster,
+        };
+        use kadmium_network::LiveWorkerRegistration;
+        use kadmium_sharding::ShardPlanner;
+        use std::collections::BTreeMap;
+
+        let probe = ReTerminalCm4LanBridge::probe_and_verify(None);
+        let desktop_node = sample_personal_cluster().remove(0);
+        let cm4_node = probe.hardware_node.clone();
+
+        let w_desktop =
+            LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, desktop_node.clone(), false)
+                .await
+                .expect("spawn desktop worker");
+        let w_cm4 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, cm4_node.clone(), false)
+            .await
+            .expect("spawn reTerminal CM4 bridge worker");
+
+        let mut live_workers = BTreeMap::new();
+        live_workers.insert(
+            desktop_node.id.0.clone(),
+            LiveWorkerRegistration {
+                node: desktop_node.clone(),
+                worker_tcp_addr: w_desktop.local_addr.to_string(),
+                worker_lan_ip: "127.0.0.1".into(),
+                worker_tcp_port: w_desktop.local_addr.port(),
+                os_name: "windows".into(),
+                cpu_arch: "x86_64".into(),
+                board_or_model: "Desktop Workstation".into(),
+                network_channel: "LocalLAN".into(),
+                installed_version: "v0.1.0-cd48".into(),
+                ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+                heartbeat_count: 1,
+                registered_at_unix_ms: 1000,
+                last_heartbeat_unix_ms: 1000,
+                last_measured_rtt_ms: 0.4,
+                executed_forward_stages: 0,
+                executed_training_steps: 0,
+                online: true,
+            },
+        );
+        live_workers.insert(
+            cm4_node.id.0.clone(),
+            LiveWorkerRegistration {
+                node: cm4_node.clone(),
+                worker_tcp_addr: w_cm4.local_addr.to_string(),
+                worker_lan_ip: DEFAULT_RETERMINAL_CM4_IP.into(),
+                worker_tcp_port: w_cm4.local_addr.port(),
+                os_name: "linux".into(),
+                cpu_arch: "aarch64".into(),
+                board_or_model: probe.board_model.clone(),
+                network_channel: "LocalLAN".into(),
+                installed_version: "v0.1.0-cd48".into(),
+                ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+                heartbeat_count: 1,
+                registered_at_unix_ms: 1000,
+                last_heartbeat_unix_ms: 1000,
+                last_measured_rtt_ms: probe.execution_proof.lan_round_trip_ms,
+                executed_forward_stages: 0,
+                executed_training_steps: 0,
+                online: true,
+            },
+        );
+
+        let cluster = vec![desktop_node.clone(), cm4_node.clone()];
+        let model = ModelSpec::deepseek_v3_671b_exl3();
+        let train_plan = ShardPlanner::compute_plan(
+            2,
+            &model,
+            WorkloadKind::DistributedTraining,
+            &cluster,
+        );
+        let inf_plan = ShardPlanner::compute_plan(2, &model, WorkloadKind::Inference, &cluster);
+
+        // 7. Live Distributed QLoRA + Nous DeMo DCT + DiLoCo Nesterov Training Step on reTerminal CM4
+        let train_step =
+            DistributedLanExecutor::execute_live_training_step(&train_plan, 1, 0.08, &live_workers)
+                .await;
+        assert!(train_step.all_stages_repops_verified);
+        assert!(
+            train_step.mean_loss_after < train_step.mean_loss_before,
+            "QLoRA training step must reduce loss ({} < {})",
+            train_step.mean_loss_after,
+            train_step.mean_loss_before
+        );
+        assert!(train_step.mean_wire_compression_ratio > 10.0);
+
+        // 8. Live Zero-Drop KV-Cache Page Migration (Polite Gaming Yield Failover to reTerminal CM4 eMMC)
+        let kv_mig = DistributedLanExecutor::migrate_kv_cache_pages_tcp(
+            2,
+            "sess-cm4-live-01",
+            (32, 60),
+            &live_workers,
+        )
+        .await;
+        assert!(kv_mig.zero_context_drop_verified);
+        assert!(kv_mig.ack.bit_exact_verified);
+        assert_eq!(kv_mig.pages_migrated, 8);
+        assert_eq!(kv_mig.tokens_preserved, 128);
+
+        // 9. Live Strata Multimodal Vision Patch Offload (SigLIP-SO400M on aarch64 reTerminal CM4)
+        let vision = DistributedLanExecutor::execute_vision_patch_offload(
+            2,
+            "Inspect reTerminal CM4 industrial panel telemetry",
+            &live_workers,
+        )
+        .await;
+        assert_eq!(vision.offloaded_to_node_id, cm4_node.id.0);
+        assert_eq!(vision.image_patches_encoded, 729);
+        assert_eq!(vision.visual_tokens_projected, 256);
+
+        // 10. Live Distributed Embeddings (/v1/embeddings across x86_64 + aarch64 CM4)
+        let emb = DistributedLanExecutor::execute_live_embeddings(
+            &inf_plan,
+            &[
+                "Kadmium heterogeneous edge cluster".to_string(),
+                "Seeed Studio reTerminal CM4 ARMv8 NEON".to_string(),
+            ],
+            64,
+            &live_workers,
+        )
+        .await;
+        assert_eq!(emb.vectors.len(), 2);
+        assert_eq!(emb.vectors[0].embedding.len(), 64);
+
+        if probe.physical_board_online {
+            // 11. Live Cross-ISA EXL3 / QTIP Fast Walsh-Hadamard Transform + Trellis MatVec (x86_64 vs aarch64 NEON)
+            let rows = 16usize;
+            let cols = 32usize;
+            let weights: Vec<f32> = (0..(rows * cols))
+                .map(|i| {
+                    let base = ((i as f32) * 0.17).sin() * 0.35;
+                    if i % 29 == 0 { base * 4.2 } else { base }
+                })
+                .collect();
+            let x: Vec<f32> = (0..cols)
+                .map(|c| ((c as f32) * 0.23 + 0.1).cos() * 0.6)
+                .collect();
+            let cal_rows: Vec<Vec<f32>> = (0..12)
+                .map(|s| {
+                    (0..cols)
+                        .map(|c| (((s * 11 + c * 5) as f32) * 0.13).sin() * 0.5)
+                        .collect()
+                })
+                .collect();
+            let col_signs = FastWalshHadamardTransform::rademacher_signs(cols, 777 + 1);
+            let hessian = OnTheFlyHessianLdl::from_calibration_activations(
+                &cal_rows, cols, &col_signs, 0.05,
+            );
+
+            for &bpw in &[2.5f32, 3.0f32, 4.0f32] {
+                let q_tensor = Exl3TrellisQuantizer::quantize_matrix(
+                    &weights,
+                    rows,
+                    cols,
+                    bpw,
+                    Some(&hessian),
+                    777,
+                );
+                let y_x86 = q_tensor.matvec_f32(&x);
+                let y_x86_f64: Vec<f64> = y_x86.iter().map(|&v| v as f64).collect();
+                let x86_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&y_x86_f64);
+                let q_milli = (x86_sum * 10_000.0).round() as i64;
+                let mut buf = [0u8; 16];
+                buf[0..4].copy_from_slice(&0u32.to_le_bytes());
+                buf[4..8].copy_from_slice(&(rows as u32).to_le_bytes());
+                buf[8..16].copy_from_slice(&(q_milli as u64).to_le_bytes());
+                let mut x86_dig: u64 = 0xcbf2_9ce4_8422_2325;
+                for &b in &buf {
+                    x86_dig ^= b as u64;
+                    x86_dig = x86_dig.wrapping_mul(0x0100_0000_01b3);
+                }
+
+                let (y_cm4, cm4_dig, cm4_exl3_ms) =
+                    ReTerminalCm4LanBridge::execute_exl3_fwht_matvec_on_cm4(
+                        DEFAULT_RETERMINAL_CM4_IP,
+                        rows,
+                        cols,
+                        q_tensor.trellis_l_bits,
+                        q_tensor.rademacher_seed,
+                        &q_tensor.row_scales,
+                        &q_tensor.col_bit_schedule,
+                        &q_tensor.trellis_symbols,
+                        &x,
+                    )
+                    .expect("execute live EXL3 FWHT matvec on reTerminal CM4");
+
+                for (r, (&vx, &vc)) in y_x86.iter().zip(y_cm4.iter()).enumerate() {
+                    assert!(
+                        (vx - vc).abs() < 1e-4,
+                        "EXL3 {:.1}-bpw row {r} mismatch between x86_64 ({vx}) and CM4 NEON ({vc})",
+                        bpw
+                    );
+                }
+                assert_eq!(
+                    x86_dig, cm4_dig,
+                    "Cross-ISA EXL3 RepOps digest mismatch at {bpw} bpw"
+                );
+                println!(
+                    "  [EXL3 {:.1}-bpw Cross-ISA Verified] x86_64 == CM4 ARMv8 NEON | RepOps={:#018x} | CM4 HW={:.3} ms",
+                    bpw, cm4_dig, cm4_exl3_ms
+                );
+            }
+
+            // 12. Live 200-Iteration ARMv8 NEON 64x64 GEMM Stress & Thermal Benchmark on reTerminal CM4
+            let stress =
+                ReTerminalCm4LanBridge::run_stress_benchmark_on_cm4(DEFAULT_RETERMINAL_CM4_IP, 200)
+                    .expect("run 200-iteration NEON stress benchmark on reTerminal CM4");
+            assert_eq!(stress.iterations, 200);
+            assert!(stress.sustained_gflops > 0.1);
+            println!(
+                "=== LIVE RETERMINAL CM4 EXTENDED SUITE (SUBSYSTEMS 7..12) PASSED ===\n\
+                 - 7. Distributed QLoRA + DeMo DCT on CM4: loss {:.4} -> {:.4} ({:.1}x wire compression)\n\
+                 - 8. Zero-Drop KV-Cache Migration to CM4 eMMC: {} pages ({} tokens) verified={} in {:.2} ms\n\
+                 - 9. Strata Vision Offload (SigLIP-400M on CM4): {} patches -> {} tokens [RepOps {:#018x}]\n\
+                 - 10. Distributed Embeddings: {}x{}D vectors [RepOps {:#018x}]\n\
+                 - 11. Cross-ISA EXL3/QTIP FWHT + Trellis MatVec (2.5 / 3.0 / 4.0 bpw): Bit-Exact x86_64 == ARMv8 NEON\n\
+                 - 12. 200-Iter NEON 64x64 GEMM Stress Bench: min={:.3}ms p50={:.3}ms p95={:.3}ms p99={:.3}ms | {:.2} GFLOP/s | Temp {:.1}°C -> {:.1}°C @ {} MHz",
+                train_step.mean_loss_before,
+                train_step.mean_loss_after,
+                train_step.mean_wire_compression_ratio,
+                kv_mig.pages_migrated,
+                kv_mig.tokens_preserved,
+                kv_mig.zero_context_drop_verified,
+                kv_mig.migration_rtt_ms,
+                vision.image_patches_encoded,
+                vision.visual_tokens_projected,
+                vision.repops_digest_fnv1a,
+                emb.vectors.len(),
+                emb.dimensions,
+                emb.vectors[0].repops_digest_fnv1a,
+                stress.min_ms,
+                stress.p50_ms,
+                stress.p95_ms,
+                stress.p99_ms,
+                stress.sustained_gflops,
+                stress.temp_before_c,
+                stress.temp_after_c,
+                stress.freq_after_mhz,
+            );
+        }
+    }
 }

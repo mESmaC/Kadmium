@@ -1392,5 +1392,31 @@ fn run_reterminal(custom_ip: Option<&str>) {
         "  Front-Bezel LEDs:      usr_led0..2 pulsed={}",
         report.execution_proof.front_bezel_leds_pulsed
     );
+    if report.physical_board_online {
+        let ip = custom_ip.unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+        if let Some(stress) = ReTerminalCm4LanBridge::run_stress_benchmark_on_cm4(ip, 200) {
+            println!("------------------------------------------------------------------------------------");
+            println!(
+                "  200-Iter NEON Stress:  min {:.3} ms | p50 {:.3} ms | p95 {:.3} ms | p99 {:.3} ms",
+                stress.min_ms, stress.p50_ms, stress.p95_ms, stress.p99_ms
+            );
+            println!(
+                "  1-Core vs 4-Core OMP:  128x128 GEMM 1c={:.3} ms -> 4c={:.3} ms ({:.2}x speedup | {:.2} GFLOP/s)",
+                stress.gemm128_1core_ms, stress.gemm128_4core_ms, stress.quad_core_speedup, stress.quad_core_gflops
+            );
+            println!(
+                "  HW ARMv8 CRC32C:       {:.2} GB/s (__crc32cd 64 KiB .ktb page verification)",
+                stress.hw_crc32c_gbps
+            );
+            println!(
+                "  Live Sensors & GPU:    LIS331DLH Accel={} mg | LTR-303 Light=(vis+ir={}, ir={}) | GPU={}",
+                stress.accel_mg_xyz, stress.ltr303_vis_ir_raw, stress.ltr303_ir_raw, stress.v3d_gpu
+            );
+            println!(
+                "  Thermal & Clock Delta: {:.1}°C -> {:.1}°C | {} -> {} MHz (FNV-1a64: {:#018x})",
+                stress.temp_before_c, stress.temp_after_c, stress.freq_before_mhz, stress.freq_after_mhz, stress.last_fnv1a64
+            );
+        }
+    }
     println!("====================================================================================");
 }

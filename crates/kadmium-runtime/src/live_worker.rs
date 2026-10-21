@@ -657,19 +657,56 @@ pub fn execute_stage_training_local(
     let mut target = req.target_signal.dequantize();
     target.resize(d_out, 0.15);
 
-    let base_w: Vec<f32> = (0..(d_out * d_in))
-        .map(|i| (((i + req.start_layer as usize * 7) as f32) * 0.04).sin() * 0.3)
-        .collect();
-
-    let mut qlora = DistributedQLoRAAdapter::new(&base_w, d_out, d_in, 4, 8.0);
-    let (loss_before, _) = qlora.backward_and_step(&x, &target, req.learning_rate);
-    let mut loss_after = loss_before;
-    let mut last_grads = Vec::new();
-    for _ in 0..4 {
-        let (l, grads) = qlora.backward_and_step(&x, &target, req.learning_rate);
-        loss_after = l;
-        last_grads = grads;
-    }
+    let mut cm4_hw_ms: Option<f64> = None;
+    let (loss_before, loss_after, last_grads) =
+        if node_id.starts_with("node-reterminal") || hostname.contains("reterminal") {
+            let ip = hostname
+                .rsplit('-')
+                .next()
+                .filter(|s| s.contains('.'))
+                .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+            if let Some((lb, la, hw_grads, _hw_dig, hw_ms)) =
+                kadmium_core::ReTerminalCm4LanBridge::execute_qlora_demo_step_on_cm4(
+                    ip,
+                    req.start_layer,
+                    req.end_layer,
+                    req.learning_rate,
+                    &x,
+                    &target,
+                )
+            {
+                cm4_hw_ms = Some(hw_ms);
+                (lb, la, hw_grads)
+            } else {
+                let base_w: Vec<f32> = (0..(d_out * d_in))
+                    .map(|i| (((i + req.start_layer as usize * 7) as f32) * 0.04).sin() * 0.3)
+                    .collect();
+                let mut qlora = DistributedQLoRAAdapter::new(&base_w, d_out, d_in, 4, 8.0);
+                let (lb, _) = qlora.backward_and_step(&x, &target, req.learning_rate);
+                let mut la = lb;
+                let mut lg = Vec::new();
+                for _ in 0..4 {
+                    let (l, grads) = qlora.backward_and_step(&x, &target, req.learning_rate);
+                    la = l;
+                    lg = grads;
+                }
+                (lb, la, lg)
+            }
+        } else {
+            let base_w: Vec<f32> = (0..(d_out * d_in))
+                .map(|i| (((i + req.start_layer as usize * 7) as f32) * 0.04).sin() * 0.3)
+                .collect();
+            let mut qlora = DistributedQLoRAAdapter::new(&base_w, d_out, d_in, 4, 8.0);
+            let (lb, _) = qlora.backward_and_step(&x, &target, req.learning_rate);
+            let mut la = lb;
+            let mut lg = Vec::new();
+            for _ in 0..4 {
+                let (l, grads) = qlora.backward_and_step(&x, &target, req.learning_rate);
+                la = l;
+                lg = grads;
+            }
+            (lb, la, lg)
+        };
 
     let mut demo = DeMoDctCompressor::new(last_grads.len(), 0.9);
     let dct_packet = demo.step_and_compress(&last_grads, 4);
@@ -680,7 +717,8 @@ pub fn execute_stage_training_local(
     let repops_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&f64_vals);
     let repops_digest = fnv1a_f64_digest(req.start_layer, req.end_layer, repops_sum);
 
-    let compute_exec_ms = (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
+    let compute_exec_ms = cm4_hw_ms
+        .unwrap_or_else(|| (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0);
 
     LiveStageTrainingResponse {
         node_id: node_id.to_string(),
@@ -1436,9 +1474,29 @@ impl LiveNodeWorkerServer {
                                     let q_milli = (tree_sum * 10_000.0).round() as i64;
                                     let digest = 0xcbf2_9ce4_8422_2325_u64
                                         ^ (q_milli as u64).wrapping_mul(0x0100_0000_01b3);
-                                    let exec_ms =
+                                    let mut exec_ms =
                                         ((t_kv.elapsed().as_secs_f64() * 1000.0) * 100.0).round()
                                             / 100.0;
+                                    if node_id_str.starts_with("node-reterminal")
+                                        || hostname_str.contains("reterminal")
+                                    {
+                                        let ip = hostname_str
+                                            .rsplit('-')
+                                            .next()
+                                            .filter(|s| s.contains('.'))
+                                            .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+                                        if let Some((_ok, hw_ms)) =
+                                            kadmium_core::ReTerminalCm4LanBridge::stage_kv_cache_migration_on_cm4(
+                                                ip,
+                                                &req.session_id,
+                                                req.quantized_k_pages.len(),
+                                                req.tokens_stored,
+                                                wire_bytes,
+                                            )
+                                        {
+                                            exec_ms = hw_ms;
+                                        }
+                                    }
                                     let ack = LiveKvCacheMigrationAck {
                                         target_node_id: node_id_str.clone(),
                                         target_hostname: hostname_str.clone(),
