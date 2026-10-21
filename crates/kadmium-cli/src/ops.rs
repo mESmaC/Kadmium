@@ -3,8 +3,8 @@
 
 use crate::print_shard_plan;
 use kadmium_core::{
-    KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, NodeId, NodeTrustTier,
-    PoliteActivityMonitor, PoliteActivitySample, PoliteState, WorkloadKind,
+    K230UsbComputeBridge, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModelSpec, NodeId,
+    NodeTrustTier, PoliteActivityMonitor, PoliteActivitySample, PoliteState, WorkloadKind,
     sample_personal_cluster,
 };
 use kadmium_data::{
@@ -121,6 +121,41 @@ pub fn run_probe() {
     println!(
         "  * FreeToken q* Split:     {:.2} (Accelerator vs. Host/NVMe Stream Ratio)",
         live_node.compute_q_star_ratio()
+    );
+
+    let k230_report = K230UsbComputeBridge::probe_attached_k230();
+    println!(
+        "\n--- 🔌 Attached USB Edge RISC-V + NPU Co-Processor Discovery (Kendryte CanMV K230) ---"
+    );
+    println!(
+        "  * Physical USB Detection: {} | Stage: {:?} | PnP: {}",
+        if k230_report.physical_board_detected {
+            "ONLINE (Hardware Attached over USB)"
+        } else {
+            "Standby Profile (Ready for Hot-Plug)"
+        },
+        k230_report.current_usb_stage,
+        k230_report.detected_pnp_instance_id
+    );
+    println!(
+        "  * Board & SoC Silicon:    {} — {}",
+        k230_report.board_model, k230_report.soc_architecture
+    );
+    println!(
+        "  * Hardware Die Serial:    {} | USB ID: {} | Serial Channel: {}",
+        k230_report.chip_unique_die_id,
+        k230_report.usb_vid_pid,
+        k230_report
+            .detected_serial_port
+            .as_deref()
+            .unwrap_or("USB Bulk / Gadget Mode")
+    );
+    println!(
+        "  * Probed MicroSD Vault:   {:.2} GiB ({} bytes, {} B LBA, {} KiB USB Bulk Write Chunks)",
+        k230_report.sdcard_telemetry.capacity_gib,
+        k230_report.sdcard_telemetry.capacity_bytes,
+        k230_report.sdcard_telemetry.block_size_bytes,
+        k230_report.sdcard_telemetry.usb_out_chunk_bytes / 1024
     );
 
     // Pack and verify a 64 KiB page-aligned .ktb tensor bank in memory
