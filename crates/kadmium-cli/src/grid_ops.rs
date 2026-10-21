@@ -389,10 +389,10 @@ pub async fn run_bench() {
     }
     println!("\n{}", hyper_train.summary_scorecard);
 
-    // 8. Hyper-Inference Compute Engine (MLA Weight-Absorption + KIVI Asymmetric 2-Bit KV + Flash-Decoding Split-KV)
+    // 8. Hyper-Inference Compute Engine (7-Stage Suite across Heterogeneous Nodes)
     let hyper_inf = HyperInferenceComputeReport::run_all();
     println!(
-        "\n[8/10] Hyper-Inference Compute Engine (MLA Weight-Absorption + KIVI 2-Bit Asymmetric KV + Flash-Decoding Split-KV)"
+        "\n[8/10] Hyper-Inference Compute Engine (MLA + KIVI 2-Bit + Flash-Decoding + PowerInfer/T-MAC LUT + Jacobi Wavefront + Radix/CacheBlend/MInference + 2-Layer MoE Prefetch)"
     );
     println!(
         "  * DeepSeek-V3 MLA Weight-Absorption (q_abs = q * W_UK^T): KV Cache {} B -> {} B/tok (-{:.1}%, {:.1}x Compression, {:.2}x Decode BW, MaxDiff={:.2e})",
@@ -419,6 +419,60 @@ pub async fn run_bench() {
         hyper_inf.flash_decoding_report.flash_decoding_speedup_x,
         hyper_inf.flash_decoding_report.split_kv_max_abs_error
     );
+    println!(
+        "  * PowerInfer Contextual Sparsity + T-MAC 81-State LUT Ternary: -{:.1}% FFN BW (CosSim {:.5}, {:.2}x FFN) | LUT Diff={:.2e} ({:.2}x CPU/NPU)",
+        hyper_inf.sparsity_and_lut_report.ffn_memory_bandwidth_saved_pct,
+        hyper_inf.sparsity_and_lut_report.sparse_ffn_cosine_similarity,
+        hyper_inf.sparsity_and_lut_report.powerinfer_ffn_speedup_x,
+        hyper_inf.sparsity_and_lut_report.tmac_lut_ternary_max_abs_diff,
+        hyper_inf.sparsity_and_lut_report.tmac_lut_cpu_npu_speedup_x
+    );
+    println!(
+        "  * Lookahead Jacobi Wavefront (W={}, {} stages): Stage Util {:.1}% -> {:.1}% | {:.2} Accepted Tok/Step ({:.2}x Lossless Decode)",
+        hyper_inf.lookahead_jacobi_report.lookahead_window_w,
+        hyper_inf.lookahead_jacobi_report.pipeline_stages_k,
+        hyper_inf.lookahead_jacobi_report.sequential_single_token_stage_util_pct,
+        hyper_inf.lookahead_jacobi_report.lookahead_wavefront_stage_util_pct,
+        hyper_inf.lookahead_jacobi_report.accepted_tokens_per_jacobi_step,
+        hyper_inf.lookahead_jacobi_report.distributed_decode_speedup_x
+    );
+    println!(
+        "  * Radix LPM ({:.1}% Hit) + CacheBlend ({:.0}% HKVD, CosSim {:.4}) + MInference (-{:.1}% FLOPs, {:.1}% Mass): TTFT {:.0} ms -> {:.0} ms ({:.2}x)",
+        hyper_inf.prefill_ttft_report.radix_lpm_prefix_hit_rate_pct,
+        hyper_inf.prefill_ttft_report.cacheblend_hkvd_recompute_fraction_pct,
+        hyper_inf.prefill_ttft_report.cacheblend_attention_cosine_similarity,
+        hyper_inf.prefill_ttft_report.minference_vertical_slash_flops_saved_pct,
+        hyper_inf.prefill_ttft_report.minference_attention_mass_preserved_pct,
+        hyper_inf.prefill_ttft_report.baseline_dense_ttft_ms,
+        hyper_inf.prefill_ttft_report.boosted_ttft_ms,
+        hyper_inf.prefill_ttft_report.ttft_speedup_x
+    );
+    println!(
+        "  * 2-Layer-Ahead MoE Router Probe (h_{{l-2}} * W_gate): {:.1}% Top-K Hit | DMA Stall {:.1} ms -> {:.2} ms (-{:.1}% Stall, {:.2}x MoE Speedup)\n",
+        hyper_inf.moe_prefetch_report.two_layer_ahead_expert_hit_rate_pct,
+        hyper_inf.moe_prefetch_report.unprefetched_moe_dma_stall_ms,
+        hyper_inf.moe_prefetch_report.lookahead_prefetched_dma_stall_ms,
+        hyper_inf.moe_prefetch_report.moe_expert_stall_reduction_pct,
+        hyper_inf.moe_prefetch_report.moe_decode_speedup_x
+    );
+    println!(
+        "{:<26} {:<56} {:>9} {:>10} {:>8} {:>9} {:>10}",
+        "NODE / SYSTEM", "ACTIVE HYPER-INFERENCE ACCELERATORS", "BASE TOK/S", "BOOST TOK/S", "SPEEDUP", "TTFT (MS)", "INF TOK/WH"
+    );
+    println!("{}", "-".repeat(134));
+    for r in &hyper_inf.node_inference_rows {
+        println!(
+            "{:<26} {:<56} {:>8.1}   {:>9.1}   {:>6.2}x {:>7.0}ms {:>10.0}",
+            r.hardware_label,
+            r.active_accelerators,
+            r.baseline_decode_tok_s,
+            r.hyper_boosted_decode_tok_s,
+            r.decode_speedup_x,
+            r.prefill_ttft_ms,
+            r.inference_tokens_per_watt_hour
+        );
+    }
+    println!("\n{}", hyper_inf.summary_scorecard);
 
     // 9. 4-Tier Hierarchical Pool Auto-Scaler (16 -> 100,000+ Nodes)
     let pool_scale = HierarchicalPoolPlanner::run_multi_scale_benchmark();

@@ -382,6 +382,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             get(get_hyper_training_report).post(get_hyper_training_report),
         )
         .route(
+            "/api/v1/inference/hyper-compute",
+            get(get_hyper_inference_report).post(get_hyper_inference_report),
+        )
+        .route(
             "/api/v1/pools/hierarchical-scale",
             get(get_hierarchical_pool_scale_report).post(get_hierarchical_pool_scale_report),
         )
@@ -2028,6 +2032,10 @@ pub struct ThroughputBoostApiResponse {
     pub storage_pool_report: DecentralizedStoragePoolReport,
     pub raid5_striping_report: RaidStripedPassReport,
     pub multipath_schedule: MultiPathStripedSchedule,
+}
+
+async fn get_hyper_inference_report() -> Json<HyperInferenceComputeReport> {
+    Json(HyperInferenceComputeReport::run_all())
 }
 
 async fn get_storage_pool_bucket_report() -> Json<DecentralizedStoragePoolReport> {
