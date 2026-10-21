@@ -38,18 +38,18 @@ use kadmium_rl::{
 use kadmium_runtime::{
     CrossSystemBenchmarkSuiteReport, CrossSystemComputeHarness, DistributedExl3ConversionEngine,
     DistributedLanExecutor, DistributedPipelineExecutionReport, Exl3ConversionReport,
-    HardwareKernelDispatcher, HardwareKernelSuiteReport, HyperTrainingBenchmarkReport,
-    KtbCheckpointExportReport, LiveDistributedTrainingStepReport, LiveDreamRsiSwarmReport,
-    LiveFts3SwarmStreamReport, LiveHopTelemetry, LiveKvCacheMigrationReport, LiveVerdeAuditReport,
-    LocalFleetSpawner, Pipeline1F1BSchedule, Pipeline1F1BScheduler,
-    TrainingComputeAcceleratorSuite, VerdeFraudProofCertificate, VerdeFraudProofEngine,
-    apply_ota_update_manifest_local,
+    HardwareKernelDispatcher, HardwareKernelSuiteReport, HyperInferenceComputeReport,
+    HyperTrainingBenchmarkReport, KtbCheckpointExportReport, LiveDistributedTrainingStepReport,
+    LiveDreamRsiSwarmReport, LiveFts3SwarmStreamReport, LiveHopTelemetry,
+    LiveKvCacheMigrationReport, LiveVerdeAuditReport, LocalFleetSpawner, Pipeline1F1BSchedule,
+    Pipeline1F1BScheduler, TrainingComputeAcceleratorSuite, VerdeFraudProofCertificate,
+    VerdeFraudProofEngine, apply_ota_update_manifest_local,
 };
 use kadmium_sharding::{
     CloudShieldCutoverWatcher, CloudShieldWatcherReport, ClusterPoolSliceLayout,
-    DataflowComparisonReport, DataflowStreamPlanner, HybridCloudArbitragePlanner,
-    ProvisionedSpotContainer, ShardPlanner, ShiftTriggerReason, SpotOrderbookBidEngine,
-    SpotOrderbookQuote, SubClusterPartitioner,
+    DataflowComparisonReport, DataflowStreamPlanner, HierarchicalPoolBenchmarkReport,
+    HierarchicalPoolPlanner, HybridCloudArbitragePlanner, ProvisionedSpotContainer, ShardPlanner,
+    ShiftTriggerReason, SpotOrderbookBidEngine, SpotOrderbookQuote, SubClusterPartitioner,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -380,6 +380,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/training/hyper-compute",
             get(get_hyper_training_report).post(get_hyper_training_report),
+        )
+        .route(
+            "/api/v1/pools/hierarchical-scale",
+            get(get_hierarchical_pool_scale_report).post(get_hierarchical_pool_scale_report),
         )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -2015,8 +2019,14 @@ async fn post_exl3_convert_and_benchmark(
 pub struct ThroughputBoostApiResponse {
     pub cross_system_matrix: CrossSystemBenchmarkSuiteReport,
     pub hyper_training_suite: HyperTrainingBenchmarkReport,
+    pub hyper_inference_suite: HyperInferenceComputeReport,
+    pub hierarchical_pool_scale: HierarchicalPoolBenchmarkReport,
     pub raid5_striping_report: RaidStripedPassReport,
     pub multipath_schedule: MultiPathStripedSchedule,
+}
+
+async fn get_hierarchical_pool_scale_report() -> Json<HierarchicalPoolBenchmarkReport> {
+    Json(HierarchicalPoolPlanner::run_multi_scale_benchmark())
 }
 
 async fn get_hyper_training_report(
@@ -2040,6 +2050,8 @@ async fn get_throughput_boost_report(
     let cross_system_matrix = CrossSystemComputeHarness::run_full_matrix(Some(nodes.clone()));
     let hyper_training_suite =
         TrainingComputeAcceleratorSuite::run_full_suite(Some(nodes.clone()));
+    let hyper_inference_suite = HyperInferenceComputeReport::run_all();
+    let hierarchical_pool_scale = HierarchicalPoolPlanner::run_multi_scale_benchmark();
     let input_act: Vec<f32> = (0..64 * 16)
         .map(|i| ((i % 29) as f32 - 14.0) * 0.125)
         .collect();
@@ -2061,6 +2073,8 @@ async fn get_throughput_boost_report(
     Json(ThroughputBoostApiResponse {
         cross_system_matrix,
         hyper_training_suite,
+        hyper_inference_suite,
+        hierarchical_pool_scale,
         raid5_striping_report,
         multipath_schedule,
     })

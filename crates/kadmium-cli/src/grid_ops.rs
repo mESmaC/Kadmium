@@ -11,10 +11,12 @@ use kadmium_network::{
 };
 use kadmium_rl::DreamRsiWorldRegistry;
 use kadmium_runtime::{
-    CrossSystemComputeHarness, HardwareKernelDispatcher, TrainingComputeAcceleratorSuite,
-    VerdeFraudProofEngine,
+    CrossSystemComputeHarness, HardwareKernelDispatcher, HyperInferenceComputeReport,
+    TrainingComputeAcceleratorSuite, VerdeFraudProofEngine,
 };
-use kadmium_sharding::{CloudShieldCutoverWatcher, SpotOrderbookBidEngine};
+use kadmium_sharding::{
+    CloudShieldCutoverWatcher, HierarchicalPoolPlanner, SpotOrderbookBidEngine,
+};
 
 pub fn run_lease(hours: f64, payout: &str) {
     let nodes = sample_personal_cluster();
@@ -384,6 +386,61 @@ pub async fn run_bench() {
         );
     }
     println!("\n{}", hyper_train.summary_scorecard);
+
+    // 8. Hyper-Inference Compute Engine (MLA Weight-Absorption + KIVI Asymmetric 2-Bit KV + Flash-Decoding Split-KV)
+    let hyper_inf = HyperInferenceComputeReport::run_all();
+    println!(
+        "\n[8/9] Hyper-Inference Compute Engine (MLA Weight-Absorption + KIVI 2-Bit Asymmetric KV + Flash-Decoding Split-KV)"
+    );
+    println!(
+        "  * DeepSeek-V3 MLA Weight-Absorption (q_abs = q * W_UK^T): KV Cache {} B -> {} B/tok (-{:.1}%, {:.1}x Compression, {:.2}x Decode BW, MaxDiff={:.2e})",
+        hyper_inf.mla_report.standard_mha_kv_bytes_per_token,
+        hyper_inf.mla_report.mla_latent_kv_bytes_per_token,
+        hyper_inf.mla_report.kv_cache_reduction_pct,
+        hyper_inf.mla_report.kv_compression_ratio_x,
+        hyper_inf.mla_report.decode_bandwidth_speedup_x,
+        hyper_inf.mla_report.weight_absorption_max_abs_diff
+    );
+    println!(
+        "  * KIVI Asymmetric 2-Bit KV (Per-Channel Key INT2 + Per-Token Val INT2): {:.2}x Compression | Key Err {:.4} -> {:.4} | CosSim {:.5}",
+        hyper_inf.kivi_2bit_report.kv_compression_ratio_x,
+        hyper_inf.kivi_2bit_report.naive_per_token_key_rel_error,
+        hyper_inf.kivi_2bit_report.kivi_asymmetric_rel_error,
+        hyper_inf.kivi_2bit_report.attention_output_cosine_similarity
+    );
+    println!(
+        "  * Flash-Decoding Parallel Split-KV ({}K ctx, {} splits): Hardware Util {:.1}% -> {:.1}% ({:.2}x Decode Speedup, LSE Err={:.2e})",
+        hyper_inf.flash_decoding_report.context_seq_len / 1024,
+        hyper_inf.flash_decoding_report.num_parallel_kv_splits,
+        hyper_inf.flash_decoding_report.unsplit_decode_hardware_utilization_pct,
+        hyper_inf.flash_decoding_report.split_kv_hardware_utilization_pct,
+        hyper_inf.flash_decoding_report.flash_decoding_speedup_x,
+        hyper_inf.flash_decoding_report.split_kv_max_abs_error
+    );
+
+    // 9. 4-Tier Hierarchical Pool Auto-Scaler (16 -> 100,000+ Nodes)
+    let pool_scale = HierarchicalPoolPlanner::run_multi_scale_benchmark();
+    println!(
+        "\n[9/9] 4-Tier Hierarchical Pool Auto-Scaler & Radix-16 Tree Federation (16 -> 100,000+ Nodes)"
+    );
+    println!(
+        "{:<38} {:>8} {:>9} {:>12} {:>11} {:>14} {:>14}",
+        "POOL SCALE TIER", "CELLS", "TREE HOPS", "LINK RAM RED", "TREE SYNC", "INF TOK/S", "TRAIN TOK/S"
+    );
+    println!("{}", "-".repeat(118));
+    for t in &pool_scale.evaluated_tiers {
+        println!(
+            "{:<38} {:>8} {:>9} {:>11.1}x {:>9.1}ms {:>14.1} {:>14.1}",
+            t.tier_label,
+            t.decomposition.total_model_cells,
+            t.scaling_metrics.tree_depth_hops,
+            t.scaling_metrics.topology_memory_reduction_x,
+            t.scaling_metrics.hierarchical_tree_sync_ms,
+            t.inference_pool_stats.aggregate_inference_tok_s,
+            t.training_pool_stats.aggregate_training_tok_s
+        );
+    }
+    println!("\n{}", pool_scale.summary_scorecard);
 }
 
 pub fn run_pairing() {

@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod exl3_qtip;
 pub mod fraud_proof;
+pub mod inference_compute;
 pub mod kernels;
 pub mod live_worker;
 pub mod throughput_boost;
@@ -18,6 +19,7 @@ pub mod training_compute;
 pub mod training_framework;
 pub use exl3_qtip::*;
 pub use fraud_proof::*;
+pub use inference_compute::*;
 pub use kernels::*;
 pub use live_worker::*;
 pub use throughput_boost::*;
