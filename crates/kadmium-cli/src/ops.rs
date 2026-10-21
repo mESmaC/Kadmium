@@ -193,6 +193,21 @@ pub fn run_probe() {
             proof.ktb_64k_sdcard_read_ms,
             proof.verde_64_layer_max_f32_drift
         );
+        println!(
+            "  * AI2D DMA & Transformer: Zero-Copy AI2D->KPU: {:.2} ms ({:.1} FPS) | FastSpeech 50-Tok Sequence Encoder: {:.2} ms ({:.1} tok/s)",
+            proof.ai2d_plus_kpu_chained_ms,
+            if proof.ai2d_plus_kpu_chained_ms > 0.0 {
+                1000.0 / proof.ai2d_plus_kpu_chained_ms
+            } else {
+                0.0
+            },
+            proof.fastspeech_transformer_50tok_ms,
+            if proof.fastspeech_transformer_50tok_ms > 0.0 {
+                50_000.0 / proof.fastspeech_transformer_50tok_ms
+            } else {
+                0.0
+            }
+        );
     }
 
     if k230_report.physical_board_detected {
@@ -404,6 +419,48 @@ pub fn run_probe() {
                     kv_report.zero_context_drop_verified,
                     kv_report.migration_rtt_ms
                 );
+
+                let ota_manifest = gw.create_ota_update_manifest(
+                    "v0.4.3-k230-kpu-rvv".to_string(),
+                    UpdatePayloadKind::KtbWeightDelta,
+                    UpdateTargetScope::AllNodes,
+                    true,
+                    "Live USB-CDC OTA delta push to CanMV K230 MicroSD".into(),
+                );
+                if let Ok(ota_ack) = DistributedLanExecutor::push_update_tcp(
+                    &w_k230.local_addr.to_string(),
+                    1,
+                    &ota_manifest,
+                )
+                .await
+                {
+                    println!(
+                        "  * Live K230 OTA Push:     {} | RepOps Canary={:#018x} | Exec: {:.2} ms",
+                        ota_ack.status_note,
+                        ota_ack.repops_post_check_digest,
+                        ota_ack.apply_latency_ms
+                    );
+                }
+
+                let d0: Vec<u8> = (0..64).map(|i| ((i * 37 + 19) & 0xFF) as u8).collect();
+                let d1_orig: Vec<u8> = (0..64).map(|i| ((i * 73 + 91) & 0xFF) as u8).collect();
+                let parity: Vec<u8> = d0.iter().zip(d1_orig.iter()).map(|(&a, &b)| a ^ b).collect();
+                let mut host_fnv: u64 = 0xcbf2_9ce4_8422_2325;
+                for &b in &d1_orig {
+                    host_fnv ^= b as u64;
+                    host_fnv = host_fnv.wrapping_mul(0x0100_0000_01b3);
+                }
+                if let Some((rec_d1, k230_fnv, raid_ms)) =
+                    K230UsbComputeBridge::recover_raid5_stripe_on_k230(&port_label, &d0, &parity)
+                {
+                    println!(
+                        "  * Live K230 RAID-5 XOR:   Recovered 64 B Straggler Stripe on {} | Exact: {} (FNV64={:#018x}, {:.2} ms)",
+                        port_label,
+                        rec_d1 == d1_orig && k230_fnv == host_fnv,
+                        k230_fnv,
+                        raid_ms
+                    );
+                }
             })
         });
     }

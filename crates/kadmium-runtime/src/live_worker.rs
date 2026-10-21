@@ -711,8 +711,36 @@ pub fn apply_ota_update_manifest_local(
         .map(|i| ((i as f64) * 0.09 + 0.15).sin())
         .collect();
     let repops_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&self_test_vec);
-    let repops_digest = fnv1a_f64_digest(0, 1, repops_sum);
-    let elapsed_ms = ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0;
+    let mut repops_digest = fnv1a_f64_digest(0, 1, repops_sum);
+    let mut k230_sd_note = String::new();
+    let mut k230_exec_override: Option<f64> = None;
+
+    if node_id.0.starts_with("node-k230") || hostname.contains("k230") {
+        let port = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.to_ascii_uppercase().starts_with("COM"))
+            .map(|s| s.to_ascii_uppercase())
+            .unwrap_or_else(|| "COM11".to_string());
+        if let Some((hw_digest, sd_ok, hw_ms)) =
+            kadmium_core::K230UsbComputeBridge::stage_ota_update_on_k230(
+                &port,
+                &manifest.update_id,
+                &manifest.target_version,
+                manifest.expected_ktb_merkle_root_fnv64,
+                manifest.artifact_size_bytes as usize,
+            )
+        {
+            repops_digest = hw_digest;
+            k230_exec_override = Some(hw_ms);
+            if sd_ok {
+                k230_sd_note = format!(" + /sdcard/kadmium_ota_release.bin on {port}");
+            }
+        }
+    }
+
+    let elapsed_ms = k230_exec_override
+        .unwrap_or_else(|| ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0);
 
     WorkerUpdatePushAck {
         update_id: manifest.update_id.clone(),
@@ -727,7 +755,7 @@ pub fn apply_ota_update_manifest_local(
         repops_post_check_digest: repops_digest,
         apply_latency_ms: elapsed_ms.max(0.12),
         status_note: format!(
-            "Applied {:?} ({} bytes) -> {} [RepOps verified]",
+            "Applied {:?} ({} bytes) -> {} [RepOps verified{k230_sd_note}]",
             manifest.payload_kind, manifest.artifact_size_bytes, manifest.target_version
         ),
     }

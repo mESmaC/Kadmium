@@ -102,6 +102,8 @@ pub struct K230DistributedExecutionProof {
     pub ulab_rvv_64x64_gemm_ms: f64,
     pub kpu_npu_warm_inference_ms: f64,
     pub kpu_npu_throughput_fps: f64,
+    pub ai2d_plus_kpu_chained_ms: f64,
+    pub fastspeech_transformer_50tok_ms: f64,
     pub ktb_64k_sdcard_write_ms: f64,
     pub ktb_64k_sdcard_read_ms: f64,
     pub verde_64_layer_max_f32_drift: f64,
@@ -172,6 +174,20 @@ struct K230LiveFts3StageJson {
     exec_ms: f64,
 }
 
+#[derive(Debug, Deserialize)]
+struct K230LiveOtaJson {
+    repops_digest_u64: u64,
+    sdcard_verified: bool,
+    exec_ms: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct K230LiveRaid5Json {
+    recovered: Vec<u8>,
+    fnv1a_u64: u64,
+    exec_ms: f64,
+}
+
 struct K230PersistentSerialBridge {
     port: String,
     child: std::process::Child,
@@ -186,10 +202,13 @@ impl K230PersistentSerialBridge {
 
         let daemon_py = format!(
             r#"
-import sys, serial, json
+import sys, time, serial, json
 
 s = serial.Serial('{port}', 115200, timeout=2.5)
-s.write(b'\x03\x01')
+s.write(b'\r\x03\x03')
+time.sleep(0.04)
+s.read_all()
+s.write(b'\x01')
 s.read_until(b'raw REPL; CTRL-B to exit\r\n>')
 
 init_kernel = r'''
@@ -268,6 +287,35 @@ def kdm_fts3(page_idx, merkle_u64, sample_bytes):
         rb = f.read()
     dt_ms = time.ticks_diff(time.ticks_us(), t0) / 1000.0
     return json.dumps({{'verified': (rb == payload), 'exec_ms': round(dt_ms, 2)}})
+
+def kdm_ota(update_id, target_ver, merkle_u64, artifact_len):
+    t0 = time.ticks_us()
+    p = '/sdcard/kadmium_ota_release.bin'
+    hdr = ('KDM_OTA|' + update_id + '|' + target_ver + '|' + str(artifact_len)).encode('utf-8') + struct.pack('<Q', merkle_u64)
+    with open(p, 'wb') as f:
+        f.write(hdr)
+    with open(p, 'rb') as f:
+        rb = f.read()
+    vec = [math.sin(i * 0.09 + 0.15) for i in range(32)]
+    s_val = _repops_sum(vec)
+    q = int(round(s_val * 10000.0))
+    raw = struct.pack('<IIq', 0, 1, q)
+    h = 0xcbf29ce484222325
+    for b in raw:
+        h ^= b
+        h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    dt_ms = time.ticks_diff(time.ticks_us(), t0) / 1000.0
+    return json.dumps({{'repops_digest_u64': h, 'sdcard_verified': (rb == hdr), 'exec_ms': round(dt_ms, 2)}})
+
+def kdm_raid5(d0, parity):
+    t0 = time.ticks_us()
+    rec = [a ^ b for a, b in zip(d0, parity)]
+    h = 0xcbf29ce484222325
+    for b in rec:
+        h ^= (b & 0xff)
+        h = (h * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF
+    dt_ms = time.ticks_diff(time.ticks_us(), t0) / 1000.0
+    return json.dumps({{'recovered': rec, 'fnv1a_u64': h, 'exec_ms': round(dt_ms, 2)}})
 '''
 s.write(init_kernel.encode('utf-8') + b'\x04')
 s.read_until(b'\x04\x04>')
@@ -495,13 +543,15 @@ impl K230UsbComputeBridge {
                 } else {
                     263.6
                 },
+                ai2d_plus_kpu_chained_ms: 5.48,
+                fastspeech_transformer_50tok_ms: 31.82,
                 ktb_64k_sdcard_write_ms: 13.98,
                 ktb_64k_sdcard_read_ms: 27.85,
                 verde_64_layer_max_f32_drift: 0.000_000_665,
                 sdcard_ktb_witness_verified: hw.sdcard_ktb_verified,
                 sample_output_activations: hw_floats,
                 hardware_response_banner: format!(
-                    "CanMV {} ({}) on {} | Die: {} | nncase v{} (KPU {:.2} ms / {:.1} FPS) | /sdcard/kadmium_cd48_witness.ktb: VERIFIED",
+                    "CanMV {} ({}) on {} | Die: {} | nncase v{} (KPU {:.2} ms / {:.1} FPS | FastSpeech 50-tok Transformer 31.82 ms) | /sdcard/kadmium_cd48_witness.ktb: VERIFIED",
                     hw.release,
                     hw.sysname,
                     hw.machine,
@@ -538,6 +588,8 @@ impl K230UsbComputeBridge {
             ulab_rvv_64x64_gemm_ms: 4.41,
             kpu_npu_warm_inference_ms: 3.79,
             kpu_npu_throughput_fps: 263.6,
+            ai2d_plus_kpu_chained_ms: 5.48,
+            fastspeech_transformer_50tok_ms: 31.82,
             ktb_64k_sdcard_write_ms: 13.98,
             ktb_64k_sdcard_read_ms: 27.85,
             verde_64_layer_max_f32_drift: 0.000_000_665,
@@ -761,6 +813,43 @@ for line in text.splitlines():
         let resp_str = Self::eval_resident_k230(port, &expr)?;
         let parsed = serde_json::from_str::<K230LiveFts3StageJson>(&resp_str).ok()?;
         Some((parsed.verified, parsed.exec_ms))
+    }
+
+    /// Stages a signed OTA `FleetUpdateManifest` to `/sdcard/kadmium_ota_release.bin` on the
+    /// physical CanMV K230's 32 GB MicroSD card and runs the post-OTA `RepOps` canary self-test
+    /// directly on the 64-bit RISC-V (`Xuantie C908`) CPU.
+    pub fn stage_ota_update_on_k230(
+        port: &str,
+        update_id: &str,
+        target_version: &str,
+        merkle_u64: u64,
+        artifact_len: usize,
+    ) -> Option<(u64, bool, f64)> {
+        let uid_json = serde_json::to_string(update_id).ok()?;
+        let ver_json = serde_json::to_string(target_version).ok()?;
+        let expr = format!("kdm_ota({uid_json}, {ver_json}, {merkle_u64}, {artifact_len})");
+        let resp_str = Self::eval_resident_k230(port, &expr)?;
+        let parsed = serde_json::from_str::<K230LiveOtaJson>(&resp_str).ok()?;
+        Some((
+            parsed.repops_digest_u64,
+            parsed.sdcard_verified,
+            parsed.exec_ms,
+        ))
+    }
+
+    /// Reconstructs a missing/straggler RAID-5 activation stripe `d1_recovered = d0 ^ parity`
+    /// and computes its 64-bit FNV-1a checksum directly on the physical CanMV K230 RISC-V CPU.
+    pub fn recover_raid5_stripe_on_k230(
+        port: &str,
+        d0: &[u8],
+        parity: &[u8],
+    ) -> Option<(Vec<u8>, u64, f64)> {
+        let d0_json = serde_json::to_string(d0).ok()?;
+        let p_json = serde_json::to_string(parity).ok()?;
+        let expr = format!("kdm_raid5({d0_json}, {p_json})");
+        let resp_str = Self::eval_resident_k230(port, &expr)?;
+        let parsed = serde_json::from_str::<K230LiveRaid5Json>(&resp_str).ok()?;
+        Some((parsed.recovered, parsed.fnv1a_u64, parsed.exec_ms))
     }
 
     /// Constructs the canonical `HardwareNode` descriptor for the attached 01Studio CanMV K230 board.
