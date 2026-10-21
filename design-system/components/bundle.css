@@ -40,18 +40,18 @@ body.kd-preview { margin: 0; padding: var(--space-4); background: var(--graphite
 .kd-badge-danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
 
 /* ---- Meter ---- */
-.kd-meter { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--space-3); min-width: 0;
+.kd-meter { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--space-3); min-width: 220px;
   font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); }
 .kd-meter-track { height: 6px; border-radius: var(--radius-xs); background: var(--graphite-3); overflow: hidden; }
 .kd-meter-fill { height: 100%; border-radius: var(--radius-xs); background: var(--cadmium); box-shadow: inset 0 0 0 1px var(--cadmium-edge); transition: width .3s ease; }
 .kd-meter-cloud .kd-meter-fill { background: var(--cherenkov); box-shadow: none; }
 .kd-meter-critical .kd-meter-fill { background: var(--danger); box-shadow: none; }
 .kd-meter-critical .kd-meter-value { color: var(--danger); }
-.kd-meter-value { font-size: 12px; letter-spacing: 0; text-transform: none; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kd-meter-value { font-size: 12px; letter-spacing: 0; text-transform: none; color: var(--ink); font-variant-numeric: tabular-nums; }
 
 /* ---- NodeCard ---- */
 .kd-node { background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-4);
-  box-shadow: var(--shadow-sm); display: grid; gap: var(--space-3); min-width: 0; font-family: var(--font-sans); color: var(--ink); }
+  box-shadow: var(--shadow-sm); display: grid; gap: var(--space-3); min-width: 280px; font-family: var(--font-sans); color: var(--ink); }
 .kd-node-head { display: flex; align-items: flex-start; gap: var(--space-3); }
 .kd-node-icon { flex: none; width: 36px; height: 36px; border-radius: var(--radius-sm); background: var(--graphite-2); color: var(--ink-muted); display: grid; place-items: center; }
 .kd-node-icon svg { width: var(--icon-md); height: var(--icon-md); }
@@ -62,12 +62,12 @@ body.kd-preview { margin: 0; padding: var(--space-4); background: var(--graphite
 .kd-node-hw { font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--ink-muted); margin-top: 2px; }
 .kd-node-head .kd-badge { margin-left: auto; flex: none; }
 .kd-node-meters { display: grid; gap: var(--space-2); }
-.kd-node-foot { display: flex; align-items: center; gap: var(--space-3); font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); flex-wrap: wrap; }
+.kd-node-foot { display: flex; align-items: center; gap: var(--space-3); font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); }
 .kd-node-foot .kd-node-shards { margin-left: auto; color: var(--ink); font-variant-numeric: tabular-nums; }
 .kd-node-offline { opacity: .72; }
 
 /* ---- ShardRail ---- */
-.kd-rail { display: block; width: 100%; max-width: 100%; height: auto; font-family: var(--font-mono); overflow: visible; }
+.kd-rail { display: block; max-width: 100%; height: auto; font-family: var(--font-mono); overflow: visible; }
 .kd-rail-bar { stroke: var(--ink); stroke-width: 3; stroke-linecap: round; }
 .kd-rail-rod { stroke: var(--cadmium); stroke-width: 8; stroke-linecap: round; }
 .kd-rail-rod-cloud { stroke: var(--cherenkov); }
@@ -76,8 +76,8 @@ body.kd-preview { margin: 0; padding: var(--space-4); background: var(--graphite
 .kd-rail-pct { fill: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /* ---- PlanCard ---- */
-.kd-plan { background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-6);
-  display: flex; flex-direction: column; gap: var(--space-4); width: 100%; min-width: 0; box-sizing: border-box; box-shadow: var(--shadow-sm); font-family: var(--font-sans); color: var(--ink); }
+.kd-plan { background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-5);
+  display: grid; gap: var(--space-4); width: 300px; box-shadow: var(--shadow-sm); font-family: var(--font-sans); color: var(--ink); align-content: start; }
 .kd-plan-eyebrow { display: flex; align-items: center; gap: var(--space-2); font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
 .kd-plan-eyebrow::before { content: ""; width: 3px; height: 14px; border-radius: var(--radius-full); background: currentColor; }
 .kd-plan-self .kd-plan-eyebrow { color: var(--cadmium-text); }
@@ -86,21 +86,20 @@ body.kd-preview { margin: 0; padding: var(--space-4); background: var(--graphite
 .kd-plan-price { font-family: var(--font-mono); font-size: 28px; line-height: 32px; font-weight: 500; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .kd-plan-price small { font-family: var(--font-sans); font-size: 13px; font-weight: 400; letter-spacing: 0; color: var(--ink-muted); margin-left: var(--space-1); }
 .kd-plan-summary { font-size: 15px; line-height: 22px; color: var(--ink-muted); }
-.kd-plan-features { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); font-size: 14px; line-height: 20px; flex: 1; }
+.kd-plan-features { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); font-size: 14px; line-height: 20px; }
 .kd-plan-features li { display: flex; gap: var(--space-2); align-items: flex-start; }
 .kd-plan-features li::before { content: ""; flex: none; width: 3px; height: 14px; margin-top: 3px; border-radius: var(--radius-full); background: var(--line-strong); }
 .kd-plan-self .kd-plan-features li::before { background: var(--cadmium); }
 .kd-plan-cloud .kd-plan-features li::before { background: var(--cherenkov); }
-.kd-plan .kd-btn { width: 100%; margin-top: auto; }
+.kd-plan .kd-btn { width: 100%; }
 
 /* ---- CodeBlock ---- */
 .kd-code { background: var(--graphite-2); border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden;
-  font-family: var(--font-mono); font-size: 13px; line-height: 20px; color: var(--ink); width: 100%; min-width: 0; box-sizing: border-box; }
-.kd-code-head { display: flex; align-items: center; gap: var(--space-2); min-height: 36px; padding: var(--space-1) var(--space-2) var(--space-1) var(--space-4);
+  font-family: var(--font-mono); font-size: 13px; line-height: 20px; color: var(--ink); min-width: 320px; }
+.kd-code-head { display: flex; align-items: center; gap: var(--space-2); min-height: 36px; padding: var(--space-1) var(--space-1) var(--space-1) var(--space-4);
   border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-muted); }
-.kd-code-head span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.kd-code-head .kd-btn { margin-left: auto; flex: none; }
-.kd-code pre { margin: 0; padding: var(--space-3) var(--space-4); overflow-x: auto; font: inherit; tab-size: 2; max-width: 100%; }
+.kd-code-head .kd-btn { margin-left: auto; }
+.kd-code pre { margin: 0; padding: var(--space-3) var(--space-4); overflow: auto; font: inherit; tab-size: 2; }
 .kd-code code { font: inherit; }
 .kd-tok-k { color: var(--code-keyword); }
 .kd-tok-s { color: var(--code-string); }
@@ -109,7 +108,7 @@ body.kd-preview { margin: 0; padding: var(--space-4); background: var(--graphite
 .kd-tok-p { color: var(--code-keyword); user-select: none; }
 
 /* ---- Input ---- */
-.kd-field { display: grid; gap: var(--space-1); min-width: 0; font-family: var(--font-sans); color: var(--ink); }
+.kd-field { display: grid; gap: var(--space-1); min-width: 240px; font-family: var(--font-sans); color: var(--ink); }
 .kd-field-label { font-size: 13px; line-height: 18px; font-weight: 500; }
 .kd-input-wrap { display: flex; align-items: center; height: var(--control-md); border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
   background: var(--graphite-0); color: var(--ink); transition: border-color .12s ease; }
@@ -124,11 +123,10 @@ body.kd-preview { margin: 0; padding: var(--space-4); background: var(--graphite
 .kd-field-disabled { opacity: .5; }
 
 /* ---- Tabs ---- */
-.kd-tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--line); font-family: var(--font-sans); overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
-.kd-tabs::-webkit-scrollbar { display: none; }
+.kd-tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--line); font-family: var(--font-sans); }
 .kd-tab { position: relative; -webkit-appearance: none; appearance: none; background: none; border: 0; height: var(--control-md); padding: 0 var(--space-3);
   font: inherit; font-size: 14px; font-weight: 500; color: var(--ink-muted); cursor: pointer; display: inline-flex; align-items: center; gap: var(--space-2);
-  border-radius: var(--radius-sm) var(--radius-sm) 0 0; white-space: nowrap; flex: none; }
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
 .kd-tab:hover { color: var(--ink); background: var(--graphite-2); }
 .kd-tab:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .kd-tab[aria-selected="true"] { color: var(--ink); font-weight: 600; }

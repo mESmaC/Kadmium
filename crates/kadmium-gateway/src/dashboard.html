@@ -242,18 +242,19 @@
   }
   function shortLabel(hostname) {
     const id = String(hostname || '');
-    if (id.indexOf('main') >= 0 || id.indexOf('rig') >= 0) return 'pc';
-    if (id.indexOf('mac') >= 0) return 'mac';
-    if (id.indexOf('zephyrus') >= 0) return 'lap-1';
-    if (id.indexOf('legion') >= 0) return 'lap-2';
-    if (id.indexOf('thinkpad') >= 0) return 'old';
-    if (id.indexOf('rk3588') >= 0 || id.indexOf('sbc') >= 0) return 'sbc';
-    if (id.indexOf('nas') >= 0 || id.indexOf('truenas') >= 0) return 'nas';
-    if (id.indexOf('h100') >= 0) return 'h100';
-    if (id.indexOf('l40') >= 0) return 'l40s';
-    if (id.indexOf('a100') >= 0) return 'a100';
-    if (id.indexOf('burst') >= 0 || id.indexOf('cloud') >= 0) return 'cloud';
-    return id.slice(0, 6);
+    if (/main|rig|desktop/i.test(id)) return 'pc';
+    if (/mac/i.test(id)) return 'mac';
+    if (/zephyrus/i.test(id)) return 'lap-1';
+    if (/legion/i.test(id)) return 'lap-2';
+    if (/thinkpad/i.test(id)) return 'old';
+    if (/k230/i.test(id)) return 'k230';
+    if (/rk3588|sbc/i.test(id)) return 'sbc';
+    if (/nas|truenas/i.test(id)) return 'nas';
+    if (/h100/i.test(id)) return 'h100';
+    if (/l40/i.test(id)) return 'l40s';
+    if (/a100/i.test(id)) return 'a100';
+    if (/burst|cloud/i.test(id)) return 'cloud';
+    return id.slice(0, 6).replace(/-+$/, '').toLowerCase();
   }
   function hardwareLine(node) {
     const m = node.memory || {}, be = String(node.backend || '').toLowerCase().replace('metalunified', 'metal').replace('cpuavx512oravx2', 'cpu avx').replace('cpuarmneonnpu', 'arm neon + npu');
