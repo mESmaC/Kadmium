@@ -157,6 +157,35 @@ pub fn run_probe() {
         k230_report.sdcard_telemetry.block_size_bytes,
         k230_report.sdcard_telemetry.usb_out_chunk_bytes / 1024
     );
+    if let Some(proof) = &k230_report.live_execution_proof {
+        println!(
+            "  * Live RISC-V Execution:  {} | {}",
+            if proof.executed_on_physical_silicon {
+                "PHYSICAL SILICON VERIFIED OVER USB"
+            } else {
+                "Reference Verification"
+            },
+            proof.riscv_core_signature
+        );
+        println!(
+            "  * KPU & Transport Link:   {} | {}",
+            proof.nncase_kpu_version, proof.transport_channel
+        );
+        println!(
+            "  * Cross-ISA FNV-1a Proof: Host={:#018x} == K230={:#018x} | Bit-Exact: {} | Max Err: {:.6}",
+            proof.host_reference_checksum_fnv1a,
+            proof.k230_hardware_checksum_fnv1a,
+            proof.bit_exact_verified,
+            proof.max_abs_error
+        );
+        println!(
+            "  * Hardware Timings:       USB RTT: {:.2} ms | K230 Compute: {:.2} ms | ulab RVV 64x64 GEMM: {:.2} ms | /sdcard .ktb Witness: {}",
+            proof.usb_round_trip_latency_ms,
+            proof.k230_compute_time_ms,
+            proof.ulab_rvv_64x64_gemm_ms,
+            proof.sdcard_ktb_witness_verified
+        );
+    }
 
     // Pack and verify a 64 KiB page-aligned .ktb tensor bank in memory
     let mut packer = KtbBankPacker::new("deepseek-v3-671b-moe");

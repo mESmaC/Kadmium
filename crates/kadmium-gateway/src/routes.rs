@@ -14,9 +14,9 @@ use axum::{
     routing::{get, post},
 };
 use kadmium_core::{
-    ClosetSiliconLongevityGovernor, K230DistributedExecutionProof, K230HardwareProbeReport,
-    K230UsbComputeBridge, KadmiumReactorInfrastructureReport, LiveHardwareProfiler, ModelSpec,
-    NodeTrustTier, OsHookHysteresisReport, OsSwapchainHysteresisEngine, PhoneFarmBoxController,
+    ClosetSiliconLongevityGovernor, K230HardwareProbeReport, K230UsbComputeBridge,
+    KadmiumReactorInfrastructureReport, LiveHardwareProfiler, ModelSpec, NodeTrustTier,
+    OsHookHysteresisReport, OsSwapchainHysteresisEngine, PhoneFarmBoxController,
     PhoneFarmBoxPreset, PhoneFarmChassisSpec, PhoneFarmTopologyMode, PhoneFarmTransportMode,
     PoliteState, ScopedApiKey, SubClusterQuotaPolicy, SubClusterRbacEngine, SupplyLeasePolicy,
     SupplyMarketplaceSnapshot, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
@@ -2057,35 +2057,7 @@ async fn get_reactor_clearinghouse_report() -> Json<KadmiumReactorInfrastructure
 }
 
 async fn get_k230_usb_probe_report() -> Json<K230HardwareProbeReport> {
-    let mut report = K230UsbComputeBridge::probe_attached_k230();
-    let input: [i8; 16] = [12, -5, 8, 3, -4, 15, 7, -9, 6, 11, -3, 14, 9, -8, 5, 10];
-    let weights: [i8; 16] = [4, 7, -2, 9, -6, 3, 11, -5, 8, -4, 6, 2, 5, 9, -7, 3];
-    let (_acc, floats, checksum) =
-        K230UsbComputeBridge::execute_reference_kdmf_microkernel(&input, &weights, 1250);
-    report.live_execution_proof = Some(K230DistributedExecutionProof {
-        workload_name: "KDMF INT8 4x4 MatMul + Gated SwiGLU Activation Micro-Kernel".to_string(),
-        transport_channel: format!(
-            "USB 2.0 High-Speed ({:?} — {})",
-            report.current_usb_stage, report.detected_pnp_instance_id
-        ),
-        riscv_core_signature: "T-Head Xuantie C908 64-bit RISC-V @ 1.6 GHz (RVV 1.0) + 6 TOPS KPU"
-            .to_string(),
-        matrix_dimensions: (4, 4, 4),
-        host_reference_checksum_fnv1a: checksum,
-        k230_hardware_checksum_fnv1a: checksum,
-        max_abs_error: 0.0,
-        bit_exact_verified: true,
-        usb_round_trip_latency_ms: 0.85,
-        k230_compute_time_ms: 0.12,
-        sample_output_activations: floats,
-        hardware_response_banner: format!(
-            "Uboot Stage for K230 | Serial: {} | SDCARD: {:.2} GiB ({} B)",
-            report.chip_unique_die_id,
-            report.sdcard_telemetry.capacity_gib,
-            report.sdcard_telemetry.capacity_bytes
-        ),
-    });
-    Json(report)
+    Json(K230UsbComputeBridge::probe_attached_k230())
 }
 
 async fn get_hyper_inference_report() -> Json<HyperInferenceComputeReport> {

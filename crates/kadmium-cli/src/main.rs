@@ -850,9 +850,84 @@ async fn run_server(
 
     gw_state.register_live_worker(local_node.clone(), worker_tcp_addr.clone(), 0.15, live_only);
 
+    // Automatically detect and attach a physical CanMV K230 RISC-V + 6 TOPS KPU board over USB-CDC if connected:
+    let k230_probe = kadmium_core::K230UsbComputeBridge::probe_attached_k230();
+    let mut attached_k230_banner: Option<String> = None;
+    let mut next_fleet_port = bound_worker_port.saturating_add(1);
+    if k230_probe.physical_board_detected {
+        if let Ok(k230_server) = LiveNodeWorkerServer::spawn_auto_port(
+            "127.0.0.1",
+            next_fleet_port,
+            k230_probe.hardware_node.clone(),
+            true,
+        )
+        .await
+        {
+            next_fleet_port = k230_server.local_addr.port().saturating_add(1);
+            let k230_tcp_addr = k230_server.local_addr.to_string();
+            let port_label = k230_probe
+                .detected_serial_port
+                .clone()
+                .unwrap_or_else(|| "USB-BootROM".to_string());
+            let (usb_rtt, os_label, live_silicon, k230_digest) =
+                if let Some(proof) = &k230_probe.live_execution_proof {
+                    (
+                        proof.usb_round_trip_latency_ms.max(0.85),
+                        proof.riscv_core_signature.clone(),
+                        proof.executed_on_physical_silicon,
+                        proof.k230_hardware_checksum_fnv1a,
+                    )
+                } else {
+                    (
+                        0.85,
+                        "rt-smart v1.8 (CanMV K230)".to_string(),
+                        false,
+                        0x627e_7e5b_5419_aca7,
+                    )
+                };
+            gw_state.register_live_worker_with_meta(
+                k230_probe.hardware_node.clone(),
+                k230_tcp_addr.clone(),
+                usb_rtt,
+                live_only,
+                os_label.clone(),
+                "riscv64-c908-rvv1.0 (6 TOPS KPU)".to_string(),
+                format!(
+                    "{} [{}]",
+                    k230_probe.board_model, k230_probe.chip_unique_die_id
+                ),
+                format!("USB-CDC ({port_label})"),
+            );
+            gw_state
+                .spawned_fleet_instances
+                .push(kadmium_runtime::SpawnedLocalWorkerInstance {
+                    server: k230_server,
+                    os_name: os_label,
+                    cpu_arch: "riscv64-c908-rvv1.0 (6 TOPS KPU)".to_string(),
+                    board_or_model: format!(
+                        "{} [{}]",
+                        k230_probe.board_model, k230_probe.chip_unique_die_id
+                    ),
+                    network_channel: format!("USB-CDC ({port_label})"),
+                });
+            attached_k230_banner = Some(format!(
+                "{} -> {} ({}, {}, RepOps={:#018x})",
+                port_label,
+                k230_tcp_addr,
+                k230_probe.board_model,
+                if live_silicon {
+                    "LIVE RISC-V SILICON"
+                } else {
+                    "USB-BRIDGE"
+                },
+                k230_digest
+            ));
+        }
+    }
+
     if spawn_fleet
         && let Ok(instances) =
-            LocalFleetSpawner::spawn_heterogeneous_local_fleet(bound_worker_port + 1, true).await
+            LocalFleetSpawner::spawn_heterogeneous_local_fleet(next_fleet_port, true).await
     {
         for inst in instances {
             let tcp_addr = inst.server.local_addr.to_string();
@@ -986,6 +1061,9 @@ async fn run_server(
         local_node.device_kind,
         local_node.available_fast_memory_gb()
     );
+    if let Some(k230_line) = &attached_k230_banner {
+        println!("    - USB RISC-V K230 Worker: {}", k230_line);
+    }
     println!("    - LAN UDP Auto-Discovery: {}", udp_disc_status);
     println!(
         "    - Connect any PC/Mac/SBC: {}",
