@@ -107,8 +107,10 @@ pub struct NodeValuationBreakdown {
     pub formula_explanation: String,
 }
 
-/// Company-level Unit Economics & Sustainability Proof ensuring Kadmium never overpays hosts
-/// or subsidizes unutilized idle time.
+/// Company-level Unit Economics, Cost-Plus Steward-Ownership Charter & Sustainability Proof
+/// ensuring **Kadmium Reactor** never overpays hosts, never subsidizes unutilized idle time,
+/// and caps operational take-rate strictly to fair living-wage headcount, relay infrastructure,
+/// and local STEM / academic / small-business reinvestment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompanySustainabilitySummary {
     /// Total monthly gross billings collected from Compute Buyers / Renters across these nodes (`$/mo`).
@@ -123,8 +125,27 @@ pub struct CompanySustainabilitySummary {
     pub kadmium_gross_margin_on_credit_payout_pct: f64,
     /// Blended company gross margin across `40%` USD Payout / `60%` Credit Payout mix (`%`).
     pub blended_company_gross_margin_pct: f64,
+    /// Share of every active compute dollar paid directly to the hardware host (`75.0%`).
+    pub host_compute_share_pct: f64,
+    /// Share allocated strictly to living-wage employee/founder salaries (proportional to headcount) + core relay/grounding infra (`20.0%`).
+    pub headcount_and_infra_cost_plus_pct: f64,
+    /// Share reinvested into local STEM programs, academic grants, and small business compute credits (`5.0%`).
+    pub community_stem_and_small_biz_grant_pct: f64,
+    /// Open-book steward-ownership charter explaining why Kadmium Reactor charges less while paying hosts more.
+    pub steward_ownership_charter: String,
     /// Strict solvency invariant: `No-Demand = No-Compute-Payout` (hosts are paid strictly from verified buyer jobs).
     pub zero_unfunded_subsidy_invariant_verified: bool,
+}
+
+/// How **Kadmium Reactor** positions itself to a specific B2B / Institutional Compute Buyer segment
+/// based on hard engineering ROI, compliance, and cost reduction (rather than charity alone).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuyerSegmentPositioning {
+    pub buyer_segment: String,
+    pub primary_workload_wedge: String,
+    pub hyperscaler_pain_point: String,
+    pub kadmium_reactor_solution: String,
+    pub verified_cost_or_speed_advantage: String,
 }
 
 /// Per-node hourly and monthly earnings quote on the Kadmium Supply Grid.
@@ -157,8 +178,9 @@ pub struct VerifiedComputeReceipt {
     pub earned_cloud_credits_usd: f64,
 }
 
-/// Quantifies why harvesting already-manufactured consumer & lab silicon (plus existing surplus
-/// datacenter spot slots) avoids building additional hyperscale datacenters.
+/// Quantifies why harvesting already-manufactured consumer, office & lab silicon (plus existing surplus
+/// datacenter spot slots) avoids building additional hyperscale datacenters and reverses the regressive
+/// ratepayer/e-waste externality onto a direct dividend for everyday people.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatacenterAvoidanceMetrics {
     /// Liters of evaporative cooling tower water avoided per month (`0 L` additional water on air-cooled edge nodes).
@@ -167,11 +189,17 @@ pub struct DatacenterAvoidanceMetrics {
     pub embodied_carbon_avoided_kg_co2e: f64,
     /// Fraction of compute satisfied by already-plugged-in consumer/lab hardware before touching existing datacenter spot slots.
     pub local_silicon_first_utilization_pct: f64,
+    /// Verified grid ratepayer externality note (e.g., PJM capacity auction 9.3x spike from $28.92 to $269.92-$333/MW-day, $16.4B ratepayer burden).
+    pub ratepayer_grid_externality_avoided: String,
+    /// Verified global e-waste upcycling note (62M tonnes/yr UN Global E-waste Monitor; upcycling UFS + LPDDR4/5 phones, laptops, PCs & servers).
+    pub ewaste_closet_silicon_upcycling: String,
+    /// Core Kadmium Reactor thesis ("If AI companies want compute, they can pay the people who would otherwise suffer from scaling operations for it").
+    pub people_powered_compute_thesis: String,
     /// Explanation of how Kadmium uses existing datacenter spot capacity without requiring new datacenter construction.
     pub grid_philosophy: String,
 }
 
-/// Aggregate marketplace view for a user leasing their local cluster to the Kadmium Supply Grid.
+/// Aggregate marketplace view for a user leasing their local cluster to the **Kadmium Reactor** Supply Grid.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupplyMarketplaceSnapshot {
     pub policy: SupplyLeasePolicy,
@@ -185,6 +213,7 @@ pub struct SupplyMarketplaceSnapshot {
     pub equivalent_l40s_burst_hours_per_month: f64,
     pub company_sustainability: CompanySustainabilitySummary,
     pub datacenter_avoidance: DatacenterAvoidanceMetrics,
+    pub buyer_positioning_matrix: Vec<BuyerSegmentPositioning>,
     pub recent_receipts: Vec<VerifiedComputeReceipt>,
 }
 
@@ -462,6 +491,10 @@ impl SupplySettlementEngine {
             credit_redemption_wholesale_fulfillment_cost_usd: credit_wholesale_cost,
             kadmium_gross_margin_on_credit_payout_pct: credit_margin_pct,
             blended_company_gross_margin_pct: blended_margin_pct,
+            host_compute_share_pct: 75.0,
+            headcount_and_infra_cost_plus_pct: 20.0,
+            community_stem_and_small_biz_grant_pct: 5.0,
+            steward_ownership_charter: "Open-Book Steward-Ownership: 75% of every active compute dollar goes directly to the people who contribute silicon; 20% scales strictly with modest living-wage employee/founder salaries and relay infrastructure; 5% funds local STEM programs, academic labs, and small businesses.".into(),
             zero_unfunded_subsidy_invariant_verified: total_gross_buyer_monthly
                 >= total_projected_monthly_usd,
         };
@@ -472,8 +505,42 @@ impl SupplySettlementEngine {
                 / 10.0,
             embodied_carbon_avoided_kg_co2e: (nodes.len() as f64) * 340.0,
             local_silicon_first_utilization_pct: 88.5,
-            grid_philosophy: "Zero additional datacenters required: Kadmium aggregates dormant consumer & lab silicon first, and absorbs existing surplus spot slots in already-built datacenters only when local capacity overflows.".into(),
+            ratepayer_grid_externality_avoided: "PJM capacity auction prices jumped 9.3x ($28.92 -> $269.92-$333/MW-day, adding $16.4B to utility bills across 13 states) to subsidize AI hyperscaler campuses that create almost no permanent local jobs.".into(),
+            ewaste_closet_silicon_upcycling: "62M tonnes/yr global e-waste (UN GEM, only 22.3% recycled): Kadmium Reactor upcycles dormant phones (UFS 3.0/4.0, LPDDR4X/5), laptops, PCs, and retired servers sitting in closets into paid compute nodes.".into(),
+            people_powered_compute_thesis: "If AI companies and institutions want compute, they can pay the people who would otherwise suffer from scaling operations for it.".into(),
+            grid_philosophy: "Zero additional datacenters required: Kadmium Reactor aggregates dormant consumer, office & lab silicon first, and absorbs existing surplus spot slots in already-built datacenters only when local capacity overflows.".into(),
         };
+
+        let buyer_positioning_matrix = vec![
+            BuyerSegmentPositioning {
+                buyer_segment: "1. Academic Research Institutions & University STEM Labs".into(),
+                primary_workload_wedge: "Departmental Lab Unification + Sharded-Island DiLoCo Training + 70B-671B Open-Weight Evals".into(),
+                hyperscaler_pain_point: "Priced out by $3.95-$6.50/hr H100 rates and 6-month NAIRR queues while 50-300 campus lab PCs/Macs sit idle overnight.".into(),
+                kadmium_reactor_solution: "Unifies existing campus GPUs/Macs at $0 CapEx (<200ms Polite student auto-yield) + bursts onto Kadmium Reactor at Cost-Plus rates while earning 1.25x Reactor Credits during summer/overnight idle hours.".into(),
+                verified_cost_or_speed_advantage: "Stretches NSF/NIH grant compute budgets 3.2x-4.0x with zero campus hardware lock-in.".into(),
+            },
+            BuyerSegmentPositioning {
+                buyer_segment: "2. Small & Mid-Sized Businesses (Legal, Healthcare, Engineering, Local Commerce)".into(),
+                primary_workload_wedge: "Zero-CapEx Private Office AI + $0.07/hr Cryptographically Blind 'Just-Enough-Boost'".into(),
+                hyperscaler_pain_point: "Cannot send HIPAA/privileged plaintext to public APIs, and cannot afford $25,000+ local server appliances or $2,500/mo dedicated cloud endpoints.".into(),
+                kadmium_reactor_solution: "Pools existing office PCs/Macs and spills only the missing 25% middle layers (L56..L75) to Kadmium Reactor wrapped in an Orthogonal FWHT Blind-Activation Shield (Layer 0 & Layer N-1 never leave the building).".into(),
+                verified_cost_or_speed_advantage: "-94.1% burst cost ($0.07/hr vs. $1.19/hr full GPU) and 9.34x faster than CPU RAM offload with 100% on-prem prompt/output privacy.".into(),
+            },
+            BuyerSegmentPositioning {
+                buyer_segment: "3. AI Startups & Agentic SaaS Companies".into(),
+                primary_workload_wedge: "Disaggregated GRPO RL Post-Training (100K WASI Sandboxes) + Batch Inference + DiLoCo Fine-Tuning".into(),
+                hyperscaler_pain_point: "Burning 70% of seed runway idling $4/hr GPUs while waiting on CPU compiler/unit-test RL rollouts or paying hyperscaler 70% gross margins.".into(),
+                kadmium_reactor_solution: "Offloads 100,000 fuel-metered WasiMicroSandbox compiler/test rollouts to upcycled Phone Farm Boxes & SBCs + streams 327.1 Gbps kdm://pool-bucket/ token carousels + Cost-Plus GPU learner steps.".into(),
+                verified_cost_or_speed_advantage: "55%-75% lower RL & batch compute burn + positive 'People-Powered Compute' ESG brand goodwill.".into(),
+            },
+            BuyerSegmentPositioning {
+                buyer_segment: "4. Government Facilities, Municipal Agencies & Public-Sector Labs".into(),
+                primary_workload_wedge: "Air-Gapped Sovereign Local Mesh + Federal/Municipal E-Waste Circularity & Ratepayer Protection".into(),
+                hyperscaler_pain_point: "Strict data sovereignty (ITAR/CMMC/CJIS), municipal budget freezes, taxpayer backlash against hyperscaler grid subsidies, and retired government IT e-waste.".into(),
+                kadmium_reactor_solution: "100% Pure Rust zero-C-dependency binary (`kadmium`) that clusters existing agency desktops and decommissioned servers on-prem with cryptographic Verde RepOps audit logs.".into(),
+                verified_cost_or_speed_advantage: "$0 new datacenter CapEx, zero external telemetry in air-gapped mode, and turns retired municipal silicon into sovereign AI capacity.".into(),
+            },
+        ];
 
         let recent_receipts = vec![
             VerifiedComputeReceipt {
@@ -520,6 +587,7 @@ impl SupplySettlementEngine {
             equivalent_l40s_burst_hours_per_month,
             company_sustainability,
             datacenter_avoidance,
+            buyer_positioning_matrix,
             recent_receipts,
         }
     }
@@ -539,6 +607,20 @@ mod tests {
         assert!(snap.company_sustainability.zero_unfunded_subsidy_invariant_verified);
         assert!(snap.company_sustainability.gross_monthly_buyer_billings_usd > snap.total_projected_monthly_usd);
         assert!(snap.company_sustainability.blended_company_gross_margin_pct >= 25.0);
+        assert!(
+            (snap.company_sustainability.host_compute_share_pct
+                + snap.company_sustainability.headcount_and_infra_cost_plus_pct
+                + snap.company_sustainability.community_stem_and_small_biz_grant_pct
+                - 100.0)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(snap.buyer_positioning_matrix.len(), 4);
+        assert!(
+            snap.datacenter_avoidance
+                .people_powered_compute_thesis
+                .contains("pay the people")
+        );
         assert!(snap.total_net_monthly_profit_after_power_usd > 0.0);
 
         for q in &snap.node_quotes {

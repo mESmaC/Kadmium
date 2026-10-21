@@ -116,6 +116,31 @@ pub fn run_lease(hours: f64, payout: &str) {
         snap.company_sustainability.blended_company_gross_margin_pct,
         snap.company_sustainability.zero_unfunded_subsidy_invariant_verified
     );
+    println!(
+        "  * Cost-Plus Steward Split:      {:.0}% Host Compute Payout | {:.0}% Fair Living-Wage Headcount & Relay Infra | {:.0}% Local STEM & Small-Biz Grants",
+        snap.company_sustainability.host_compute_share_pct,
+        snap.company_sustainability.headcount_and_infra_cost_plus_pct,
+        snap.company_sustainability.community_stem_and_small_biz_grant_pct
+    );
+    println!(
+        "  * People-Powered Thesis:        \"{}\"",
+        snap.datacenter_avoidance.people_powered_compute_thesis
+    );
+    println!(
+        "  * Grid Ratepayer Protection:    {}",
+        snap.datacenter_avoidance.ratepayer_grid_externality_avoided
+    );
+    println!(
+        "  * E-Waste Silicon Upcycling:    {}",
+        snap.datacenter_avoidance.ewaste_closet_silicon_upcycling
+    );
+    println!("  [Kadmium Reactor B2B / Institutional Buyer Positioning Matrix]:");
+    for seg in &snap.buyer_positioning_matrix {
+        println!(
+            "    - {:<55} -> {} ({})",
+            seg.buyer_segment, seg.primary_workload_wedge, seg.verified_cost_or_speed_advantage
+        );
+    }
 
     let boost = ElasticLocalBoostPlanner::evaluate_desktop_just_enough_boost();
     println!(
