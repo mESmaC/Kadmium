@@ -6,9 +6,13 @@ use kadmium_core::{
     SupplySettlementEngine, sample_personal_cluster,
 };
 use kadmium_data::{HfByteRangeSlicer, SafetensorsToKtbTranscoder};
-use kadmium_network::{NatTraversalCoordinator, ZeroClickLanPairingEngine};
+use kadmium_network::{
+    MultiPathInterfaceStriper, NatTraversalCoordinator, SwarmRaidStriper, ZeroClickLanPairingEngine,
+};
 use kadmium_rl::DreamRsiWorldRegistry;
-use kadmium_runtime::{HardwareKernelDispatcher, VerdeFraudProofEngine};
+use kadmium_runtime::{
+    CrossSystemComputeHarness, HardwareKernelDispatcher, VerdeFraudProofEngine,
+};
 use kadmium_sharding::{CloudShieldCutoverWatcher, SpotOrderbookBidEngine};
 
 pub fn run_lease(hours: f64, payout: &str) {
@@ -171,7 +175,7 @@ pub async fn run_bench() {
         .await
         .expect("execute UDP hole-punch loopback");
     println!(
-        "\n[3/3] STUN / UDP Hole-Punching (`KDMP` Probe: {} <-> {}, Nonce {:#018x}) & DERP Fallback",
+        "\n[3/6] STUN / UDP Hole-Punching (`KDMP` Probe: {} <-> {}, Nonce {:#018x}) & DERP Fallback",
         sock_a, sock_b, nonce
     );
     for r in &nat_matrix {
@@ -186,6 +190,105 @@ pub async fn run_bench() {
             r.direct_p2p_achieved
         );
     }
+
+    // 4. RAID-0 / RAID-5 Linear-Algebraic Parity Tensor Striping & Multi-Path Link Bonding
+    let input_act: Vec<f32> = (0..64 * 16)
+        .map(|i| ((i % 29) as f32 - 14.0) * 0.125)
+        .collect();
+    let weights: Vec<f32> = (0..16 * 16)
+        .map(|i| ((i % 19) as f32 - 9.0) * 0.0625)
+        .collect();
+    let (_, raid_report) = SwarmRaidStriper::execute_raid5_coded_projection(
+        &input_act,
+        &weights,
+        64,
+        16,
+        16,
+        8,
+        Some(3),
+        33.0,
+    );
+    let mp_sched = MultiPathInterfaceStriper::benchmark_cluster_multipath(&nodes, 33.0);
+    println!(
+        "\n[4/6] RAID-5 Linear-Algebraic Parity Tensor Striping (`Y_p = sum(Y_j)`) & Multi-Path Link Bonding"
+    );
+    println!(
+        "  * 33 MB Prefill across k={} Seeders + {} Parity | Single Link: {:.1} ms | Naive RAID-0 (w/ straggler #3): {:.1} ms",
+        raid_report.data_stripes_k,
+        raid_report.parity_stripes_p,
+        raid_report.single_link_baseline_ms,
+        raid_report.raid0_straggler_bound_ms
+    );
+    println!(
+        "  * RAID-5 Parity Completion: {:.1} ms ({:.2}x Speedup, -{:.1}% Tail Latency, Straggler #3 Reconstructed Err={:.2e})",
+        raid_report.raid5_parity_completed_ms,
+        raid_report.speedup_vs_single_link,
+        raid_report.tail_latency_reduction_pct,
+        raid_report.max_reconstruction_error
+    );
+    println!(
+        "  * Multi-Path Interface Bonding: {:.2} Gbps Bonded (vs {:.2} Gbps Single Best = {:.2}x Speedup across {} channels)",
+        mp_sched.bonded_bandwidth_gbps,
+        mp_sched.single_best_link_gbps,
+        mp_sched.multi_path_speedup,
+        mp_sched.channel_allocations.len()
+    );
+
+    // 5 & 6. Cross-System Roofline Matrix, Speculative Tree Attention, Chunked Prefill & Zero-Bubble ZB-H1 Training
+    let matrix = CrossSystemComputeHarness::run_full_matrix(None);
+    println!(
+        "\n[5/6] Throughput & Training Accelerators (Speculative Tree Attention + Chunked Prefill + Zero-Bubble ZB-H1)"
+    );
+    println!(
+        "  * Speculative Draft Tree (D={}, B={}, {} nodes): Accepted {} tokens/RTT ({:.2}x Decode Speedup, +{:.1}% vs linear K=4)",
+        matrix.speculative_tree_report.tree_depth,
+        matrix.speculative_tree_report.branching_factor,
+        matrix.speculative_tree_report.total_tree_nodes_evaluated,
+        matrix.speculative_tree_report.accepted_length,
+        matrix.speculative_tree_report.decode_speedup_multiplier,
+        matrix.speculative_tree_report.gain_over_linear_speculative_pct
+    );
+    println!(
+        "  * Continuous Chunked Prefill ({} tok / {} chunks + {} decode streams): AI {:.1} -> {:.1} FLOP/B | Jitter {:.1} ms (vs {:.1} ms stall)",
+        matrix.chunked_prefill_report.total_prefill_tokens,
+        matrix.chunked_prefill_report.num_fused_batches,
+        matrix.chunked_prefill_report.piggybacked_decode_streams,
+        matrix.chunked_prefill_report.unbatched_decode_arithmetic_intensity,
+        matrix.chunked_prefill_report.fused_batch_arithmetic_intensity,
+        matrix.chunked_prefill_report.chunked_p99_decode_jitter_ms,
+        matrix.chunked_prefill_report.unchunked_prefill_stall_ms
+    );
+    println!(
+        "  * Zero-Bubble ZB-H1 Split-B/W Training: Bubble {:.2}% -> {:.2}% (-{:.1}% Bubble, +{:.1}% Throughput) | FWHT INT8 Checkpoint: -{:.1}% VRAM",
+        matrix.zero_bubble_training_report.standard_1f1b_bubble_pct,
+        matrix.zero_bubble_training_report.zero_bubble_zbh1_bubble_pct,
+        matrix.zero_bubble_training_report.bubble_reduction_pct,
+        matrix.zero_bubble_training_report.training_throughput_gain_pct,
+        matrix.zero_bubble_training_report.fwht_int8_checkpoint_memory_saved_pct
+    );
+
+    println!(
+        "\n[6/6] Cross-System Compute & Roofline Matrix (BF16 vs. Q4_K vs. EXL3 2.5bpw Trellis)"
+    );
+    println!(
+        "{:<28} {:<20} {:>9} {:>10} {:>10} {:>11} {:>11} {:>12}",
+        "NODE / SYSTEM", "DEVICE KIND", "MEM (GB)", "BW (GB/S)", "BF16 TOK/S", "Q4_K TOK/S", "EXL3 TOK/S", "TOK / WH"
+    );
+    println!("{}", "-".repeat(120));
+    for row in &matrix.system_rows {
+        println!(
+            "{:<28} {:<20} {:>8.1}   {:>9.1}   {:>9.1}   {:>10.1}   {:>10.1}   {:>10.0}",
+            row.hardware_label,
+            format!("{:?}", row.device_kind),
+            row.fast_memory_gb,
+            row.memory_bandwidth_gbps,
+            row.shard_bf16_tok_s,
+            row.shard_q4k_tok_s,
+            row.shard_exl3_trellis_tok_s,
+            row.tokens_per_watt_hour
+        );
+    }
+    println!("\n{}", matrix.shareable_scorecard_markdown);
 }
 
 pub fn run_pairing() {

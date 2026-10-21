@@ -12,9 +12,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub mod lan_pairing;
 pub mod live_mesh;
 pub mod nat_traversal;
+pub mod raid_striper;
 pub use lan_pairing::*;
 pub use live_mesh::*;
 pub use nat_traversal::*;
+pub use raid_striper::*;
 
 /// Transport path classification between two peers in the Kadmium mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

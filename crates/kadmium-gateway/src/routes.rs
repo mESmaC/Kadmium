@@ -26,21 +26,23 @@ use kadmium_data::{
 };
 use kadmium_network::{
     FleetUpdatePushSummary, HolePunchNegotiationResult, JoinTicket, LanPairingCandidate,
-    LiveClusterWorkersOverview, NatTraversalCoordinator, UpdatePayloadKind, UpdateTargetScope,
-    WorkerHeartbeatAck, WorkerHeartbeatRequest, WorkerRegisterRequest, WorkerRegistrationAck,
-    WorkerUpdatePushAck, ZeroClickLanPairingEngine,
+    LiveClusterWorkersOverview, MultiPathInterfaceStriper, MultiPathStripedSchedule,
+    NatTraversalCoordinator, RaidStripedPassReport, SwarmRaidStriper, UpdatePayloadKind,
+    UpdateTargetScope, WorkerHeartbeatAck, WorkerHeartbeatRequest, WorkerRegisterRequest,
+    WorkerRegistrationAck, WorkerUpdatePushAck, ZeroClickLanPairingEngine,
 };
 use kadmium_rl::{
     DiscoveryTree, DreamRsiWorldRegistry, GrpoEpochExecutor, GrpoVerifiedStepReport,
     RegisteredDreamRsiWorld, RlEnvironmentSuiteSpec, RlTopologyPlanner,
 };
 use kadmium_runtime::{
-    DistributedExl3ConversionEngine, DistributedLanExecutor, DistributedPipelineExecutionReport,
-    Exl3ConversionReport, HardwareKernelDispatcher, HardwareKernelSuiteReport,
-    KtbCheckpointExportReport, LiveDistributedTrainingStepReport, LiveDreamRsiSwarmReport,
-    LiveFts3SwarmStreamReport, LiveHopTelemetry, LiveKvCacheMigrationReport, LiveVerdeAuditReport,
-    LocalFleetSpawner, Pipeline1F1BSchedule, Pipeline1F1BScheduler, VerdeFraudProofCertificate,
-    VerdeFraudProofEngine, apply_ota_update_manifest_local,
+    CrossSystemBenchmarkSuiteReport, CrossSystemComputeHarness, DistributedExl3ConversionEngine,
+    DistributedLanExecutor, DistributedPipelineExecutionReport, Exl3ConversionReport,
+    HardwareKernelDispatcher, HardwareKernelSuiteReport, KtbCheckpointExportReport,
+    LiveDistributedTrainingStepReport, LiveDreamRsiSwarmReport, LiveFts3SwarmStreamReport,
+    LiveHopTelemetry, LiveKvCacheMigrationReport, LiveVerdeAuditReport, LocalFleetSpawner,
+    Pipeline1F1BSchedule, Pipeline1F1BScheduler, VerdeFraudProofCertificate, VerdeFraudProofEngine,
+    apply_ota_update_manifest_local,
 };
 use kadmium_sharding::{
     CloudShieldCutoverWatcher, CloudShieldWatcherReport, ClusterPoolSliceLayout,
@@ -369,6 +371,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/runtime/exl3",
             get(post_exl3_convert_and_benchmark).post(post_exl3_convert_and_benchmark),
+        )
+        .route(
+            "/api/v1/runtime/throughput-boost",
+            get(get_throughput_boost_report).post(get_throughput_boost_report),
         )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -1998,4 +2004,45 @@ async fn post_exl3_convert_and_benchmark(
         target_bpw,
         &nodes,
     ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThroughputBoostApiResponse {
+    pub cross_system_matrix: CrossSystemBenchmarkSuiteReport,
+    pub raid5_striping_report: RaidStripedPassReport,
+    pub multipath_schedule: MultiPathStripedSchedule,
+}
+
+async fn get_throughput_boost_report(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<ThroughputBoostApiResponse> {
+    let nodes = {
+        let guard = state.lock().expect("gateway state lock");
+        guard.nodes.clone()
+    };
+
+    let cross_system_matrix = CrossSystemComputeHarness::run_full_matrix(Some(nodes.clone()));
+    let input_act: Vec<f32> = (0..64 * 16)
+        .map(|i| ((i % 29) as f32 - 14.0) * 0.125)
+        .collect();
+    let weights: Vec<f32> = (0..16 * 16)
+        .map(|i| ((i % 19) as f32 - 9.0) * 0.0625)
+        .collect();
+    let (_, raid5_striping_report) = SwarmRaidStriper::execute_raid5_coded_projection(
+        &input_act,
+        &weights,
+        64,
+        16,
+        16,
+        8,
+        Some(3),
+        33.0,
+    );
+    let multipath_schedule = MultiPathInterfaceStriper::benchmark_cluster_multipath(&nodes, 33.0);
+
+    Json(ThroughputBoostApiResponse {
+        cross_system_matrix,
+        raid5_striping_report,
+        multipath_schedule,
+    })
 }
