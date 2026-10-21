@@ -792,30 +792,30 @@
   };
 
   var SUPPLY_NODES = [
-    { id: 'rig-alpha-rtx4090', name: 'Desktop PC (RTX 4090)', hardware: '24 GB VRAM · Blind middle layers', usdPerHour: 0.38 },
-    { id: 'mac-mini-m4-pro', name: 'M4 Mac Mini Pro', hardware: '48 GB Unified · Contiguous MoE layers', usdPerHour: 0.29 },
-    { id: 'phone-farm-s20-box20', name: '20-Slot Phone Farm Box (S20)', hardware: '160 GB LPDDR5 · 115W BMS · MoE & WASI RL', usdPerHour: 0.34 },
-    { id: 'zephyrus-g16-rtx4070', name: 'Gaming Laptop (RTX 4070M)', hardware: '8 GB VRAM · Attention + DeMo sync', usdPerHour: 0.14 },
-    { id: 'rk3588-sbc-bramble', name: 'ARM64 SBC Cluster', hardware: '24 GB RAM · WASI RL sandboxes', usdPerHour: 0.06 },
-    { id: 'synology-nas-vault', name: 'Home / Lab NAS Vault', hardware: '16 TB ZFS · .ktb P2P shard seeding', usdPerHour: 0.05 }
+    { id: 'rig-alpha-rtx4090', name: 'Desktop PC (RTX 4090)', hardware: '24 GB VRAM · 290W active · 62% duty', buyerActiveHr: 0.324, hostActiveHr: 0.243, dutyPct: 62, usdPerHour: 0.152, powerPerHr: 0.027 },
+    { id: 'mac-mini-m4-pro', name: 'M4 Mac Mini Pro', hardware: '48 GB Unified · 38W active · 65% duty', buyerActiveHr: 0.252, hostActiveHr: 0.189, dutyPct: 65, usdPerHour: 0.124, powerPerHr: 0.004 },
+    { id: 'phone-farm-s20-box20', name: '20-Slot Phone Farm Box (S20)', hardware: '160 GB LPDDR5 · 115W BMS · 58% duty', buyerActiveHr: 0.360, hostActiveHr: 0.270, dutyPct: 58, usdPerHour: 0.161, powerPerHr: 0.011 },
+    { id: 'zephyrus-g16-rtx4070', name: 'Gaming Laptop (RTX 4070M)', hardware: '8 GB VRAM · 95W active · 48% duty', buyerActiveHr: 0.097, hostActiveHr: 0.073, dutyPct: 48, usdPerHour: 0.036, powerPerHr: 0.007 },
+    { id: 'rk3588-sbc-bramble', name: 'ARM64 SBC Cluster', hardware: '16 GB RAM · 16W active · 45% duty', buyerActiveHr: 0.073, hostActiveHr: 0.055, dutyPct: 45, usdPerHour: 0.026, powerPerHr: 0.001 },
+    { id: 'synology-nas-vault', name: 'Home / Lab NAS Vault', hardware: '4 TB NVMe · 55W · RS(8,2) bucket seed', buyerActiveHr: 0.049, hostActiveHr: 0.037, dutyPct: 55, usdPerHour: 0.025, powerPerHr: 0.006 }
   ];
 
   var FAQS = [
     {
-      q: 'Can cloud or Supply Grid nodes see my prompts or weights?',
-      a: 'No. Layer 0 (token embeddings) and Layer N-1 (final output head) stay pinned strictly to your own local machines. External nodes only process anonymous middle-layer activation tensors.'
+      q: 'Can cloud or Kadmium Reactor nodes see my prompts or weights?',
+      a: 'No. Layer 0 (token embeddings) and Layer N-1 (final output head) stay pinned strictly to your own local machines, and spilled middle layers are wrapped in a session-keyed Orthogonal FWHT Blind-Activation Shield (Wire CosSim = 0.0489).'
     },
     {
-      q: 'How does RAID-5 P2P tensor striping fix slow residential upload speeds?',
-      a: 'Kadmium stripes 64 KiB .ktb pages and token chunks across k parallel seeders plus a linear-algebraic parity node (Y_p = Σ Y_j), multiplying return bandwidth by 8×–16× while ignoring the slowest straggler node.'
+      q: 'How are Kadmium Reactor host payouts calculated, and how does the company stay sustainable?',
+      a: 'Open-book math: No-Demand = No-Compute-Payout. When a buyer rents your node, 75% goes directly to you, 20% scales strictly with modest living-wage employee/founder salaries and relay infrastructure (no 6-figure executive greed), and 5% funds local STEM programs and small businesses. All quotes deduct realistic demand duty cycles (32%–65%) and $0.14/kWh electricity.'
     },
     {
-      q: 'How do students & universities get free compute or STTR funding?',
-      a: 'Students with a .edu email receive $50/mo in free off-peak Scholar Compute Credits routed to overnight campus/community nodes. University CS labs can partner as NSF STTR Co-PIs ($95k–$400k lab subaward).'
+      q: 'How do students & universities get free compute or stretch grant budgets 3–4×?',
+      a: 'Universities unify existing idle campus lab PCs/Macs at $0 CapEx (<200ms Polite student auto-yield), earn 1.25× Reactor Credits overnight/summer, and give .edu students $50/mo in free off-peak Scholar Compute Credits.'
     },
     {
-      q: 'Why say "we don’t need any additional datacenters"?',
-      a: 'Because 30M+ air-cooled GPUs, Macs, and campus computers already sit 85% idle (0 L cooling water, 0 kg new concrete), and decommissioned enterprise servers can be recycled into Sentinel & Scholar nodes.'
+      q: 'Why say "If AI companies want compute, they can pay the people for it"?',
+      a: 'AI hyperscaler campuses caused PJM grid capacity prices to jump 9.3× ($28.92 -> $269.92–$333/MW-day, adding $16.4B to household utility bills) while 62M tonnes/yr of phones, laptops, and PCs go to e-waste. Paying people for already-manufactured silicon solves both.'
     }
   ];
 
@@ -848,13 +848,18 @@
     var hourlyUsdTotal = SUPPLY_NODES.reduce(function (acc, nd) {
       return acc + (enabledSupply[nd.id] ? nd.usdPerHour : 0);
     }, 0);
+    var hourlyPowerTotal = SUPPLY_NODES.reduce(function (acc, nd) {
+      return acc + (enabledSupply[nd.id] ? nd.powerPerHr : 0);
+    }, 0);
     var activeSupplyCount = SUPPLY_NODES.reduce(function (acc, nd) {
       return acc + (enabledSupply[nd.id] ? 1 : 0);
     }, 0);
     var hourlyCreditsTotal = hourlyUsdTotal * 1.25;
     var monthlyUsdTotal = hourlyUsdTotal * leaseHours * 30;
+    var monthlyPowerTotal = hourlyPowerTotal * leaseHours * 30;
+    var monthlyNetProfitUsd = monthlyUsdTotal - monthlyPowerTotal;
     var monthlyCreditsTotal = hourlyCreditsTotal * leaseHours * 30;
-    var monthlyBurstHoursL40s = monthlyCreditsTotal / 0.79;
+    var monthlyBurstHoursL40s = monthlyCreditsTotal / 0.75;
 
     React.useEffect(function () {
       document.documentElement.setAttribute('data-theme', theme);
@@ -1194,47 +1199,71 @@
               });
             }))),
 
-        /* ---- 4. "We Don't Need Any Additional Datacenters" ---- */
+        /* ---- 4. "Kadmium Reactor & The People-Powered Compute Charter" ---- */
         h('section', { id: 'no-new-datacenters', className: 'panel' },
           h('div', { className: 'two', style: { alignItems: 'center', marginBottom: 'var(--space-6)' } },
             h('div', { className: 'kd-stack' },
-              h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Civic & grid physics · the alternative to greenfield buildouts'),
-              h('h2', { className: 'headline', style: { margin: 0 } }, 'We don\u2019t need any additional datacenters.'),
+              h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Kadmium Reactor · Open-Book Steward-Ownership & Grid Physics'),
+              h('h2', { className: 'headline', style: { margin: 0 } }, '\u201CIf AI companies want compute, they can pay the people who would otherwise suffer from scaling operations for it.\u201D'),
               h('p', { className: 'body-lg', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'New hyperscale datacenters strain municipal grids and evaporate millions of liters of local cooling water—while tens of millions of GPUs and Macs already sit plugged into wall outlets at under 10% utilization. Kadmium harvests existing local hardware first, and rents unutilized spot slots in already-built datacenters only when you burst.')),
+                'New AI hyperscaler mega-campuses drove PJM grid capacity prices up 9.3× ($28.92 \u2192 $269.92–$333/MW-day, adding $16.4B to household utility bills) while creating almost zero permanent local jobs. Meanwhile, 62M tonnes/yr of phones (UFS + LPDDR4/5), laptops, and PCs go to e-waste. Kadmium Reactor pays everyday people, labs, and small businesses for the silicon they already own.')),
             h('div', { className: 'table-wrap' },
               h('table', { className: 'mono-table' },
                 h('thead', null, h('tr', null,
-                  h('th', null, 'METRIC'),
-                  h('th', null, 'NEW DATACENTER'),
-                  h('th', null, 'KADMIUM GRID'))),
+                  h('th', null, 'METRIC / DOLLAR FLOW'),
+                  h('th', null, 'HYPERSCALER DATACENTER'),
+                  h('th', null, 'KADMIUM REACTOR'))),
                 h('tbody', null,
                   h('tr', null,
-                    h('td', null, 'Hardware source'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, 'Greenfield 500 MW buildout'),
-                    h('td', { style: { color: 'var(--cadmium-text)' } }, 'Existing PCs/Macs + idle spot slots')),
+                    h('td', null, 'Ratepayer Grid Impact'),
+                    h('td', { style: { color: 'var(--ink-muted)' } }, '9.3× PJM capacity surge (+$16.4B bills)'),
+                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, 'Pays households & labs directly (75% share)')),
                   h('tr', null,
-                    h('td', null, 'Cooling water'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, '~1.8 L / kWh evaporated'),
-                    h('td', { style: { color: 'var(--ok)' } }, '0 L / hr additional water')),
+                    h('td', null, 'E-Waste & Silicon Source'),
+                    h('td', { style: { color: 'var(--ink-muted)' } }, '62M tonnes/yr discarded (22.3% recycled)'),
+                    h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, 'Upcycles UFS/LPDDR phones, laptops, PCs & servers')),
                   h('tr', null,
-                    h('td', null, 'New concrete & silicon'),
-                    h('td', { style: { color: 'var(--ink-muted)' } }, 'Thousands of tons'),
-                    h('td', { style: { color: 'var(--ok)' } }, '0 kg (1,700 kg CO₂e saved / 5 nodes)')))))),
+                    h('td', null, 'Open-Book Revenue Split'),
+                    h('td', { style: { color: 'var(--ink-muted)' } }, '65–75% VC/exec margin · 0% to locals'),
+                    h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, '75% Hosts · 20% Fair Living-Wage Ops · 5% STEM Grants')))))),
 
-          h('div', { className: 'stat-strip-3' },
+          h('div', { className: 'stat-strip-3', style: { marginBottom: 'var(--space-6)' } },
             h('div', { className: 'stat-card' },
-              h('span', { className: 'label' }, 'LOCAL COOLING WATER (--cadmium)'),
-              h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } }, '0 L / hr'),
-              h('span', { className: 'meta' }, 'Ambient air-cooled desktops, Macs & laptops already on desks')),
+              h('span', { className: 'label' }, '75% TO HARDWARE HOSTS'),
+              h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } }, '75.0 %'),
+              h('span', { className: 'meta' }, 'Paid directly to people, schools & offices contributing active silicon (No-Demand = No-Payout solvency)')),
             h('div', { className: 'stat-card' },
-              h('span', { className: 'label' }, 'EXISTING DATACENTER SLOTS (--cherenkov)'),
-              h('span', { className: 'metric', style: { color: 'var(--cherenkov-text)' } }, 'Spot Surplus'),
-              h('span', { className: 'meta' }, 'Absorbs idle GPUs in already-built facilities instead of building new ones')),
+              h('span', { className: 'label' }, '20% COST-PLUS FAIR SALARIES & INFRA'),
+              h('span', { className: 'metric', style: { color: 'var(--cherenkov-text)' } }, '20.0 %'),
+              h('span', { className: 'meta' }, 'Strictly proportional to modest family-supporting headcount + core relay/grounding infra (0 exec greed)')),
             h('div', { className: 'stat-card' },
-              h('span', { className: 'label' }, 'EMBODIED CARBON AVOIDED'),
-              h('span', { className: 'metric', style: { color: 'var(--ok)' } }, '1,700 kg CO₂e'),
-              h('span', { className: 'meta' }, 'Saved per 5-node cluster by reusing already-manufactured silicon')))),
+              h('span', { className: 'label' }, '5% LOCAL STEM & SMALL-BIZ GRANTS'),
+              h('span', { className: 'metric', style: { color: 'var(--ok)' } }, '5.0 %'),
+              h('span', { className: 'meta' }, 'Reinvested into local STEM classrooms, university labs, and main-street small businesses'))),
+
+          h('div', { className: 'table-wrap' },
+            h('table', { className: 'mono-table' },
+              h('thead', null, h('tr', null,
+                h('th', null, 'CHECK-WRITING BUYER SEGMENT'),
+                h('th', null, 'PRIMARY WORKLOAD WEDGE'),
+                h('th', null, 'WHY THEY BUY KADMIUM REACTOR (HARD ROI)'))),
+              h('tbody', null,
+                h('tr', null,
+                  h('td', { style: { fontWeight: 600 } }, '1. Universities & Research Institutions'),
+                  h('td', null, 'Campus Lab Unification + DiLoCo Training + 70B–671B Evals'),
+                  h('td', { style: { color: 'var(--cadmium-text)' } }, 'Stretches NSF/NIH grants 3.2×–4.0× ($0 CapEx on existing campus PCs/Macs + 1.25× overnight credits)')),
+                h('tr', null,
+                  h('td', { style: { fontWeight: 600 } }, '2. Small & Mid-Sized Businesses'),
+                  h('td', null, 'Zero-CapEx Private Office AI + $0.07/hr "Just-Enough-Boost"'),
+                  h('td', { style: { color: 'var(--ok)' } }, '-94.1% vs. full cloud GPU ($0.07/hr vs $1.19/hr); Layer 0 & N-1 + FWHT Blind Shield stay 100% on-prem')),
+                h('tr', null,
+                  h('td', { style: { fontWeight: 600 } }, '3. AI Startups & Agentic SaaS'),
+                  h('td', null, 'Disaggregated GRPO RL (100K WASI Sandboxes) + Batch Pool'),
+                  h('td', { style: { color: 'var(--cherenkov-text)' } }, '55%–75% lower RL & batch compute burn on upcycled Phone Farm Boxes + "People-Powered" goodwill')),
+                h('tr', null,
+                  h('td', { style: { fontWeight: 600 } }, '4. Government & Municipal Facilities'),
+                  h('td', null, 'Air-Gapped Pure-Rust Sovereign Mesh + E-Waste Circularity'),
+                  h('td', { style: { color: 'var(--ok)' } }, '$0 new datacenter CapEx, ITAR/CMMC/CJIS sovereign boundary, repurposes retired municipal IT')))))),
 
         /* ---- 4B. Kadmium Scholar (.edu), University STTR & Crowdfunding Founder Pass ---- */
         h('section', { id: 'scholars', className: 'section-block' },
@@ -1337,8 +1366,8 @@
         h('section', { id: 'supply-grid', className: 'section-block' },
           h('div', { className: 'section-head' },
             h('div', { className: 'section-head-copy' },
-              h('p', { className: 'eyebrow' }, 'Kadmium Supply Grid · passive income calculator'),
-              h('h2', { className: 'headline', style: { margin: 0 } }, 'Lease idle silicon overnight. Yield in < 200 ms when you play.')),
+              h('p', { className: 'eyebrow' }, 'Kadmium Reactor Supply Grid · honest 5-factor valuation & electricity-deducted calculator'),
+              h('h2', { className: 'headline', style: { margin: 0 } }, 'Open-book payouts: 75% to you, realistic demand duty cycles, and $0.14/kWh power deducted.')),
             h('div', { className: 'kd-row' },
               h(K.Button, {
                 variant: payoutMode === 'credits' ? 'primary' : 'default',
@@ -1365,17 +1394,26 @@
                 h('table', { className: 'mono-table' },
                   h('thead', null, h('tr', null,
                     h('th', null, 'MACHINE'),
-                    h('th', null, 'USD / HR'),
-                    h('th', null, '1.25× CREDITS'),
+                    h('th', null, 'BUYER / HOST (75%)'),
+                    h('th', null, 'EFF $/HR'),
+                    h('th', null, 'NET / MO (AFTER POWER)'),
                     h('th', null, 'LEASE'))),
                   h('tbody', null, SUPPLY_NODES.map(function (nd) {
                     var active = !!enabledSupply[nd.id];
+                    var nodeGrossMo = nd.usdPerHour * leaseHours * 30;
+                    var nodePwrMo = nd.powerPerHr * leaseHours * 30;
+                    var nodeNetMo = nodeGrossMo - nodePwrMo;
+                    var nodeCreditsMo = nodeGrossMo * 1.25;
                     return h('tr', { key: nd.id, style: { opacity: active ? 1 : 0.48 } },
                       h('td', null,
                         h('div', { style: { color: 'var(--ink)', fontWeight: 600 } }, nd.name),
                         h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, nd.hardware)),
-                      h('td', null, '$' + nd.usdPerHour.toFixed(2)),
-                      h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$' + (nd.usdPerHour * 1.25).toFixed(2)),
+                      h('td', null, '$' + nd.buyerActiveHr.toFixed(3) + ' \u2192 $' + nd.hostActiveHr.toFixed(3)),
+                      h('td', null, '$' + nd.usdPerHour.toFixed(3)),
+                      h('td', { style: { color: 'var(--ok)', fontWeight: 600 } },
+                        payoutMode === 'credits'
+                          ? '$' + nodeCreditsMo.toFixed(2) + ' cr'
+                          : '+$' + nodeNetMo.toFixed(2) + ' (-$' + nodePwrMo.toFixed(2) + ' pwr)'),
                       h('td', null,
                         h(K.Button, {
                           variant: active ? 'primary' : 'default',
@@ -1387,19 +1425,23 @@
             h('div', { className: 'kd-stack' },
               h('div', { className: 'stat-strip-2' },
                 h('div', { className: 'stat-card' },
-                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'HOURLY (1.25× CREDITS)' : 'HOURLY DIRECT USD'),
+                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'MONTHLY 1.25× REACTOR CREDITS' : 'GROSS USD vs ELECTRICITY (@ $0.14/kWh)'),
                   h('span', { className: 'metric', style: { color: 'var(--cadmium-text)' } },
-                    '$' + (payoutMode === 'credits' ? hourlyCreditsTotal : hourlyUsdTotal).toFixed(2) + ' / hr'),
-                  h('span', { className: 'meta' }, activeSupplyCount + ' nodes · ' + leaseHours + ' hr/day idle window')),
+                    payoutMode === 'credits'
+                      ? '$' + monthlyCreditsTotal.toFixed(2) + ' / mo'
+                      : '$' + monthlyUsdTotal.toFixed(2) + ' - $' + monthlyPowerTotal.toFixed(2)),
+                  h('span', { className: 'meta' }, activeSupplyCount + ' nodes · ' + leaseHours + ' hr/day · 75% Host / 20% Fair Ops / 5% STEM')),
                 h('div', { className: 'stat-card' },
-                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'MONTHLY CREDITS' : 'MONTHLY USD PAYOUT'),
+                  h('span', { className: 'label' }, payoutMode === 'credits' ? 'EQUIVALENT L40S BURST HOURS' : 'TRUE NET CASH PROFIT AFTER POWER'),
                   h('span', { className: 'metric', style: { color: 'var(--ok)' } },
-                    '$' + (payoutMode === 'credits' ? monthlyCreditsTotal : monthlyUsdTotal).toFixed(2) + ' / mo'),
-                  h('span', { className: 'meta' }, '≈ ' + monthlyBurstHoursL40s.toFixed(0) + ' hrs of L40S 48 GB burst / mo'))),
+                    payoutMode === 'credits'
+                      ? monthlyBurstHoursL40s.toFixed(0) + ' hrs / mo'
+                      : '+$' + monthlyNetProfitUsd.toFixed(2) + ' / mo'),
+                  h('span', { className: 'meta' }, 'No-Demand = No-Payout solvency · 0% penalty <200ms gaming yield'))),
               h(K.CodeBlock, {
-                title: 'terminal · start leasing in one command',
+                title: 'terminal · inspect transparent 5-factor breakdown & start leasing',
                 language: 'shell',
-                code: '$ kadmium lease --hours ' + leaseHours + ' --payout ' + payoutMode + '\n# -> Projected: $' + (payoutMode === 'credits' ? monthlyCreditsTotal : monthlyUsdTotal).toFixed(2) + '/mo · < 200 ms game auto-yield (0% penalty)'
+                code: '$ kadmium lease --hours ' + leaseHours + ' --payout ' + payoutMode + '\n# -> Gross: $' + monthlyUsdTotal.toFixed(2) + '/mo - Power: $' + monthlyPowerTotal.toFixed(2) + '/mo = +$' + monthlyNetProfitUsd.toFixed(2) + '/mo Net Cash (or $' + monthlyCreditsTotal.toFixed(2) + '/mo in 1.25× Credits)'
               })))),
 
         /* ---- 6. Under the Hood (Clean Tabbed Architecture) ---- */

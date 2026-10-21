@@ -300,12 +300,16 @@
         supply ? h('section', { className: 'panel' },
           h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
             h('div', null,
-              h('p', { className: 'eyebrow' }, 'Kadmium Supply Grid · lease idle local silicon'),
-              h('div', { className: 'title' }, 'Earn direct USD or 1.25× Kadmium Cloud credits while idle')),
+              h('p', { className: 'eyebrow' }, 'Kadmium Reactor Supply Grid · open-book 5-factor valuation & $0.14/kWh power deduction'),
+              h('div', { className: 'title' }, '75% to Host · 20% Fair Living-Wage Ops · 5% Local STEM & Small-Biz Grants'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '4px 0 0' } },
+                supply.datacenter_avoidance && supply.datacenter_avoidance.people_powered_compute_thesis
+                  ? '\u201C' + supply.datacenter_avoidance.people_powered_compute_thesis + '\u201D'
+                  : 'No-Demand = No-Compute-Payout solvency.')),
             h('div', { className: 'kd-row' },
               h(K.Badge, { tone: supply.policy.enabled ? 'local' : 'neutral', dot: true },
                 supply.policy.enabled
-                  ? 'Leasing active · $' + supply.total_hourly_cloud_credits_usd.toFixed(2) + '/hr credits'
+                  ? 'Leasing active · +$' + (supply.total_net_monthly_profit_after_power_usd || 0).toFixed(2) + '/mo net after power'
                   : 'Leasing paused'),
               h(K.Button, {
                 variant: supply.policy.enabled ? 'primary' : 'default',
@@ -316,27 +320,34 @@
                 variant: supply.policy.payout_mode && supply.policy.payout_mode.KadmiumCloudCredits ? 'primary' : 'quiet',
                 size: 'sm',
                 onClick: function () { updateSupplyPolicy(true, supply.policy.daily_lease_hours, true); }
-              }, '1.25× Cloud credits ($' + supply.total_projected_monthly_cloud_credits_usd.toFixed(0) + '/mo)'),
+              }, '1.25× Reactor credits ($' + supply.total_projected_monthly_cloud_credits_usd.toFixed(0) + '/mo)'),
               h(K.Button, {
                 variant: supply.policy.payout_mode === 'UsdDirectPayout' ? 'primary' : 'quiet',
                 size: 'sm',
                 onClick: function () { updateSupplyPolicy(true, supply.policy.daily_lease_hours, false); }
-              }, 'Direct USD ($' + supply.total_projected_monthly_usd.toFixed(0) + '/mo)'))),
+              }, 'Direct USD (+$' + (supply.total_net_monthly_profit_after_power_usd || supply.total_projected_monthly_usd).toFixed(0) + '/mo net)'))),
           h('div', { className: 'table-wrap' },
             h('table', { className: 'mono-table' },
               h('thead', null, h('tr', null,
                 h('th', null, 'LOCAL NODE'),
                 h('th', null, 'HARDWARE'),
-                h('th', null, 'USD / HR'),
-                h('th', null, '1.25× CREDITS / HR'),
-                h('th', null, 'PROJECTED MONTHLY (1.25×)'))),
+                h('th', null, 'BUYER \u2192 HOST (75%)'),
+                h('th', null, 'DUTY %'),
+                h('th', null, 'GROSS / MO'),
+                h('th', null, 'POWER (@ $0.14/kWh)'),
+                h('th', null, 'NET PROFIT / MO'),
+                h('th', null, '1.25× CREDITS / MO'))),
               h('tbody', null, supply.node_quotes.map(function (q) {
+                var vb = q.valuation_breakdown || {};
                 return h('tr', { key: q.node_id },
                   h('td', null, q.hostname),
                   h('td', null, q.hardware_summary),
-                  h('td', null, '$' + q.usd_rate_per_hour.toFixed(2)),
-                  h('td', { style: { color: 'var(--cadmium-text)' } }, '$' + q.cloud_credit_rate_per_hour_usd.toFixed(2)),
-                  h('td', null, '$' + q.projected_monthly_cloud_credits_usd.toFixed(2)));
+                  h('td', null, '$' + (vb.gross_buyer_clearing_rate_usd_hr || 0).toFixed(3) + ' \u2192 $' + (vb.host_active_job_usd_per_hr || 0).toFixed(3)),
+                  h('td', null, (vb.expected_active_utilization_pct || 0).toFixed(0) + '%'),
+                  h('td', null, '$' + q.projected_monthly_usd.toFixed(2)),
+                  h('td', { style: { color: 'var(--ink-muted)' } }, '-$' + (vb.estimated_monthly_electricity_cost_usd || 0).toFixed(2)),
+                  h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, '+$' + (vb.net_monthly_profit_after_power_usd || q.projected_monthly_usd).toFixed(2)),
+                  h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$' + q.projected_monthly_cloud_credits_usd.toFixed(2)));
               }))))) : null,
 
         execReport ? h('section', { className: 'panel' },
