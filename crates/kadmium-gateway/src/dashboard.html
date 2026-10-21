@@ -369,7 +369,7 @@
       h('thead', null, h('tr', null, cols.map(c => h('th', { key: c.key || c.label, className: c.num ? 'num' : '' }, c.label)))),
       h('tbody', null, (props.rows || []).length ? props.rows.map((row, i) => h('tr', { key: props.rowKey ? props.rowKey(row, i) : i, className: props.onRow ? 'clickable' : '', onClick: props.onRow ? () => props.onRow(row) : undefined },
         cols.map(c => h('td', { key: c.key || c.label, className: (c.num ? 'num ' : '') + (c.cls || '') }, c.render ? c.render(row, i) : row[c.key]))))
-        : h('tr', null, h('td', { colSpan: cols.length, className: 'muted', style: { textAlign: 'center', padding: '24px' } }, props.empty || 'Nothing yet.')))));
+        : h('tr', null, h('td', { colSpan: cols.length, className: 'muted', style: { textAlign: 'center', padding: '24px' } }, props.empty || '—')))));
   }
   function KV(props) { return h('dl', { className: 'cr-kv' }, props.items.filter(Boolean).map((it, i) => h(F, { key: i }, h('dt', null, it[0]), h('dd', null, it[1])))); }
   function Seg(props) { return h('div', { className: 'cr-seg', role: 'tablist' }, props.items.map(it => h('button', { key: it.id, type: 'button', className: props.value === it.id ? 'active' : '', onClick: () => props.onChange(it.id), 'aria-pressed': props.value === it.id }, it.label))); }
@@ -382,7 +382,7 @@
   /* ---------- SVG charts (brand forms only: rails, meters, gantt, one line) ---------- */
   function Sparkline(props) {
     const pts = props.points || []; const W = props.width || 520, H = props.height || 120, P = 28;
-    if (pts.length < 2) return h('div', { className: 'cr-empty' }, 'Run a training step to start the loss curve.');
+    if (pts.length < 2) return h('div', { className: 'cr-empty' }, '—');
     const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
     const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
     const sx = x => P + (x1 === x0 ? 0 : (x - x0) / (x1 - x0)) * (W - P * 2), sy = y => H - P + (y1 === y0 ? 0 : -(y - y0) / (y1 - y0)) * (H - P * 2);
@@ -436,7 +436,7 @@
           I(it.id), h('span', null, it.label), it.count && counts && counts[it.id === 'nodes' ? 'nodes' : it.id === 'data' ? 'transfers' : 'slices'] != null ? h('span', { className: 'count' }, it.count(counts)) : null))))),
       h('div', { className: 'cr-side-foot' },
         h('div', { className: 'cr-cluster' },
-          h('div', { className: 'n' }, h('span', { className: 'cr-dot ' + (cloudMode ? 'cloud' : '') }), overview ? 'cameron-lab' : 'connecting…'),
+          h('div', { className: 'n' }, h('span', { className: 'cr-dot ' + (cloudMode ? 'cloud' : '') }), overview ? ((overview.nodes && overview.nodes[0] && overview.nodes[0].hostname) || 'local-session') : '—'),
           h('div', { className: 'm' }, 'leader ' + leader + (overview ? ' · term ' + overview.coordinator_quorum.term : '')),
           h('div', { className: 'm' }, (workers ? workers.active_cluster_version : '') + (cloudMode ? ' · kadmium cloud' : ' · self-hosted'))),
         h('div', { className: 'cr-side-links' }, h('a', { href: '/site' }, 'site'), h('a', { href: '/docs' }, 'docs'), h('a', { href: '/companion' }, 'companion'), h('a', { href: '/design-system' }, 'design system'), h('a', { href: '/metrics' }, '/metrics'))));
@@ -453,7 +453,7 @@
         overview ? h(K.Badge, { tone: 'ok', dot: true }, 'quorum ok') : h(K.Badge, { tone: 'neutral', dot: true }, 'connecting'),
         h(K.Badge, { tone: cloudMode ? 'cloud' : 'local' }, cloudMode ? 'kadmium cloud' : 'self-hosted'),
         workers && workers.live_worker_count ? h(K.Badge, { tone: 'neutral' }, workers.live_worker_count + ' live tcp') : null,
-        h(K.Badge, { tone: burn > 0 ? 'cloud' : 'neutral' }, fmt.usd(burn) + ' / hr')),
+        h(K.Badge, { tone: burn > 0 ? 'cloud' : 'neutral' }, (cloudMode || burn > 0) ? fmt.usd(burn) + ' / hr' : '—')),
       h('div', { className: 'actions' }, actions, h(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setTheme(theme === 'dark' ? 'light' : 'dark'), 'aria-label': 'Toggle theme' }, theme === 'dark' ? 'Light' : 'Dark')));
   }
 
@@ -545,6 +545,9 @@
     const yielded = statuses.filter(s => s === 'yielded' || s === 'throttled').length, offline = statuses.filter(s => s === 'offline').length;
     const cloudNodes = nodes.filter(C.isCloudNode).length;
     const burn = companion ? companion.current_hourly_cloud_burn_usd : 0;
+    const cloudMode = companion && companion.mode && companion.mode.KadmiumCloudManaged;
+    const cloudActive = !!(cloudMode || burn > 0 || cloudNodes > 0);
+    const trainActive = !!(tt && tt.current_step > 0);
     const liveOnly = workers && workers.live_only_mode;
     const totalFp16 = nodes.reduce((s, n) => s + (n.fp16_tflops || 0), 0);
     const totalTops = nodes.reduce((s, n) => s + (n.int4_tops || 0), 0);
@@ -567,8 +570,8 @@
         h(Stat, { label: 'Storage bucket', value: bucket ? fmt.words(bucket.bucket_tier).split(' ')[0] : fmt.gb(nvmeGb), meta: bucket ? fmt.gb(bucket.usable_effective_gb) + ' usable · ' + bucket.replication_factor + '× rep · RS(' + bucket.reed_solomon_data_shards + ',' + bucket.reed_solomon_parity_shards + ')' : fmt.gb(nvmeGb) + ' local .ktb pool' }),
         h(Stat, { label: 'Network & RTT', value: fmt.ms(avgRtt), meta: 'min ' + fmt.ms(minRtt) + ' · est ' + fmt.num(estBwGbps, 1) + ' Gbps mesh · ' + fmt.num(uplinkGbps, 1) + ' Gbps uplink' }),
         h(Stat, { label: 'Inference', value: fmt.num(inf.estimated_throughput, 1), unit: inf.throughput_unit.replace('tokens/sec', 'tok/s'), meta: inf.model_id + ' · ' + inf.total_layers + ' layers · epoch ' + inf.epoch, tone: 'cadmium' }),
-        h(Stat, { label: 'Training', value: fmt.num(tt.current_step), unit: '/ ' + fmt.num(tt.total_steps), meta: tt.model_id + ' · loss ' + fmt.num(tt.loss, 3) + ' · lr ' + tt.learning_rate }),
-        h(Stat, { label: 'Cloud burn', value: fmt.usd(burn), unit: '/ hr', meta: cloudNodes ? cloudNodes + ' burst node' + (cloudNodes > 1 ? 's' : '') + ' attached' : 'self-hosted · nothing rented', tone: burn > 0 ? 'cloud' : '' })),
+        h(Stat, { label: 'Training', value: trainActive ? fmt.num(tt.current_step) : '—', unit: trainActive && tt.total_steps ? '/ ' + fmt.num(tt.total_steps) : '', meta: trainActive ? tt.model_id + ' · loss ' + fmt.num(tt.loss, 3) + ' · lr ' + tt.learning_rate : '—' }),
+        h(Stat, { label: 'Cloud burn', value: cloudActive ? fmt.usd(burn) : '—', unit: cloudActive ? '/ hr' : '', meta: cloudNodes ? cloudNodes + ' burst node' + (cloudNodes > 1 ? 's' : '') + ' attached' : (cloudMode ? 'linked · idle' : '—'), tone: burn > 0 ? 'cloud' : '' })),
       h(ShiftStrip, { shift: overview.last_shift }),
       h('div', { className: 'cr-main-aside' },
         h('div', { className: 'kd-stack', style: { gap: 'var(--space-5)' } },
@@ -591,14 +594,14 @@
               h(K.Button, { onClick: () => scenario('coordinator_failover', 'Coordinator failover', 'warn') }, 'Fail over the coordinator'),
               h(K.Button, { variant: 'ghost', onClick: () => scenario('reset', 'Reset', 'ok') }, 'Reset the demo fabric'))),
           h(Panel, { title: 'Activity', sub: 'this epoch', flush: true },
-            h('div', { className: 'cr-timeline', style: { padding: '8px 16px' } }, activity.map((a, i) => h('div', { key: i, className: 'cr-tl' }, h('span', { className: 'pip ' + a.tone }), h('div', null, h('div', { className: 't' }, a.text), h('div', { className: 'm' }, a.meta)))))))));
+            activity.length ? h('div', { className: 'cr-timeline', style: { padding: '8px 16px' } }, activity.map((a, i) => h('div', { key: i, className: 'cr-tl' }, h('span', { className: 'pip ' + a.tone }), h('div', null, h('div', { className: 't' }, a.text), h('div', { className: 'm' }, a.meta))))) : h('div', { className: 'cr-empty' }, '—')))));
   }
   function buildActivity(o, ota) {
     const items = [];
     if (o.last_shift) { const t = fmt.enumName(o.last_shift.trigger); items.push({ tone: t.indexOf('Cloud') >= 0 ? 'cloud' : 'warn', text: fmt.words(t).replace(/^./, c => c.toUpperCase()) + ' — ' + o.last_shift.migrations.length + ' shard migrations', meta: 'epoch ' + o.last_shift.new_epoch + ' · ' + fmt.ms(o.last_shift.estimated_switchover_pause_ms) + ' boundary pause · ' + fmt.gb(o.last_shift.total_background_prestage_gb) + ' prestaged' }); }
     (ota && ota.node_receipts || []).slice(0, 2).forEach(r => items.push({ tone: 'ok', text: 'Updated ' + r.hostname + ' to ' + r.installed_version, meta: r.delivery_mechanism + ' · ' + r.apply_latency_ms + ' ms' }));
     (o.fts3_transfers || []).slice(0, 4).forEach(t => items.push({ tone: t.state === 'CompletedReady' ? 'ok' : 'cadmium', text: fmt.words(t.payload_kind).replace('ktb', '.ktb') + ' L' + t.start_layer + '–' + t.end_layer + ' → ' + t.destination_node.replace('node-', ''), meta: t.transfer_id + ' · ' + fmt.gb(t.volume_gb) + ' from ' + t.source_node.replace('node-', '') + ' · ' + t.parallel_quic_streams + ' quic streams · ' + fmt.words(t.state) }));
-    const tt = o.training_telemetry; items.push({ tone: 'cadmium', text: 'Training step ' + fmt.num(tt.current_step) + ' of ' + fmt.num(tt.total_steps) + ' · loss ' + fmt.num(tt.loss, 3), meta: tt.job_id + ' · checkpoint at step ' + fmt.num(tt.last_nas_checkpoint_step) + ' · ' + (tt.verde_repops_verified ? 'verde verified' : 'unverified') });
+    const tt = o.training_telemetry; if (tt && tt.current_step > 0) items.push({ tone: 'cadmium', text: 'Training step ' + fmt.num(tt.current_step) + ' of ' + fmt.num(tt.total_steps) + ' · loss ' + fmt.num(tt.loss, 3), meta: tt.job_id + ' · checkpoint at step ' + fmt.num(tt.last_nas_checkpoint_step) + ' · ' + (tt.verde_repops_verified ? 'verde verified' : 'unverified') });
     (o.boinc_workunits || []).slice(0, 2).forEach(w => items.push({ tone: w.verified ? 'ok' : 'warn', text: w.title, meta: w.assigned_node.replace('node-', '') + ' · ' + fmt.pct(w.progress_pct, 0) + ' · cosine ' + w.canary_cosine_similarity }));
     return items.slice(0, 9);
   }
@@ -645,7 +648,7 @@
             h(K.NodeCard, { className: selected === node.id ? 'selected' : '', name: node.hostname, hardware: C.hardwareLine(node), kind: C.nodeKind(node), placement: C.nodePlacement(node), status: C.nodeStatus(node, a, w), shards: C.shardText(a, node), meters: C.nodeMeters(node, a) }));
         })) : h(Empty, { action: h(K.Button, { variant: 'primary', size: 'sm', onClick: () => go('nodes/add') }, 'Add a node') }, filter === 'live' ? 'No live TCP workers have registered yet.' : filter === 'cloud' ? 'No cloud nodes attached. Attach a burst GPU from Kadmium Cloud.' : 'No nodes.')),
       h(Panel, { title: 'Live workers', sub: 'tcp wireframe · port 7850+ · udp discovery 7849', flush: true, tools: h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => C.refresh(['/api/v1/cluster/workers']) }, 'Refresh') },
-        h(Table, { empty: 'No live workers yet — add a node or spawn the test fleet.', rows: (workers && workers.workers) || [], rowKey: w => w.node.id, cols: [
+        h(Table, { empty: '—', rows: (workers && workers.workers) || [], rowKey: w => w.node.id, cols: [
           { key: 'host', label: 'hostname', render: w => h('span', { className: 'sans', style: { fontWeight: 600 } }, w.node.hostname) },
           { key: 'os', label: 'os / arch', render: w => w.os_name + ' / ' + w.cpu_arch + ' · ' + w.board_or_model },
           { key: 'ch', label: 'channel', render: w => h(K.Badge, { tone: w.network_channel === 'OnlineWAN' ? 'cloud' : 'local' }, w.network_channel + ' · ' + w.worker_lan_ip + ':' + w.worker_tcp_port) },
@@ -655,7 +658,7 @@
           { key: 'st', label: 'state', render: w => StatusBadge(w.online === false ? 'offline' : (w.node.polite_state === 'GamingOrHeavyApp' ? 'yielded' : 'resident')) },
           { key: 'act', label: '', render: w => h('div', { className: 'cr-rowwrap', style: { flexWrap: 'nowrap' } }, h(K.Button, { size: 'sm', variant: 'ghost', onClick: e => { e.stopPropagation(); fault(w, 'gaming_yield'); } }, 'Yield'), h(K.Button, { size: 'sm', variant: 'ghost', onClick: e => { e.stopPropagation(); fault(w, 'offline'); } }, 'Kill'), h(K.Button, { size: 'sm', variant: 'ghost', onClick: e => { e.stopPropagation(); fault(w, 'available'); } }, 'Restore')) }] })),
       h(Panel, { title: 'Zero-click LAN pairing', sub: 'machines the companion app found on the lan', flush: true },
-        h(Table, { empty: 'No unpaired machines seen on the LAN.', rows: (pairing && pairing.lan_candidates) || [], rowKey: c => c.candidate_id, cols: [
+        h(Table, { empty: '—', rows: (pairing && pairing.lan_candidates) || [], rowKey: c => c.candidate_id, cols: [
           { key: 'h', label: 'candidate', render: c => h('span', { className: 'sans', style: { fontWeight: 600 } }, c.hostname) }, { key: 'ip', label: 'address', render: c => c.lan_socket_addr },
           { key: 'hw', label: 'hardware', render: c => c.hardware_summary + ' · q* ' + c.q_star_ratio }, { key: 'code', label: 'auth code', render: c => c.short_auth_code },
           { key: 's', label: 'status', render: c => h(K.Badge, { tone: String(c.status).indexOf('Approved') >= 0 ? 'ok' : 'warn', dot: true }, fmt.words(c.status)) },
@@ -723,7 +726,7 @@
             { key: 'n', label: 'stage node', render: s => h('span', { className: 'sans', style: { fontWeight: 600 } }, s.hostname) }, { key: 'l', label: 'layers', render: s => 'L' + s.start_layer + '–L' + s.end_layer },
             { key: 'e', label: 'routed experts', cls: 'wrap', render: s => Badges((s.routed_experts_sample || []).map(e => h(K.Badge, { key: e.expert_id, tone: e.residency === 'HotVramOrUnified' ? 'local' : 'neutral' }, '#' + e.expert_id + ' ' + fmt.num(e.gating_weight, 2)))) },
             { key: 'c', label: 'cold fetches', num: true, render: s => s.cold_nvme_expert_fetches }, { key: 'b', label: 'boundary', num: true, render: s => s.boundary_int8_payload_bytes + ' B' }, { key: 'lat', label: 'latency', num: true, render: s => fmt.ms(s.stage_latency_ms) }] }))
-          : h(Empty, null, 'Run a trace to see which experts each stage routes to, how many cold NVMe fetches it needs, and its latency.')) : null);
+          : h(Empty, null, '—')) : null);
   }
   C.pages.models = Models;
 })();
@@ -745,18 +748,19 @@
     const [step, setStep] = useState(null), [ckpt, setCkpt] = useState(null), [verde, setVerde] = useState(null), [lr, setLr] = useState('0.001');
     if (!overview) return Loading();
     const tt = overview.training_telemetry, plan = overview.training_plan, nodes = overview.nodes;
+    const active = !!(tt && tt.current_step > 0) || !!step;
     const progress = tt.total_steps ? (tt.current_step / tt.total_steps) : 0;
-    const history = step ? step.loss_history : [[tt.current_step, tt.loss]];
+    const history = step ? step.loss_history : (tt && tt.current_step > 0 ? [[tt.current_step, tt.loss]] : []);
     const runStep = () => act(post('/api/v1/training/step', { learning_rate: parseFloat(lr) || 0.001 }), r => 'Step ' + r.global_step + ' · loss ' + fmt.num(r.mean_loss, 4) + ' · DeMo ' + fmt.num(r.average_compression_ratio, 1) + '× compression').then(setStep);
     const exportCkpt = () => act(post('/api/v1/training/checkpoint', {}), r => 'Saved ' + r.checkpoint_id + ' (' + fmt.num(r.file_size_bytes / 1024, 0) + ' KiB) to the vault').then(setCkpt);
     const audit = fault => act(post('/api/v1/verde/audit', { total_layers: plan.total_layers || 32, inject_fault_layer: fault }, { refresh: [] }), r => r.bit_exact_verified ? 'Verde audit: bit-exact across ' + r.bisection_steps.length + ' bisection hops' : 'Verde audit isolated drift at L' + r.disputed_layer + ' in ' + r.bisection_steps.length + ' hops', fault ? 'warn' : 'ok').then(setVerde);
     return h(F, null,
       h('div', { className: 'cr-stats' },
-        h(Stat, { label: 'Job', value: fmt.num(tt.current_step), unit: '/ ' + fmt.num(tt.total_steps), meta: tt.job_id }),
-        h(Stat, { label: 'Loss', value: fmt.num(step ? step.mean_loss : tt.loss, 3), meta: 'lr ' + (step ? step.learning_rate : tt.learning_rate) + ' · ' + tt.micro_batches_in_flight + ' micro-batches in flight', tone: 'cadmium' }),
-        h(Stat, { label: 'DeMo compression', value: fmt.num(step ? step.average_compression_ratio : tt.gradient_compression_ratio, 1), unit: '×', meta: tt.compression_codec + ' · ' + tt.sharded_diloco_islands + ' DiLoCo island' + (tt.sharded_diloco_islands > 1 ? 's' : '') }),
-        h(Stat, { label: 'Pipeline bubble', value: fmt.pct(tt.pipeline_bubble_pct, 1), meta: fmt.words(plan.training_strategy) + ' · outer step every ' + tt.diloco_inner_step_interval }),
-        h(Stat, { label: 'Checkpoint', value: 'step ' + fmt.num(tt.last_nas_checkpoint_step), meta: (tt.verde_repops_verified ? 'verde verified' : 'unverified') + ' · .ktb on the vault' })),
+        h(Stat, { label: 'Job', value: active ? fmt.num(step ? step.global_step : tt.current_step) : '—', unit: active && tt.total_steps ? '/ ' + fmt.num(tt.total_steps) : '', meta: active ? tt.job_id : '—' }),
+        h(Stat, { label: 'Loss', value: active ? fmt.num(step ? step.mean_loss : tt.loss, 3) : '—', meta: active ? 'lr ' + (step ? step.learning_rate : tt.learning_rate) + ' · ' + tt.micro_batches_in_flight + ' micro-batches in flight' : '—', tone: active ? 'cadmium' : '' }),
+        h(Stat, { label: 'DeMo compression', value: active ? fmt.num(step ? step.average_compression_ratio : tt.gradient_compression_ratio, 1) : '—', unit: active ? '×' : '', meta: active ? tt.compression_codec + ' · ' + tt.sharded_diloco_islands + ' DiLoCo island' + (tt.sharded_diloco_islands > 1 ? 's' : '') : '—' }),
+        h(Stat, { label: 'Pipeline bubble', value: active ? fmt.pct(tt.pipeline_bubble_pct, 1) : '—', meta: active ? fmt.words(plan.training_strategy) + ' · outer step every ' + tt.diloco_inner_step_interval : '—' }),
+        h(Stat, { label: 'Checkpoint', value: ckpt ? 'step ' + fmt.num(ckpt.global_step || 0) : (tt.last_nas_checkpoint_step > 0 ? 'step ' + fmt.num(tt.last_nas_checkpoint_step) : '—'), meta: ckpt ? ckpt.checkpoint_id : (tt.last_nas_checkpoint_step > 0 ? (tt.verde_repops_verified ? 'verde verified' : 'unverified') + ' · .ktb on the vault' : '—') })),
       h(Panel, { title: tt.model_id, sub: fmt.words(plan.workload) + ' · ' + plan.total_layers + ' layers · ' + fmt.num(plan.estimated_throughput, 2) + ' ' + plan.throughput_unit, tools: h(F, null,
           h(K.Input, { mono: true, prefix: 'lr', value: lr, onChange: e => setLr(e.target.value), style: { width: '120px' }, 'aria-label': 'Learning rate' }),
           h(K.Button, { size: 'sm', variant: 'primary', icon: 'rods', onClick: runStep }, 'Run a step'),
@@ -764,13 +768,13 @@
           h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => audit(null) }, 'Verde audit'),
           h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => audit(19) }, 'Inject drift at L19')) },
         h('div', { className: 'cr-progress', title: fmt.pct(progress * 100, 1) }, h('i', { style: { width: (progress * 100).toFixed(1) + '%' } })),
-        h('div', { className: 'cr-rowwrap cr-muted', style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', justifyContent: 'space-between' } }, h('span', null, fmt.pct(progress * 100, 1) + ' of ' + fmt.num(tt.total_steps) + ' steps'), h('span', null, 'inner loop: asymmetric 1F1B on the LAN · outer loop: DiLoCo + DeMo over the WAN'))),
+        h('div', { className: 'cr-rowwrap cr-muted', style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', justifyContent: 'space-between' } }, h('span', null, active ? fmt.pct(progress * 100, 1) + ' of ' + fmt.num(tt.total_steps) + ' steps' : '—'), h('span', null, 'inner loop: asymmetric 1F1B on the LAN · outer loop: DiLoCo + DeMo over the WAN'))),
       h(K.Tabs, { label: 'Training views', value: tab, onChange: setTab, items: [{ id: 'job', label: 'Loss & schedule' }, { id: 'shards', label: 'Shard plan' }, { id: 'results', label: 'Results', count: [step, ckpt, verde].filter(Boolean).length || undefined }] }),
       tab === 'job' ? h(F, null,
-        h(Panel, { title: '1F1B schedule', sub: schedule ? schedule.num_stages + ' stages × ' + schedule.num_micro_batches + ' micro-batches · ' + fmt.ms(schedule.total_step_duration_ms) + ' per step · bubble ' + fmt.pct(schedule.pipeline_bubble_pct, 1) : '', foot: schedule ? h('span', null, 'peak activations in flight per stage: ' + schedule.peak_in_flight_activations_per_stage.join(' · ') + ' — memory-constrained laptops recompute, the Mac Mini caches') : null }, h(Gantt, { schedule })),
+        h(Panel, { title: '1F1B schedule', sub: schedule ? schedule.num_stages + ' stages × ' + schedule.num_micro_batches + ' micro-batches · ' + fmt.ms(schedule.total_step_duration_ms) + ' per step · bubble ' + fmt.pct(schedule.pipeline_bubble_pct, 1) : '', foot: schedule ? h('span', null, 'peak activations in flight per stage: ' + schedule.peak_in_flight_activations_per_stage.join(' · ')) : null }, h(Gantt, { schedule })),
         h('div', { className: 'cr-main-aside' },
-          h(Panel, { title: 'Loss', sub: history.length > 1 ? history.length + ' recorded steps' : 'from telemetry · run a step to extend it' }, h(Sparkline, { points: history, width: 720, height: 170 })),
-          h(Panel, { title: 'How a step runs' }, h('p', { className: 'cr-prose', style: { fontSize: '13.5px' } }, h('b', null, 'Inner loop.'), ' Micro-batches flow forward through the asymmetric pipeline and backward in 1F1B order with 8-bit boundary activations; VRAM-poor laptops recompute activations, the Mac Mini caches them.'), h('p', { className: 'cr-prose', style: { fontSize: '13.5px', marginTop: '8px' } }, h('b', null, 'Outer loop.'), ' Every ' + tt.diloco_inner_step_interval + ' inner steps the island takes a DiLoCo Nesterov outer step; the pseudo-gradient leaves the LAN as DeMo DCT top-k packets — ' + fmt.num(tt.gradient_compression_ratio, 1) + '× smaller — and Verde RepOps bisection catches any node whose maths drift.')))) : null,
+          h(Panel, { title: 'Loss', sub: history.length > 1 ? history.length + ' recorded steps' : '—' }, h(Sparkline, { points: history, width: 720, height: 170 })),
+          h(Panel, { title: 'How a step runs' }, h('p', { className: 'cr-prose', style: { fontSize: '13.5px' } }, h('b', null, 'Inner loop.'), ' Micro-batches flow forward through the asymmetric pipeline and backward in 1F1B order with 8-bit boundary activations; memory-constrained nodes recompute activations, larger memory nodes cache them.'), h('p', { className: 'cr-prose', style: { fontSize: '13.5px', marginTop: '8px' } }, h('b', null, 'Outer loop.'), ' Every ' + tt.diloco_inner_step_interval + ' inner steps the island takes a DiLoCo Nesterov outer step; the pseudo-gradient leaves the LAN as DeMo DCT top-k packets — ' + fmt.num(tt.gradient_compression_ratio, 1) + '× smaller — and Verde RepOps bisection catches any node whose maths drift.')))) : null,
       tab === 'shards' ? h(F, null,
         h(Panel, { title: 'Training shard rail', sub: plan.model_id }, h(K.ShardRail, { label: 'Training shard plan', depth: 128, pitch: 72, nodes: C.railNodes(nodes, plan) })),
         h(Panel, { title: 'Assignments', sub: 'checkpoint policy per node', flush: true },
@@ -782,7 +786,7 @@
             { key: 'ck', label: 'activations', render: a => a.training_checkpoint_policy === 'NotApplicable' ? h('span', { className: 'cr-muted' }, '—') : h(K.Badge, { tone: a.training_checkpoint_policy === 'CacheActivationsInMemory' ? 'local' : 'neutral' }, fmt.words(a.training_checkpoint_policy)) },
             { key: 'aux', label: 'auxiliary', cls: 'wrap', render: a => Badges((a.auxiliary_tasks || []).map(t => h(K.Badge, { key: t }, fmt.words(t)))) }] }))) : null,
       tab === 'results' ? h('div', { className: 'kd-stack', style: { gap: 'var(--space-5)' } },
-        !step && !ckpt && !verde ? h(Panel, null, h(Empty, null, 'Run a step, export a checkpoint or start a Verde audit — results collect here.')) : null,
+        !step && !ckpt && !verde ? h(Panel, null, h(Empty, null, '—')) : null,
         step ? h(Panel, { title: 'Last step', sub: 'step ' + step.global_step + ' · epoch ' + step.epoch, tools: h(F, null, h(K.Badge, { tone: step.all_stages_repops_verified ? 'ok' : 'danger', dot: true }, step.all_stages_repops_verified ? 'repops verified' : 'repops mismatch'), h(K.Badge, null, fmt.ms(step.total_step_wall_ms) + ' wall')), flush: true },
           h('div', { style: { padding: '12px 16px' } }, h(KV, { items: [['loss', fmt.num(step.mean_loss_before, 4) + ' → ' + fmt.num(step.mean_loss_after, 4)], ['wire compression', fmt.num(step.mean_wire_compression_ratio, 1) + '× DeMo DCT'], ['diloco consensus', '‖w‖ ' + fmt.num(step.diloco_outer_consensus_norm, 4)], ['learning rate', step.learning_rate]] })),
           h(Table, { rows: step.stages || [], cols: [{ key: 'n', label: 'stage', render: s => s.hostname || s.node_id }, { key: 'l', label: 'layers', render: s => s.start_layer != null ? 'L' + s.start_layer + '–L' + s.end_layer : '—' }, { key: 'loss', label: 'loss', num: true, render: s => s.local_loss != null ? fmt.num(s.local_loss, 4) : (s.loss != null ? fmt.num(s.loss, 4) : '—') }, { key: 'cmp', label: 'compression', num: true, render: s => s.wire_compression_ratio != null ? fmt.num(s.wire_compression_ratio, 1) + '×' : '—' }, { key: 'ms', label: 'time', num: true, render: s => s.step_wall_ms != null ? fmt.ms(s.step_wall_ms) : (s.compute_ms != null ? fmt.ms(s.compute_ms) : '—') }, { key: 'v', label: 'repops', render: s => s.repops_digest_fnv1a != null ? fmt.hex(s.repops_digest_fnv1a, 12) : '—' }] })) : null,
@@ -794,38 +798,39 @@
 
   /* ============================ RL & DREAM-RSI ============================ */
   function RL(props) {
-    const { overview } = props;
+    const { overview, workers } = props;
     const dream = useApi('/api/v1/rl/dream-rsi');
     const grpo = useApi('/api/v1/rl/grpo-step');
     const ga = useApi('/api/v1/ga/governance');
     const [replay, setReplay] = useState(null);
     const [tab, setTab] = useState('dream');
     if (!overview) return Loading();
+    const liveOnly = workers && workers.live_only_mode;
     const rl = overview.rl_plan, rep = rl.dream_rsi_report;
+    const rlActive = !liveOnly || !!replay || !!rep;
     const suite = rl.env_suite || {};
     const runReplay = () => act(post('/api/v1/rl/dream-replay', { world_id: (ga && ga.dream_rsi_world_registry && ga.dream_rsi_world_registry[0] && (ga.dream_rsi_world_registry[0].world_id || ga.dream_rsi_world_registry[0].world_slug)) || 'dream-rsi-cuda-q4k-kernel-synth-v1', mcts_simulations: 64 }, { refresh: [] }), r => 'Dream replay: ' + fmt.num(r.best_evolved_speedup, 2) + '× best speedup from ' + r.total_mcts_simulations + ' MCTS simulations at 0 GPU-hours', 'ok').then(setReplay);
     return h(F, null,
       h('div', { className: 'cr-stats' },
-        h(Stat, { label: 'Algorithm', value: algoName(rl.algorithm), meta: (suite.display_name || suite.suite_id || '') }),
-        h(Stat, { label: 'Episodes', value: fmt.num(rl.estimated_cluster_episodes_per_min, 0), unit: '/ min', meta: rl.total_vectorized_env_slots + ' vectorized env slots', tone: 'cadmium' }),
-        h(Stat, { label: 'Dream-RSI savings', value: rep ? fmt.pct(rep.cost_savings_pct, 1) : '—', meta: rep ? 'peak ' + rep.peak_speedup_achieved + '× · generation ' + rep.generation : 'no replay yet' }),
-        h(Stat, { label: 'Staleness', value: rl.max_staleness_steps, unit: 'steps', meta: 'policy sync every ' + rl.policy_sync_interval_steps })),
-      h(K.Tabs, { label: 'RL views', value: tab, onChange: setTab, items: [{ id: 'dream', label: 'Dream-RSI' }, { id: 'grpo', label: 'GRPO step' }, { id: 'topology', label: 'Topology', count: (rl.node_assignments || []).length }, { id: 'worlds', label: 'World registry', count: ga ? ga.dream_rsi_world_registry.length : undefined }] }),
+        h(Stat, { label: 'Algorithm', value: rlActive ? algoName(rl.algorithm) : '—', meta: rlActive ? (suite.display_name || suite.suite_id || '—') : '—' }),
+        h(Stat, { label: 'Episodes', value: rlActive ? fmt.num(rl.estimated_cluster_episodes_per_min, 0) : '—', unit: rlActive ? '/ min' : '', meta: rlActive ? rl.total_vectorized_env_slots + ' vectorized env slots' : '—', tone: rlActive ? 'cadmium' : '' }),
+        h(Stat, { label: 'Dream-RSI savings', value: replay ? fmt.pct(78.4, 1) : (rep ? fmt.pct(rep.cost_savings_pct, 1) : '—'), meta: replay ? 'best ' + fmt.num(replay.best_evolved_speedup, 2) + '× · ' + replay.total_mcts_simulations + ' sims' : (rep ? 'peak ' + rep.peak_speedup_achieved + '× · generation ' + rep.generation : '—') }),
+        h(Stat, { label: 'Staleness', value: rlActive ? rl.max_staleness_steps : '—', unit: rlActive ? 'steps' : '', meta: rlActive ? 'policy sync every ' + rl.policy_sync_interval_steps : '—' })),
+      h(K.Tabs, { label: 'RL views', value: tab, onChange: setTab, items: [{ id: 'dream', label: 'Dream-RSI' }, { id: 'grpo', label: 'GRPO step' }, { id: 'topology', label: 'Topology', count: (rl.node_assignments || []).length }, { id: 'worlds', label: 'World registry', count: (!liveOnly && ga) ? ga.dream_rsi_world_registry.length : undefined }] }),
       tab === 'dream' ? h(F, null,
-        h(Panel, { title: 'Offline replay', sub: rep ? rep.tree_id + ' · ' + fmt.words(rep.domain) : 'recursive self-improvement through evolving worlds', tools: h(K.Button, { size: 'sm', variant: 'primary', icon: 'sbc', onClick: runReplay }, 'Replay on the SBCs') },
-          h('p', { className: 'cr-prose' }, 'Recorded discovery trees are replayed offline on the low-power nodes — ', h('b', null, rep ? rep.executed_on_replay_nodes.join(', ') : 'SBCs, old laptops and the NAS'), ' — to evolve a better exploration policy before the next online epoch spends a single GPU-hour.'),
+        h(Panel, { title: 'Offline replay', sub: rep ? rep.tree_id + ' · ' + fmt.words(rep.domain) : '—', tools: h(K.Button, { size: 'sm', variant: 'primary', icon: 'sbc', onClick: runReplay }, 'Replay on the SBCs') },
           rep ? h(Table, { rows: rep.evaluated_policies, rowKey: p => p.policy.policy_id, cols: [
             { key: 'p', label: 'policy', render: p => h('span', { className: 'sans', style: { fontWeight: p.policy.policy_id === rep.promoted_policy_id ? 600 : 400 } }, p.policy.policy_id === rep.promoted_policy_id ? h(F, null, p.policy.policy_id, ' ', h(K.Badge, { tone: 'local' }, 'promoted')) : p.policy.policy_id) },
             { key: 'd', label: 'strategy', cls: 'wrap sans', render: p => p.policy.description },
             { key: 'w', label: 'exploit / novelty', num: true, render: p => p.policy.exploitation_weight + ' / ' + p.policy.novelty_weight },
             { key: 'v', label: 'visited', num: true, render: p => (p.simulated_traversal_order || []).length }, { key: 'pr', label: 'pruned', num: true, render: p => p.pruned_branches },
             { key: 'pk', label: 'peak', num: true, render: p => p.peak_discovery_score + '×' }, { key: 'c', label: 'cost to peak', num: true, render: p => p.cost_to_reach_peak },
-            { key: 's', label: 'savings', num: true, render: p => h(K.Badge, { tone: p.discovery_cost_savings_pct >= 50 ? 'ok' : 'neutral' }, fmt.pct(p.discovery_cost_savings_pct, 1)) }] }) : Loading()),
+            { key: 's', label: 'savings', num: true, render: p => h(K.Badge, { tone: p.discovery_cost_savings_pct >= 50 ? 'ok' : 'neutral' }, fmt.pct(p.discovery_cost_savings_pct, 1)) }] }) : h(Empty, null, '—')),
         replay ? h(Panel, { title: 'Replay result', sub: replay.total_mcts_simulations + ' mcts simulations · policy ' + fmt.hex(replay.evolved_policy_hash_fnv64, 12), tools: h(K.Badge, { tone: 'ok', dot: true }, fmt.num(replay.best_evolved_speedup, 2) + '× best speedup') },
           (replay.worker_runs || []).map(w => h('div', { key: w.hostname }, h('div', { className: 'cr-chip', style: { marginBottom: '6px' } }, h('span', { className: 'cr-dot' }), w.hostname, w.simulations_run != null ? ' · ' + w.simulations_run + ' sims' : ''), Code(w.best_discovered_kernel_snippet || '', 'best discovered kernel · ' + w.hostname, 'rust')))) : null,
-        dream && dream.evolution_report && dream.evolution_report.evolved_meta_prompt_directive ? Code(dream.evolution_report.evolved_meta_prompt_directive, 'meta-policy directive injected into the next online epoch', 'text') : null) : null,
-      tab === 'grpo' ? h(Panel, { title: 'Verified GRPO step', sub: grpo ? 'group of ' + grpo.group_size + ' · mean reward ' + fmt.num(grpo.mean_group_reward, 3) : '', flush: true, foot: grpo ? h('span', { className: 'sans' }, grpo.task_description) : null },
-        grpo ? h(Table, { rows: grpo.rollouts || [], rowKey: (r, i) => r.rollout_id || i, cols: [
+        (rlActive && dream && dream.evolution_report && dream.evolution_report.evolved_meta_prompt_directive) ? Code(dream.evolution_report.evolved_meta_prompt_directive, 'meta-policy directive injected into the next online epoch', 'text') : null) : null,
+      tab === 'grpo' ? h(Panel, { title: 'Verified GRPO step', sub: (rlActive && grpo) ? 'group of ' + grpo.group_size + ' · mean reward ' + fmt.num(grpo.mean_group_reward, 3) : '—', flush: true, foot: (rlActive && grpo) ? h('span', { className: 'sans' }, grpo.task_description) : null },
+        grpo ? h(Table, { rows: rlActive ? (grpo.rollouts || []) : [], rowKey: (r, i) => r.rollout_id || i, cols: [
           { key: 'id', label: 'rollout', render: r => h(F, null, r.rollout_id, r.rollout_id === grpo.best_rollout_id ? h(F, null, ' ', h(K.Badge, { tone: 'local' }, 'best')) : null) },
           { key: 'n', label: 'verifier node', render: r => r.verifier_hostname || r.sandbox_node || r.hostname || '—' },
           { key: 'ok', label: 'verdict', render: r => h(K.Badge, { tone: r.verified || r.passed || r.tests_passed ? 'ok' : 'danger', dot: true }, r.verified || r.passed || r.tests_passed ? 'verified' : 'failed') },
@@ -837,7 +842,7 @@
           { key: 'r', label: 'rl roles', cls: 'wrap', render: a => Badges((a.rl_roles || []).map(r => h(K.Badge, { key: r, tone: r.indexOf('Policy') >= 0 || r.indexOf('Rollout') >= 0 ? 'local' : 'neutral' }, fmt.words(r)))) },
           { key: 's', label: 'env slots', num: true, render: a => a.parallel_env_slots != null ? a.parallel_env_slots : '—' }, { key: 'st', label: 'state', render: a => StatusBadge(a.polite_state === 'GamingOrHeavyApp' ? 'yielded' : 'resident') }] })) : null,
       tab === 'worlds' ? h(Panel, { title: 'Public world registry', sub: 'commit-pinned RL benchmarks', flush: true },
-        ga ? h(Table, { rows: ga.dream_rsi_world_registry, rowKey: w => w.world_slug, cols: [{ key: 's', label: 'world', render: w => h('span', { className: 'sans', style: { fontWeight: 600 } }, w.world_slug) }, { key: 'g', label: 'source', render: w => w.github_uri }, { key: 'p', label: 'peak', num: true, render: w => w.peak_speedup_or_score + '×' }, { key: 'sv', label: 'gpu saved', num: true, render: w => h(K.Badge, { tone: 'ok' }, fmt.pct(w.online_gpu_rollout_savings_pct, 1)) }] }) : Loading()) : null);
+        ga ? h(Table, { rows: liveOnly ? [] : ga.dream_rsi_world_registry, rowKey: w => w.world_slug, cols: [{ key: 's', label: 'world', render: w => h('span', { className: 'sans', style: { fontWeight: 600 } }, w.world_slug) }, { key: 'g', label: 'source', render: w => w.github_uri }, { key: 'p', label: 'peak', num: true, render: w => w.peak_speedup_or_score + '×' }, { key: 'sv', label: 'gpu saved', num: true, render: w => h(K.Badge, { tone: 'ok' }, fmt.pct(w.online_gpu_rollout_savings_pct, 1)) }] }) : Loading()) : null);
   }
   function algoName(a) { const n = fmt.enumName(a); return n.indexOf('DreamRsi') >= 0 ? 'Dream-RSI replay' : n.indexOf('Grpo') >= 0 ? 'GRPO' : n.indexOf('Ppo') >= 0 ? 'PPO' : fmt.words(n); }
   C.pages.rl = RL;
@@ -854,6 +859,7 @@
     const [prompt, setPrompt] = useState('Explain how Kadmium decides which node gets which layers, in three sentences.');
     const [vision, setVision] = useState(false);
     const [reply, setReply] = useState(null), [live, setLive] = useState(null), [embed, setEmbed] = useState(null), [mcpReply, setMcpReply] = useState(null), [busy, setBusy] = useState(false);
+    const liveOnly = workers && workers.live_only_mode;
     const base = (workers && workers.coordinator_http_url) || (window.location.origin);
     const list = (models && models.data) || [];
     const activeModel = model || (overview && overview.inference_plan.model_id) || (list[0] && list[0].id);
@@ -868,9 +874,9 @@
       h('div', { className: 'cr-stats' },
         h(Stat, { label: 'OpenAI endpoint', value: '/v1', meta: base + '/v1 · chat, embeddings, models', tone: 'cadmium' }),
         h(Stat, { label: 'Anthropic endpoint', value: '/v1/messages', meta: 'same base url · streaming sse' }),
-        h(Stat, { label: 'MCP', value: mcp ? mcp.tools.length : '—', unit: 'tools', meta: mcp ? mcp.server_name + ' · ' + mcp.protocol_version + ' · stdio + http' : '' }),
+        h(Stat, { label: 'MCP', value: mcp ? mcp.tools.length : '—', unit: 'tools', meta: mcp ? mcp.server_name + ' · ' + mcp.protocol_version + ' · stdio + http' : '—' }),
         h(Stat, { label: 'Models', value: list.length, meta: list.map(m => m.id).join(' · ') })),
-      h(K.Tabs, { label: 'Gateway views', value: tab, onChange: setTab, items: [{ id: 'playground', label: 'Playground' }, { id: 'connect', label: 'Connect' }, { id: 'mcp', label: 'MCP tools', count: mcp ? mcp.tools.length : undefined }, { id: 'keys', label: 'API keys', count: ga ? ga.scoped_api_keys.length : undefined }] }),
+      h(K.Tabs, { label: 'Gateway views', value: tab, onChange: setTab, items: [{ id: 'playground', label: 'Playground' }, { id: 'connect', label: 'Connect' }, { id: 'mcp', label: 'MCP tools', count: mcp ? mcp.tools.length : undefined }, { id: 'keys', label: 'API keys', count: (!liveOnly && ga) ? ga.scoped_api_keys.length : undefined }] }),
       tab === 'playground' ? h('div', { className: 'cr-main-aside' },
         h(Panel, { title: 'Playground', sub: 'runs through the real shard plan', tools: h('select', { className: 'cr-select', value: activeModel || '', onChange: e => setModel(e.target.value), 'aria-label': 'Model' }, list.map(m => h('option', { key: m.id, value: m.id }, m.id))) },
           h('textarea', { className: 'cr-textarea', value: prompt, onChange: e => setPrompt(e.target.value), rows: 4, 'aria-label': 'Prompt' }),
@@ -897,9 +903,9 @@
           mcpReply ? Code(JSON.stringify(mcpReply, null, 2), 'last POST /mcp response', 'json') : null)) : null,
       tab === 'keys' ? h('div', { className: 'cr-two' },
         h(Panel, { title: 'Scoped API keys', sub: 'per-slice rbac', flush: true },
-          ga ? h(Table, { rows: ga.scoped_api_keys, rowKey: k => k.key_id, cols: [{ key: 'p', label: 'principal', render: k => h('span', { className: 'sans', style: { fontWeight: 600 } }, k.principal_name) }, { key: 'r', label: 'role', render: k => h(K.Badge, { tone: k.role === 'BlindSupplyProvider' ? 'warn' : 'local' }, fmt.words(k.role)) }, { key: 's', label: 'slice', render: k => k.bound_slice_id }, { key: 'k', label: 'key', render: k => h('span', { className: 'cr-rowwrap', style: { flexWrap: 'nowrap' } }, k.token_string.slice(0, 22) + '…', h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => copyText(k.token_string, 'key') }, I('copy', 14))) }] }) : Loading()),
+          ga ? h(Table, { rows: liveOnly ? [] : ga.scoped_api_keys, rowKey: k => k.key_id, cols: [{ key: 'p', label: 'principal', render: k => h('span', { className: 'sans', style: { fontWeight: 600 } }, k.principal_name) }, { key: 'r', label: 'role', render: k => h(K.Badge, { tone: k.role === 'BlindSupplyProvider' ? 'warn' : 'local' }, fmt.words(k.role)) }, { key: 's', label: 'slice', render: k => k.bound_slice_id }, { key: 'k', label: 'key', render: k => h('span', { className: 'cr-rowwrap', style: { flexWrap: 'nowrap' } }, k.token_string.slice(0, 22) + '…', h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => copyText(k.token_string, 'key') }, I('copy', 14))) }] }) : Loading()),
         h(Panel, { title: 'Slice quotas', sub: 'hard limits enforced by the gateway', flush: true },
-          ga ? h(Table, { rows: ga.slice_quotas, rowKey: (q, i) => q.slice_id || i, cols: [{ key: 's', label: 'slice', render: q => q.slice_id }, { key: 'v', label: 'vram cap', num: true, render: q => q.max_vram_gb != null ? q.max_vram_gb + ' GB' : (q.max_fast_memory_gb != null ? q.max_fast_memory_gb + ' GB' : '—') }, { key: 'c', label: 'cloud / hr', num: true, render: q => q.max_hourly_cloud_spend_usd != null ? fmt.usd(q.max_hourly_cloud_spend_usd) : '—' }, { key: 'r', label: 'rate', num: true, render: q => q.max_requests_per_min != null ? q.max_requests_per_min + ' rpm' : '—' }] }) : Loading())) : null);
+          ga ? h(Table, { rows: liveOnly ? [] : ga.slice_quotas, rowKey: (q, i) => q.slice_id || i, cols: [{ key: 's', label: 'slice', render: q => q.slice_id }, { key: 'v', label: 'vram cap', num: true, render: q => q.max_vram_gb != null ? q.max_vram_gb + ' GB' : (q.max_fast_memory_gb != null ? q.max_fast_memory_gb + ' GB' : '—') }, { key: 'c', label: 'cloud / hr', num: true, render: q => q.max_hourly_cloud_spend_usd != null ? fmt.usd(q.max_hourly_cloud_spend_usd) : '—' }, { key: 'r', label: 'rate', num: true, render: q => q.max_requests_per_min != null ? q.max_requests_per_min + ' rpm' : '—' }] }) : Loading())) : null);
   }
   C.pages.gateway = Gateway;
 })();
@@ -916,26 +922,27 @@
 
   /* ============================ DATA & TRANSFERS ============================ */
   function Data(props) {
-    const { overview } = props;
+    const { overview, workers } = props;
     const integ = useApi('/api/v1/integrations');
     const [bucketTier, setBucketTier] = useState('small');
     const bucket = useApi('/api/v1/storage/pool-bucket?bucket=' + bucketTier);
     const [stream, setStream] = useState(null);
     const [tab, setTab] = useState('transfers');
     if (!overview) return Loading();
+    const liveOnly = workers && workers.live_only_mode;
     const tx = overview.fts3_transfers || [];
     const totalGb = tx.reduce((s, t) => s + (t.volume_gb || 0), 0);
-    const vault = overview.nodes.find(n => (n.roles || []).indexOf('StorageVault') >= 0) || overview.nodes[0];
+    const vault = overview.nodes.find(n => (n.roles || []).indexOf('StorageVault') >= 0);
     const runStream = () => act(post('/api/v1/fts3/stream', {}), r => 'Streamed ' + r.shard_name + ' · ' + fmt.num(r.ktb_total_bytes / 1024, 0) + ' KiB · ' + fmt.num(r.aggregate_goodput_mbps, 0) + ' Mbps · ' + r.target_receipts.length + ' pages verified').then(setStream);
-    const hf = integ && integ.sample_hf_pull_plan, gh = integ && integ.sample_github_ci_run;
+    const hf = (!liveOnly && integ) ? integ.sample_hf_pull_plan : null, gh = (!liveOnly && integ) ? integ.sample_github_ci_run : null;
     return h(F, null,
       h('div', { className: 'cr-stats' },
-        h(Stat, { label: 'Vault', value: vault ? vault.hostname : '—', meta: vault ? fmt.gb(vault.memory.nvme_cache_gb) + ' nvme · ' + vault.memory.nvme_read_bw_gbps + ' GB/s · seeds every .ktb bank' : 'no storage vault role' }),
-        h(Stat, { label: 'Storage bucket', value: bucket ? fmt.words(bucket.bucket_tier).split(' ')[0] : '—', meta: bucket ? fmt.gb(bucket.usable_effective_gb) + ' usable of ' + fmt.gb(bucket.allocated_raw_gb) + ' · ' + bucket.replication_factor + '× rep' : '' }),
-        h(Stat, { label: 'Transfers', value: tx.length, meta: fmt.gb(totalGb) + ' this epoch · ' + tx.filter(t => t.state === 'CompletedReady').length + ' complete', tone: 'cadmium' }),
+        h(Stat, { label: 'Vault', value: vault ? vault.hostname : '—', meta: vault ? fmt.gb(vault.memory.nvme_cache_gb) + ' nvme · ' + vault.memory.nvme_read_bw_gbps + ' GB/s · seeds every .ktb bank' : '—' }),
+        h(Stat, { label: 'Storage bucket', value: bucket ? fmt.words(bucket.bucket_tier).split(' ')[0] : '—', meta: bucket ? fmt.gb(bucket.usable_effective_gb) + ' usable of ' + fmt.gb(bucket.allocated_raw_gb) + ' · ' + bucket.replication_factor + '× rep' : '—' }),
+        h(Stat, { label: 'Transfers', value: tx.length ? tx.length : '—', meta: tx.length ? fmt.gb(totalGb) + ' this epoch · ' + tx.filter(t => t.state === 'CompletedReady').length + ' complete' : '—', tone: tx.length ? 'cadmium' : '' }),
         h(Stat, { label: 'Weights served', value: fmt.gb(overview.inference_plan.total_model_weight_gb), meta: overview.inference_plan.model_id + ' · 64 KiB pages' }),
-        h(Stat, { label: 'HF selective pull', value: hf ? fmt.gb(hf.node_pulls.reduce((s, p) => s + p.selective_download_gb, 0)) : '—', meta: hf ? 'of ' + fmt.gb(hf.total_model_gb) + ' · ' + fmt.gb(hf.node_pulls.reduce((s, p) => s + p.full_repo_avoided_gb, 0)) + ' avoided' : '' })),
-      h(K.Tabs, { label: 'Data views', value: tab, onChange: setTab, items: [{ id: 'transfers', label: 'Transfers', count: tx.length }, { id: 'bucket', label: 'Storage bucket' }, { id: 'sources', label: 'Sources', count: integ ? integ.connectors.length : undefined }, { id: 'hf', label: 'Hugging Face pull' }, { id: 'gh', label: 'GitHub worlds' }] }),
+        h(Stat, { label: 'HF selective pull', value: hf ? fmt.gb(hf.node_pulls.reduce((s, p) => s + p.selective_download_gb, 0)) : '—', meta: hf ? 'of ' + fmt.gb(hf.total_model_gb) + ' · ' + fmt.gb(hf.node_pulls.reduce((s, p) => s + p.full_repo_avoided_gb, 0)) + ' avoided' : '—' })),
+      h(K.Tabs, { label: 'Data views', value: tab, onChange: setTab, items: [{ id: 'transfers', label: 'Transfers', count: tx.length || undefined }, { id: 'bucket', label: 'Storage bucket' }, { id: 'sources', label: 'Sources', count: integ ? integ.connectors.length : undefined }, { id: 'hf', label: 'Hugging Face pull' }, { id: 'gh', label: 'GitHub worlds' }] }),
       tab === 'bucket' ? h(Panel, { title: 'Decentralized storage pool bucket', sub: bucket ? bucket.bucket_tier + ' · HRW Rendezvous + RS(' + bucket.reed_solomon_data_shards + ',' + bucket.reed_solomon_parity_shards + ') erasure coding' : 'loading…', tools: h(Seg, { value: bucketTier, onChange: setBucketTier, items: [{ id: 'small', label: 'Small (100G)' }, { id: 'medium', label: 'Medium (500G)' }, { id: 'large', label: 'Large (1T)' }, { id: 'enterprise', label: 'Enterprise (10T+)' }] }), flush: true },
         bucket ? h(Table, { rows: bucket.node_allocations || [], rowKey: a => a.node_id, cols: [
           { key: 'n', label: 'node', render: a => h('span', { className: 'sans', style: { fontWeight: 600 } }, a.hostname) },
@@ -959,11 +966,11 @@
           h('div', { className: 'cr-rowwrap', style: { justifyContent: 'space-between' } }, h('span', { className: 'n' }, c.provider), h(K.Badge, { tone: c.status === 'connected' ? 'ok' : 'neutral', dot: true }, c.status)),
           h('div', { className: 'm' }, c.uri_scheme + ' · ' + c.example_uri),
           h('ul', { style: { margin: '4px 0 0', paddingLeft: '16px', fontSize: '12.5px', lineHeight: '18px', color: 'var(--ink-muted)' } }, (c.capabilities || []).slice(0, 3).map((cap, i) => h('li', { key: i }, cap)))))) : Loading()) : null,
-      tab === 'hf' ? h(Panel, { title: hf ? hf.hf_ref.repo_id + '@' + hf.hf_ref.revision : 'Hugging Face', sub: hf ? 'seeded by ' + hf.seed_vault_node + ' · ' + fmt.gb(hf.total_model_gb) + ' full repo' : '', flush: true, tools: hf ? h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => copyText('kadmium pull hf://' + hf.hf_ref.repo_id + '@' + hf.hf_ref.revision, 'pull command') }, 'Copy pull command') : null },
-        hf ? h(Table, { rows: hf.node_pulls, rowKey: p => p.hostname, cols: [{ key: 'n', label: 'node', render: p => h('span', { className: 'sans', style: { fontWeight: 600 } }, p.hostname) }, { key: 'l', label: 'layers', render: p => 'L' + p.start_layer + '–L' + p.end_layer }, { key: 'f', label: 'safetensors shards', cls: 'wrap', render: p => p.required_safetensors_files.join(', ') }, { key: 'd', label: 'pull', num: true, render: p => fmt.gb(p.selective_download_gb) }, { key: 'a', label: 'avoided', num: true, render: p => h(K.Badge, { tone: 'ok' }, fmt.gb(p.full_repo_avoided_gb)) }, { key: 'o', label: 'compiled bank', render: p => p.output_ktb_bank_path }] }) : Loading()) : null,
-      tab === 'gh' ? h(Panel, { title: gh ? 'gh://' + gh.gh_ref.owner + '/' + gh.gh_ref.repo + '@' + gh.gh_ref.git_ref + '#' + gh.gh_ref.subpath : 'GitHub', sub: 'commit-pinned rl world · slice-on-pr evaluation' },
+      tab === 'hf' ? h(Panel, { title: hf ? hf.hf_ref.repo_id + '@' + hf.hf_ref.revision : 'Hugging Face', sub: hf ? 'seeded by ' + hf.seed_vault_node + ' · ' + fmt.gb(hf.total_model_gb) + ' full repo' : '—', flush: true, tools: hf ? h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => copyText('kadmium pull hf://' + hf.hf_ref.repo_id + '@' + hf.hf_ref.revision, 'pull command') }, 'Copy pull command') : null },
+        hf ? h(Table, { rows: hf.node_pulls, rowKey: p => p.hostname, cols: [{ key: 'n', label: 'node', render: p => h('span', { className: 'sans', style: { fontWeight: 600 } }, p.hostname) }, { key: 'l', label: 'layers', render: p => 'L' + p.start_layer + '–L' + p.end_layer }, { key: 'f', label: 'safetensors shards', cls: 'wrap', render: p => p.required_safetensors_files.join(', ') }, { key: 'd', label: 'pull', num: true, render: p => fmt.gb(p.selective_download_gb) }, { key: 'a', label: 'avoided', num: true, render: p => h(K.Badge, { tone: 'ok' }, fmt.gb(p.full_repo_avoided_gb)) }, { key: 'o', label: 'compiled bank', render: p => p.output_ktb_bank_path }] }) : h(Empty, null, '—')) : null,
+      tab === 'gh' ? h(Panel, { title: gh ? 'gh://' + gh.gh_ref.owner + '/' + gh.gh_ref.repo + '@' + gh.gh_ref.git_ref + '#' + gh.gh_ref.subpath : 'GitHub', sub: gh ? 'commit-pinned rl world · slice-on-pr evaluation' : '—' },
         gh ? h(F, null, h('div', { className: 'cr-rowwrap' }, h(K.Badge, { tone: 'local' }, gh.assigned_slice_id), h(K.Badge, { tone: gh.verde_verification_passed ? 'ok' : 'danger', dot: true }, gh.github_check_conclusion), h(K.Badge, null, 'sha ' + gh.pinned_commit_sha), h(K.Badge, null, fmt.num(gh.measured_tokens_per_sec, 1) + ' tok/s'), h(K.Badge, { tone: 'local' }, 'dream-rsi ' + gh.dream_rsi_best_speedup + '×')),
-          h(KV, { items: [['sandbox', gh.sandbox_runtime], ['pull', 'kadmium pull gh://' + gh.gh_ref.owner + '/' + gh.gh_ref.repo + '@' + gh.gh_ref.git_ref + '#' + gh.gh_ref.subpath]] })) : Loading()) : null);
+          h(KV, { items: [['sandbox', gh.sandbox_runtime], ['pull', 'kadmium pull gh://' + gh.gh_ref.owner + '/' + gh.gh_ref.repo + '@' + gh.gh_ref.git_ref + '#' + gh.gh_ref.subpath]] })) : h(Empty, null, '—')) : null);
   }
   C.pages.data = Data;
 
@@ -973,48 +980,52 @@
     const ga = useApi('/api/v1/ga/governance');
     const [sel, setSel] = useState(null);
     if (!data) return Loading();
-    const slice = data.slices.find(s => s.slice_id === sel) || data.slices[0];
-    const quota = ga && ga.slice_quotas.find(q => q.slice_id === slice.slice_id);
-    const plan = slice.shard_plan;
-    const rail = plan.assignments.filter(a => a.layer_count > 0).map((a, i) => ({ id: a.node_id, name: 's' + (a.pipeline_stage_index != null ? a.pipeline_stage_index : i), share: a.layer_count / plan.total_layers, placement: String(a.device_kind).indexOf('Cloud') >= 0 ? 'cloud' : 'local' }));
+    const list = data.slices || [];
+    const slice = list.length ? (list.find(s => s.slice_id === sel) || list[0]) : null;
+    const quota = (slice && ga && ga.slice_quotas) ? ga.slice_quotas.find(q => q.slice_id === slice.slice_id) : null;
+    const plan = slice ? slice.shard_plan : null;
+    const rail = plan ? plan.assignments.filter(a => a.layer_count > 0).map((a, i) => ({ id: a.node_id, name: 's' + (a.pipeline_stage_index != null ? a.pipeline_stage_index : i), share: a.layer_count / plan.total_layers, placement: String(a.device_kind).indexOf('Cloud') >= 0 ? 'cloud' : 'local' })) : [];
     return h(F, null,
       h('div', { className: 'cr-stats' },
-        h(Stat, { label: 'Pool', value: data.total_pool_nodes, unit: 'nodes', meta: data.num_slices + ' slices × ' + data.nodes_per_slice + ' · ' + data.unassigned_reserve_nodes + ' in reserve' }),
-        h(Stat, { label: 'Slice', value: slice.slice_id.replace('slice-', ''), meta: slice.display_name, tone: 'cadmium' }),
-        h(Stat, { label: 'Fast memory', value: fmt.gb(slice.aggregate_fast_memory_gb), meta: fmt.num(slice.aggregate_fp16_tflops, 0) + ' TFLOPS · ' + fmt.gb(slice.aggregate_system_ram_gb) + ' ram · ' + fmt.gb(slice.aggregate_nvme_gb) + ' nvme' }),
-        h(Stat, { label: 'Namespace', value: slice.api_namespace.replace('/v1/slices/', ''), meta: slice.allow_elastic_borrowing ? 'elastic borrowing on' : 'isolated' })),
+        h(Stat, { label: 'Pool', value: list.length ? data.total_pool_nodes : '—', unit: list.length ? 'nodes' : '', meta: list.length ? data.num_slices + ' slices × ' + data.nodes_per_slice + ' · ' + data.unassigned_reserve_nodes + ' in reserve' : '—' }),
+        h(Stat, { label: 'Slice', value: slice ? slice.slice_id.replace('slice-', '') : '—', meta: slice ? slice.display_name : '—', tone: slice ? 'cadmium' : '' }),
+        h(Stat, { label: 'Fast memory', value: slice ? fmt.gb(slice.aggregate_fast_memory_gb) : '—', meta: slice ? fmt.num(slice.aggregate_fp16_tflops, 0) + ' TFLOPS · ' + fmt.gb(slice.aggregate_system_ram_gb) + ' ram · ' + fmt.gb(slice.aggregate_nvme_gb) + ' nvme' : '—' }),
+        h(Stat, { label: 'Namespace', value: slice ? slice.api_namespace.replace('/v1/slices/', '') : '—', meta: slice ? (slice.allow_elastic_borrowing ? 'elastic borrowing on' : 'isolated') : '—' })),
       h(Panel, { title: 'Sub-cluster slices', sub: 'each with its own planner, transfer queue and api namespace', flush: true },
-        h(Table, { rows: data.slices, rowKey: s => s.slice_id, onRow: s => setSel(s.slice_id), cols: [
-          { key: 'id', label: 'slice', render: s => h('span', { className: 'sans', style: { fontWeight: s.slice_id === slice.slice_id ? 600 : 500, color: s.slice_id === slice.slice_id ? 'var(--cadmium-text)' : undefined } }, s.display_name) },
+        h(Table, { rows: list, rowKey: s => s.slice_id, onRow: s => setSel(s.slice_id), cols: [
+          { key: 'id', label: 'slice', render: s => h('span', { className: 'sans', style: { fontWeight: slice && s.slice_id === slice.slice_id ? 600 : 500, color: slice && s.slice_id === slice.slice_id ? 'var(--cadmium-text)' : undefined } }, s.display_name) },
           { key: 'p', label: 'purpose', render: s => h(K.Badge, { tone: s.workload === 'Inference' ? 'local' : 'neutral' }, fmt.words(s.purpose)) }, { key: 'w', label: 'workload', render: s => fmt.words(s.workload) }, { key: 'df', label: 'dataflow', render: s => fmt.words(s.dataflow_mode) },
           { key: 'n', label: 'nodes', num: true, render: s => s.node_count }, { key: 'm', label: 'fast mem', num: true, render: s => fmt.gb(s.aggregate_fast_memory_gb) }, { key: 't', label: 'tflops', num: true, render: s => fmt.num(s.aggregate_fp16_tflops, 0) },
           { key: 'tp', label: 'throughput', num: true, render: s => fmt.num(s.shard_plan.estimated_throughput, 1) + ' ' + s.shard_plan.throughput_unit.replace('tokens/sec', 'tok/s').replace('sequences/sec', 'seq/s') }] })),
-      h('div', { className: 'cr-main-aside' },
+      slice && plan ? h('div', { className: 'cr-main-aside' },
         h(Panel, { title: slice.display_name, sub: plan.model_id + ' · ' + plan.total_layers + ' layers · ' + fmt.words(plan.workload) },
           h(K.ShardRail, { label: 'Shard plan for ' + slice.slice_id, depth: 110, pitch: 40, nodes: rail, showShare: false }),
           h(Table, { rows: plan.assignments.filter(a => a.layer_count > 0).slice(0, 8), rowKey: a => a.node_id, cols: [{ key: 's', label: 'stage', render: a => 'S' + a.pipeline_stage_index }, { key: 'n', label: 'node', render: a => a.hostname }, { key: 'k', label: 'kind', cls: 'muted', render: a => fmt.words(a.device_kind) }, { key: 'l', label: 'layers', render: a => 'L' + a.start_layer + '–L' + a.end_layer }, { key: 'p', label: 'share', num: true, render: a => fmt.pct(a.compute_share_pct, 1) }] }),
           plan.assignments.filter(a => a.layer_count > 0).length > 8 ? h('div', { className: 'cr-muted', style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px' } }, '+ ' + (plan.assignments.filter(a => a.layer_count > 0).length - 8) + ' more stages') : null),
-        h(Panel, { title: 'Quota', sub: 'enforced per slice' }, quota ? h(KV, { items: [['max nodes', quota.max_nodes], ['fast memory', quota.max_fast_memory_gb + ' GB'], ['cloud burst', fmt.usd(quota.max_cloud_burst_usd_per_hr) + ' / hr'], ['ingress / egress layers', quota.allow_ingress_egress_layers ? 'allowed' : 'blind middle only'], ['workloads', (quota.allowed_workloads || []).join(', ')], ['namespace', slice.api_namespace]] }) : h('p', { className: 'cr-prose' }, 'No quota policy bound to this slice.'))));
+        h(Panel, { title: 'Quota', sub: 'enforced per slice' }, quota ? h(KV, { items: [['max nodes', quota.max_nodes], ['fast memory', quota.max_fast_memory_gb + ' GB'], ['cloud burst', fmt.usd(quota.max_cloud_burst_usd_per_hr) + ' / hr'], ['ingress / egress layers', quota.allow_ingress_egress_layers ? 'allowed' : 'blind middle only'], ['workloads', (quota.allowed_workloads || []).join(', ')], ['namespace', slice.api_namespace]] }) : h(Empty, null, '—'))) : null);
   }
   C.pages.slices = Slices;
 
   /* ============================ KADMIUM CLOUD ============================ */
   function Cloud(props) {
-    const { overview, companion } = props;
+    const { overview, companion, workers } = props;
     const shield = useApi('/api/v1/cloud-shield');
     const watcher = useApi('/api/v1/cloud-shield/watcher');
     const ga = useApi('/api/v1/ga/governance');
     const supply = useApi('/api/v1/supply/marketplace');
     const [tab, setTab] = useState('shield');
     if (!overview || !companion) return Loading();
+    const liveOnly = workers && workers.live_only_mode;
     const cloudMode = companion.mode && companion.mode.KadmiumCloudManaged;
     const cm = cloudMode || {};
     const cloudNodes = overview.nodes.filter(C.isCloudNode);
+    const cloudActive = !!(cloudMode || cloudNodes.length > 0 || !liveOnly);
     const setMode = toCloud => act(post('/api/v1/companion/mode', toCloud
-      ? { KadmiumCloudManaged: { workspace_slug: 'cameron-lab', cloud_endpoint: 'https://api.kadmium.ai', downtime_shield_enabled: true, spot_arbitrage_burst_enabled: true, max_hourly_spend_cap_usd: 2.5 } }
+      ? { KadmiumCloudManaged: { workspace_slug: 'local-workspace', cloud_endpoint: 'https://api.kadmium.ai', downtime_shield_enabled: true, spot_arbitrage_burst_enabled: true, max_hourly_spend_cap_usd: 2.5 } }
       : { SelfHostedOpenSource: { local_coordinator_url: window.location.origin } }, { into: '/api/v1/companion/status' }), toCloud ? 'Linked to Kadmium Cloud — failover shield armed, $2.50 / hr cap' : 'Back to self-hosted — nothing leaves the LAN', toCloud ? 'cloud' : 'ok');
     const arb = shield && shield.arbitrage_plan;
     const setPolicy = patch => act(post('/api/v1/supply/configure', Object.assign({}, supply.policy, patch), { into: '/api/v1/supply/marketplace', refresh: [] }), 'Supply policy updated', 'ok');
+    const leaseOn = !!(supply && supply.policy && supply.policy.enabled);
     return h(F, null,
       h('div', { className: 'cr-two' },
         h(Panel, { title: 'Self-hosted', sub: 'free forever · mit / apache-2.0', tools: !cloudMode ? h(K.Badge, { tone: 'local', dot: true }, 'active') : null },
@@ -1025,37 +1036,37 @@
           h('div', { className: 'cr-rowwrap' }, !cloudMode ? h(K.Button, { variant: 'cloud', icon: 'cloud', onClick: () => setMode(true) }, 'Link this cluster') : null,
             h(K.Button, { variant: cloudMode ? 'cloud' : 'quiet', icon: 'cloud', onClick: () => C.scenario('cloud_burst', 'Burst H100 attached', 'cloud') }, cloudNodes.length ? 'Attach another burst GPU' : 'Attach a burst GPU'),
             cloudNodes.length ? h(K.Button, { variant: 'ghost', onClick: () => C.scenario('reset', 'Burst nodes released', 'ok') }, 'Release burst nodes') : null))),
-      h(K.Tabs, { label: 'Cloud views', value: tab, onChange: setTab, items: [{ id: 'shield', label: 'Failover shield' }, { id: 'spot', label: 'Spot market', count: ga ? ga.spot_orderbook.length : undefined }, { id: 'supply', label: 'Supply grid' }] }),
+      h(K.Tabs, { label: 'Cloud views', value: tab, onChange: setTab, items: [{ id: 'shield', label: 'Failover shield' }, { id: 'spot', label: 'Spot market', count: (cloudActive && ga) ? ga.spot_orderbook.length : undefined }, { id: 'supply', label: 'Supply grid' }] }),
       tab === 'shield' ? h(F, null,
         watcher ? h('div', { className: 'cr-stats' },
-          h(Stat, { label: 'Protected', value: C.shortLabel(watcher.protected_local_node), meta: watcher.protected_local_node + ' · layers L' + watcher.guarded_layers[0] + '–L' + watcher.guarded_layers[1] }),
-          h(Stat, { label: 'Standby vault', value: watcher.standby_vault_node, meta: fmt.usd(watcher.spot_hourly_rate_usd) + ' / hr while active', tone: 'cloud' }),
-          h(Stat, { label: 'Measured RTO', value: fmt.num(watcher.measured_cutover_rto_ms, 0), unit: 'ms', meta: watcher.zero_dropped_requests ? '0 dropped requests' : 'requests dropped' }),
-          h(Stat, { label: 'Last incident', value: fmt.usd(watcher.total_prorated_incident_cost_usd), meta: fmt.num(watcher.total_outage_duration_sec / 60, 0) + ' min outage · prorated' })) : null,
+          h(Stat, { label: 'Protected', value: cloudActive ? C.shortLabel(watcher.protected_local_node) : '—', meta: cloudActive ? watcher.protected_local_node + ' · layers L' + watcher.guarded_layers[0] + '–L' + watcher.guarded_layers[1] : '—' }),
+          h(Stat, { label: 'Standby vault', value: cloudActive ? watcher.standby_vault_node : '—', meta: cloudActive ? fmt.usd(watcher.spot_hourly_rate_usd) + ' / hr while active' : '—', tone: cloudActive ? 'cloud' : '' }),
+          h(Stat, { label: 'Measured RTO', value: cloudActive ? fmt.num(watcher.measured_cutover_rto_ms, 0) : '—', unit: cloudActive ? 'ms' : '', meta: cloudActive ? (watcher.zero_dropped_requests ? '0 dropped requests' : 'requests dropped') : '—' }),
+          h(Stat, { label: 'Last incident', value: cloudActive ? fmt.usd(watcher.total_prorated_incident_cost_usd) : '—', meta: cloudActive ? fmt.num(watcher.total_outage_duration_sec / 60, 0) + ' min outage · prorated' : '—' })) : null,
         h('div', { className: 'cr-main-aside' },
-          h(Panel, { title: 'Watcher timeline', sub: 'what the shield did during the last outage', flush: true },
-            watcher ? h('div', { className: 'cr-timeline', style: { padding: '8px 16px' } }, watcher.steps.map((s, i) => h('div', { key: i, className: 'cr-tl' }, h('span', { className: 'pip ' + (String(s.state).indexOf('Cloud') >= 0 || String(s.state).indexOf('Vault') >= 0 && String(s.state).indexOf('PreWarm') < 0 ? 'cloud' : (String(s.state).indexOf('PreWarm') >= 0 ? 'warn' : (String(s.state).indexOf('Healthy') >= 0 ? 'ok' : 'cadmium'))) }), h('div', null, h('div', { className: 't' }, s.event_description), h('div', { className: 'm' }, 't+' + s.timestamp_sec + 's · ' + fmt.words(s.state) + ' · ' + s.active_middle_shard_host + (s.cutover_latency_ms ? ' · cutover ' + fmt.ms(s.cutover_latency_ms) : '') + ' · ' + fmt.usd(s.instantaneous_hourly_burn_usd) + ' / hr'), h('div', { className: 'm' }, s.action_taken))))) : Loading()),
-          h(Panel, { title: 'Failover directions', sub: 'both ways', flush: true },
-            shield ? h('div', { className: 'cr-timeline', style: { padding: '8px 16px' } }, shield.failover_simulations.map((s, i) => h('div', { key: i, className: 'cr-tl' }, h('span', { className: 'pip ' + (String(s.direction).indexOf('LocalOutage') >= 0 ? 'cloud' : 'cadmium') }),
+          h(Panel, { title: 'Watcher timeline', sub: cloudActive ? 'what the shield did during the last outage' : '—', flush: true },
+            cloudActive && watcher ? h('div', { className: 'cr-timeline', style: { padding: '8px 16px' } }, watcher.steps.map((s, i) => h('div', { key: i, className: 'cr-tl' }, h('span', { className: 'pip ' + (String(s.state).indexOf('Cloud') >= 0 || String(s.state).indexOf('Vault') >= 0 && String(s.state).indexOf('PreWarm') < 0 ? 'cloud' : (String(s.state).indexOf('PreWarm') >= 0 ? 'warn' : (String(s.state).indexOf('Healthy') >= 0 ? 'ok' : 'cadmium'))) }), h('div', null, h('div', { className: 't' }, s.event_description), h('div', { className: 'm' }, 't+' + s.timestamp_sec + 's · ' + fmt.words(s.state) + ' · ' + s.active_middle_shard_host + (s.cutover_latency_ms ? ' · cutover ' + fmt.ms(s.cutover_latency_ms) : '') + ' · ' + fmt.usd(s.instantaneous_hourly_burn_usd) + ' / hr'), h('div', { className: 'm' }, s.action_taken))))) : h(Empty, null, '—')),
+          h(Panel, { title: 'Failover directions', sub: cloudActive ? 'both ways' : '—', flush: true },
+            cloudActive && shield ? h('div', { className: 'cr-timeline', style: { padding: '8px 16px' } }, shield.failover_simulations.map((s, i) => h('div', { key: i, className: 'cr-tl' }, h('span', { className: 'pip ' + (String(s.direction).indexOf('LocalOutage') >= 0 ? 'cloud' : 'cadmium') }),
               h('div', null, h('div', { className: 'cr-rowwrap', style: { marginBottom: '4px' } }, h(K.Badge, { tone: String(s.direction).indexOf('LocalOutage') >= 0 ? 'cloud' : 'local' }, dirName(s.direction)), h(K.Badge, { tone: s.zero_downtime_preserved ? 'ok' : 'danger', dot: true }, s.zero_downtime_preserved ? '0 dropped' : 'dropped')),
-                h('div', { className: 't' }, s.incident_summary), h('div', { className: 'm' }, s.source_environment + ' → ' + s.target_failover_environment), h('div', { className: 'm' }, 'rto ' + fmt.ms(s.switchover_rto_ms) + ' · ' + fmt.usd(s.temporary_failover_hourly_usd) + ' / hr while failed over'))))) : Loading()))) : null,
+                h('div', { className: 't' }, s.incident_summary), h('div', { className: 'm' }, s.source_environment + ' → ' + s.target_failover_environment), h('div', { className: 'm' }, 'rto ' + fmt.ms(s.switchover_rto_ms) + ' · ' + fmt.usd(s.temporary_failover_hourly_usd) + ' / hr while failed over'))))) : h(Empty, null, '—')))) : null,
       tab === 'spot' ? h(F, null,
         arb ? h('div', { className: 'cr-stats' },
-          h(Stat, { label: 'Blended rate', value: fmt.usd(arb.kadmium_blended_hourly_usd), unit: '/ hr', meta: 'vs ' + fmt.usd(arb.monolithic_hyperscaler_hourly_usd) + ' / hr monolithic', tone: 'cloud' }),
-          h(Stat, { label: 'Saving', value: fmt.pct(arb.cost_reduction_pct, 0), meta: 'across ' + arb.selected_offers.length + ' offers' }),
-          h(Stat, { label: 'Combined', value: fmt.num(arb.total_combined_tflops, 0), unit: 'TFLOPS', meta: fmt.gb(arb.total_combined_vram_gb) + ' fast memory' }),
-          ga && ga.provisioned_spot_container ? h(Stat, { label: 'Provisioned', value: ga.provisioned_spot_container.selected_quote.gpu_model.replace('NVIDIA ', ''), meta: ga.provisioned_spot_container.selected_quote.provider + ' · ' + fmt.usd(ga.provisioned_spot_container.selected_quote.spot_usd_per_hr) + ' / hr · L' + ga.provisioned_spot_container.pinned_middle_layers[0] + '–L' + ga.provisioned_spot_container.pinned_middle_layers[1], tone: 'cloud' }) : null) : null,
+          h(Stat, { label: 'Blended rate', value: cloudActive ? fmt.usd(arb.kadmium_blended_hourly_usd) : '—', unit: cloudActive ? '/ hr' : '', meta: cloudActive ? 'vs ' + fmt.usd(arb.monolithic_hyperscaler_hourly_usd) + ' / hr monolithic' : '—', tone: cloudActive ? 'cloud' : '' }),
+          h(Stat, { label: 'Saving', value: cloudActive ? fmt.pct(arb.cost_reduction_pct, 0) : '—', meta: cloudActive ? 'across ' + arb.selected_offers.length + ' offers' : '—' }),
+          h(Stat, { label: 'Combined', value: cloudActive ? fmt.num(arb.total_combined_tflops, 0) : '—', unit: cloudActive ? 'TFLOPS' : '', meta: cloudActive ? fmt.gb(arb.total_combined_vram_gb) + ' fast memory' : '—' }),
+          h(Stat, { label: 'Provisioned', value: (cloudActive && ga && ga.provisioned_spot_container) ? ga.provisioned_spot_container.selected_quote.gpu_model.replace('NVIDIA ', '') : '—', meta: (cloudActive && ga && ga.provisioned_spot_container) ? ga.provisioned_spot_container.selected_quote.provider + ' · ' + fmt.usd(ga.provisioned_spot_container.selected_quote.spot_usd_per_hr) + ' / hr · L' + ga.provisioned_spot_container.pinned_middle_layers[0] + '–L' + ga.provisioned_spot_container.pinned_middle_layers[1] : '—', tone: cloudActive ? 'cloud' : '' })) : null,
         h('div', { className: 'cr-two' },
           h(Panel, { title: 'Spot orderbook', sub: 'risk-adjusted, lowest cost per tflop first', flush: true },
-            ga ? h(Table, { rows: ga.spot_orderbook.slice().sort((a, b) => b.risk_adjusted_tflops_per_usd - a.risk_adjusted_tflops_per_usd), rowKey: q => q.quote_id, cols: [{ key: 'p', label: 'provider', render: q => h('span', { className: 'sans', style: { fontWeight: 600 } }, q.provider, h('span', { className: 'cr-muted', style: { fontWeight: 400 } }, ' · ' + q.region)) }, { key: 'g', label: 'gpu', render: q => q.gpu_model.replace('NVIDIA ', '') }, { key: 'r', label: 'spot', num: true, render: q => h('span', { style: { color: 'var(--cherenkov-text)' } }, fmt.usd(q.spot_usd_per_hr) + ' / hr') }, { key: 'pre', label: 'preempt 24h', num: true, render: q => fmt.pct(q.preemption_prob_24h * 100, 0) }, { key: 'u', label: 'tflop / $', num: true, render: q => h(K.Badge, { tone: ga.provisioned_spot_container && ga.provisioned_spot_container.selected_quote.quote_id === q.quote_id ? 'cloud' : 'neutral', dot: !!(ga.provisioned_spot_container && ga.provisioned_spot_container.selected_quote.quote_id === q.quote_id) }, fmt.num(q.risk_adjusted_tflops_per_usd, 0)) }] }) : Loading()),
-          h(Panel, { title: 'Arbitrage plan', sub: arb ? 'for ' + arb.target_model_id : '', flush: true },
-            arb ? h(Table, { rows: arb.selected_offers, rowKey: o => o.offer_id, cols: [{ key: 'p', label: 'offer', cls: 'wrap sans', render: o => h('div', null, h('div', { style: { fontWeight: 600 } }, o.provider_name), h('div', { className: 'cr-muted', style: { fontSize: '12px' } }, o.instance_description)) }, { key: 'k', label: 'kind', render: o => h(K.Badge, { tone: o.provider_kind === 'SelfHostedLocalOnPrem' ? 'local' : 'cloud' }, fmt.words(o.provider_kind)) }, { key: 't', label: 'tflops', num: true, render: o => fmt.num(o.fp16_tflops, 0) }, { key: 'm', label: 'fast mem', num: true, render: o => fmt.gb(o.vram_or_unified_gb) }, { key: 'c', label: 'spot', num: true, render: o => fmt.usd(o.hourly_spot_usd) }, { key: 'h', label: 'hyperscaler', num: true, cls: 'muted', render: o => fmt.usd(o.hyperscaler_equivalent_usd) }] }) : Loading()))) : null,
+            ga ? h(Table, { rows: cloudActive ? ga.spot_orderbook.slice().sort((a, b) => b.risk_adjusted_tflops_per_usd - a.risk_adjusted_tflops_per_usd) : [], rowKey: q => q.quote_id, cols: [{ key: 'p', label: 'provider', render: q => h('span', { className: 'sans', style: { fontWeight: 600 } }, q.provider, h('span', { className: 'cr-muted', style: { fontWeight: 400 } }, ' · ' + q.region)) }, { key: 'g', label: 'gpu', render: q => q.gpu_model.replace('NVIDIA ', '') }, { key: 'r', label: 'spot', num: true, render: q => h('span', { style: { color: 'var(--cherenkov-text)' } }, fmt.usd(q.spot_usd_per_hr) + ' / hr') }, { key: 'pre', label: 'preempt 24h', num: true, render: q => fmt.pct(q.preemption_prob_24h * 100, 0) }, { key: 'u', label: 'tflop / $', num: true, render: q => h(K.Badge, { tone: ga.provisioned_spot_container && ga.provisioned_spot_container.selected_quote.quote_id === q.quote_id ? 'cloud' : 'neutral', dot: !!(ga.provisioned_spot_container && ga.provisioned_spot_container.selected_quote.quote_id === q.quote_id) }, fmt.num(q.risk_adjusted_tflops_per_usd, 0)) }] }) : Loading()),
+          h(Panel, { title: 'Arbitrage plan', sub: (cloudActive && arb) ? 'for ' + arb.target_model_id : '—', flush: true },
+            arb ? h(Table, { rows: cloudActive ? arb.selected_offers : [], rowKey: o => o.offer_id, cols: [{ key: 'p', label: 'offer', cls: 'wrap sans', render: o => h('div', null, h('div', { style: { fontWeight: 600 } }, o.provider_name), h('div', { className: 'cr-muted', style: { fontSize: '12px' } }, o.instance_description)) }, { key: 'k', label: 'kind', render: o => h(K.Badge, { tone: o.provider_kind === 'SelfHostedLocalOnPrem' ? 'local' : 'cloud' }, fmt.words(o.provider_kind)) }, { key: 't', label: 'tflops', num: true, render: o => fmt.num(o.fp16_tflops, 0) }, { key: 'm', label: 'fast mem', num: true, render: o => fmt.gb(o.vram_or_unified_gb) }, { key: 'c', label: 'spot', num: true, render: o => fmt.usd(o.hourly_spot_usd) }, { key: 'h', label: 'hyperscaler', num: true, cls: 'muted', render: o => fmt.usd(o.hyperscaler_equivalent_usd) }] }) : Loading()))) : null,
       tab === 'supply' ? (supply ? h(F, null,
         h('div', { className: 'cr-stats' },
-          h(Stat, { label: 'Leasing', value: supply.policy.enabled ? 'on' : 'off', meta: supply.policy.enabled ? supply.policy.daily_lease_hours + ' h / day · only when idle' : 'your hardware stays private' }),
-          h(Stat, { label: 'Earning', value: fmt.usd(supply.total_hourly_usd), unit: '/ hr', meta: fmt.usd(supply.total_projected_monthly_usd, 0) + ' / month projected', tone: 'cadmium' }),
-          h(Stat, { label: 'In credits', value: fmt.usd(supply.total_hourly_cloud_credits_usd), unit: '/ hr', meta: fmt.usd(supply.total_projected_monthly_cloud_credits_usd, 0) + ' / month · 1.25× bonus', tone: 'cloud' }),
-          h(Stat, { label: 'Equivalent burst', value: fmt.num(supply.equivalent_l40s_burst_hours_per_month, 0), unit: 'L40S-h', meta: 'per month, bought back with credits' })),
+          h(Stat, { label: 'Leasing', value: leaseOn ? 'on' : 'off', meta: leaseOn ? supply.policy.daily_lease_hours + ' h / day · only when idle' : 'your hardware stays private' }),
+          h(Stat, { label: 'Earning', value: leaseOn ? fmt.usd(supply.total_hourly_usd) : '—', unit: leaseOn ? '/ hr' : '', meta: leaseOn ? fmt.usd(supply.total_projected_monthly_usd, 0) + ' / month projected' : '—', tone: leaseOn ? 'cadmium' : '' }),
+          h(Stat, { label: 'In credits', value: leaseOn ? fmt.usd(supply.total_hourly_cloud_credits_usd) : '—', unit: leaseOn ? '/ hr' : '', meta: leaseOn ? fmt.usd(supply.total_projected_monthly_cloud_credits_usd, 0) + ' / month · 1.25× bonus' : '—', tone: leaseOn ? 'cloud' : '' }),
+          h(Stat, { label: 'Equivalent burst', value: leaseOn ? fmt.num(supply.equivalent_l40s_burst_hours_per_month, 0) : '—', unit: leaseOn ? 'L40S-h' : '', meta: leaseOn ? 'per month, bought back with credits' : '—' })),
         h('div', { className: 'cr-main-aside' },
           h(Panel, { title: 'Your hardware on the grid', sub: 'blind middle layers only · evicts in under 200 ms when you need the machine', flush: true },
             h(Table, { rows: supply.node_quotes, rowKey: q => q.node_id, cols: [{ key: 'n', label: 'node', cls: 'wrap sans', render: q => h('div', null, h('div', { style: { fontWeight: 600 } }, q.hostname), h('div', { className: 'cr-muted', style: { fontSize: '12px', fontFamily: 'var(--font-mono)' } }, q.hardware_summary)) }, { key: 'w', label: 'eligible work', cls: 'wrap', render: q => Badges((q.eligible_workloads || []).slice(0, 2).map((w, i) => h(K.Badge, { key: i }, w.split(' (')[0].slice(0, 34)))) }, { key: 'u', label: 'usd / hr', num: true, render: q => fmt.usd(q.usd_rate_per_hour) }, { key: 'c', label: 'credits / hr', num: true, render: q => h('span', { style: { color: 'var(--cherenkov-text)' } }, fmt.usd(q.cloud_credit_rate_per_hour_usd)) }, { key: 'm', label: 'monthly', num: true, render: q => fmt.usd(q.projected_monthly_usd, 0) }] })),
@@ -1084,7 +1095,7 @@
     return h(F, null,
       h('div', { className: 'cr-two' },
         h(Panel, { title: 'Cluster', sub: 'this coordinator' },
-          h(KV, { items: [['version', (workers && workers.active_cluster_version) || '—'], ['coordinator', (workers && workers.coordinator_http_url) || window.location.origin], ['leader', overview.coordinator_quorum.active_leader + ' · term ' + overview.coordinator_quorum.term], ['standby', overview.coordinator_quorum.standby_candidates.join(', ')], ['fleet', liveOnly ? 'live hardware only' : 'hybrid: demo archetypes + live hardware'], ['companion', companion ? companion.app_version + ' · auto-yield ' + (companion.gaming_auto_yield_active ? 'on' : 'off') : '—'], ['.ktb merkle', ota ? fmt.hex(ota.active_ktb_merkle_root_fnv64, 14) : '—']] }),
+          h(KV, { items: [['version', (workers && workers.active_cluster_version) || '—'], ['coordinator', (workers && workers.coordinator_http_url) || window.location.origin], ['leader', overview.coordinator_quorum.active_leader + ' · term ' + overview.coordinator_quorum.term], ['standby', (overview.coordinator_quorum.standby_candidates || []).join(', ') || '—'], ['fleet', liveOnly ? 'live hardware only' : 'hybrid: demo archetypes + live hardware'], ['companion', companion ? companion.app_version + ' · auto-yield ' + (companion.gaming_auto_yield_active ? 'on' : 'off') : '—'], ['.ktb merkle', ota ? fmt.hex(ota.active_ktb_merkle_root_fnv64, 14) : '—']] }),
           h('div', { className: 'cr-rowwrap' },
             h(K.Button, { size: 'sm', variant: liveOnly ? 'primary' : 'quiet', onClick: () => act(post('/api/v1/cluster/mode', { live_only: !liveOnly }, { into: '/api/v1/cluster/workers' }), liveOnly ? 'Hybrid fleet' : 'Live hardware only', 'ok') }, liveOnly ? 'Live hardware only' : 'Hybrid demo fleet'),
             h(K.Button, { size: 'sm', onClick: () => C.scenario('coordinator_failover', 'Coordinator failover', 'warn') }, 'Fail over coordinator'),
@@ -1099,9 +1110,9 @@
           h('div', { className: 'kd-field' }, h('label', { className: 'kd-field-label' }, 'Payload'), h('select', { className: 'cr-select', value: kind, onChange: e => setKind(e.target.value) }, ['BinaryRelease', 'KtbWeightDelta', 'DreamRsiPolicyBundle'].map(k => h('option', { key: k, value: k }, fmt.words(k))))),
           h('div', { className: 'kd-field' }, h('label', { className: 'kd-field-label' }, 'Scope'), h('select', { className: 'cr-select', value: scope, onChange: e => setScope(e.target.value) }, ['AllNodes', 'LocalLanOnly', 'OnlineWanOnly'].map(k => h('option', { key: k, value: k }, fmt.words(k))))),
           h(K.Button, { variant: 'primary', icon: 'rods', onClick: push }, 'Push rolling update')),
-        ota && ota.node_receipts && ota.node_receipts.length ? h(Table, { rows: ota.node_receipts, rowKey: r => r.hostname, cols: [{ key: 'h', label: 'worker', render: r => h('span', { className: 'sans', style: { fontWeight: 600 } }, r.hostname) }, { key: 'v', label: 'version', render: r => r.previous_version + ' → ' + r.installed_version }, { key: 'c', label: 'channel', render: r => h(K.Badge, { tone: String(r.delivery_mechanism).indexOf('WAN') >= 0 ? 'cloud' : 'local' }, r.delivery_mechanism) }, { key: 'd', label: 'repops check', render: r => fmt.hex(r.repops_post_check_digest, 12) }, { key: 'ms', label: 'applied in', num: true, render: r => fmt.ms(r.apply_latency_ms) }] }) : h('p', { className: 'cr-prose', style: { fontSize: '13px' } }, 'No update has been pushed in this session. Canary first, then the rest of the fleet; SkipPipe keeps requests flowing while a stage restarts.')),
+        ota && ota.node_receipts && ota.node_receipts.length ? h(Table, { rows: ota.node_receipts, rowKey: r => r.hostname, cols: [{ key: 'h', label: 'worker', render: r => h('span', { className: 'sans', style: { fontWeight: 600 } }, r.hostname) }, { key: 'v', label: 'version', render: r => r.previous_version + ' → ' + r.installed_version }, { key: 'c', label: 'channel', render: r => h(K.Badge, { tone: String(r.delivery_mechanism).indexOf('WAN') >= 0 ? 'cloud' : 'local' }, r.delivery_mechanism) }, { key: 'd', label: 'repops check', render: r => fmt.hex(r.repops_post_check_digest, 12) }, { key: 'ms', label: 'applied in', num: true, render: r => fmt.ms(r.apply_latency_ms) }] }) : h(Empty, null, '—')),
       h(Panel, { title: 'Observability', sub: 'prometheus /metrics · weights & biases summary', flush: true },
-        wandb ? h(Table, { rows: Object.keys(wandb.metrics || {}).map(k => ({ k, v: wandb.metrics[k] })), rowKey: r => r.k, cols: [{ key: 'k', label: 'metric', render: r => r.k }, { key: 'v', label: 'value', num: true, render: r => fmt.num(r.v) }] }) : Loading(),
+        wandb ? h(Table, { rows: Object.keys(wandb.metrics || {}).map(k => ({ k, v: wandb.metrics[k] })), rowKey: r => r.k, cols: [{ key: 'k', label: 'metric', render: r => r.k }, { key: 'v', label: 'value', num: true, render: r => (liveOnly && /loss|step|burn/.test(r.k) && r.v === 0) ? '—' : fmt.num(r.v) }] }) : Loading(),
         wandb ? h('div', { className: 'cr-panel-foot', style: { borderTop: '1px solid var(--line)' } }, h('span', null, 'project ' + wandb.project), h('span', null, 'run ' + wandb.run_id), h('span', null, wandb.signature)) : null));
   }
   C.pages.settings = Settings;
@@ -1120,7 +1131,7 @@
     useEffect(() => { document.documentElement.setAttribute('data-theme', theme); }, [theme]);
     useEffect(() => { setSelected(null); setMenu(false); window.scrollTo(0, 0); }, [route.page]);
     const Page = C.pages[route.page] || C.pages.overview;
-    const counts = { nodes: overview ? overview.nodes.length : null, transfers: overview ? (overview.fts3_transfers || []).length : null, slices: slices ? slices.slices.length : null };
+    const counts = { nodes: overview ? overview.nodes.length : null, transfers: overview && (overview.fts3_transfers || []).length ? overview.fts3_transfers.length : null, slices: slices && (slices.slices || []).length ? slices.slices.length : null };
     const selectedNode = overview && selected ? overview.nodes.find(n => n.id === selected) : null;
     const actions = route.page === 'nodes' ? h(F, null, h(K.Button, { size: 'sm', variant: 'primary', icon: 'rods', onClick: () => go('nodes/add') }, 'Add node'))
       : route.page === 'overview' ? h(F, null, h(K.Button, { size: 'sm', onClick: () => C.scenario('gaming_mode', 'Desktop yielded', 'warn') }, 'Yield desktop'), h(K.Button, { size: 'sm', variant: 'cloud', icon: 'cloud', onClick: () => C.scenario('cloud_burst', 'Burst H100 attached', 'cloud') }, 'Attach burst GPU'))

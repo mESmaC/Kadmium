@@ -269,8 +269,14 @@ impl GatewayState {
             WorkloadKind::DistributedTraining,
             &self.nodes,
         );
-        self.fts3_transfers =
-            Fts3TransferScheduler::plan_initial_staging(&self.inference_plan, &self.nodes);
+        if self.live_only_mode {
+            if self.last_fts3_stream_report.is_none() && self.last_shift.is_none() {
+                self.fts3_transfers.clear();
+            }
+        } else {
+            self.fts3_transfers =
+                Fts3TransferScheduler::plan_initial_staging(&self.inference_plan, &self.nodes);
+        }
     }
 
     /// Switches between Live-Hardware-Only mode (`true`) and Hybrid Demo + Live mode (`false`).
@@ -278,6 +284,12 @@ impl GatewayState {
         self.live_only_mode = live_only;
         self.epoch += 1;
         if live_only {
+            self.training_step_counter = 0;
+            self.last_training_loss = 0.0;
+            self.training_loss_history.clear();
+            self.last_checkpoint_step = 0;
+            self.supply_policy.enabled = false;
+            self.fts3_transfers.clear();
             let live_nodes: Vec<HardwareNode> = self
                 .live_workers
                 .values()
@@ -290,6 +302,17 @@ impl GatewayState {
                 live_nodes
             };
         } else {
+            if self.training_step_counter == 0 {
+                self.training_step_counter = 1_420;
+                self.last_training_loss = 1.184;
+                self.training_loss_history = vec![
+                    (1_417, 1.312),
+                    (1_418, 1.264),
+                    (1_419, 1.219),
+                    (1_420, 1.184),
+                ];
+                self.last_checkpoint_step = 1_400;
+            }
             let mut merged = sample_personal_cluster();
             for w in self.live_workers.values().filter(|w| w.online) {
                 if let Some(existing) = merged.iter_mut().find(|n| n.id == w.node.id) {
@@ -399,6 +422,12 @@ impl GatewayState {
 
         if switch_to_live_only && !self.live_only_mode {
             self.live_only_mode = true;
+            self.training_step_counter = 0;
+            self.last_training_loss = 0.0;
+            self.training_loss_history.clear();
+            self.last_checkpoint_step = 0;
+            self.supply_policy.enabled = false;
+            self.fts3_transfers.clear();
             self.nodes = self
                 .live_workers
                 .values()
@@ -767,7 +796,12 @@ impl GatewayState {
     }
 
     pub fn supply_marketplace(&self) -> SupplyMarketplaceSnapshot {
-        SupplySettlementEngine::evaluate_cluster_supply(&self.nodes, &self.supply_policy)
+        let mut snap =
+            SupplySettlementEngine::evaluate_cluster_supply(&self.nodes, &self.supply_policy);
+        if self.live_only_mode && !self.supply_policy.enabled {
+            snap.recent_receipts.clear();
+        }
+        snap
     }
 
     pub fn companion_status(&self) -> CompanionAppStatus {
@@ -806,16 +840,27 @@ impl GatewayState {
         training_telemetry.current_step = self.training_step_counter;
         training_telemetry.loss = self.last_training_loss;
         training_telemetry.last_nas_checkpoint_step = self.last_checkpoint_step;
+        if self.live_only_mode && self.training_step_counter == 0 {
+            training_telemetry.total_steps = 0;
+            training_telemetry.micro_batches_in_flight = 0;
+        }
 
-        let boinc_workunits = sample_boinc_workunits();
+        let boinc_workunits = if self.live_only_mode {
+            Vec::new()
+        } else {
+            sample_boinc_workunits()
+        };
         let mesh_links = build_mesh_link_matrix(&self.nodes);
         let rl_env_suite = RlEnvironmentSuiteSpec::dream_rsi_evolving_world();
-        let rl_plan = RlTopologyPlanner::compute_rl_plan(
+        let mut rl_plan = RlTopologyPlanner::compute_rl_plan(
             self.epoch,
             &self.training_model,
             &rl_env_suite,
             &self.nodes,
         );
+        if self.live_only_mode {
+            rl_plan.dream_rsi_report = None;
+        }
 
         ClusterOverviewResponse {
             coordinator_quorum: self.coordinator_quorum.clone(),

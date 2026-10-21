@@ -671,7 +671,19 @@ async fn post_attach_phone_farm(
     })
 }
 
-async fn get_pool_slices() -> Json<ClusterPoolSliceLayout> {
+async fn get_pool_slices(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<ClusterPoolSliceLayout> {
+    let guard = state.lock().expect("gateway state lock");
+    if guard.live_only_mode {
+        return Json(ClusterPoolSliceLayout {
+            total_pool_nodes: guard.nodes.len(),
+            num_slices: 0,
+            nodes_per_slice: 0,
+            unassigned_reserve_nodes: guard.nodes.len(),
+            slices: Vec::new(),
+        });
+    }
     let pool = sample_node_pool(100);
     let model = ModelSpec::deepseek_v3_671b_moe();
     Json(SubClusterPartitioner::partition_pool(&pool, 5, &model))
@@ -1304,7 +1316,11 @@ async fn get_companion_pairing(
 ) -> Json<CompanionPairingApiResponse> {
     let guard = state.lock().expect("gateway state lock");
     let coord_id = &guard.coordinator_quorum.active_leader;
-    let lan_candidates = ZeroClickLanPairingEngine::discover_lan_candidates(coord_id);
+    let lan_candidates = if guard.live_only_mode {
+        Vec::new()
+    } else {
+        ZeroClickLanPairingEngine::discover_lan_candidates(coord_id)
+    };
     let os_hysteresis =
         OsSwapchainHysteresisEngine::sample_desktop_gaming_timeline(&guard.nodes[0]);
     Json(CompanionPairingApiResponse {
