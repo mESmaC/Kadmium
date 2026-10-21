@@ -764,6 +764,7 @@ pub mod os_hooks;
 pub mod phone_farm;
 pub mod rbac;
 pub mod reactor_clearinghouse;
+pub mod reterminal_cm4;
 pub mod supply;
 pub mod tegra_switch;
 
@@ -773,6 +774,7 @@ pub use os_hooks::*;
 pub use phone_farm::*;
 pub use rbac::*;
 pub use reactor_clearinghouse::*;
+pub use reterminal_cm4::*;
 pub use supply::*;
 pub use tegra_switch::*;
 

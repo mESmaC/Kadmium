@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use kadmium_core::{
     HardwareNode, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModdedSwitchController, ModelSpec,
     PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmTopologyMode, PhoneFarmTransportMode,
-    PoliteState, SwitchRuntimeEnvironment, SwitchSiliconRevision, WorkloadKind,
-    sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
+    PoliteState, ReTerminalCm4LanBridge, SwitchRuntimeEnvironment, SwitchSiliconRevision,
+    WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::{Fts3TransferScheduler, LocalModelDiskImporter};
 use kadmium_gateway::{GatewayState, build_router};
@@ -229,6 +229,12 @@ enum Commands {
         #[arg(short, long, default_value = "mariko")]
         revision: String,
     },
+    /// Probe and benchmark the live Seeed Studio reTerminal CM4 (BCM2711 Cortex-A72 aarch64 NEON) over LAN TCP
+    Reterminal {
+        /// Optional LAN IP of the Seeed Studio reTerminal CM4 (defaults to 192.168.40.75)
+        #[arg(short, long)]
+        ip: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -310,6 +316,7 @@ async fn main() {
         } => run_import(&model, path.as_deref(), &format, start_layer, end_layer),
         Commands::Exl3 { model, bpw } => run_exl3(&model, bpw),
         Commands::Switch { revision } => run_switch(&revision),
+        Commands::Reterminal { ip } => run_reterminal(ip.as_deref()),
     }
 }
 
@@ -1337,5 +1344,53 @@ fn run_switch(revision_slug: &str) {
     for w in &spec.recommended_kadmium_workloads {
         println!("    * {}", w);
     }
+    println!("====================================================================================");
+}
+
+fn run_reterminal(custom_ip: Option<&str>) {
+    let report = ReTerminalCm4LanBridge::probe_and_verify(custom_ip);
+    println!("====================================================================================");
+    println!("  KADMIUM (Cd-48) — SEEED STUDIO reTERMINAL CM4 (ARMv8 NEON) LIVE LAN PROBE");
+    println!("====================================================================================");
+    println!(
+        "  Physical Board Online: {} ({})",
+        report.physical_board_online, report.lan_endpoint
+    );
+    println!("  Board Model:           {}", report.board_model);
+    println!("  MAC Address / OUI:     {}", report.mac_address_oui);
+    println!("  SoC Architecture:      {}", report.soc_architecture);
+    println!("  Kernel Uname:          {}", report.execution_proof.kernel_uname);
+    println!(
+        "  Live SoC Telemetry:    {:.1}°C | {} MHz | eMMC {:.2}/{:.2} GiB free",
+        report.telemetry.temp_c,
+        report.telemetry.cpu_freq_mhz,
+        report.telemetry.emmc_free_gib,
+        report.telemetry.emmc_total_gib
+    );
+    println!(
+        "  I2C HMI Peripherals:   {}",
+        report.telemetry.i2c_peripherals.join(", ")
+    );
+    println!("------------------------------------------------------------------------------------");
+    println!(
+        "  LAN TCP Round-Trip:    {:.2} ms (persistent TCP_NODELAY socket)",
+        report.execution_proof.lan_round_trip_ms
+    );
+    println!(
+        "  NEON 64x64 FP32 GEMM:  {:.3} ms (vfmaq_f32 | FNV-1a64: {:#018x} | sample: {:?})",
+        report.execution_proof.neon_gemm_64x64_ms,
+        report.execution_proof.neon_gemm_fnv1a64,
+        report.execution_proof.neon_sample4
+    );
+    println!(
+        "  eMMC 64 KiB .ktb I/O:  write {:.3} ms | read {:.3} ms | witness_verified={}",
+        report.execution_proof.emmc_64k_write_ms,
+        report.execution_proof.emmc_64k_read_ms,
+        report.execution_proof.emmc_witness_verified
+    );
+    println!(
+        "  Front-Bezel LEDs:      usr_led0..2 pulsed={}",
+        report.execution_proof.front_bezel_leds_pulsed
+    );
     println!("====================================================================================");
 }

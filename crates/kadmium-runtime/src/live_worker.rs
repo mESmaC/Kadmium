@@ -568,6 +568,24 @@ pub fn execute_stage_kernels_with_ktb(
             hidden = hw_hidden;
             k230_hw_exec_ms = Some(hw_ms);
         }
+    } else if node_id.starts_with("node-reterminal") || hostname.contains("reterminal") {
+        let ip = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.contains('.'))
+            .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+        if let Some((hw_hidden, hw_ms)) =
+            kadmium_core::ReTerminalCm4LanBridge::execute_live_stage_forward_on_cm4(
+                ip,
+                req.start_layer,
+                req.end_layer,
+                gate_scale,
+                &hidden,
+            )
+        {
+            hidden = hw_hidden;
+            k230_hw_exec_ms = Some(hw_ms);
+        }
     }
     if k230_hw_exec_ms.is_none() {
         for l in req.start_layer..=req.end_layer {
@@ -737,6 +755,27 @@ pub fn apply_ota_update_manifest_local(
                 k230_sd_note = format!(" + /sdcard/kadmium_ota_release.bin on {port}");
             }
         }
+    } else if node_id.0.starts_with("node-reterminal") || hostname.contains("reterminal") {
+        let ip = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.contains('.'))
+            .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+        if let Some((hw_digest, emmc_ok, hw_ms)) =
+            kadmium_core::ReTerminalCm4LanBridge::stage_ota_update_on_cm4(
+                ip,
+                &manifest.update_id,
+                &manifest.target_version,
+                manifest.expected_ktb_merkle_root_fnv64,
+                manifest.artifact_size_bytes as usize,
+            )
+        {
+            repops_digest = hw_digest;
+            k230_exec_override = Some(hw_ms);
+            if emmc_ok {
+                k230_sd_note = format!(" + ~/kadmium-cm4/kadmium_ota_release.bin on {ip}");
+            }
+        }
     }
 
     let elapsed_ms = k230_exec_override
@@ -820,6 +859,32 @@ pub fn execute_verde_layer_challenge_local(
                 compute_exec_ms: hw_ms.max(0.05),
             };
         }
+    } else if node_id.starts_with("node-reterminal") || hostname.contains("reterminal") {
+        let ip = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.contains('.'))
+            .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+        if let Some((sample, sum, digest, hw_ms)) =
+            kadmium_core::ReTerminalCm4LanBridge::execute_live_verde_challenge_on_cm4(
+                ip,
+                req.start_layer,
+                req.target_layer,
+                &state,
+                req.inject_fault_at_layer,
+            )
+        {
+            return LiveVerdeBisectionResponse {
+                audit_id: req.audit_id.clone(),
+                node_id: node_id.to_string(),
+                hostname: hostname.to_string(),
+                queried_layer: req.target_layer,
+                layer_state_sample: sample,
+                repops_tree_sum: sum,
+                repops_digest_fnv1a: digest,
+                compute_exec_ms: hw_ms.max(0.05),
+            };
+        }
     }
 
     for l in req.start_layer..=req.target_layer {
@@ -871,6 +936,24 @@ pub fn execute_dream_rsi_replay_local(
         if let Some((hw_passed, hw_speedup, hw_ms)) =
             kadmium_core::K230UsbComputeBridge::execute_live_dream_rsi_on_k230(
                 &port,
+                req.epoch,
+                sims,
+                req.puct_exploration_c,
+            )
+        {
+            passed_wasi = hw_passed;
+            best_speedup = hw_speedup;
+            k230_hw_ms = Some(hw_ms);
+        }
+    } else if node_id.starts_with("node-reterminal") || hostname.contains("reterminal") {
+        let ip = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.contains('.'))
+            .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+        if let Some((hw_passed, hw_speedup, hw_ms)) =
+            kadmium_core::ReTerminalCm4LanBridge::execute_live_dream_rsi_on_cm4(
+                ip,
                 req.epoch,
                 sims,
                 req.puct_exploration_c,
@@ -1155,6 +1238,26 @@ impl LiveNodeWorkerServer {
                                                         sd_suffix = format!(
                                                             " | /sdcard/kadmium_fts3_shard.ktb verified={} ({:.2} ms)",
                                                             sd_ok, sd_ms
+                                                        );
+                                                    }
+                                                } else if (node_id_str.starts_with("node-reterminal")
+                                                    || hostname_str.contains("reterminal"))
+                                                    && req.page_index == 0
+                                                {
+                                                    let ip = hostname_str
+                                                        .rsplit('-')
+                                                        .next()
+                                                        .filter(|s| s.contains('.'))
+                                                        .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+                                                    if let Some((emmc_ok, emmc_ms)) = kadmium_core::ReTerminalCm4LanBridge::stage_fts3_ktb_page_on_cm4(
+                                                        ip,
+                                                        req.page_index,
+                                                        req.expected_merkle_root,
+                                                        &req.page_bytes,
+                                                    ) {
+                                                        sd_suffix = format!(
+                                                            " | ~/kadmium-cm4/kadmium_fts3_page_0.ktb verified={} ({:.2} ms)",
+                                                            emmc_ok, emmc_ms
                                                         );
                                                     }
                                                 }

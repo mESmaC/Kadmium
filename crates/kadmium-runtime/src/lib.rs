@@ -872,4 +872,219 @@ mod tests {
             assert!((yf - y_ref).abs() < 1e-3, "matvec mismatch: {yf} vs {y_ref}");
         }
     }
+
+    #[tokio::test]
+    async fn test_live_reterminal_cm4_6_subsystem_cluster() {
+        use kadmium_core::{DEFAULT_RETERMINAL_CM4_IP, ReTerminalCm4LanBridge};
+        use kadmium_network::{
+            FleetUpdateManifest, LiveWorkerRegistration, UpdatePayloadKind, UpdateTargetScope,
+        };
+        use std::collections::BTreeMap;
+
+        let probe = ReTerminalCm4LanBridge::probe_and_verify(None);
+        assert!(probe.execution_proof.emmc_witness_verified);
+        assert!(probe.execution_proof.neon_gemm_64x64_ms > 0.0);
+
+        let desktop_node = sample_personal_cluster().remove(0);
+        let cm4_node = probe.hardware_node.clone();
+
+        let w_desktop =
+            LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, desktop_node.clone(), false)
+                .await
+                .expect("spawn desktop worker");
+        let w_cm4 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, cm4_node.clone(), false)
+            .await
+            .expect("spawn reTerminal CM4 bridge worker");
+
+        let mut live_workers = BTreeMap::new();
+        live_workers.insert(
+            desktop_node.id.0.clone(),
+            LiveWorkerRegistration {
+                node: desktop_node.clone(),
+                worker_tcp_addr: w_desktop.local_addr.to_string(),
+                worker_lan_ip: "127.0.0.1".into(),
+                worker_tcp_port: w_desktop.local_addr.port(),
+                os_name: "windows".into(),
+                cpu_arch: "x86_64".into(),
+                board_or_model: "Desktop Workstation".into(),
+                network_channel: "LocalLAN".into(),
+                installed_version: "v0.1.0-cd48".into(),
+                ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+                heartbeat_count: 1,
+                registered_at_unix_ms: 1000,
+                last_heartbeat_unix_ms: 1000,
+                last_measured_rtt_ms: 0.4,
+                executed_forward_stages: 0,
+                executed_training_steps: 0,
+                online: true,
+            },
+        );
+        live_workers.insert(
+            cm4_node.id.0.clone(),
+            LiveWorkerRegistration {
+                node: cm4_node.clone(),
+                worker_tcp_addr: w_cm4.local_addr.to_string(),
+                worker_lan_ip: DEFAULT_RETERMINAL_CM4_IP.into(),
+                worker_tcp_port: w_cm4.local_addr.port(),
+                os_name: "linux".into(),
+                cpu_arch: "aarch64".into(),
+                board_or_model: probe.board_model.clone(),
+                network_channel: "LocalLAN".into(),
+                installed_version: "v0.1.0-cd48".into(),
+                ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+                heartbeat_count: 1,
+                registered_at_unix_ms: 1000,
+                last_heartbeat_unix_ms: 1000,
+                last_measured_rtt_ms: probe.execution_proof.lan_round_trip_ms,
+                executed_forward_stages: 0,
+                executed_training_steps: 0,
+                online: true,
+            },
+        );
+
+        let cluster = vec![desktop_node.clone(), cm4_node.clone()];
+        let model = ModelSpec::deepseek_v3_671b_exl3();
+        let inf_plan = ShardPlanner::compute_plan(1, &model, WorkloadKind::Inference, &cluster);
+
+        // 1. Live Multi-Device Inference Forward Pass (Desktop x86_64 + reTerminal CM4 aarch64 NEON)
+        let (inf_report, hops) = DistributedLanExecutor::execute_live_pipeline(
+            &inf_plan,
+            "Verify Seeed Studio reTerminal CM4 distributed inference",
+            &live_workers,
+        )
+        .await;
+        assert!(!hops.is_empty());
+        assert!(inf_report.effective_tokens_per_sec > 0.0);
+
+        // 2. Live Cross-ISA Gensyn Verde O(log L) Layer-Bisection Audit (x86_64 vs aarch64 Cortex-A72)
+        let mut cm4_audit_workers = BTreeMap::new();
+        cm4_audit_workers.insert(
+            cm4_node.id.0.clone(),
+            live_workers.get(&cm4_node.id.0).unwrap().clone(),
+        );
+        let honest_audit = DistributedLanExecutor::run_live_verde_bisection_audit_tcp(
+            1,
+            64,
+            None,
+            &cm4_audit_workers,
+        )
+        .await;
+        assert!(honest_audit.bit_exact_verified);
+        assert_eq!(honest_audit.disputed_layer, None);
+
+        let fault_audit = DistributedLanExecutor::run_live_verde_bisection_audit_tcp(
+            1,
+            64,
+            Some(41),
+            &cm4_audit_workers,
+        )
+        .await;
+        assert!(!fault_audit.bit_exact_verified);
+        assert_eq!(fault_audit.disputed_layer, Some(41));
+
+        // 3. Live FTS3 64 KiB .ktb Shard Streaming to reTerminal CM4 32 GB eMMC
+        let fts3_report = DistributedLanExecutor::stream_fts3_ktb_shard_tcp(
+            &model.id,
+            "shard-cm4-emmc-00.ktb",
+            1,
+            &cm4_audit_workers,
+        )
+        .await;
+        assert!(
+            fts3_report
+                .target_receipts
+                .iter()
+                .all(|r| r.verified_merkle_proof)
+        );
+
+        // 4. Live Over-The-Air (OTA) Release Push + Post-Update ARMv8 NEON RepOps Self-Test
+        let payload = b"KDM_CM4_RETERMINAL_OTA_V020".to_vec();
+        let expected_merkle = fts3_report.merkle_root_fnv64;
+        let mac = FleetUpdateManifest::compute_signature_mac(
+            "ota-cm4-01",
+            "v0.2.0-cd48",
+            expected_merkle,
+            &payload,
+        );
+        let manifest = FleetUpdateManifest {
+            update_id: "ota-cm4-01".into(),
+            target_version: "v0.2.0-cd48".into(),
+            payload_kind: UpdatePayloadKind::BinaryRelease,
+            target_scope: UpdateTargetScope::AllNodes,
+            rolling_canary: true,
+            issued_at_unix_ms: 3000,
+            expected_ktb_merkle_root_fnv64: expected_merkle,
+            artifact_size_bytes: payload.len(),
+            payload_bytes: payload,
+            signature_mac_fnv64: mac,
+            release_notes: "Live OTA release staged on reTerminal CM4 eMMC".into(),
+        };
+        let ota_ack =
+            DistributedLanExecutor::push_update_tcp(&w_cm4.local_addr.to_string(), 2, &manifest)
+                .await
+                .expect("push OTA to CM4 worker");
+        assert!(ota_ack.accepted);
+        assert_eq!(ota_ack.installed_version, "v0.2.0-cd48");
+
+        // 5. Live Dream-RSI MCTS PUCT Rollout Evolution on reTerminal CM4 Cortex-A72
+        let dream_report = DistributedLanExecutor::run_live_dream_rsi_replay_tcp(
+            1,
+            "gpu_kernel_opt",
+            64,
+            &cm4_audit_workers,
+        )
+        .await;
+        assert!(dream_report.best_evolved_speedup > 1.38);
+
+        // 6. Live ARMv8 NEON 128-bit veorq_u32 RAID-5 XOR Parity Reconstruction on reTerminal CM4
+        if probe.physical_board_online {
+            let s0 = vec![0x12u8; 256];
+            let s1 = vec![0x34u8; 256];
+            let s2 = vec![0x56u8; 256];
+            let s3_lost = vec![0x78u8; 256];
+            let parity: Vec<u8> = (0..256)
+                .map(|i| s0[i] ^ s1[i] ^ s2[i] ^ s3_lost[i])
+                .collect();
+            let (recovered, _fnv, hw_ms) =
+                ReTerminalCm4LanBridge::execute_raid5_xor_recovery_on_cm4(
+                    DEFAULT_RETERMINAL_CM4_IP,
+                    &parity,
+                    &s0,
+                    &s1,
+                    &s2,
+                )
+                .expect("execute live NEON RAID-5 XOR recovery on reTerminal CM4");
+            assert_eq!(recovered, s3_lost);
+            assert!(hw_ms >= 0.0);
+            println!(
+                "=== LIVE RETERMINAL CM4 6-SUBSYSTEM TEST PASSED ===\n\
+                 - Physical Board Online: {} ({} @ {})\n\
+                 - 1. Inference Throughput: {:.1} tok/s across {} stages\n\
+                 - 2. Cross-ISA Verde Audit: honest_verified={} ({} steps), fault_L41_detected={:?} (cert {:?})\n\
+                 - 3. FTS3 .ktb eMMC Stream: {} pages verified [Merkle {:#018x}] ({:.1} Mbps)\n\
+                 - 4. OTA Push to CM4 eMMC: accepted={} version={} ({})\n\
+                 - 5. Dream-RSI MCTS on CM4: {} rollouts -> {:.2}x speedup [hash {:#018x}]\n\
+                 - 6. ARMv8 NEON veorq_u32 RAID-5 XOR Recovery: 256 B reconstructed in {:.3} ms",
+                probe.physical_board_online,
+                probe.board_model,
+                probe.lan_endpoint,
+                inf_report.effective_tokens_per_sec,
+                hops.len(),
+                honest_audit.bit_exact_verified,
+                honest_audit.bisection_steps.len(),
+                fault_audit.disputed_layer,
+                fault_audit.fraud_proof_certificate_id,
+                fts3_report.target_receipts.len(),
+                fts3_report.merkle_root_fnv64,
+                fts3_report.aggregate_goodput_mbps,
+                ota_ack.accepted,
+                ota_ack.installed_version,
+                ota_ack.status_note,
+                dream_report.total_mcts_simulations,
+                dream_report.best_evolved_speedup,
+                dream_report.evolved_policy_hash_fnv64,
+                hw_ms,
+            );
+        }
+    }
 }
