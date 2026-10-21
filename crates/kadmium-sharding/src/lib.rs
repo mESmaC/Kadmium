@@ -156,11 +156,19 @@ impl ShardPlanner {
             .map(|(idx, node)| {
                 let score = node.capacity_score(workload);
                 // Filter out tiny utility-only or tiny-score nodes from hosting heavy transformer blocks
-                // unless no other nodes exist.
-                let eligible = score >= 12.0
+                // unless they are dedicated NPU/KPU edge co-processors (e.g. CanMV K230 6 TOPS KPU) or no other nodes exist.
+                let is_npu_coprocessor = node.device_kind == DeviceKind::LinuxSbc
+                    && node.int4_tops >= 6.0
+                    && node.roles.contains(&NodeRole::ComputeWorker);
+                let eligible = (score >= 12.0 || is_npu_coprocessor)
                     && (node.roles.contains(&NodeRole::ComputeWorker)
                         || node.roles.contains(&NodeRole::BurstAccelerator));
-                (idx, if eligible { score } else { 0.0 })
+                let effective_score = if is_npu_coprocessor {
+                    score.max(4.5)
+                } else {
+                    score
+                };
+                (idx, if eligible { effective_score } else { 0.0 })
             })
             .collect();
 

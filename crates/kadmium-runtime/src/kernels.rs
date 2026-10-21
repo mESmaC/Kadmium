@@ -29,6 +29,8 @@ pub enum HardwareKernelTarget {
     CpuAvx512Fma,
     /// ARM64 NEON + Rockchip/Apple NPU (`vdotq_s32` + `vfmaq_f32`).
     ArmNeonDotProd,
+    /// 64-bit RISC-V Vector 1.0 (`Xuantie C908` RVV 1.0) + Canaan 3rd-Gen KPU AI NPU (`6 TOPS`).
+    RiscVRvv10Kpu,
 }
 
 impl HardwareKernelTarget {
@@ -43,6 +45,17 @@ impl HardwareKernelTarget {
         }
     }
 
+    pub fn from_node(node: &HardwareNode) -> Self {
+        if node.id.0.contains("k230")
+            || node.id.0.contains("riscv")
+            || node.hostname.contains("k230")
+        {
+            Self::RiscVRvv10Kpu
+        } else {
+            Self::from_backend(node.backend)
+        }
+    }
+
     pub fn intrinsic_signature(&self) -> &'static str {
         match self {
             Self::CudaTensorCorePtx => "mma.sync.aligned.m16n8k16.f32.f16.f16.f32 + cp.async.ca",
@@ -53,6 +66,9 @@ impl HardwareKernelTarget {
             Self::VulkanSubgroupSpirv => "OpCooperativeMatrixMulAddKHR + OpGroupNonUniformFAdd",
             Self::CpuAvx512Fma => "_mm512_fmadd_ps + _mm512_dpbusd_epi32 (AVX-512 VNNI)",
             Self::ArmNeonDotProd => "vdotq_s32 + vfmaq_f32 (ARMv8.4-A DotProd)",
+            Self::RiscVRvv10Kpu => {
+                "vfwmacc.vv (RVV 1.0 VLEN=128) + nncase v2.11.0 3rd-Gen KPU DMA (6 TOPS)"
+            }
         }
     }
 }
@@ -313,7 +329,7 @@ impl HardwareKernelDispatcher {
         let node_profiles = cluster
             .iter()
             .map(|n| {
-                let target = HardwareKernelTarget::from_backend(n.backend);
+                let target = HardwareKernelTarget::from_node(n);
                 let achieved_gflops =
                     ((n.effective_fp16_tflops() * 1000.0 * 0.78) * 10.0).round() / 10.0;
                 let bw_util = (74.0 + (n.compute_q_star_ratio() * 18.0)).min(94.5);

@@ -185,6 +185,150 @@ pub fn run_probe() {
             proof.ulab_rvv_64x64_gemm_ms,
             proof.sdcard_ktb_witness_verified
         );
+        println!(
+            "  * 6 TOPS KPU & MicroSD:   3rd-Gen KPU Warm Pass: {:.2} ms ({:.1} FPS) | 64 KiB .ktb SD Write: {:.2} ms / Read: {:.2} ms | 64-Layer f32 Drift: {:.9}",
+            proof.kpu_npu_warm_inference_ms,
+            proof.kpu_npu_throughput_fps,
+            proof.ktb_64k_sdcard_write_ms,
+            proof.ktb_64k_sdcard_read_ms,
+            proof.verde_64_layer_max_f32_drift
+        );
+    }
+
+    if k230_report.physical_board_detected {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let mut gw = GatewayState::new();
+            let w_host = LiveNodeWorkerServer::spawn_auto_port(
+                "127.0.0.1",
+                0,
+                live_node.clone(),
+                false,
+            )
+            .await
+            .expect("spawn host worker");
+            let w_k230 = LiveNodeWorkerServer::spawn_auto_port(
+                "127.0.0.1",
+                0,
+                k230_report.hardware_node.clone(),
+                false,
+            )
+            .await
+            .expect("spawn k230 usb proxy worker");
+
+            let port_label = k230_report
+                .detected_serial_port
+                .clone()
+                .unwrap_or_else(|| "COM11".to_string());
+            gw.register_live_worker(
+                live_node.clone(),
+                w_host.local_addr.to_string(),
+                0.15,
+                true,
+            );
+            gw.register_live_worker_with_meta(
+                k230_report.hardware_node.clone(),
+                w_k230.local_addr.to_string(),
+                42.0,
+                true,
+                "rt-smart v1.8 (CanMV K230)".to_string(),
+                "riscv64-c908-rvv1.0 (6 TOPS KPU)".to_string(),
+                k230_report.board_model.clone(),
+                format!("USB-CDC ({port_label})"),
+            );
+
+            println!(
+                "\n--- 🌐 Live 2-Node Cross-ISA Cluster Execution ({} [x86_64] <-> {} [RISC-V K230 on {}]) ---",
+                live_node.hostname, k230_report.hardware_node.hostname, port_label
+            );
+            for a in &gw.inference_plan.assignments {
+                println!(
+                    "  * Stage {:?}: {:<38} | Layers: {:>2} ({:?}..{:?}) | Share: {:>5.1}% | q*={:.2}",
+                    a.pipeline_stage_index,
+                    a.hostname,
+                    a.layer_count,
+                    a.start_layer,
+                    a.end_layer,
+                    a.compute_share_pct,
+                    a.tiered_memory.q_star_accel_ratio
+                );
+            }
+
+            let (pipe_report, hops) = DistributedLanExecutor::execute_live_pipeline(
+                &gw.inference_plan,
+                "Verify live x86_64 to CanMV K230 RISC-V multi-stage boundary tensor execution over USB",
+                &gw.live_workers,
+            )
+            .await;
+            for hop in &hops {
+                println!(
+                    "  * Hop #{}: {:<38} | Layers L{:02}..L{:02} | {} | Exec: {:.2} ms | Wire+USB: {:.2} ms | RepOps={:#018x}",
+                    hop.stage_index,
+                    hop.hostname,
+                    hop.start_layer,
+                    hop.end_layer,
+                    hop.transport_mode,
+                    hop.compute_exec_ms,
+                    hop.wire_plus_compute_ms,
+                    hop.repops_digest_fnv1a
+                );
+            }
+            println!(
+                "  * Pipeline Output Norm:   L2={:.3} | Stages Executed: {} | Speculative Speedup: {:.2}x",
+                pipe_report
+                    .stages
+                    .last()
+                    .map(|s| s.output_activation_l2_norm)
+                    .unwrap_or(0.0),
+                hops.len(),
+                pipe_report.speculative_verification.effective_speedup_multiplier
+            );
+
+            let verde_audit = DistributedLanExecutor::run_live_verde_bisection_audit_tcp(
+                1,
+                16,
+                None,
+                &gw.live_workers,
+            )
+            .await;
+            println!(
+                "  * Cross-ISA Verde Audit:  Referee (x86_64 f64) vs {} (RISC-V f32 on {}) | {} steps | Bit-Exact: {} | Wall: {:.2} ms",
+                verde_audit.target_hostname,
+                port_label,
+                verde_audit.bisection_steps.len(),
+                verde_audit.bit_exact_verified,
+                verde_audit.total_audit_wall_ms
+            );
+                for st in &verde_audit.bisection_steps {
+                    println!(
+                        "      - Bisect Step #{} [L{:02}..L{:02} -> mid L{:02}]: K230={:#018x} == Referee={:#018x} (Matched: {}, RTT: {:.2} ms)",
+                        st.step_index,
+                        st.search_low_layer,
+                        st.search_high_layer,
+                        st.midpoint_layer,
+                        st.worker_repops_digest,
+                        st.referee_repops_digest,
+                        st.matched,
+                        st.wire_rtt_ms
+                    );
+                }
+
+                let fault_audit = DistributedLanExecutor::run_live_verde_bisection_audit_tcp(
+                    2,
+                    16,
+                    Some(11),
+                    &gw.live_workers,
+                )
+                .await;
+                println!(
+                    "  * Cross-ISA Fault Trap:   Injected Fault @ L11 on {} -> Isolated Disputed Layer #{:?} in {} steps (Cert: {:?})",
+                    fault_audit.target_hostname,
+                    fault_audit.disputed_layer,
+                    fault_audit.bisection_steps.len(),
+                    fault_audit.fraud_proof_certificate_id
+                );
+            })
+        });
     }
 
     // Pack and verify a 64 KiB page-aligned .ktb tensor bank in memory
