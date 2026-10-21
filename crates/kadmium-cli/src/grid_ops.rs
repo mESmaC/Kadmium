@@ -5,7 +5,9 @@ use kadmium_core::{
     OsSwapchainHysteresisEngine, SubClusterRbacEngine, SupplyLeasePolicy, SupplyPayoutMode,
     SupplySettlementEngine, sample_personal_cluster,
 };
-use kadmium_data::{HfByteRangeSlicer, SafetensorsToKtbTranscoder};
+use kadmium_data::{
+    DecentralizedStoragePoolEngine, HfByteRangeSlicer, SafetensorsToKtbTranscoder,
+};
 use kadmium_network::{
     MultiPathInterfaceStriper, NatTraversalCoordinator, SwarmRaidStriper, ZeroClickLanPairingEngine,
 };
@@ -390,7 +392,7 @@ pub async fn run_bench() {
     // 8. Hyper-Inference Compute Engine (MLA Weight-Absorption + KIVI Asymmetric 2-Bit KV + Flash-Decoding Split-KV)
     let hyper_inf = HyperInferenceComputeReport::run_all();
     println!(
-        "\n[8/9] Hyper-Inference Compute Engine (MLA Weight-Absorption + KIVI 2-Bit Asymmetric KV + Flash-Decoding Split-KV)"
+        "\n[8/10] Hyper-Inference Compute Engine (MLA Weight-Absorption + KIVI 2-Bit Asymmetric KV + Flash-Decoding Split-KV)"
     );
     println!(
         "  * DeepSeek-V3 MLA Weight-Absorption (q_abs = q * W_UK^T): KV Cache {} B -> {} B/tok (-{:.1}%, {:.1}x Compression, {:.2}x Decode BW, MaxDiff={:.2e})",
@@ -421,7 +423,7 @@ pub async fn run_bench() {
     // 9. 4-Tier Hierarchical Pool Auto-Scaler (16 -> 100,000+ Nodes)
     let pool_scale = HierarchicalPoolPlanner::run_multi_scale_benchmark();
     println!(
-        "\n[9/9] 4-Tier Hierarchical Pool Auto-Scaler & Radix-16 Tree Federation (16 -> 100,000+ Nodes)"
+        "\n[9/10] 4-Tier Hierarchical Pool Auto-Scaler & Radix-16 Tree Federation (16 -> 100,000+ Nodes)"
     );
     println!(
         "{:<38} {:>8} {:>9} {:>12} {:>11} {:>14} {:>14}",
@@ -441,6 +443,56 @@ pub async fn run_bench() {
         );
     }
     println!("\n{}", pool_scale.summary_scorecard);
+
+    // 10. Decentralized Pool Storage Bucket & Wire-Resident Token Carousel (100-Node Pool)
+    let storage_pool = DecentralizedStoragePoolEngine::run_pool_storage_benchmark(100);
+    println!(
+        "\n[10/10] Decentralized Pool Storage Bucket (`{}`) & Wire-Resident Token Carousel ({}-Node Pool)",
+        storage_pool.bucket_uri, storage_pool.total_participating_nodes
+    );
+    println!(
+        "  * Pooled Capacity: {:.2} TiB NVMe/UFS Flash + {:.2} TiB Wire-Resident RAM Carousel | Agg Read: {:.1} GB/s ({:.1} Gbps Seed)",
+        storage_pool.total_pooled_disk_capacity_gb / 1024.0,
+        storage_pool.total_wire_ram_carousel_gb / 1024.0,
+        storage_pool.aggregate_disk_read_bw_gbps,
+        storage_pool.aggregate_network_seed_bw_gbps
+    );
+    println!(
+        "  * Systematic RS(k={}, m={}) Erasure Coding ({:.2}x Overhead vs 3.0x Rep): Dropped {:?} -> Reconstructed Exact={} (Diff={} B)",
+        storage_pool.erasure_coding_verification.data_shards_k,
+        storage_pool.erasure_coding_verification.parity_shards_m,
+        storage_pool.erasure_coding_verification.storage_overhead_ratio,
+        storage_pool.erasure_coding_verification.simulated_dropped_shard_indices,
+        storage_pool.erasure_coding_verification.exact_bit_identical_recovery,
+        storage_pool.erasure_coding_verification.reconstruction_max_byte_diff
+    );
+    println!(
+        "  * 'Living on the Wire' Token Carousel ({:.1}T Tokens): {:.1} Gbps Wire Feed ({:.1}x vs {:.1} Gbps 1-NAS) | Step Data Stall: {:.1} ms -> {:.1} ms ({:.1}% Wire Hit)",
+        storage_pool.wire_token_carousel.dataset_total_tokens_billions / 1000.0,
+        storage_pool.wire_token_carousel.decentralized_pool_carousel_gbps,
+        storage_pool.wire_token_carousel.bandwidth_scaling_multiplier_x,
+        storage_pool.wire_token_carousel.centralized_nas_bottleneck_gbps,
+        storage_pool.wire_token_carousel.centralized_data_stall_ms_per_step,
+        storage_pool.wire_token_carousel.wire_carousel_data_stall_ms_per_step,
+        storage_pool.wire_token_carousel.pre_staged_on_wire_hit_rate_pct
+    );
+    println!(
+        "\n{:<52} {:<24} {:>9} {:>10} {:>12} {:>12}",
+        "VIRTUAL BUCKET URI (DRAG-AND-DROP)", "OBJECT KIND", "LOG (GB)", "PHYS (GB)", "BLOCKS", "READ (GBPS)"
+    );
+    println!("{}", "-".repeat(124));
+    for obj in &storage_pool.bucket_objects {
+        println!(
+            "{:<52} {:<24} {:>8.1}   {:>9.1}   {:>10}   {:>10.1}",
+            obj.object_uri,
+            obj.object_kind,
+            obj.logical_size_gb,
+            obj.physical_erasure_coded_gb,
+            obj.total_64mb_superblocks,
+            obj.parallel_read_bandwidth_gbps
+        );
+    }
+    println!("\n{}", storage_pool.summary_scorecard);
 }
 
 pub fn run_pairing() {

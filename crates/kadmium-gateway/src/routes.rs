@@ -21,8 +21,8 @@ use kadmium_core::{
     sample_cloud_burst_gpu_node, sample_node_pool,
 };
 use kadmium_data::{
-    EcosystemIntegrationsOverview, Fts3TransferScheduler, Fts3TransferState, ImportedModelManifest,
-    LocalModelDiskImporter,
+    DecentralizedStoragePoolEngine, DecentralizedStoragePoolReport, EcosystemIntegrationsOverview,
+    Fts3TransferScheduler, Fts3TransferState, ImportedModelManifest, LocalModelDiskImporter,
 };
 use kadmium_network::{
     FleetUpdatePushSummary, HolePunchNegotiationResult, JoinTicket, LanPairingCandidate,
@@ -384,6 +384,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/pools/hierarchical-scale",
             get(get_hierarchical_pool_scale_report).post(get_hierarchical_pool_scale_report),
+        )
+        .route(
+            "/api/v1/storage/pool-bucket",
+            get(get_storage_pool_bucket_report).post(get_storage_pool_bucket_report),
         )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -2021,8 +2025,13 @@ pub struct ThroughputBoostApiResponse {
     pub hyper_training_suite: HyperTrainingBenchmarkReport,
     pub hyper_inference_suite: HyperInferenceComputeReport,
     pub hierarchical_pool_scale: HierarchicalPoolBenchmarkReport,
+    pub storage_pool_report: DecentralizedStoragePoolReport,
     pub raid5_striping_report: RaidStripedPassReport,
     pub multipath_schedule: MultiPathStripedSchedule,
+}
+
+async fn get_storage_pool_bucket_report() -> Json<DecentralizedStoragePoolReport> {
+    Json(DecentralizedStoragePoolEngine::run_pool_storage_benchmark(100))
 }
 
 async fn get_hierarchical_pool_scale_report() -> Json<HierarchicalPoolBenchmarkReport> {
@@ -2052,6 +2061,7 @@ async fn get_throughput_boost_report(
         TrainingComputeAcceleratorSuite::run_full_suite(Some(nodes.clone()));
     let hyper_inference_suite = HyperInferenceComputeReport::run_all();
     let hierarchical_pool_scale = HierarchicalPoolPlanner::run_multi_scale_benchmark();
+    let storage_pool_report = DecentralizedStoragePoolEngine::run_pool_storage_benchmark(100);
     let input_act: Vec<f32> = (0..64 * 16)
         .map(|i| ((i % 29) as f32 - 14.0) * 0.125)
         .collect();
@@ -2075,6 +2085,7 @@ async fn get_throughput_boost_report(
         hyper_training_suite,
         hyper_inference_suite,
         hierarchical_pool_scale,
+        storage_pool_report,
         raid5_striping_report,
         multipath_schedule,
     })

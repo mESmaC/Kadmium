@@ -11,6 +11,9 @@ use kadmium_core::{HardwareNode, NodeId, NodeRole};
 use kadmium_sharding::{ClusterShardPlan, ResponsibilityShiftPlan};
 use serde::{Deserialize, Serialize};
 
+pub mod storage_pool;
+pub use storage_pool::*;
+
 /// Magic header bytes for the Kadmium Tensor Bank (`.ktb`) file format (`"KDTB"`).
 pub const KTB_MAGIC_BYTES: [u8; 4] = *b"KDTB";
 
