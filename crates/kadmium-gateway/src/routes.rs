@@ -38,10 +38,11 @@ use kadmium_rl::{
 use kadmium_runtime::{
     CrossSystemBenchmarkSuiteReport, CrossSystemComputeHarness, DistributedExl3ConversionEngine,
     DistributedLanExecutor, DistributedPipelineExecutionReport, Exl3ConversionReport,
-    HardwareKernelDispatcher, HardwareKernelSuiteReport, KtbCheckpointExportReport,
-    LiveDistributedTrainingStepReport, LiveDreamRsiSwarmReport, LiveFts3SwarmStreamReport,
-    LiveHopTelemetry, LiveKvCacheMigrationReport, LiveVerdeAuditReport, LocalFleetSpawner,
-    Pipeline1F1BSchedule, Pipeline1F1BScheduler, VerdeFraudProofCertificate, VerdeFraudProofEngine,
+    HardwareKernelDispatcher, HardwareKernelSuiteReport, HyperTrainingBenchmarkReport,
+    KtbCheckpointExportReport, LiveDistributedTrainingStepReport, LiveDreamRsiSwarmReport,
+    LiveFts3SwarmStreamReport, LiveHopTelemetry, LiveKvCacheMigrationReport, LiveVerdeAuditReport,
+    LocalFleetSpawner, Pipeline1F1BSchedule, Pipeline1F1BScheduler,
+    TrainingComputeAcceleratorSuite, VerdeFraudProofCertificate, VerdeFraudProofEngine,
     apply_ota_update_manifest_local,
 };
 use kadmium_sharding::{
@@ -375,6 +376,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/runtime/throughput-boost",
             get(get_throughput_boost_report).post(get_throughput_boost_report),
+        )
+        .route(
+            "/api/v1/training/hyper-compute",
+            get(get_hyper_training_report).post(get_hyper_training_report),
         )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -2009,8 +2014,19 @@ async fn post_exl3_convert_and_benchmark(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThroughputBoostApiResponse {
     pub cross_system_matrix: CrossSystemBenchmarkSuiteReport,
+    pub hyper_training_suite: HyperTrainingBenchmarkReport,
     pub raid5_striping_report: RaidStripedPassReport,
     pub multipath_schedule: MultiPathStripedSchedule,
+}
+
+async fn get_hyper_training_report(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<HyperTrainingBenchmarkReport> {
+    let nodes = {
+        let guard = state.lock().expect("gateway state lock");
+        guard.nodes.clone()
+    };
+    Json(TrainingComputeAcceleratorSuite::run_full_suite(Some(nodes)))
 }
 
 async fn get_throughput_boost_report(
@@ -2022,6 +2038,8 @@ async fn get_throughput_boost_report(
     };
 
     let cross_system_matrix = CrossSystemComputeHarness::run_full_matrix(Some(nodes.clone()));
+    let hyper_training_suite =
+        TrainingComputeAcceleratorSuite::run_full_suite(Some(nodes.clone()));
     let input_act: Vec<f32> = (0..64 * 16)
         .map(|i| ((i % 29) as f32 - 14.0) * 0.125)
         .collect();
@@ -2042,6 +2060,7 @@ async fn get_throughput_boost_report(
 
     Json(ThroughputBoostApiResponse {
         cross_system_matrix,
+        hyper_training_suite,
         raid5_striping_report,
         multipath_schedule,
     })

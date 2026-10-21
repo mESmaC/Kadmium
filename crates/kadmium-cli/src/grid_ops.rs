@@ -11,7 +11,8 @@ use kadmium_network::{
 };
 use kadmium_rl::DreamRsiWorldRegistry;
 use kadmium_runtime::{
-    CrossSystemComputeHarness, HardwareKernelDispatcher, VerdeFraudProofEngine,
+    CrossSystemComputeHarness, HardwareKernelDispatcher, TrainingComputeAcceleratorSuite,
+    VerdeFraudProofEngine,
 };
 use kadmium_sharding::{CloudShieldCutoverWatcher, SpotOrderbookBidEngine};
 
@@ -289,6 +290,68 @@ pub async fn run_bench() {
         );
     }
     println!("\n{}", matrix.shareable_scorecard_markdown);
+
+    // 7. Hyper-Training Compute Engine (GaLore + Muon Newton-Schulz + Varlen Packing + Chunked CE + FWHT-FP8 + SkipPipe)
+    let hyper_train = TrainingComputeAcceleratorSuite::run_full_suite(None);
+    println!(
+        "\n[7/7] Hyper-Training Compute Engine (GaLore + Muon 8-Bit + Varlen Packing + Liger Chunked CE + FWHT-FP8 + SkipPipe)"
+    );
+    println!(
+        "  * GaLore + Muon Newton-Schulz 8-Bit Optimizer: -{}% Optimizer VRAM ({} KB vs {} KB) | Loss {:.4} -> {:.4} (-{:.1}%)",
+        hyper_train.galore_muon_report.optimizer_vram_reduction_pct,
+        hyper_train.galore_muon_report.galore_int8_state_bytes / 1024,
+        hyper_train.galore_muon_report.standard_adamw_state_bytes / 1024,
+        hyper_train.galore_muon_report.initial_loss,
+        hyper_train.galore_muon_report.final_loss,
+        hyper_train.galore_muon_report.loss_reduction_pct
+    );
+    println!(
+        "  * Varlen Best-Fit Sequence Packing ({} seqs -> {} bins): Padding Waste {:.1}% -> {:.1}% ({:.2}x Effective Token Speedup)",
+        hyper_train.packing_and_chunked_ce_report.total_sequences,
+        hyper_train.packing_and_chunked_ce_report.packed_bin_count,
+        hyper_train.packing_and_chunked_ce_report.unpacked_padding_waste_pct,
+        hyper_train.packing_and_chunked_ce_report.packed_padding_waste_pct,
+        hyper_train.packing_and_chunked_ce_report.effective_packing_speedup
+    );
+    println!(
+        "  * Liger Fused Chunked Cross-Entropy (V=128,256): Peak Logit VRAM {:.1} MB -> {:.1} MB (-{:.1}% VRAM, MaxGradDiff={:.2e})",
+        hyper_train.packing_and_chunked_ce_report.standard_ce_peak_logit_vram_mb,
+        hyper_train.packing_and_chunked_ce_report.fused_chunked_ce_peak_vram_mb,
+        hyper_train.packing_and_chunked_ce_report.logit_vram_savings_pct,
+        hyper_train.packing_and_chunked_ce_report.max_loss_grad_diff
+    );
+    println!(
+        "  * FWHT-Rotated FP8 (E4M3 Fwd / E5M2 Bwd): Outlier L2 Err {:.4} -> {:.4} | Fwd CosSim {:.5} | Bwd CosSim {:.5} ({:.2}x GEMM)",
+        hyper_train.hadamard_fp8_report.naive_fp8_e4m3_rel_error,
+        hyper_train.hadamard_fp8_report.fwht_rotated_fp8_e4m3_rel_error,
+        hyper_train.hadamard_fp8_report.forward_gemm_cosine_similarity,
+        hyper_train.hadamard_fp8_report.backward_e5m2_gemm_cosine_similarity,
+        hyper_train.hadamard_fp8_report.fp8_training_compute_speedup
+    );
+    println!(
+        "  * SkipPipe Straggler Bypass + Async PhoneFarm/UMA Offload: Step {:.1} ms -> {:.1} ms ({:.1}% Pipeline Util, {:.2}x Speedup)\n",
+        hyper_train.skippipe_offload_report.stalled_pipeline_step_ms,
+        hyper_train.skippipe_offload_report.skippipe_active_step_ms,
+        hyper_train.skippipe_offload_report.skippipe_pipeline_utilization_pct,
+        hyper_train.skippipe_offload_report.skippipe_and_offload_speedup
+    );
+    println!(
+        "{:<28} {:<38} {:>11} {:>12} {:>10} {:>12}",
+        "NODE / SYSTEM", "TRAINING ROLE", "BASE TOK/S", "BOOST TOK/S", "SAVED GB", "TRAIN TOK/WH"
+    );
+    println!("{}", "-".repeat(118));
+    for r in &hyper_train.node_training_rows {
+        println!(
+            "{:<28} {:<38} {:>10.1}   {:>11.1}   {:>8.1}   {:>11.0}",
+            r.hardware_label,
+            r.assigned_training_role,
+            r.baseline_train_tok_s,
+            r.boosted_train_tok_s,
+            r.memory_saved_gb,
+            r.train_tokens_per_watt_hour
+        );
+    }
+    println!("\n{}", hyper_train.summary_scorecard);
 }
 
 pub fn run_pairing() {
