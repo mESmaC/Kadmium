@@ -734,16 +734,16 @@
 
   var WORKLOAD_TABS = {
     inference: {
-      eyebrow: '01 · 5-Tier MoE Inference + RAID-5 Swarm Striping',
-      title: 'Run 671B models across VRAM, Apple Unified Memory, NVMe, and RAID-5 peer swarms.',
-      prose: 'Hot attention weights stay in VRAM and Unified Memory while cold MoE experts stream from NVMe (.ktb 64 KiB pages) and stripe across parallel seeders with RAID-5 straggler parity.',
-      codeTitle: 'terminal · selective pull, Wireshark privacy check & OpenAI stream',
+      eyebrow: '01 · EXL3 / QTIP Trellis + RAID-5 Swarm Inference',
+      title: 'Run 671B models across VRAM, Mac UMA, Phone Farm Boxes, and RAID-5 peer swarms.',
+      prose: 'Combines EXL3/QTIP FWHT incoherence trellis quantization (2.0–6.0 bpw), local GGUF/Safetensors to .ktb disk importing, TCP PagedAttention KV migration, and RAID-5 straggler parity.',
+      codeTitle: 'terminal · import local GGUF/EXL3, verify privacy & serve',
       codeLang: 'shell',
-      code: '$ kadmium pull hf://deepseek-ai/DeepSeek-V3@main\n$ kadmium serve --port 7848 --raid-parity 1',
+      code: '$ kadmium import --model deepseek-v3-671b-exl3 --format exl3\n$ kadmium serve --port 7848 --raid-parity 1',
       rows: [
-        ['Tensor format', '.ktb v1 (64 KiB pages + O(log N) Merkle proofs)'],
-        ['Swarm & RAID-5', 'Multi-seeder BitTorrent pull + RAID-5 coded activation striping (8× uplink)'],
-        ['Speculative draft', 'ARM SBC 0.6B INT4 draft verifier (2.22× WAN speedup)'],
+        ['Quantization', 'EXL3 / QTIP FWHT incoherence + Viterbi bitshift trellis (2.0–6.0 bpw)'],
+        ['Swarm & RAID-5', 'Multi-seeder .ktb pull + RAID-5 coded activation striping (8× uplink)'],
+        ['KV & Multimodal', 'Live TCP PagedAttention KV migration + /v1/embeddings & Vision offload'],
         ['Privacy boundary', 'Layer 0 & Layer N-1 pinned locally (0 plaintext bytes on wire)']
       ]
     },
@@ -794,6 +794,7 @@
   var SUPPLY_NODES = [
     { id: 'rig-alpha-rtx4090', name: 'Desktop PC (RTX 4090)', hardware: '24 GB VRAM · Blind middle layers', usdPerHour: 0.38 },
     { id: 'mac-mini-m4-pro', name: 'M4 Mac Mini Pro', hardware: '48 GB Unified · Contiguous MoE layers', usdPerHour: 0.29 },
+    { id: 'phone-farm-s20-box20', name: '20-Slot Phone Farm Box (S20)', hardware: '160 GB LPDDR5 · 115W BMS · MoE & WASI RL', usdPerHour: 0.34 },
     { id: 'zephyrus-g16-rtx4070', name: 'Gaming Laptop (RTX 4070M)', hardware: '8 GB VRAM · Attention + DeMo sync', usdPerHour: 0.14 },
     { id: 'rk3588-sbc-bramble', name: 'ARM64 SBC Cluster', hardware: '24 GB RAM · WASI RL sandboxes', usdPerHour: 0.06 },
     { id: 'synology-nas-vault', name: 'Home / Lab NAS Vault', hardware: '16 TB ZFS · .ktb P2P shard seeding', usdPerHour: 0.05 }
