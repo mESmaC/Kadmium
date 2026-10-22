@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     http::header,
     response::{Html, IntoResponse},
     routing::{get, post},
@@ -26,8 +26,9 @@ use kadmium_core::{
     TegraX1PlatformController, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
 };
 use kadmium_data::{
-    DecentralizedStoragePoolEngine, DecentralizedStoragePoolReport, EcosystemIntegrationsOverview,
-    Fts3TransferScheduler, Fts3TransferState, ImportedModelManifest, LocalModelDiskImporter,
+    BucketGroundingAnchorKind, DecentralizedStoragePoolEngine, DecentralizedStoragePoolReport,
+    EcosystemIntegrationsOverview, Fts3TransferScheduler, Fts3TransferState, GroundingAnchorTarget,
+    GroundingSyncPolicy, ImportedModelManifest, LocalModelDiskImporter,
 };
 use kadmium_network::{
     FleetUpdatePushSummary, HolePunchNegotiationResult, JoinTicket, LanPairingCandidate,
@@ -401,6 +402,14 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/storage/pool-bucket",
             get(get_storage_pool_bucket_report).post(get_storage_pool_bucket_report),
+        )
+        .route(
+            "/api/v1/storage/pool-bucket/object",
+            post(post_storage_pool_bucket_object),
+        )
+        .route(
+            "/api/v1/storage/pool-bucket/anchor",
+            post(post_storage_pool_bucket_anchor),
         )
         .route(
             "/api/v1/cluster/elastic-boost",
@@ -1208,6 +1217,28 @@ async fn post_export_training_checkpoint(
         if report.zero_copy_verified {
             guard.last_checkpoint_step = report.step_index;
             guard.active_ktb_merkle_root_fnv64 = report.merkle_root_fnv64;
+            let ckpt_uri = format!(
+                "kdm://pool-bucket/checkpoints/{}.ktb",
+                report.checkpoint_id
+            );
+            let obj = DecentralizedStoragePoolEngine::create_bucket_object(
+                &ckpt_uri,
+                &format!(
+                    "Training Checkpoint {} (Step {} · {} tensor slices)",
+                    report.model_id, report.step_index, report.tensor_slice_count
+                ),
+                "Distributed Training Checkpoint (.ktb)",
+                (guard.training_model.total_weight_footprint_gb() * 0.25).max(0.5),
+                8,
+                2,
+                Some(report.merkle_root_fnv64),
+                &guard.nodes,
+            );
+            guard
+                .bucket_objects
+                .retain(|o| o.object_uri != obj.object_uri);
+            guard.bucket_objects.push(obj);
+            let _ = guard.save_persistent_state();
         }
         guard.last_checkpoint_report = Some(report.clone());
     }
@@ -2205,22 +2236,213 @@ async fn get_hyper_inference_report() -> Json<HyperInferenceComputeReport> {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StorageBucketRequest {
     pub pool_size: Option<usize>,
+    pub bucket: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StorageBucketPutObjectRequest {
+    pub object_uri: Option<String>,
+    pub display_name: Option<String>,
+    pub object_kind: Option<String>,
+    pub logical_size_gb: Option<f64>,
+    pub data_shards_k: Option<usize>,
+    pub parity_shards_m: Option<usize>,
+    pub preset: Option<String>,
+    pub delete_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StorageBucketAnchorRequest {
+    pub anchor_uri: Option<String>,
+    pub anchor_kind: Option<String>,
+    pub sync_policy: Option<String>,
+    pub capacity_tb: Option<f64>,
+    pub sustained_bandwidth_gbps: Option<f64>,
+    pub egress_cost_per_gb_usd: Option<f64>,
 }
 
 async fn get_storage_pool_bucket_report(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    Query(query): Query<StorageBucketRequest>,
     req: Option<Json<StorageBucketRequest>>,
 ) -> Json<DecentralizedStoragePoolReport> {
-    if let Some(Json(r)) = req
-        && let Some(sz) = r.pool_size
-    {
+    let body = req.map(|Json(r)| r).unwrap_or_default();
+    let explicit_pool_size = body.pool_size.or(query.pool_size);
+    let tier = body
+        .bucket
+        .or(query.bucket)
+        .unwrap_or_else(|| "live".to_string());
+
+    let mapped_pool_size = explicit_pool_size.or(match tier.as_str() {
+        "small" | "10" => Some(10),
+        "medium" | "25" => Some(25),
+        "large" | "50" => Some(50),
+        "enterprise" | "100" => Some(100),
+        _ => None,
+    });
+
+    if let Some(sz) = mapped_pool_size {
         return Json(DecentralizedStoragePoolEngine::run_pool_storage_benchmark(sz));
     }
-    let nodes = {
+
+    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
         let guard = state.lock().expect("gateway state lock");
-        guard.nodes.clone()
+        (
+            guard.nodes.clone(),
+            guard.imported_models.clone(),
+            guard.bucket_objects.clone(),
+            guard.bucket_anchors.clone(),
+        )
     };
-    Json(DecentralizedStoragePoolEngine::evaluate_bucket_for_nodes(&nodes))
+    Json(DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+        &nodes,
+        &imported_models,
+        &bucket_objects,
+        &bucket_anchors,
+    ))
+}
+
+async fn post_storage_pool_bucket_object(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(req): Json<StorageBucketPutObjectRequest>,
+) -> Json<DecentralizedStoragePoolReport> {
+    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+        let mut guard = state.lock().expect("gateway state lock");
+        if let Some(del_uri) = req.delete_uri.as_deref() {
+            guard.bucket_objects.retain(|o| o.object_uri != del_uri);
+        } else {
+            let (uri, name, kind, size_gb, merkle) = match req.preset.as_deref() {
+                Some("active-model") => {
+                    let m = &guard.inference_model;
+                    (
+                        format!("kdm://pool-bucket/models/{}.ktb", m.id),
+                        format!("{} (Sharded Weight Bank)", m.display_name),
+                        "Sharded Model Weight Bank (.ktb)".to_string(),
+                        m.total_weight_footprint_gb(),
+                        Some(guard.active_ktb_merkle_root_fnv64),
+                    )
+                }
+                Some("dataset-stream") => (
+                    "kdm://pool-bucket/datasets/local-code-instruct-stream.ktb".to_string(),
+                    "Local Code & Reasoning Token Carousel Stream (.ktb)".to_string(),
+                    "Wire-Carousel Token Dataset (.ktb)".to_string(),
+                    12.5,
+                    None,
+                ),
+                Some("shared-workspace") => (
+                    "kdm://pool-bucket/workspace/shared-rag-and-eval-bundle.ktb".to_string(),
+                    "Shared RAG Corpus & Evaluation Bundle (.ktb)".to_string(),
+                    "Shared Workspace Object (.ktb)".to_string(),
+                    4.0,
+                    None,
+                ),
+                _ => {
+                    let raw_uri = req
+                        .object_uri
+                        .unwrap_or_else(|| "kdm://pool-bucket/workspace/custom-object.ktb".into());
+                    let raw_name = req
+                        .display_name
+                        .unwrap_or_else(|| "User Staged Pool Bucket Object (.ktb)".into());
+                    let raw_kind = req
+                        .object_kind
+                        .unwrap_or_else(|| "Sharded Model Weight Bank (.ktb)".into());
+                    let raw_size = req.logical_size_gb.unwrap_or(4.5);
+                    (raw_uri, raw_name, raw_kind, raw_size, None)
+                }
+            };
+            let k = req.data_shards_k.unwrap_or(8);
+            let m = req.parity_shards_m.unwrap_or(2);
+            let entry = DecentralizedStoragePoolEngine::create_bucket_object(
+                &uri,
+                &name,
+                &kind,
+                size_gb,
+                k,
+                m,
+                merkle,
+                &guard.nodes,
+            );
+            guard
+                .bucket_objects
+                .retain(|o| o.object_uri != entry.object_uri);
+            guard.bucket_objects.push(entry);
+        }
+        let _ = guard.save_persistent_state();
+        (
+            guard.nodes.clone(),
+            guard.imported_models.clone(),
+            guard.bucket_objects.clone(),
+            guard.bucket_anchors.clone(),
+        )
+    };
+
+    Json(DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+        &nodes,
+        &imported_models,
+        &bucket_objects,
+        &bucket_anchors,
+    ))
+}
+
+async fn post_storage_pool_bucket_anchor(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(req): Json<StorageBucketAnchorRequest>,
+) -> Json<DecentralizedStoragePoolReport> {
+    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+        let mut guard = state.lock().expect("gateway state lock");
+        let kind = match req.anchor_kind.as_deref() {
+            Some("LocalNasZfsVault") | Some("nas") => BucketGroundingAnchorKind::LocalNasZfsVault,
+            Some("CloudObjectBucketS3R2") | Some("s3") | Some("r2") => {
+                BucketGroundingAnchorKind::CloudObjectBucketS3R2
+            }
+            _ => BucketGroundingAnchorKind::DedicatedStorageServer,
+        };
+        let policy = match req.sync_policy.as_deref() {
+            Some("SyncWriteThroughCheckpointGuard") => {
+                GroundingSyncPolicy::SyncWriteThroughCheckpointGuard
+            }
+            Some("HibernateAndSwarmRehydrate") => GroundingSyncPolicy::HibernateAndSwarmRehydrate,
+            _ => GroundingSyncPolicy::AsyncWriteBehindMerkleDelta,
+        };
+        let uri = req.anchor_uri.unwrap_or_else(|| match kind {
+            BucketGroundingAnchorKind::LocalNasZfsVault => {
+                "nas://local-zfs-vault/kadmium-ground".to_string()
+            }
+            BucketGroundingAnchorKind::CloudObjectBucketS3R2 => {
+                "r2://kadmium-pool-bucket-ground/merkle-store".to_string()
+            }
+            BucketGroundingAnchorKind::DedicatedStorageServer => {
+                format!("kdm-vault://{}/ground-vault", guard.coordinator_lan_ip)
+            }
+        });
+        let anchor = GroundingAnchorTarget {
+            anchor_id: format!("anchor-custom-{}", guard.bucket_anchors.len() + 1),
+            anchor_uri: uri.clone(),
+            anchor_kind: kind,
+            sync_policy: policy,
+            priority_tier: (guard.bucket_anchors.len() as u8).saturating_add(2),
+            capacity_tb: req.capacity_tb.unwrap_or(4.0).max(0.1),
+            sustained_bandwidth_gbps: req.sustained_bandwidth_gbps.unwrap_or(10.0).max(0.5),
+            egress_cost_per_gb_usd: req.egress_cost_per_gb_usd.unwrap_or(0.0).max(0.0),
+            merkle_grounded_coverage_pct: 100.0,
+        };
+        guard.bucket_anchors.retain(|a| a.anchor_uri != uri);
+        guard.bucket_anchors.push(anchor);
+        let _ = guard.save_persistent_state();
+        (
+            guard.nodes.clone(),
+            guard.imported_models.clone(),
+            guard.bucket_objects.clone(),
+            guard.bucket_anchors.clone(),
+        )
+    };
+
+    Json(DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+        &nodes,
+        &imported_models,
+        &bucket_objects,
+        &bucket_anchors,
+    ))
 }
 
 async fn get_hierarchical_pool_scale_report() -> Json<HierarchicalPoolBenchmarkReport> {

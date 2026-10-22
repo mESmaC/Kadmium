@@ -424,11 +424,11 @@
 
   /* ---------- the shell ---------- */
   const NAV = [
-    { group: 'Fabric', items: [{ id: 'overview', label: 'Overview' }, { id: 'nodes', label: 'Nodes', count: d => d.nodes }, { id: 'platforms', label: 'Silicon platforms', count: d => d.platforms }, { id: 'models', label: 'Models & shards' }, { id: 'data', label: 'Data & transfers', count: d => d.transfers }] },
+    { group: 'Fabric', items: [{ id: 'overview', label: 'Overview' }, { id: 'nodes', label: 'Nodes', count: d => d.nodes }, { id: 'platforms', label: 'Silicon platforms', count: d => d.platforms }, { id: 'models', label: 'Models & shards' }, { id: 'data', label: 'Storage & transfers', count: d => d.transfers }] },
     { group: 'Work', items: [{ id: 'training', label: 'Training' }, { id: 'rl', label: 'RL & Dream-RSI' }, { id: 'gateway', label: 'Gateway & API' }, { id: 'slices', label: 'Slices', count: d => d.slices }] },
     { group: 'Account', items: [{ id: 'cloud', label: 'Kadmium Cloud' }, { id: 'settings', label: 'Settings' }] }
   ];
-  const TITLES = { overview: 'Overview', nodes: 'Nodes', platforms: 'Silicon platforms & hardware bridges', models: 'Models & shards', data: 'Data & transfers', training: 'Training', rl: 'RL & Dream-RSI', gateway: 'Gateway & API', slices: 'Sub-cluster slices', cloud: 'Kadmium Cloud', settings: 'Settings' };
+  const TITLES = { overview: 'Overview', nodes: 'Nodes', platforms: 'Silicon platforms & hardware bridges', models: 'Models & shards', data: 'Storage bucket & transfers', training: 'Training', rl: 'RL & Dream-RSI', gateway: 'Gateway & API', slices: 'Sub-cluster slices', cloud: 'Kadmium Cloud', settings: 'Settings' };
 
   function Sidebar(props) {
     const { route, overview, workers, companion, counts, theme, open, onClose } = props;
@@ -591,13 +591,13 @@
     const uplinkGbps = nodes.reduce((a, n) => a + (n.network_uplink_gbps || 0), 0);
     const activity = buildActivity(overview, ota);
     const runLivePass = () => act(fetch('/api/v1/pipeline/execute-live').then(r => r.json()).then(d => { C.refresh(C.CLUSTER_PATHS); return d; }), d => 'Executed live TCP pass across ' + (d.live_hops || []).length + ' stages · ' + fmt.num(d.execution.effective_tokens_per_sec, 1) + ' tok/s (' + fmt.ms(d.execution.total_pipeline_latency_ms) + ')', 'ok');
-    const importLocalKtb = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), m => 'Compiled & loaded ' + m.model_id + ' (' + m.page_count_64k + ' × 64 KiB pages) on disk', 'ok');
+    const importLocalKtb = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models', '/api/v1/storage/pool-bucket?bucket=live']) }), m => 'Compiled & loaded ' + m.model_id + ' (' + (m.ktb_page_count || m.page_count_64k || 0) + ' × 64 KiB pages) on disk', 'ok');
     return h(F, null,
       h('div', { className: 'cr-stats' },
         h(Stat, { label: 'Nodes', value: resident, unit: '/ ' + nodes.length, meta: (yielded ? yielded + ' yielded · ' : '') + (offline ? offline + ' offline · ' : '') + cloudNodes + ' cloud · ' + ((workers && workers.live_worker_count) || 0) + ' live tcp' }),
         h(Stat, { label: 'Compute', value: fmt.num(totalFp16, 1), unit: 'FP16 TFLOPS', meta: (totalFp8 > totalFp16 ? fmt.num(totalFp8, 1) + ' FP8/INT8 TF · ' : '') + fmt.num(totalTops, 1) + ' FP4/INT4 TOPS · ' + (totalNpuTops > 0 ? fmt.num(totalNpuTops, 0) + ' NPU TOPS · ' : '') + fmt.num(totalCpuTf, 1) + ' CPU TF' }),
         h(Stat, { label: 'Memory & storage', value: fmt.gb(fastMemGb + sysRamGb), meta: fmt.gb(fastMemGb) + ' fast VRAM/UMA · ' + fmt.gb(sysRamGb) + ' RAM · ' + fmt.gb(nvmeGb) + ' NVMe' }),
-        h(Stat, { label: 'Local .ktb banks', value: importedBanks.length, unit: importedBanks.length === 1 ? 'bank' : 'banks', meta: importedBanks.length ? importedBanks[importedBanks.length - 1].model_id + ' (' + importedBanks[importedBanks.length - 1].page_count_64k + ' × 64K pages)' : fmt.gb(nvmeGb) + ' local NVMe pool · 0 imported' }),
+        h(Stat, { label: 'Storage bucket', value: fmt.gb(nvmeGb * 0.85), meta: 'kdm://pool-bucket/ · ' + fmt.gb(fastMemGb * 0.1 + sysRamGb * 0.2) + ' wire RAM · ' + importedBanks.length + ' .ktb bank' + (importedBanks.length === 1 ? '' : 's') }),
         h(Stat, { label: 'Network & RTT', value: fmt.ms(avgRtt), meta: 'min ' + fmt.ms(minRtt) + ' · est ' + fmt.num(estBwGbps, 1) + ' Gbps mesh · ' + fmt.num(uplinkGbps, 1) + ' Gbps uplink' }),
         h(Stat, { label: 'Inference', value: !modelLoaded ? 'Idle' : (measuredTps ? fmt.num(measuredTps, 1) : 'Staged'), unit: (modelLoaded && measuredTps) ? 'tok/s' : '', meta: !modelLoaded ? 'No model loaded · ' + fmt.gb(fastMemGb) + ' VRAM/UMA ready' : (measuredTps ? inf.model_id + ' · ' + overview.executed_inference_requests + ' passes · ' + fmt.ms(measuredLatMs || 0) : inf.model_id + ' · ' + inf.total_layers + ' layers (' + fmt.gb(inf.total_model_weight_gb) + ')'), tone: modelLoaded ? 'cadmium' : '' }),
         h(Stat, { label: 'Training', value: trainActive ? fmt.num(tt.current_step) : 'Idle', unit: trainActive && tt.total_steps ? '/ ' + fmt.num(tt.total_steps) : '', meta: trainActive ? tt.model_id + ' · loss ' + fmt.num(tt.loss, 3) + ' · lr ' + tt.learning_rate : 'No training job running' }),
@@ -644,6 +644,7 @@
             h('div', { className: 'kd-stack', style: { gap: '8px' } },
               h(K.Button, { variant: 'primary', icon: 'rods', onClick: () => go('nodes/add') }, 'Add a node'),
               h(K.Button, { icon: 'bolt', onClick: () => act(post('/api/v1/platforms/attach', { family: 'all-live' }), r => 'Attached ' + (r.attached_hostnames.join(', ') || 'live silicon') + (r.live_silicon_verified ? ' (live silicon verified)' : ''), 'ok') }, 'Auto-attach live silicon (M4 / CM4 / K230)'),
+              h(K.Button, { onClick: () => go('data/bucket') }, 'Storage bucket (kdm://pool-bucket/)'),
               h(K.Button, { onClick: () => go('platforms') }, 'Silicon platforms & bridges (26 SKUs)'),
               h(K.Button, { variant: liveOnly ? 'primary' : 'quiet', onClick: () => act(post('/api/v1/cluster/mode', { live_only: !liveOnly }, { into: '/api/v1/cluster/workers' }), liveOnly ? 'Switched to hybrid fleet (demo + live hardware)' : 'Switched to live session hardware only', 'ok') }, liveOnly ? 'Session: Live hardware only' : 'Session: Hybrid demo fleet'),
               h(K.Button, { onClick: () => scenario('gaming_mode', 'Desktop yielded to its owner', 'warn') }, 'Yield the desktop (gaming mode)'),
@@ -1104,35 +1105,133 @@
 
   /* ============================ DATA & TRANSFERS ============================ */
   function Data(props) {
-    const { overview, workers } = props;
+    const { overview, workers, route } = props;
     const integ = useApi('/api/v1/integrations');
-    const [bucketTier, setBucketTier] = useState('small');
-    const bucket = useApi('/api/v1/storage/pool-bucket?bucket=' + bucketTier);
+    const [bucketTier, setBucketTier] = useState('live');
+    const bucketPath = '/api/v1/storage/pool-bucket?bucket=' + bucketTier;
+    const bucket = useApi(bucketPath);
     const [stream, setStream] = useState(null);
-    const [tab, setTab] = useState('transfers');
+    const [tab, setTab] = useState((route && route.sub) || 'bucket');
+    const [objUri, setObjUri] = useState('kdm://pool-bucket/workspace/custom-weights.ktb');
+    const [objName, setObjName] = useState('Custom Sharded Weight Bank (.ktb)');
+    const [objKind, setObjKind] = useState('Sharded Model Weight Bank (.ktb)');
+    const [objSize, setObjSize] = useState('4.5');
+    useEffect(() => { if (route && route.sub) setTab(route.sub); }, [route && route.sub]);
     if (!overview) return Loading();
     const liveOnly = workers && workers.live_only_mode;
     const tx = overview.fts3_transfers || [];
     const totalGb = tx.reduce((s, t) => s + (t.volume_gb || 0), 0);
-    const vault = overview.nodes.find(n => (n.roles || []).indexOf('StorageVault') >= 0);
     const runStream = () => act(post('/api/v1/fts3/stream', {}), r => 'Streamed ' + r.shard_name + ' · ' + fmt.num(r.ktb_total_bytes / 1024, 0) + ' KiB · ' + fmt.num(r.aggregate_goodput_mbps, 0) + ' Mbps · ' + r.target_receipts.length + ' pages verified').then(setStream);
+    const putBucketObj = body => act(post('/api/v1/storage/pool-bucket/object', body, { into: '/api/v1/storage/pool-bucket?bucket=live', refresh: C.CLUSTER_PATHS.concat([bucketPath]) }), r => { setBucketTier('live'); return 'Updated kdm://pool-bucket/ · ' + (r.bucket_objects || []).length + ' object(s) across ' + r.total_participating_nodes + ' node(s)'; }, 'ok');
+    const addBucketAnchor = body => act(post('/api/v1/storage/pool-bucket/anchor', body, { into: '/api/v1/storage/pool-bucket?bucket=live', refresh: [bucketPath] }), r => { setBucketTier('live'); return 'Attached grounding anchor · ' + (r.bucket_grounding.configured_anchors || []).length + ' active anchor(s)'; }, 'ok');
+    const compileAndStageKtb = () => act(post('/api/v1/models/import', { model_id: overview.inference_plan.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models', bucketPath]) }), m => 'Compiled & staged ' + m.model_id + ' (' + (m.ktb_page_count || m.page_count_64k || 0) + ' × 64 KiB pages) into kdm://pool-bucket/', 'ok');
     const hf = (!liveOnly && integ) ? integ.sample_hf_pull_plan : null, gh = (!liveOnly && integ) ? integ.sample_github_ci_run : null;
+    const ec = bucket && bucket.erasure_coding_verification;
+    const wc = bucket && bucket.wire_token_carousel;
+    const bg = bucket && bucket.bucket_grounding;
+    const objs = (bucket && bucket.bucket_objects) || [];
+    const contribs = (bucket && bucket.node_contributions_sample) || [];
+    const anchors = (bg && bg.configured_anchors) || [];
+    const logicalSum = objs.reduce((s, o) => s + (o.logical_size_gb || 0), 0);
+    const physSum = objs.reduce((s, o) => s + (o.physical_erasure_coded_gb || 0), 0);
     return h(F, null,
       h('div', { className: 'cr-stats' },
-        h(Stat, { label: 'Vault', value: vault ? vault.hostname : '—', meta: vault ? fmt.gb(vault.memory.nvme_cache_gb) + ' nvme · ' + vault.memory.nvme_read_bw_gbps + ' GB/s · seeds every .ktb bank' : '—' }),
-        h(Stat, { label: 'Storage bucket', value: bucket ? fmt.words(bucket.bucket_tier).split(' ')[0] : '—', meta: bucket ? fmt.gb(bucket.usable_effective_gb) + ' usable of ' + fmt.gb(bucket.allocated_raw_gb) + ' · ' + bucket.replication_factor + '× rep' : '—' }),
-        h(Stat, { label: 'Transfers', value: tx.length ? tx.length : '—', meta: tx.length ? fmt.gb(totalGb) + ' this epoch · ' + tx.filter(t => t.state === 'CompletedReady').length + ' complete' : '—', tone: tx.length ? 'cadmium' : '' }),
-        h(Stat, { label: 'Weights served', value: overview.active_model_loaded ? fmt.gb(overview.inference_plan.total_model_weight_gb) : '0.0 GB', meta: overview.active_model_loaded ? (overview.inference_plan.model_id + ' · 64 KiB pages') : 'No model currently loaded' }),
-        h(Stat, { label: 'Local .ktb banks', value: (overview.imported_models || []).length, unit: 'on disk', meta: (overview.imported_models || []).length ? overview.imported_models[overview.imported_models.length - 1].model_id + ' (' + overview.imported_models[overview.imported_models.length - 1].page_count_64k + ' pages)' : (hf ? fmt.gb(hf.node_pulls.reduce((s, p) => s + p.selective_download_gb, 0)) + ' HF selective' : '0 imported') })),
-      h(K.Tabs, { label: 'Data views', value: tab, onChange: setTab, items: [{ id: 'transfers', label: 'Transfers', count: tx.length || undefined }, { id: 'bucket', label: 'Storage bucket' }, { id: 'sources', label: 'Sources', count: integ ? integ.connectors.length : undefined }, { id: 'hf', label: 'Hugging Face pull' }, { id: 'gh', label: 'GitHub worlds' }] }),
-      tab === 'bucket' ? h(Panel, { title: 'Decentralized storage pool bucket', sub: bucket ? bucket.bucket_tier + ' · HRW Rendezvous + RS(' + bucket.reed_solomon_data_shards + ',' + bucket.reed_solomon_parity_shards + ') erasure coding' : 'loading…', tools: h(Seg, { value: bucketTier, onChange: setBucketTier, items: [{ id: 'small', label: 'Small (100G)' }, { id: 'medium', label: 'Medium (500G)' }, { id: 'large', label: 'Large (1T)' }, { id: 'enterprise', label: 'Enterprise (10T+)' }] }), flush: true },
-        bucket ? h(Table, { rows: bucket.node_allocations || [], rowKey: a => a.node_id, cols: [
-          { key: 'n', label: 'node', render: a => h('span', { className: 'sans', style: { fontWeight: 600 } }, a.hostname) },
-          { key: 'c', label: 'capacity', num: true, render: a => fmt.gb(a.nvme_capacity_gb) },
-          { key: 'a', label: 'allocated', num: true, render: a => fmt.gb(a.allocated_pool_gb) },
-          { key: 'p', label: 'primary shards', num: true, render: a => a.primary_shards_hosted },
-          { key: 'r', label: 'parity / replica', num: true, render: a => a.replica_and_parity_shards_hosted },
-          { key: 'bw', label: 'seeding bw', num: true, render: a => fmt.num(a.seeding_bandwidth_gbps, 2) + ' Gbps' }] }) : Loading()) : null,
+        h(Stat, { label: 'Storage bucket', value: bucket ? fmt.gb(bucket.total_pooled_disk_capacity_gb) : '—', meta: bucket ? bucket.bucket_uri + ' · ' + bucket.total_participating_nodes + ' nodes · ' + fmt.gb(bucket.total_pooled_disk_capacity_gb / (ec ? ec.storage_overhead_ratio : 1.25)) + ' usable RS(' + (ec ? ec.data_shards_k + ',' + ec.parity_shards_m : '8,2') + ')' : '—', tone: 'cadmium' }),
+        h(Stat, { label: 'Wire RAM carousel', value: bucket ? fmt.gb(bucket.total_wire_ram_carousel_gb) : '—', meta: wc ? wc.decentralized_pool_carousel_gbps + ' Gbps P2P (' + wc.bandwidth_scaling_multiplier_x + '× vs NAS) · ' + wc.wire_carousel_data_stall_ms_per_step + ' ms stall' : '—' }),
+        h(Stat, { label: 'Bucket objects', value: objs.length, unit: objs.length === 1 ? 'object' : 'objects', meta: objs.length ? fmt.gb(logicalSum) + ' logical → ' + fmt.gb(physSum) + ' EC (' + (ec ? ec.storage_overhead_ratio + '×' : '1.25×') + ')' : '0 staged in kdm://pool-bucket/' }),
+        h(Stat, { label: 'Bucket grounding', value: anchors.length, unit: anchors.length === 1 ? 'anchor' : 'anchors', meta: bg ? bg.steady_state_p2p_swarm_read_share_pct + '% P2P · -' + bg.p99_tail_read_latency_reduction_pct + '% p99 · 50% drop Err=' + bg.grounded_recovery_max_byte_diff + 'B' : '—' }),
+        h(Stat, { label: 'Transfers & .ktb', value: (overview.imported_models || []).length, unit: 'local .ktb', meta: tx.length ? tx.length + ' FTS3 transfers (' + fmt.gb(totalGb) + ')' : 'Aggregate disk read ' + (bucket ? bucket.aggregate_disk_read_bw_gbps + ' GB/s' : '—') })),
+      h(K.Tabs, { label: 'Data views', value: tab, onChange: setTab, items: [{ id: 'bucket', label: 'Storage bucket (kdm://pool-bucket/)', count: objs.length || undefined }, { id: 'transfers', label: 'FTS3 transfers', count: tx.length || undefined }, { id: 'sources', label: 'Sources', count: integ ? integ.connectors.length : undefined }, { id: 'hf', label: 'Hugging Face pull' }, { id: 'gh', label: 'GitHub worlds' }] }),
+      tab === 'bucket' ? h(F, null,
+        h(Panel, {
+            title: 'Decentralized pool storage bucket · kdm://pool-bucket/',
+            sub: bucket ? (bucketTier === 'live' ? 'Live cluster (' + bucket.total_participating_nodes + ' active nodes)' : bucket.total_participating_nodes + '-node scale topology') + ' · Capacity-Weighted HRW Rendezvous + Systematic RS(' + ec.data_shards_k + ',' + ec.parity_shards_m + ') (' + ec.storage_overhead_ratio + '× overhead · ' + ec.reconstruction_max_byte_diff + ' B recovery error)' : 'loading…',
+            tools: h(Seg, { value: bucketTier, onChange: setBucketTier, items: [{ id: 'live', label: 'Live Cluster (' + overview.nodes.length + ')' }, { id: 'small', label: '10-Node Pool' }, { id: 'large', label: '50-Node Pool' }, { id: 'enterprise', label: '100-Node Pool' }] })
+          },
+          h('div', { className: 'cr-rowwrap', style: { justifyContent: 'space-between', marginBottom: '12px' } },
+            h('div', { className: 'cr-rowwrap' },
+              h(K.Button, { size: 'sm', variant: 'primary', icon: 'bolt', onClick: () => putBucketObj({ preset: 'active-model' }) }, 'Stage active model (' + overview.inference_plan.model_id + ')'),
+              h(K.Button, { size: 'sm', onClick: compileAndStageKtb }, 'Compile & stage local .ktb'),
+              h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => putBucketObj({ preset: 'dataset-stream' }) }, '+ Token carousel dataset (.ktb)'),
+              h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => putBucketObj({ preset: 'shared-workspace' }) }, '+ Shared RAG & eval bundle')),
+            ec ? Badges([
+              h(K.Badge, { key: 'ec', tone: ec.exact_bit_identical_recovery ? 'ok' : 'danger', dot: true }, 'RS(' + ec.data_shards_k + '+' + ec.parity_shards_m + ') verified · ' + ec.reconstruction_max_byte_diff + ' B diff'),
+              bg ? h(K.Badge, { key: 'gr', tone: bg.grounded_survives_mass_dropout ? 'local' : 'warn' }, '50% mass-dropout survival: ' + (bg.grounded_survives_mass_dropout ? 'PASS (0 B diff)' : 'FAIL')) : null
+            ]) : null),
+          h('div', { className: 'cr-rowwrap', style: { alignItems: 'flex-end', padding: '10px 12px', background: 'var(--bg-2)', borderRadius: '6px', border: '1px solid var(--line)', marginBottom: '14px' } },
+            h(K.Input, { label: 'Object URI (kdm://pool-bucket/...)', mono: true, value: objUri, onChange: e => setObjUri(e.target.value), style: { minWidth: '260px', flex: 2 } }),
+            h(K.Input, { label: 'Display name', value: objName, onChange: e => setObjName(e.target.value), style: { minWidth: '200px', flex: 2 } }),
+            h('div', { className: 'kd-field' },
+              h('label', { className: 'kd-field-label' }, 'Object kind'),
+              h('select', { className: 'cr-select', value: objKind, onChange: e => setObjKind(e.target.value) },
+                ['Sharded Model Weight Bank (.ktb)', 'Wire-Carousel Token Dataset (.ktb)', 'Distributed Training Checkpoint (.ktb)', 'Shared Workspace Object (.ktb)'].map(k => h('option', { key: k, value: k }, k)))),
+            h(K.Input, { label: 'Logical GiB', mono: true, value: objSize, onChange: e => setObjSize(e.target.value), style: { width: '96px' } }),
+            h(K.Button, { variant: 'primary', icon: 'plus', onClick: () => putBucketObj({ object_uri: objUri, display_name: objName, object_kind: objKind, logical_size_gb: parseFloat(objSize) || 4.5, data_shards_k: 8, parity_shards_m: 2 }) }, 'Put object')),
+          objs.length ? h(Table, {
+            rows: objs,
+            rowKey: o => o.object_uri,
+            cols: [
+              { key: 'u', label: 'object uri', render: o => h('div', null, h('div', { style: { fontWeight: 600, color: 'var(--cadmium-text)' } }, o.object_uri), h('div', { className: 'cr-muted sans', style: { fontSize: '12px' } }, o.display_name)) },
+              { key: 'k', label: 'kind', render: o => h(K.Badge, { tone: o.object_kind.indexOf('Model') >= 0 || o.object_kind.indexOf('Compiled') >= 0 ? 'local' : 'neutral' }, o.object_kind) },
+              { key: 'sz', label: 'logical → ec physical', num: true, render: o => fmt.gb(o.logical_size_gb) + ' → ' + fmt.gb(o.physical_erasure_coded_gb) },
+              { key: 'ec', label: 'stripe · 64m blocks', num: true, render: o => 'RS(' + o.data_shards_k + ',' + o.parity_shards_m + ') · ' + fmt.num(o.total_64mb_superblocks, 0) },
+              { key: 'bw', label: 'parallel read', num: true, render: o => fmt.num(o.parallel_read_bandwidth_gbps, 1) + ' Gbps' },
+              { key: 'm', label: 'merkle root', render: o => fmt.hex(o.merkle_root_fnv64, 12) },
+              { key: 'h', label: 'hrw stripe holders', cls: 'wrap', render: o => Badges((o.sample_stripe_holder_nodes || []).map(n => h(K.Badge, { key: n }, strip(n)))) },
+              { key: 'act', label: '', render: o => bucketTier === 'live' ? h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => putBucketObj({ delete_uri: o.object_uri }) }, 'Remove') : null }
+            ]
+          }) : h(Empty, {
+            action: h('div', { className: 'cr-rowwrap', style: { justifyContent: 'center' } },
+              h(K.Button, { size: 'sm', variant: 'primary', onClick: () => putBucketObj({ preset: 'active-model' }) }, 'Stage ' + overview.inference_plan.model_id + ' (' + fmt.gb(overview.inference_plan.total_model_weight_gb) + ') into kdm://pool-bucket/'),
+              h(K.Button, { size: 'sm', variant: 'ghost', onClick: compileAndStageKtb }, 'Compile & stage local .ktb bank'))
+          }, 'No objects are currently staged in your live cluster bucket (kdm://pool-bucket/). Stage your active model, compile a local .ktb weight bank, or put a custom object above.')),
+        h('div', { className: 'cr-two' },
+          h(Panel, { title: 'Node storage contributions', sub: contribs.length + ' participating nodes · 85% NVMe/UFS + 10–20% Wire RAM pledged', flush: true },
+            bucket ? h(Table, {
+              rows: contribs,
+              rowKey: c => c.node_id,
+              cols: [
+                { key: 'n', label: 'node', render: c => h('span', { className: 'sans', style: { fontWeight: 600 } }, c.hostname) },
+                { key: 'k', label: 'device kind', cls: 'muted', render: c => fmt.words(c.device_kind) },
+                { key: 'd', label: 'pledged disk', num: true, render: c => fmt.gb(c.pledged_disk_gb) },
+                { key: 'r', label: 'wire ram', num: true, render: c => fmt.gb(c.pledged_wire_ram_gb) },
+                { key: 'dbw', label: 'disk read', num: true, render: c => fmt.num(c.disk_read_bw_gbps, 1) + ' GB/s' },
+                { key: 'ubw', label: 'seed uplink', num: true, render: c => fmt.num(c.seed_uplink_gbps, 1) + ' Gbps' },
+                { key: 'sh', label: 'shards', num: true, render: c => h(K.Badge, { tone: c.hosted_shard_count > 0 ? 'local' : 'neutral' }, c.hosted_shard_count) }
+              ]
+            }) : Loading()),
+          h('div', { className: 'kd-stack', style: { gap: 'var(--space-5)' } },
+            h(Panel, {
+                title: 'Bucket grounding anchors',
+                sub: 'write-behind merkle delta journal · survives >m correlated node dropouts',
+                flush: true,
+                tools: h('div', { className: 'cr-rowwrap' },
+                  h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => addBucketAnchor({ anchor_kind: 'LocalNasZfsVault', anchor_uri: 'nas://local-truenas/zpool-kadmium-ground', capacity_tb: 8.0, sustained_bandwidth_gbps: 10.0 }) }, '+ Local NAS ZFS'),
+                  h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => addBucketAnchor({ anchor_kind: 'CloudObjectBucketS3R2', anchor_uri: 'r2://kadmium-ground-vault/merkle-deltas', capacity_tb: 50.0, sustained_bandwidth_gbps: 25.0 }) }, '+ Cloud S3 / R2'))
+              },
+              anchors.length ? h(Table, {
+                rows: anchors,
+                rowKey: a => a.anchor_id,
+                cols: [
+                  { key: 'u', label: 'anchor uri', render: a => h('span', { style: { fontWeight: 600 } }, a.anchor_uri) },
+                  { key: 'k', label: 'kind', render: a => h(K.Badge, { tone: String(a.anchor_kind).indexOf('Cloud') >= 0 ? 'cloud' : 'local' }, fmt.words(a.anchor_kind)) },
+                  { key: 'p', label: 'sync policy', cls: 'muted', render: a => fmt.words(a.sync_policy) },
+                  { key: 'c', label: 'capacity', num: true, render: a => fmt.num(a.capacity_tb, 2) + ' TiB' },
+                  { key: 'bw', label: 'bw', num: true, render: a => fmt.num(a.sustained_bandwidth_gbps, 1) + ' Gbps' },
+                  { key: 'm', label: 'merkle', num: true, render: a => fmt.pct(a.merkle_grounded_coverage_pct, 1) }
+                ]
+              }) : Loading()),
+            wc && ec ? h(Panel, { title: 'Wire-resident token carousel & RS(k,m) telemetry', sub: 'living on the wire · zero central NAS bottleneck' },
+              h(KV, {
+                items: [
+                  ['bucket uri', bucket.bucket_uri],
+                  ['wire ring buffer', fmt.gb(wc.active_wire_ring_buffer_gb) + ' pinned RAM/UMA across ' + wc.pool_node_count + ' nodes'],
+                  ['carousel vs central NAS', wc.decentralized_pool_carousel_gbps + ' Gbps P2P vs ' + wc.centralized_nas_bottleneck_gbps + ' Gbps NAS (' + wc.bandwidth_scaling_multiplier_x + '×)'],
+                  ['step data I/O stall', wc.centralized_data_stall_ms_per_step + ' ms → ' + wc.wire_carousel_data_stall_ms_per_step + ' ms (' + wc.pre_staged_on_wire_hit_rate_pct + '% pre-staged on wire)'],
+                  ['erasure coding', 'RS(k=' + ec.data_shards_k + ', m=' + ec.parity_shards_m + ') · ' + ec.storage_overhead_ratio + '× overhead · max byte diff = ' + ec.reconstruction_max_byte_diff + ' B'],
+                  ['mass-dropout resilience', '50% node loss: ungrounded=' + String(bg.ungrounded_survives_mass_dropout) + ' → grounded=' + String(bg.grounded_survives_mass_dropout) + ' (err=' + bg.grounded_recovery_max_byte_diff + ' B)']
+                ]
+              })) : null))) : null,
       tab === 'transfers' ? h(F, null,
         h(Panel, { title: 'Third-party transfers', sub: 'fts3 · peer to peer · the coordinator never relays bytes', flush: true, tools: h(K.Button, { size: 'sm', variant: 'primary', onClick: runStream }, 'Stream a .ktb shard now') },
           h(Table, { rows: tx, rowKey: t => t.transfer_id, cols: [

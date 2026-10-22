@@ -240,6 +240,7 @@
     var exlResultState = React.useState(null), exlResult = exlResultState[0], setExlResult = exlResultState[1];
     var kvMigState = React.useState(null), kvMig = kvMigState[0], setKvMig = kvMigState[1];
     var ftsStreamState = React.useState(null), ftsStream = ftsStreamState[0], setFtsStream = ftsStreamState[1];
+    var bucketState = React.useState(null), bucket = bucketState[0], setBucket = bucketState[1];
     var busyState = React.useState(false), busy = busyState[0], setBusy = busyState[1];
 
     function notify(msg) {
@@ -257,6 +258,7 @@
       fetch('/api/v1/supply/marketplace').then(function (r) { return r.json(); }).then(setSupply);
       fetch('/api/v1/companion/pairing').then(function (r) { return r.json(); }).then(setPairing);
       fetch('/api/v1/cloud-shield/watcher').then(function (r) { return r.json(); }).then(setWatcher);
+      fetch('/api/v1/storage/pool-bucket?bucket=live').then(function (r) { return r.json(); }).then(setBucket);
     }
 
     function runLivePipelinePass() {
@@ -393,7 +395,20 @@
         body: JSON.stringify({ model_id: impModel, format_hint: impFormat, start_layer: 0, end_layer: 3 })
       }).then(function (r) { return r.json(); }).then(function (d) {
         setImpResult(d);
+        fetch('/api/v1/storage/pool-bucket?bucket=live').then(function (r) { return r.json(); }).then(setBucket);
         notify('Compiled 64 KiB page-aligned .ktb bank: ' + d.compiled_ktb_path + ' (Merkle ' + hex(d.merkle_root_fnv64) + ')');
+      }).finally(function () { setBusy(false); });
+    }
+
+    function stageToPoolBucket(preset) {
+      setBusy(true);
+      fetch('/api/v1/storage/pool-bucket/object', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preset: preset })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        setBucket(d);
+        notify('Staged object into ' + d.bucket_uri + ' (' + (d.bucket_objects || []).length + ' total objects across ' + d.total_participating_nodes + ' nodes)');
       }).finally(function () { setBusy(false); });
     }
 
@@ -720,6 +735,34 @@
                 h('div', { style: { color: 'var(--ok)' } }, '✓ Footprint: ' + exlResult.original_fp16_size_gb.toFixed(1) + ' GB (FP16) → ' + exlResult.exl3_ktb_size_gb.toFixed(1) + ' GB (EXL3 .ktb) [-' + exlResult.vram_savings_vs_q4k_gb.toFixed(1) + ' GB vs Q4_K]'),
                 h('div', null, '• Fused Viterbi SNR: ' + exlResult.exl3_viterbi_snr_db.toFixed(2) + ' dB (+' + exlResult.snr_gain_over_scalar_db.toFixed(2) + ' dB over scalar) · FWHT Peak/RMS ' + exlResult.pre_fwht_peak_to_rms.toFixed(2) + '× → ' + exlResult.post_fwht_peak_to_rms.toFixed(2) + '×'),
                 h('div', null, '• Cluster Schedule: ' + exlResult.node_conversion_shards.length + ' nodes (~' + exlResult.estimated_cluster_conversion_minutes.toFixed(1) + ' min total)')) : null)),
+
+          bucket ? h('section', { className: 'panel' },
+            h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
+              h('div', null,
+                h('p', { className: 'eyebrow' }, 'Decentralized Pool Storage Bucket · ' + bucket.bucket_uri + ' (' + bucket.total_participating_nodes + ' nodes)'),
+                h('div', { className: 'title' }, bucket.total_pooled_disk_capacity_gb.toFixed(1) + ' GB Pooled NVMe/UFS · ' + bucket.total_wire_ram_carousel_gb.toFixed(1) + ' GB Wire RAM Carousel · RS(' + bucket.erasure_coding_verification.data_shards_k + ',' + bucket.erasure_coding_verification.parity_shards_m + ')')),
+              h('div', { className: 'kd-row', style: { gap: '8px', flexWrap: 'wrap' } },
+                h(K.Button, { size: 'sm', variant: 'primary', disabled: busy, onClick: function () { stageToPoolBucket('active-model'); } }, 'Stage Active Model .ktb'),
+                h(K.Button, { size: 'sm', variant: 'quiet', disabled: busy, onClick: function () { stageToPoolBucket('dataset-stream'); } }, '+ Token Carousel Dataset'),
+                h(K.Button, { size: 'sm', variant: 'quiet', disabled: busy, onClick: function () { stageToPoolBucket('shared-workspace'); } }, '+ Shared Workspace Bundle'))),
+            (bucket.bucket_objects && bucket.bucket_objects.length) ? h('div', { className: 'table-wrap' },
+              h('table', { className: 'mono-table' },
+                h('thead', null, h('tr', null,
+                  h('th', null, 'OBJECT URI'),
+                  h('th', null, 'KIND'),
+                  h('th', null, 'LOGICAL → EC PHYSICAL'),
+                  h('th', null, 'PARALLEL READ'),
+                  h('th', null, 'MERKLE (FNV64)'),
+                  h('th', null, 'HRW STRIPE HOLDERS'))),
+                h('tbody', null, bucket.bucket_objects.map(function (o) {
+                  return h('tr', { key: o.object_uri },
+                    h('td', { style: { fontWeight: 600, color: 'var(--cadmium-text)' } }, o.object_uri),
+                    h('td', null, o.object_kind),
+                    h('td', null, o.logical_size_gb.toFixed(2) + ' GB → ' + o.physical_erasure_coded_gb.toFixed(2) + ' GB'),
+                    h('td', null, o.parallel_read_bandwidth_gbps.toFixed(1) + ' Gbps'),
+                    h('td', null, hex(o.merkle_root_fnv64)),
+                    h('td', null, (o.sample_stripe_holder_nodes || []).join(', ')));
+                })))) : h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } }, '0 objects currently staged in kdm://pool-bucket/. Compile a local .ktb bank above or click "Stage Active Model .ktb" to populate your live cluster storage bucket.')) : null,
 
           execReport ? h('section', { className: 'panel' },
             h('p', { className: 'eyebrow' }, 'Live pipeline execution trace · Top-4 MoE router + Speculative draft verification'),

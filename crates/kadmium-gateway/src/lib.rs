@@ -7,7 +7,10 @@ use kadmium_core::{
     HardwareNode, LiveHardwareProfiler, ModelSpec, NodeTrustTier, PoliteState, SupplyLeasePolicy,
     SupplyMarketplaceSnapshot, SupplySettlementEngine, WorkloadKind, sample_personal_cluster,
 };
-use kadmium_data::{Fts3TransferScheduler, ImportedModelManifest, ThirdPartyTransferJob};
+use kadmium_data::{
+    Fts3TransferScheduler, GroundingAnchorTarget, ImportedModelManifest, PoolBucketObjectEntry,
+    ThirdPartyTransferJob,
+};
 use kadmium_network::{
     CoordinatorFailoverQuorum, DEFAULT_KADMIUM_RUNTIME_VERSION, FleetUpdateManifest,
     FleetUpdatePushSummary, JoinTicket, LiveClusterWorkersOverview, LiveWorkerRegistration,
@@ -148,6 +151,10 @@ pub struct GatewayState {
     pub last_fts3_stream_report: Option<LiveFts3SwarmStreamReport>,
     pub last_kv_migration_report: Option<LiveKvCacheMigrationReport>,
     pub imported_models: Vec<ImportedModelManifest>,
+    /// User-staged or checkpoint objects inside `kdm://pool-bucket/...`.
+    pub bucket_objects: Vec<PoolBucketObjectEntry>,
+    /// User-configured persistent grounding anchors (`nas://`, `kdm-vault://`, `s3://`, `r2://`).
+    pub bucket_anchors: Vec<GroundingAnchorTarget>,
     /// True only when a model has been explicitly loaded/selected, imported as `.ktb`, or executed in this session.
     pub active_model_loaded: bool,
     /// True when the user has explicitly selected a model ID via `/api/v1/cluster/model` or `/api/v1/models/import`.
@@ -171,6 +178,10 @@ pub struct PersistentClusterStateJournal {
     pub active_ktb_merkle_root_fnv64: u64,
     pub last_checkpoint_step: u64,
     pub imported_models: Vec<ImportedModelManifest>,
+    #[serde(default)]
+    pub bucket_objects: Vec<PoolBucketObjectEntry>,
+    #[serde(default)]
+    pub bucket_anchors: Vec<GroundingAnchorTarget>,
 }
 
 impl Default for GatewayState {
@@ -234,6 +245,8 @@ impl GatewayState {
             last_fts3_stream_report: None,
             last_kv_migration_report: None,
             imported_models: Vec::new(),
+            bucket_objects: Vec::new(),
+            bucket_anchors: Vec::new(),
             active_model_loaded: false,
             user_selected_model: false,
             executed_inference_requests: 0,
@@ -259,6 +272,8 @@ impl GatewayState {
             active_ktb_merkle_root_fnv64: self.active_ktb_merkle_root_fnv64,
             last_checkpoint_step: self.last_checkpoint_step,
             imported_models: self.imported_models.clone(),
+            bucket_objects: self.bucket_objects.clone(),
+            bucket_anchors: self.bucket_anchors.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&journal)
             .map_err(|e| format!("Failed to serialize state journal: {e}"))?;
@@ -1220,5 +1235,40 @@ mod tests {
         let attach_parsed: PlatformAttachResponse = serde_json::from_str(&attach_json).unwrap();
         assert_eq!(attach_parsed.attached_family, "all-live");
         assert!(!attach_parsed.overview.nodes.is_empty());
+
+        // 4. Verify Storage Bucket live report, object staging, and grounding anchor endpoints
+        let bucket_live_json = http_get("/api/v1/storage/pool-bucket?bucket=live");
+        let bucket_live: kadmium_data::DecentralizedStoragePoolReport =
+            serde_json::from_str(&bucket_live_json).unwrap();
+        assert_eq!(bucket_live.bucket_uri, "kdm://pool-bucket/");
+        assert!(bucket_live.total_participating_nodes >= 1);
+        assert!(bucket_live.total_pooled_disk_capacity_gb > 0.0);
+
+        let put_obj_json = http_post(
+            "/api/v1/storage/pool-bucket/object",
+            r#"{"preset":"active-model"}"#,
+        );
+        let after_put: kadmium_data::DecentralizedStoragePoolReport =
+            serde_json::from_str(&put_obj_json).unwrap();
+        assert!(!after_put.bucket_objects.is_empty());
+
+        let add_anchor_json = http_post(
+            "/api/v1/storage/pool-bucket/anchor",
+            r#"{"anchor_kind":"LocalNasZfsVault","anchor_uri":"nas://local-truenas/zpool-ground","capacity_tb":8.0,"sustained_bandwidth_gbps":10.0}"#,
+        );
+        let after_anchor: kadmium_data::DecentralizedStoragePoolReport =
+            serde_json::from_str(&add_anchor_json).unwrap();
+        assert!(
+            after_anchor
+                .bucket_grounding
+                .configured_anchors
+                .iter()
+                .any(|a| a.anchor_uri == "nas://local-truenas/zpool-ground")
+        );
+
+        let bucket_scale_json = http_get("/api/v1/storage/pool-bucket?bucket=enterprise");
+        let bucket_scale: kadmium_data::DecentralizedStoragePoolReport =
+            serde_json::from_str(&bucket_scale_json).unwrap();
+        assert_eq!(bucket_scale.total_participating_nodes, 100);
     }
 }
