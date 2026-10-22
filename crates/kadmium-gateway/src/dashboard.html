@@ -243,7 +243,10 @@
   function shortLabel(hostname) {
     const id = String(hostname || '');
     if (/main|rig|desktop/i.test(id)) return 'pc';
-    if (/mac/i.test(id)) return 'mac';
+    if (/m4|apple|mac|ipad/i.test(id)) return 'm4';
+    if (/cm4|reterminal|turing|uconsole|waveshare/i.test(id)) return 'cm4';
+    if (/switch|tegra|mariko|erista|jetson|shield/i.test(id)) return 'tegra';
+    if (/phone-farm|sd8/i.test(id)) return 'farm';
     if (/zephyrus/i.test(id)) return 'lap-1';
     if (/legion/i.test(id)) return 'lap-2';
     if (/thinkpad/i.test(id)) return 'old';
@@ -343,6 +346,7 @@
   const NAV_ICONS = {
     overview: 'M4 7h16M8 4v10M12 4v16M16 4v8',
     nodes: 'M3 5h18v11H3zM8 20h8M12 16v4',
+    platforms: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM17 14v6M14 17h6',
     models: 'M5 6h14M12 3v15M8 6v7M16 6v9',
     training: 'M4 18L10 11l4 4 6-8M4 4v16h16',
     rl: 'M6 4v6a4 4 0 0 0 4 4h4M14 14l3 3m-3-3l3-3M6 10h0M18 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4z',
@@ -415,11 +419,11 @@
 
   /* ---------- the shell ---------- */
   const NAV = [
-    { group: 'Fabric', items: [{ id: 'overview', label: 'Overview' }, { id: 'nodes', label: 'Nodes', count: d => d.nodes }, { id: 'models', label: 'Models & shards' }, { id: 'data', label: 'Data & transfers', count: d => d.transfers }] },
+    { group: 'Fabric', items: [{ id: 'overview', label: 'Overview' }, { id: 'nodes', label: 'Nodes', count: d => d.nodes }, { id: 'platforms', label: 'Silicon platforms', count: d => d.platforms }, { id: 'models', label: 'Models & shards' }, { id: 'data', label: 'Data & transfers', count: d => d.transfers }] },
     { group: 'Work', items: [{ id: 'training', label: 'Training' }, { id: 'rl', label: 'RL & Dream-RSI' }, { id: 'gateway', label: 'Gateway & API' }, { id: 'slices', label: 'Slices', count: d => d.slices }] },
     { group: 'Account', items: [{ id: 'cloud', label: 'Kadmium Cloud' }, { id: 'settings', label: 'Settings' }] }
   ];
-  const TITLES = { overview: 'Overview', nodes: 'Nodes', models: 'Models & shards', data: 'Data & transfers', training: 'Training', rl: 'RL & Dream-RSI', gateway: 'Gateway & API', slices: 'Sub-cluster slices', cloud: 'Kadmium Cloud', settings: 'Settings' };
+  const TITLES = { overview: 'Overview', nodes: 'Nodes', platforms: 'Silicon platforms & hardware bridges', models: 'Models & shards', data: 'Data & transfers', training: 'Training', rl: 'RL & Dream-RSI', gateway: 'Gateway & API', slices: 'Sub-cluster slices', cloud: 'Kadmium Cloud', settings: 'Settings' };
 
   function Sidebar(props) {
     const { route, overview, workers, companion, counts, theme, open, onClose } = props;
@@ -433,7 +437,7 @@
       h('nav', { className: 'cr-nav', 'aria-label': 'Control room' }, NAV.map(g => h(F, { key: g.group },
         h('div', { className: 'cr-nav-group' }, g.group),
         g.items.map(it => h('a', { key: it.id, href: '#/' + it.id, className: route.page === it.id ? 'active' : '', onClick: onClose, 'aria-current': route.page === it.id ? 'page' : undefined },
-          I(it.id), h('span', null, it.label), it.count && counts && counts[it.id === 'nodes' ? 'nodes' : it.id === 'data' ? 'transfers' : 'slices'] != null ? h('span', { className: 'count' }, it.count(counts)) : null))))),
+          I(it.id), h('span', null, it.label), it.count && counts && counts[it.id === 'nodes' ? 'nodes' : it.id === 'platforms' ? 'platforms' : it.id === 'data' ? 'transfers' : 'slices'] != null ? h('span', { className: 'count' }, it.count(counts)) : null))))),
       h('div', { className: 'cr-side-foot' },
         h('div', { className: 'cr-cluster' },
           h('div', { className: 'n' }, h('span', { className: 'cr-dot ' + (cloudMode ? 'cloud' : '') }), overview ? ((overview.nodes && overview.nodes[0] && overview.nodes[0].hostname) || 'local-session') : '—'),
@@ -588,6 +592,8 @@
           h(Panel, { title: 'Quick actions' },
             h('div', { className: 'kd-stack', style: { gap: '8px' } },
               h(K.Button, { variant: 'primary', icon: 'rods', onClick: () => go('nodes/add') }, 'Add a node'),
+              h(K.Button, { icon: 'bolt', onClick: () => act(post('/api/v1/platforms/attach', { family: 'all-live' }), r => 'Attached ' + (r.attached_hostnames.join(', ') || 'live silicon') + (r.live_silicon_verified ? ' (live silicon verified)' : ''), 'ok') }, 'Auto-attach live silicon (M4 / CM4 / K230)'),
+              h(K.Button, { onClick: () => go('platforms') }, 'Silicon platforms & bridges (26 SKUs)'),
               h(K.Button, { variant: liveOnly ? 'primary' : 'quiet', onClick: () => act(post('/api/v1/cluster/mode', { live_only: !liveOnly }, { into: '/api/v1/cluster/workers' }), liveOnly ? 'Switched to hybrid fleet (demo + live hardware)' : 'Switched to live session hardware only', 'ok') }, liveOnly ? 'Session: Live hardware only' : 'Session: Hybrid demo fleet'),
               h(K.Button, { onClick: () => scenario('gaming_mode', 'Desktop yielded to its owner', 'warn') }, 'Yield the desktop (gaming mode)'),
               h(K.Button, { variant: 'cloud', icon: 'cloud', onClick: () => scenario('cloud_burst', 'Burst H100 attached', 'cloud') }, 'Attach a burst GPU'),
@@ -668,6 +674,123 @@
   }
   function natName(n) { return { AddressRestrictedCone: 'addr-restricted cone', EndpointIndependentFullCone: 'full cone', PortRestrictedCone: 'port-restricted cone', SymmetricNatHard: 'symmetric (hard)' }[n] || fmt.words(n); }
   C.pages.nodes = Nodes;
+
+  /* ============================ SILICON PLATFORMS & BRIDGES ============================ */
+  function Platforms() {
+    const pf = useApi('/api/v1/platforms/overview');
+    const [tab, setTab] = useState('apple-m4');
+    const [deepSuite, setDeepSuite] = useState(null);
+    const [busy, setBusy] = useState(false);
+    if (!pf) return Loading('Probing silicon platforms (Apple M4 · RPi CM4 · Tegra X1 · Kendryte K230 · Phone Farm)…');
+    const m4 = pf.apple_m4_probe, cm4 = pf.rpi_cm4_probe, k230 = pf.kendryte_k230_probe, tx1 = pf.tegra_x1_active_spec, farm = pf.phone_farm_active_spec;
+    const deep = deepSuite || pf.apple_m4_deep_metal4;
+    const attach = (family, sku_slug, label) => act(post('/api/v1/platforms/attach', { family, sku_slug, run_deep_bench: family === 'apple-m4' && !sku_slug }), r => {
+      if (r.apple_m4_deep_metal4) setDeepSuite(r.apple_m4_deep_metal4);
+      return 'Attached ' + (label || r.attached_hostnames.join(', ') || family) + (r.live_silicon_verified ? ' · LIVE SILICON VERIFIED' : ' · shard plan recomputed');
+    }, 'ok');
+    const runM4Deep = () => {
+      setBusy(true);
+      act(post('/api/v1/m4-mac-mini/deep-suite', { iterations: 8, seq_len: 256 }, { refresh: [] }), r => {
+        if (r.deep_metal4_suite) setDeepSuite(r.deep_metal4_suite);
+        const d = r.deep_metal4_suite;
+        return d ? 'Apple M4 Deep Metal 4 Suite: 1024×1024 GEMM ' + fmt.num(d.tiled_gemm1024_gflops, 1) + ' GFLOP/s · 10-Core GCD ' + fmt.num(d.gcd_10core_speedup, 2) + '× · Zero-Copy mmap verified' : 'M4 probed';
+      }, 'ok').finally(() => setBusy(false));
+    };
+    const skuCols = family => [
+      { key: 'ff', label: 'form factor / product', render: s => h('span', { className: 'sans', style: { fontWeight: 600 } }, s.form_factor) },
+      { key: 'tier', label: 'silicon tier', render: s => h(K.Badge, { tone: 'local' }, s.silicon_tier) },
+      { key: 'host', label: 'node hostname', render: s => s.node.hostname },
+      { key: 'be', label: 'backend', render: s => s.node.backend },
+      { key: 'tf', label: 'fp16 / int4', num: true, render: s => fmt.num(s.node.fp16_tflops, 2) + ' TF · ' + fmt.num(s.node.int4_tops, 1) + ' TOPS' },
+      { key: 'mem', label: 'unified / ram', num: true, render: s => fmt.gb(s.node.memory.unified_mem_gb || s.node.memory.system_ram_gb) + ' @ ' + fmt.num(s.node.memory.unified_mem_bw_gbps || s.node.memory.system_ram_bw_gbps, 1) + ' GB/s' },
+      { key: 'q', label: 'q* ratio', num: true, render: s => fmt.num(s.q_star_ratio, 2) },
+      { key: 'act', label: '', render: s => h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => attach(family, s.sku_slug, s.form_factor + ' (' + s.silicon_tier + ')') }, 'Attach SKU') }
+    ];
+    return h(F, null,
+      h('div', { className: 'cr-stats' },
+        h(Stat, { label: 'Platform families', value: pf.total_platform_families, unit: 'families', meta: 'Apple M4 · RPi CM4 · Tegra X1 · Kendryte K230 · Phone Farm', tone: 'cadmium' }),
+        h(Stat, { label: 'Silicon catalog', value: pf.total_catalog_skus, unit: 'SKUs', meta: 'Target entire silicon architectures, not single devices' }),
+        h(Stat, { label: 'Apple M4 bridge', value: m4.physical_board_online ? 'ONLINE' : 'STANDBY', meta: m4.lan_endpoint + ' · ' + m4.telemetry.cpu_brand + ' (' + m4.telemetry.gpu_cores + ' GPU / ' + m4.telemetry.ane_cores + ' ANE)', tone: m4.physical_board_online ? 'cadmium' : '' }),
+        h(Stat, { label: 'Metal 4 + AMX', value: fmt.num(m4.execution_proof.amx_sgemm_512_gflops, 0), unit: 'GFLOP/s', meta: deep ? '1024² Metal ' + fmt.num(deep.tiled_gemm1024_gflops, 1) + ' GF/s · GCD ' + fmt.num(deep.gcd_10core_speedup, 2) + '× · CRC32C ' + fmt.num(m4.execution_proof.hw_crc32c_gbps, 1) + ' GB/s' : 'AMX 512×512 SGEMM · CRC32C ' + fmt.num(m4.execution_proof.hw_crc32c_gbps, 1) + ' GB/s' }),
+        h(Stat, { label: 'Edge SBC bridges', value: (cm4.physical_board_online ? 1 : 0) + (k230.physical_board_detected ? 1 : 0) + (m4.physical_board_online ? 1 : 0), unit: 'live', meta: 'CM4 ' + (cm4.physical_board_online ? 'online' : 'standby') + ' · K230 ' + (k230.physical_board_detected ? 'online' : 'standby') + ' · Tegra X1 ready' })),
+      h(K.Tabs, { label: 'Platform families', value: tab, onChange: setTab, items: [
+        { id: 'apple-m4', label: 'Apple M4 Silicon', count: pf.apple_m4_catalog.length },
+        { id: 'rpi-cm4', label: 'Raspberry Pi CM4 (BCM2711)', count: pf.rpi_cm4_catalog.length },
+        { id: 'tegra-x1', label: 'NVIDIA Tegra X1 / Switch', count: pf.tegra_x1_catalog.length },
+        { id: 'kendryte-k230', label: 'Kendryte K230 RISC-V', count: pf.kendryte_k230_catalog.length },
+        { id: 'phone-farm', label: '20-Slot Phone Farm', count: pf.phone_farm_catalog.length }
+      ] }),
+      tab === 'apple-m4' ? h(F, null,
+        h('div', { className: 'cr-two' },
+          h(Panel, { title: 'Live Apple M4 LAN Bridge', sub: m4.lan_endpoint + ' · ' + m4.board_model, tools: h(F, null,
+              h(K.Badge, { tone: m4.physical_board_online ? 'ok' : 'warn', dot: true }, m4.physical_board_online ? 'live physical silicon' : 'standby descriptor'),
+              h(K.Button, { size: 'sm', variant: 'primary', icon: 'rods', onClick: () => attach('apple-m4', null, m4.board_model) }, 'Attach live M4 to cluster')) },
+            h(KV, { items: [
+              ['machine / model', m4.board_model + ' (' + m4.telemetry.hw_model + ')'],
+              ['soc / cores', m4.soc_architecture + ' · ' + m4.telemetry.cpu_cores_total + ' CPU (' + m4.telemetry.cpu_cores_perf + 'P+' + m4.telemetry.cpu_cores_eff + 'E) · ' + m4.telemetry.gpu_cores + ' GPU · ' + m4.telemetry.ane_cores + ' ANE'],
+              ['unified memory', fmt.num(m4.telemetry.unified_memory_gib, 1) + ' GiB LPDDR5X @ ' + fmt.num(m4.telemetry.unified_mem_bw_gbps, 0) + ' GB/s (Metal working set ' + fmt.num(m4.telemetry.metal_recommended_working_set_gib, 2) + ' GiB)'],
+              ['apple nvme storage', fmt.num(m4.telemetry.ssd_free_gib, 1) + ' / ' + fmt.num(m4.telemetry.ssd_total_gib, 1) + ' GiB free · 64 KiB .ktb write ' + fmt.ms(m4.execution_proof.nvme_64k_write_ms) + ' / read ' + fmt.ms(m4.execution_proof.nvme_64k_read_ms)],
+              ['lan tcp round-trip', fmt.ms(m4.execution_proof.lan_round_trip_ms) + ' · kernel ' + m4.execution_proof.kernel_uname],
+              ['metal 4 + amx proof', 'Metal 64×64 GEMM ' + fmt.ms(m4.execution_proof.metal_gpu_gemm_64x64_ms) + ' (' + fmt.hex(m4.execution_proof.metal_gpu_gemm_fnv1a64, 12) + ') · AMX 512² ' + fmt.num(m4.execution_proof.amx_sgemm_512_gflops, 1) + ' GFLOP/s · CRC32C ' + fmt.num(m4.execution_proof.hw_crc32c_gbps, 2) + ' GB/s']
+            ] })),
+          h(Panel, { title: 'Deep Metal 4 + 10-Core GCD + Zero-Copy mmap Suite', sub: 'libkadmium_m4_metal.dylib · 5 native kernels', tools: h(K.Button, { size: 'sm', variant: 'primary', disabled: busy, onClick: runM4Deep }, busy ? 'Running on M4…' : 'Run deep suite on M4') },
+            deep ? h(KV, { items: [
+              ['1. metal 4 tiled gemm (1024×1024)', fmt.ms(deep.tiled_gemm1024_ms) + ' · ' + fmt.num(deep.tiled_gemm1024_gflops, 2) + ' GFLOP/s · FNV-1a ' + fmt.hex(deep.tiled_gemm1024_fnv1a64, 12)],
+              ['2. metal 4 fused rmsnorm + rope', fmt.ms(deep.rmsnorm_rope_ms) + ' · bit-exact RepOps ' + fmt.hex(deep.rmsnorm_rope_repops_digest, 12) + ' · sample [' + (deep.rmsnorm_rope_sample8 || []).slice(0, 4).map(x => fmt.num(x, 3)).join(', ') + ']'],
+              ['3. metal 4 flash-gqa paged (256 kv)', fmt.ms(deep.flash_gqa_seq256_ms) + ' · online-softmax RepOps ' + fmt.hex(deep.flash_gqa_repops_digest, 12)],
+              ['4. 10-core gcd (4p+6e) scaling', '1-core ' + fmt.ms(deep.gcd_1core_256_ms) + ' → 10-core ' + fmt.ms(deep.gcd_10core_256_ms) + ' (' + fmt.num(deep.gcd_10core_speedup, 2) + '× speedup)'],
+              ['5. armv9.2-a int8 dotprod & fp16', 'vdotq_s32 ' + fmt.num(deep.armv9_int8_dotprod_gops, 1) + ' GOPS · vfmaq_f16 ' + fmt.num(deep.armv9_fp16_neon_gflops, 1) + ' GFLOP/s'],
+              ['6. zero-copy mmap .ktb -> metal 4', fmt.ms(deep.zerocopy_mmap_ktb_ms) + ' · newBufferWithBytesNoCopy verified=' + String(deep.zerocopy_mmap_verified) + ' · RepOps ' + fmt.hex(deep.zerocopy_mmap_repops_digest, 12)]
+            ] }) : h(Empty, { action: h(K.Button, { size: 'sm', variant: 'primary', onClick: runM4Deep }, 'Run Deep Metal 4 Suite') }, 'Click to execute the 5-kernel Metal 4 + 10-Core GCD + Zero-Copy mmap benchmark on the Apple M4 node.'))),
+        h(Panel, { title: 'Apple M4 Silicon Platform Catalog (M4 · M4 Pro · M4 Max · M4 Ultra)', sub: 'targets all Apple M4-based Macs & iPad Pro', flush: true },
+          h(Table, { rows: pf.apple_m4_catalog, rowKey: s => s.sku_slug, cols: skuCols('apple-m4') }))) : null,
+      tab === 'rpi-cm4' ? h(F, null,
+        h(Panel, { title: 'Live Raspberry Pi CM4 (BCM2711 Cortex-A72) LAN Bridge', sub: cm4.lan_endpoint + ' · ' + cm4.board_model, tools: h(F, null,
+            h(K.Badge, { tone: cm4.physical_board_online ? 'ok' : 'warn', dot: true }, cm4.physical_board_online ? 'live physical silicon' : 'standby descriptor'),
+            h(K.Button, { size: 'sm', variant: 'primary', icon: 'rods', onClick: () => attach('rpi-cm4', null, cm4.board_model) }, 'Attach live CM4 to cluster')) },
+          h(KV, { items: [
+            ['board / carrier', cm4.board_model + ' · ' + cm4.mac_address_oui],
+            ['soc architecture', cm4.soc_architecture + ' · ' + cm4.execution_proof.kernel_uname],
+            ['live telemetry', fmt.num(cm4.telemetry.temp_c, 1) + ' °C · ' + cm4.telemetry.cpu_freq_mhz + ' MHz · eMMC ' + fmt.num(cm4.telemetry.emmc_free_gib, 2) + '/' + fmt.num(cm4.telemetry.emmc_total_gib, 2) + ' GiB free'],
+            ['i2c peripherals', (cm4.telemetry.i2c_peripherals || []).join(', ')],
+            ['armv8 neon proof', '64×64 vfmaq_f32 GEMM ' + fmt.ms(cm4.execution_proof.neon_gemm_64x64_ms) + ' (' + fmt.hex(cm4.execution_proof.neon_gemm_fnv1a64, 12) + ') · eMMC 64K witness=' + String(cm4.execution_proof.emmc_witness_verified)]
+          ] })),
+        h(Panel, { title: 'Raspberry Pi CM4 (BCM2711) Platform Catalog', sub: 'all CM4 carrier boards & memory/storage configurations', flush: true },
+          h(Table, { rows: pf.rpi_cm4_catalog, rowKey: s => s.sku_slug, cols: skuCols('rpi-cm4') }))) : null,
+      tab === 'tegra-x1' ? h(F, null,
+        h(Panel, { title: 'NVIDIA Tegra X1 / X1+ (T210 / T214) Platform Controller', sub: tx1.display_name + ' · ' + tx1.jetson_equivalent, tools: h(K.Button, { size: 'sm', variant: 'primary', icon: 'rods', onClick: () => attach('tegra-x1', pf.tegra_x1_catalog[0].sku_slug, tx1.display_name) }, 'Attach Tegra X1 node') },
+          h(KV, { items: [
+            ['gpu & cpu', tx1.maxwell_cuda_cores + ' Maxwell CUDA cores (sm_53 FP16 @ ' + tx1.gpu_clock_mhz + ' MHz) + ' + tx1.cpu_cores_a57 + '× Cortex-A57 @ ' + tx1.cpu_clock_mhz + ' MHz'],
+            ['unified memory', fmt.num(tx1.unified_lpddr_gb, 1) + ' GB LPDDR4X @ ' + fmt.num(tx1.unified_mem_bw_gbps, 1) + ' GB/s · ' + fmt.num(tx1.fp16_tflops, 2) + ' FP16 TFLOPS'],
+            ['dock & battery safety', 'BQ24193 80% Charge-Limit/Bypass=' + String(tx1.dock_safety.bq24193_charge_limit_or_bypass_active) + ' · ' + tx1.dock_safety.wall_power_watts + ' W docked · ' + fmt.num(tx1.tokens_per_watt_hour_advantage_vs_desktop, 2) + '× tokens/Wh vs desktop'],
+            ['workloads', (tx1.recommended_kadmium_workloads || []).join(' · ')]
+          ] })),
+        h(Panel, { title: 'NVIDIA Tegra X1 / X1+ Platform Catalog', sub: 'Nintendo Switch Mariko/Erista/8GB Mod, Jetson Nano B01, and Shield TV Pro', flush: true },
+          h(Table, { rows: pf.tegra_x1_catalog, rowKey: s => s.sku_slug, cols: skuCols('tegra-x1') }))) : null,
+      tab === 'kendryte-k230' ? h(F, null,
+        h(Panel, { title: 'Kendryte K230 / K230D RISC-V (Xuantie C908 RVV 1.0 + 6 TOPS KPU) USB Bridge', sub: k230.board_model + ' · Die ' + k230.chip_unique_die_id, tools: h(F, null,
+            h(K.Badge, { tone: k230.physical_board_detected ? 'ok' : 'warn', dot: true }, k230.physical_board_detected ? 'usb silicon detected' : 'usb standby'),
+            h(K.Button, { size: 'sm', variant: 'primary', icon: 'rods', onClick: () => attach('kendryte-k230', null, k230.board_model) }, 'Attach K230 to cluster')) },
+          h(KV, { items: [
+            ['board & die id', k230.board_model + ' · Die ID ' + k230.chip_unique_die_id],
+            ['serial / usb', (k230.detected_serial_port || 'USB-BootROM') + ' · stage ' + fmt.words(k230.connection_stage)],
+            ['riscv + kpu', 'Dual-core 64-bit T-Head Xuantie C908 (1.6 GHz RVV 1.0) + 6 TOPS 3rd-Gen KPU (nncase v2.11)'],
+            ['live proof', k230.live_execution_proof ? k230.live_execution_proof.hardware_response_banner : 'Ready for USB-CDC attachment']
+          ] })),
+        h(Panel, { title: 'Kendryte K230 / K230D RISC-V Platform Catalog', sub: '01Studio CanMV, Canaan EVB, K230D Zero SiP, Banana Pi BPI-K230D, Yahboom 2GB', flush: true },
+          h(Table, { rows: pf.kendryte_k230_catalog, rowKey: s => s.sku_slug, cols: skuCols('kendryte-k230') }))) : null,
+      tab === 'phone-farm' ? h(F, null,
+        h(Panel, { title: '20-Slot Phone Farm Box (Snapdragon ARM64 UMA MoE Array)', sub: farm.display_name, tools: h(K.Button, { size: 'sm', variant: 'primary', icon: 'rods', onClick: () => attach('phone-farm', 'sd865', farm.display_name) }, 'Attach 20-Slot Phone Farm') },
+          h(KV, { items: [
+            ['chassis & slots', farm.slot_count + ' stripped ARM64 motherboards · battery-free BMS direct PSU (' + farm.psu_rating + ', ' + farm.average_wall_power_watts + ' W avg)'],
+            ['aggregate memory', fmt.gb(farm.aggregate_lpddr_unified_gb) + ' Unified LPDDR (' + fmt.num(farm.aggregate_parallel_mem_bw_gbps, 1) + ' GB/s parallel MoE bandwidth)'],
+            ['aggregate compute', fmt.num(farm.aggregate_fp16_tflops, 1) + ' FP16 TFLOPS · ' + fmt.num(farm.aggregate_int4_tops, 1) + ' INT4/Hexagon NPU TOPS · ' + farm.aggregate_cpu_cores + ' ARM64 cores'],
+            ['usb-adb discovery', 'adb_binary_detected=' + String(farm.adb_discovery.adb_binary_detected) + ' · connected_usb_devices=' + farm.adb_discovery.connected_physical_devices.length]
+          ] })),
+        h(Panel, { title: '20-Slot Phone Farm Chassis Presets', sub: 'attach as a coherent 160 GB UMA MoE array', flush: true },
+          h(Table, { rows: pf.phone_farm_catalog, rowKey: s => s.sku_slug, cols: skuCols('phone-farm') }))) : null);
+  }
+  C.pages.platforms = Platforms;
 
   /* ============================ MODELS & SHARDS ============================ */
   function Models(props) {
@@ -1131,10 +1254,11 @@
     useEffect(() => { document.documentElement.setAttribute('data-theme', theme); }, [theme]);
     useEffect(() => { setSelected(null); setMenu(false); window.scrollTo(0, 0); }, [route.page]);
     const Page = C.pages[route.page] || C.pages.overview;
-    const counts = { nodes: overview ? overview.nodes.length : null, transfers: overview && (overview.fts3_transfers || []).length ? overview.fts3_transfers.length : null, slices: slices && (slices.slices || []).length ? slices.slices.length : null };
+    const counts = { nodes: overview ? overview.nodes.length : null, platforms: 26, transfers: overview && (overview.fts3_transfers || []).length ? overview.fts3_transfers.length : null, slices: slices && (slices.slices || []).length ? slices.slices.length : null };
     const selectedNode = overview && selected ? overview.nodes.find(n => n.id === selected) : null;
-    const actions = route.page === 'nodes' ? h(F, null, h(K.Button, { size: 'sm', variant: 'primary', icon: 'rods', onClick: () => go('nodes/add') }, 'Add node'))
-      : route.page === 'overview' ? h(F, null, h(K.Button, { size: 'sm', onClick: () => C.scenario('gaming_mode', 'Desktop yielded', 'warn') }, 'Yield desktop'), h(K.Button, { size: 'sm', variant: 'cloud', icon: 'cloud', onClick: () => C.scenario('cloud_burst', 'Burst H100 attached', 'cloud') }, 'Attach burst GPU'))
+    const actions = route.page === 'nodes' ? h(F, null, h(K.Button, { size: 'sm', onClick: () => go('platforms') }, 'Silicon platforms'), h(K.Button, { size: 'sm', variant: 'primary', icon: 'rods', onClick: () => go('nodes/add') }, 'Add node'))
+      : route.page === 'platforms' ? h(F, null, h(K.Button, { size: 'sm', variant: 'primary', icon: 'bolt', onClick: () => act(post('/api/v1/platforms/attach', { family: 'all-live' }), r => 'Attached ' + (r.attached_hostnames.join(', ') || 'live silicon'), 'ok') }, 'Auto-attach all live silicon'))
+      : route.page === 'overview' ? h(F, null, h(K.Button, { size: 'sm', onClick: () => go('platforms') }, 'Silicon platforms'), h(K.Button, { size: 'sm', onClick: () => C.scenario('gaming_mode', 'Desktop yielded', 'warn') }, 'Yield desktop'), h(K.Button, { size: 'sm', variant: 'cloud', icon: 'cloud', onClick: () => C.scenario('cloud_burst', 'Burst H100 attached', 'cloud') }, 'Attach burst GPU'))
       : route.page === 'cloud' ? h(K.Button, { size: 'sm', variant: 'cloud', icon: 'cloud', onClick: () => C.scenario('cloud_burst', 'Burst H100 attached', 'cloud') }, 'Attach burst GPU')
       : null;
     return h('div', { className: 'cr' },

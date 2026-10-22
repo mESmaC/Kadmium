@@ -244,6 +244,22 @@ enum Commands {
         #[arg(short, long)]
         ip: Option<String>,
     },
+    /// Launch the Native Kadmium Desktop Application Window + Local Coordinator & Live Silicon Auto-Discovery
+    #[command(visible_alias = "app")]
+    Desktop {
+        /// Port to bind the local HTTP coordinator and API gateway
+        #[arg(short, long, default_value_t = 7848)]
+        port: u16,
+        /// Start with only real probed hardware nodes (Local Host + Apple M4 + RPi CM4 + K230)
+        #[arg(long)]
+        live: bool,
+        /// Also open the Cluster Control Room window alongside the Desktop Companion App
+        #[arg(long)]
+        control_room: bool,
+        /// Print the desktop app summary and verify live silicon bridges without blocking or opening a GUI window
+        #[arg(long)]
+        check_only: bool,
+    },
 }
 
 #[tokio::main]
@@ -327,6 +343,12 @@ async fn main() {
         Commands::Switch { revision } => run_switch(&revision),
         Commands::Reterminal { ip } => run_reterminal(ip.as_deref()),
         Commands::M4 { ip } => run_m4_mac_mini(ip.as_deref()),
+        Commands::Desktop {
+            port,
+            live,
+            control_room,
+            check_only,
+        } => run_desktop(port, live, control_room, check_only).await,
     }
 }
 
@@ -950,6 +972,104 @@ async fn run_server(
         }
     }
 
+    // Automatically detect and attach a live Apple M4 platform node (192.168.40.237:7860) and Raspberry Pi CM4 node (192.168.40.75:7859) on the LAN:
+    let mut attached_m4_banner: Option<String> = None;
+    let m4_probe = kadmium_core::M4MacMiniLanBridge::probe_and_verify(None);
+    if m4_probe.physical_board_online
+        && let Ok(m4_server) = LiveNodeWorkerServer::spawn_auto_port(
+            "127.0.0.1",
+            next_fleet_port,
+            m4_probe.hardware_node.clone(),
+            true,
+        )
+        .await
+    {
+        next_fleet_port = m4_server.local_addr.port().saturating_add(1);
+        let m4_tcp_addr = m4_server.local_addr.to_string();
+        let os_label = "macOS 26 (Darwin 25.0.0)".to_string();
+        let arch_label = "arm64e (Apple M4 · Metal 4 + AMX)".to_string();
+        let board_label = m4_probe.board_model.clone();
+        gw_state.register_live_worker_with_meta(
+            m4_probe.hardware_node.clone(),
+            m4_tcp_addr.clone(),
+            m4_probe.execution_proof.lan_round_trip_ms.max(0.25),
+            live_only,
+            os_label.clone(),
+            arch_label.clone(),
+            board_label.clone(),
+            "LocalLAN".to_string(),
+        );
+        if let Some(w) = gw_state.live_workers.get_mut(&m4_probe.hardware_node.id.0) {
+            w.worker_lan_ip = kadmium_core::DEFAULT_M4_MAC_MINI_IP.to_string();
+            w.worker_tcp_port = kadmium_core::DEFAULT_M4_MAC_MINI_PORT;
+        }
+        gw_state
+            .spawned_fleet_instances
+            .push(kadmium_runtime::SpawnedLocalWorkerInstance {
+                server: m4_server,
+                os_name: os_label,
+                cpu_arch: arch_label,
+                board_or_model: board_label,
+                network_channel: "LocalLAN".to_string(),
+            });
+        attached_m4_banner = Some(format!(
+            "{} -> {} ({}, LIVE METAL 4 + AMX {:.1} GFLOP/s, RepOps={:#018x})",
+            m4_probe.lan_endpoint,
+            m4_tcp_addr,
+            m4_probe.board_model,
+            m4_probe.execution_proof.amx_sgemm_512_gflops,
+            m4_probe.execution_proof.metal_gpu_gemm_fnv1a64
+        ));
+    }
+
+    let mut attached_cm4_banner: Option<String> = None;
+    let cm4_probe = kadmium_core::ReTerminalCm4LanBridge::probe_and_verify(None);
+    if cm4_probe.physical_board_online
+        && let Ok(cm4_server) = LiveNodeWorkerServer::spawn_auto_port(
+            "127.0.0.1",
+            next_fleet_port,
+            cm4_probe.hardware_node.clone(),
+            true,
+        )
+        .await
+    {
+        next_fleet_port = cm4_server.local_addr.port().saturating_add(1);
+        let cm4_tcp_addr = cm4_server.local_addr.to_string();
+        let os_label = "Linux 6.12 (Debian Bookworm)".to_string();
+        let arch_label = "aarch64 (BCM2711 Cortex-A72 NEON)".to_string();
+        let board_label = cm4_probe.board_model.clone();
+        gw_state.register_live_worker_with_meta(
+            cm4_probe.hardware_node.clone(),
+            cm4_tcp_addr.clone(),
+            cm4_probe.execution_proof.lan_round_trip_ms.max(0.25),
+            live_only,
+            os_label.clone(),
+            arch_label.clone(),
+            board_label.clone(),
+            "LocalLAN".to_string(),
+        );
+        if let Some(w) = gw_state.live_workers.get_mut(&cm4_probe.hardware_node.id.0) {
+            w.worker_lan_ip = kadmium_core::DEFAULT_RETERMINAL_CM4_IP.to_string();
+            w.worker_tcp_port = kadmium_core::DEFAULT_RETERMINAL_CM4_PORT;
+        }
+        gw_state
+            .spawned_fleet_instances
+            .push(kadmium_runtime::SpawnedLocalWorkerInstance {
+                server: cm4_server,
+                os_name: os_label,
+                cpu_arch: arch_label,
+                board_or_model: board_label,
+                network_channel: "LocalLAN".to_string(),
+            });
+        attached_cm4_banner = Some(format!(
+            "{} -> {} ({}, LIVE ARMv8 NEON, RepOps={:#018x})",
+            cm4_probe.lan_endpoint,
+            cm4_tcp_addr,
+            cm4_probe.board_model,
+            cm4_probe.execution_proof.neon_gemm_fnv1a64
+        ));
+    }
+
     if spawn_fleet
         && let Ok(instances) =
             LocalFleetSpawner::spawn_heterogeneous_local_fleet(next_fleet_port, true).await
@@ -1102,6 +1222,12 @@ async fn run_server(
         local_node.device_kind,
         local_node.available_fast_memory_gb()
     );
+    if let Some(m4_line) = &attached_m4_banner {
+        println!("    - LAN Apple M4 Worker:    {}", m4_line);
+    }
+    if let Some(cm4_line) = &attached_cm4_banner {
+        println!("    - LAN RPi CM4 Worker:     {}", cm4_line);
+    }
     if let Some(k230_line) = &attached_k230_banner {
         println!("    - USB RISC-V K230 Worker: {}", k230_line);
     }
@@ -1534,4 +1660,116 @@ fn run_m4_mac_mini(custom_ip: Option<&str>) {
         }
     }
     println!("====================================================================================");
+}
+
+fn launch_native_desktop_window(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        let app_arg = format!("--app={url}");
+        let win_size = "--window-size=1360,900";
+        if std::process::Command::new("msedge")
+            .args([&app_arg, win_size])
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
+        if std::process::Command::new("chrome")
+            .args([&app_arg, win_size])
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
+async fn run_desktop(port: u16, live_only: bool, open_control_room: bool, check_only: bool) {
+    let local_node = LiveHardwareProfiler::probe_local_host();
+    let m4_probe = kadmium_core::M4MacMiniLanBridge::probe_and_verify(None);
+    let cm4_probe = kadmium_core::ReTerminalCm4LanBridge::probe_and_verify(None);
+    let k230_probe = kadmium_core::K230UsbComputeBridge::probe_attached_k230();
+
+    println!("====================================================================================");
+    println!("  KADMIUM (Cd-48) — NATIVE DESKTOP APPLICATION & MULTI-PLATFORM COORDINATOR");
+    println!("====================================================================================");
+    println!(
+        "  Local Workstation:     {} ({:?}, {:.1} GB VRAM/UMA + {:.1} GB RAM, q*={:.2})",
+        local_node.hostname,
+        local_node.backend,
+        local_node.available_fast_memory_gb(),
+        local_node.memory.system_ram_gb,
+        local_node.compute_q_star_ratio()
+    );
+    println!(
+        "  Apple M4 LAN Bridge:   {} ({} @ {} | Metal 4 + AMX {:.1} GFLOP/s)",
+        if m4_probe.physical_board_online {
+            "ONLINE"
+        } else {
+            "STANDBY"
+        },
+        m4_probe.board_model,
+        m4_probe.lan_endpoint,
+        m4_probe.execution_proof.amx_sgemm_512_gflops
+    );
+    println!(
+        "  RPi CM4 LAN Bridge:    {} ({} @ {})",
+        if cm4_probe.physical_board_online {
+            "ONLINE"
+        } else {
+            "STANDBY"
+        },
+        cm4_probe.board_model,
+        cm4_probe.lan_endpoint
+    );
+    println!(
+        "  Kendryte K230 Bridge:  {} ({} [{}])",
+        if k230_probe.physical_board_detected {
+            "ONLINE"
+        } else {
+            "STANDBY"
+        },
+        k230_probe.board_model,
+        k230_probe.chip_unique_die_id
+    );
+    println!(
+        "  Silicon Catalog SKUs:  26 platform configurations (7 Apple M4 + 6 CM4 + 5 Tegra X1 + 5 K230 + 3 Phone Farm)"
+    );
+    println!(
+        "  Desktop App Window:    http://127.0.0.1:{}/companion",
+        port
+    );
+    println!(
+        "  Control Room UI:       http://127.0.0.1:{}/#/platforms",
+        port
+    );
+    println!("====================================================================================");
+
+    if check_only {
+        return;
+    }
+
+    let companion_url = format!("http://127.0.0.1:{port}/companion");
+    let control_room_url = format!("http://127.0.0.1:{port}/#/platforms");
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(550)).await;
+        launch_native_desktop_window(&companion_url);
+        if open_control_room {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            launch_native_desktop_window(&control_room_url);
+        }
+    });
+
+    run_server(port, None, live_only, DEFAULT_WORKER_TCP_PORT, false).await;
 }

@@ -274,7 +274,7 @@ fn send_m4_json_rpc(addr_str: &str, payload: &serde_json::Value) -> Option<(serd
         if guard.as_ref().map(|c| c.addr != addr_str).unwrap_or(true) || attempt > 0 {
             *guard = None;
             let sock_addr: SocketAddr = addr_str.parse().ok()?;
-            let stream = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(900)).ok()?;
+            let stream = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(350)).ok()?;
             let _ = stream.set_nodelay(true);
             let _ = stream.set_read_timeout(Some(Duration::from_millis(2500)));
             let _ = stream.set_write_timeout(Some(Duration::from_millis(2500)));

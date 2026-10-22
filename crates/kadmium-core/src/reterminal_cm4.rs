@@ -52,7 +52,7 @@ fn send_cm4_json_rpc(addr: &str, request_json: &serde_json::Value) -> Option<(se
         if guard.as_ref().map(|c| c.addr != addr).unwrap_or(true) || attempt > 0 {
             *guard = None;
             let sock_addr: SocketAddr = addr.parse().ok()?;
-            let stream = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(900)).ok()?;
+            let stream = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(350)).ok()?;
             let _ = stream.set_nodelay(true);
             let _ = stream.set_read_timeout(Some(Duration::from_millis(2500)));
             let _ = stream.set_write_timeout(Some(Duration::from_millis(2500)));

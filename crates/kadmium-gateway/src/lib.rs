@@ -1088,4 +1088,79 @@ mod tests {
         );
         assert!(ota_manifest.verify_signature());
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_platforms_overview_and_attach_endpoints_and_ui_bundles() {
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::sync::{Arc, Mutex};
+
+        let state = Arc::new(Mutex::new(GatewayState::new()));
+        let app = build_router(Arc::clone(&state));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let http_get = |path: &str| -> String {
+            let mut s = TcpStream::connect(addr).unwrap();
+            write!(
+                s,
+                "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut buf = String::new();
+            s.read_to_string(&mut buf).unwrap();
+            buf.split_once("\r\n\r\n").unwrap().1.to_string()
+        };
+
+        let http_post = |path: &str, body_json: &str| -> String {
+            let mut s = TcpStream::connect(addr).unwrap();
+            write!(
+                s,
+                "POST {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body_json}",
+                body_json.len()
+            )
+            .unwrap();
+            let mut buf = String::new();
+            s.read_to_string(&mut buf).unwrap();
+            buf.split_once("\r\n\r\n").unwrap().1.to_string()
+        };
+
+        // 1. Verify Control Room Dashboard (/) and Desktop Companion Application (/companion) HTML bundles
+        let dash_html = http_get("/");
+        assert!(dash_html.contains("/api/v1/platforms/overview"));
+        assert!(dash_html.contains("/api/v1/m4-mac-mini/deep-suite"));
+        assert!(dash_html.contains("Silicon platforms"));
+
+        let comp_html = http_get("/companion");
+        assert!(comp_html.contains("Silicon Platforms & LAN Bridges"));
+        assert!(comp_html.contains("Local .ktb Studio & EXL3 Quantizer"));
+        assert!(comp_html.contains("/api/v1/platforms/attach"));
+
+        // 2. Verify GET /api/v1/platforms/overview
+        let pf_json = http_get("/api/v1/platforms/overview");
+        let pf: PlatformFamiliesOverviewResponse = serde_json::from_str(&pf_json).unwrap();
+        assert_eq!(pf.total_platform_families, 5);
+        assert_eq!(pf.total_catalog_skus, 26);
+        assert_eq!(pf.apple_m4_catalog.len(), 7);
+        assert_eq!(pf.rpi_cm4_catalog.len(), 6);
+        assert_eq!(pf.tegra_x1_catalog.len(), 5);
+        assert_eq!(pf.kendryte_k230_catalog.len(), 5);
+        assert_eq!(pf.phone_farm_catalog.len(), 3);
+        if pf.apple_m4_probe.physical_board_online {
+            let deep = pf
+                .apple_m4_deep_metal4
+                .expect("live Apple M4 deep Metal 4 suite");
+            assert!(deep.tiled_gemm1024_gflops > 50.0);
+            assert!(deep.zerocopy_mmap_verified);
+        }
+
+        // 3. Verify POST /api/v1/platforms/attach across families
+        let attach_json = http_post("/api/v1/platforms/attach", r#"{"family":"all-live"}"#);
+        let attach_parsed: PlatformAttachResponse = serde_json::from_str(&attach_json).unwrap();
+        assert_eq!(attach_parsed.attached_family, "all-live");
+        assert!(!attach_parsed.overview.nodes.is_empty());
+    }
 }

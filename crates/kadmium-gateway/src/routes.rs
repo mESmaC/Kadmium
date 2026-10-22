@@ -14,15 +14,16 @@ use axum::{
     routing::{get, post},
 };
 use kadmium_core::{
-    ClosetSiliconLongevityGovernor, K230HardwareProbeReport, K230UsbComputeBridge,
-    KadmiumReactorInfrastructureReport, LiveHardwareProfiler, M4MacMiniLanBridge,
-    M4MacMiniProbeReport, ModdedSwitchController, ModdedSwitchNodeSpec, ModelSpec,
-    NodeTrustTier, OsHookHysteresisReport, OsSwapchainHysteresisEngine, PhoneFarmBoxController,
-    PhoneFarmBoxPreset, PhoneFarmChassisSpec, PhoneFarmTopologyMode, PhoneFarmTransportMode,
-    PoliteState, ReTerminalCm4LanBridge, ReTerminalCm4ProbeReport, ScopedApiKey,
-    SubClusterQuotaPolicy, SubClusterRbacEngine, SupplyLeasePolicy, SupplyMarketplaceSnapshot,
-    SwitchRuntimeEnvironment, SwitchSiliconRevision, WorkloadKind, sample_cloud_burst_gpu_node,
-    sample_node_pool,
+    AppleM4DeepMetalSuiteReport, AppleM4PlatformBridge, ClosetSiliconLongevityGovernor,
+    HardwareNode, K230HardwareProbeReport, K230UsbComputeBridge,
+    KadmiumReactorInfrastructureReport, KendryteK230PlatformBridge, LiveHardwareProfiler,
+    M4MacMiniLanBridge, M4MacMiniProbeReport, ModdedSwitchController, ModdedSwitchNodeSpec,
+    ModelSpec, NodeTrustTier, OsHookHysteresisReport, OsSwapchainHysteresisEngine,
+    PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmChassisSpec, PhoneFarmTopologyMode,
+    PhoneFarmTransportMode, PoliteState, ReTerminalCm4LanBridge, ReTerminalCm4ProbeReport,
+    RpiCm4PlatformBridge, ScopedApiKey, SubClusterQuotaPolicy, SubClusterRbacEngine,
+    SupplyLeasePolicy, SupplyMarketplaceSnapshot, SwitchRuntimeEnvironment, SwitchSiliconRevision,
+    TegraX1PlatformController, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
 };
 use kadmium_data::{
     DecentralizedStoragePoolEngine, DecentralizedStoragePoolReport, EcosystemIntegrationsOverview,
@@ -45,9 +46,10 @@ use kadmium_runtime::{
     HardwareKernelDispatcher, HardwareKernelSuiteReport, HyperInferenceComputeReport,
     HyperTrainingBenchmarkReport, KtbCheckpointExportReport, LiveDistributedTrainingStepReport,
     LiveDreamRsiSwarmReport, LiveFts3SwarmStreamReport, LiveHopTelemetry,
-    LiveKvCacheMigrationReport, LiveVerdeAuditReport, LocalFleetSpawner, Pipeline1F1BSchedule,
-    Pipeline1F1BScheduler, TrainingComputeAcceleratorSuite, VerdeFraudProofCertificate,
-    VerdeFraudProofEngine, apply_ota_update_manifest_local,
+    LiveKvCacheMigrationReport, LiveNodeWorkerServer, LiveVerdeAuditReport, LocalFleetSpawner,
+    Pipeline1F1BSchedule, Pipeline1F1BScheduler, SpawnedLocalWorkerInstance,
+    TrainingComputeAcceleratorSuite, VerdeFraudProofCertificate, VerdeFraudProofEngine,
+    apply_ota_update_manifest_local,
 };
 use kadmium_sharding::{
     CloudShieldCutoverWatcher, CloudShieldWatcherReport, ClusterPoolSliceLayout,
@@ -418,6 +420,15 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             "/api/v1/m4-mac-mini/probe",
             get(get_m4_mac_mini_probe_report).post(get_m4_mac_mini_probe_report),
         )
+        .route(
+            "/api/v1/m4-mac-mini/deep-suite",
+            get(get_m4_deep_metal4_suite).post(get_m4_deep_metal4_suite),
+        )
+        .route(
+            "/api/v1/platforms/overview",
+            get(get_platforms_overview).post(get_platforms_overview),
+        )
+        .route("/api/v1/platforms/attach", post(post_attach_platform))
         .route(
             "/api/v1/cluster/switch-tegra",
             get(post_switch_tegra_node).post(post_switch_tegra_node),
@@ -2267,4 +2278,540 @@ async fn get_m4_mac_mini_probe_report(
         }
     }
     Json(report)
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct M4DeepSuiteRequest {
+    pub custom_ip: Option<String>,
+    pub iterations: Option<usize>,
+    pub seq_len: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct M4DeepSuiteApiResponse {
+    pub probe: M4MacMiniProbeReport,
+    pub deep_metal4_suite: Option<AppleM4DeepMetalSuiteReport>,
+}
+
+async fn get_m4_deep_metal4_suite(
+    req: Option<Json<M4DeepSuiteRequest>>,
+) -> Json<M4DeepSuiteApiResponse> {
+    let params = req.map(|Json(r)| r).unwrap_or_default();
+    let ip = params
+        .custom_ip
+        .as_deref()
+        .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+    let probe = M4MacMiniLanBridge::probe_and_verify(Some(ip));
+    let deep_metal4_suite = if probe.physical_board_online {
+        M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(
+            ip,
+            params.iterations.unwrap_or(6),
+            params.seq_len.unwrap_or(256),
+        )
+    } else {
+        None
+    };
+    Json(M4DeepSuiteApiResponse {
+        probe,
+        deep_metal4_suite,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformCatalogSkuEntry {
+    pub family: String,
+    pub sku_slug: String,
+    pub form_factor: String,
+    pub silicon_tier: String,
+    pub node: HardwareNode,
+    pub q_star_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformFamiliesOverviewResponse {
+    pub total_platform_families: usize,
+    pub total_catalog_skus: usize,
+    pub apple_m4_probe: M4MacMiniProbeReport,
+    pub apple_m4_deep_metal4: Option<AppleM4DeepMetalSuiteReport>,
+    pub apple_m4_catalog: Vec<PlatformCatalogSkuEntry>,
+    pub rpi_cm4_probe: ReTerminalCm4ProbeReport,
+    pub rpi_cm4_catalog: Vec<PlatformCatalogSkuEntry>,
+    pub tegra_x1_active_spec: ModdedSwitchNodeSpec,
+    pub tegra_x1_catalog: Vec<PlatformCatalogSkuEntry>,
+    pub kendryte_k230_probe: K230HardwareProbeReport,
+    pub kendryte_k230_catalog: Vec<PlatformCatalogSkuEntry>,
+    pub phone_farm_active_spec: PhoneFarmChassisSpec,
+    pub phone_farm_catalog: Vec<PlatformCatalogSkuEntry>,
+}
+
+fn build_platform_catalogs() -> (
+    Vec<PlatformCatalogSkuEntry>,
+    Vec<PlatformCatalogSkuEntry>,
+    Vec<PlatformCatalogSkuEntry>,
+    Vec<PlatformCatalogSkuEntry>,
+    Vec<PlatformCatalogSkuEntry>,
+) {
+    let apple_m4_catalog: Vec<PlatformCatalogSkuEntry> =
+        AppleM4PlatformBridge::catalog_all_m4_products()
+            .into_iter()
+            .map(|(ff, tier, node)| PlatformCatalogSkuEntry {
+                family: "apple-m4".into(),
+                sku_slug: node.id.0.clone(),
+                form_factor: format!("{} ({:?})", ff.display_product_name(), tier),
+                silicon_tier: format!("{tier:?}"),
+                q_star_ratio: node.compute_q_star_ratio(),
+                node,
+            })
+            .collect();
+
+    let rpi_cm4_catalog: Vec<PlatformCatalogSkuEntry> =
+        RpiCm4PlatformBridge::catalog_all_cm4_platforms()
+            .into_iter()
+            .map(|(carrier, node)| PlatformCatalogSkuEntry {
+                family: "rpi-cm4".into(),
+                sku_slug: node.id.0.clone(),
+                form_factor: carrier.display_name().to_string(),
+                silicon_tier: "BCM2711 Cortex-A72 NEON".into(),
+                q_star_ratio: node.compute_q_star_ratio(),
+                node,
+            })
+            .collect();
+
+    let tegra_x1_catalog: Vec<PlatformCatalogSkuEntry> =
+        TegraX1PlatformController::catalog_all_tegra_x1_platforms()
+            .into_iter()
+            .map(|(ff, node)| PlatformCatalogSkuEntry {
+                family: "tegra-x1".into(),
+                sku_slug: node.id.0.clone(),
+                form_factor: format!("{ff:?}"),
+                silicon_tier: "Maxwell sm_53 CUDA (T210/T214)".into(),
+                q_star_ratio: node.compute_q_star_ratio(),
+                node,
+            })
+            .collect();
+
+    let kendryte_k230_catalog: Vec<PlatformCatalogSkuEntry> =
+        KendryteK230PlatformBridge::catalog_all_k230_platforms()
+            .into_iter()
+            .map(|(ff, node)| PlatformCatalogSkuEntry {
+                family: "kendryte-k230".into(),
+                sku_slug: node.id.0.clone(),
+                form_factor: format!("{ff:?}"),
+                silicon_tier: "Xuantie C908 RVV 1.0 + 6 TOPS KPU".into(),
+                q_star_ratio: node.compute_q_star_ratio(),
+                node,
+            })
+            .collect();
+
+    let phone_farm_catalog: Vec<PlatformCatalogSkuEntry> = [
+        (
+            "sd845",
+            PhoneFarmBoxPreset::Snapdragon845S9Box20,
+            "20x Galaxy S9 (Snapdragon 845 · 80 GB LPDDR4X)",
+        ),
+        (
+            "sd865",
+            PhoneFarmBoxPreset::Snapdragon865S20Box20,
+            "20x Galaxy S20 (Snapdragon 865 · 160 GB LPDDR5)",
+        ),
+        (
+            "sd8gen2",
+            PhoneFarmBoxPreset::Snapdragon8Gen2S23Box20,
+            "20x Galaxy S23 (Snapdragon 8 Gen 2 · 160 GB LPDDR5X)",
+        ),
+    ]
+    .into_iter()
+    .map(|(slug, preset, label)| {
+        let spec = PhoneFarmBoxController::build_chassis_spec(
+            preset,
+            PhoneFarmTransportMode::Usb3AdbMultiplexedTunnel,
+            PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray,
+        );
+        let node = PhoneFarmBoxController::to_aggregated_hardware_node(&spec);
+        PlatformCatalogSkuEntry {
+            family: "phone-farm".into(),
+            sku_slug: slug.to_string(),
+            form_factor: label.to_string(),
+            silicon_tier: "20-Slot ARM64 UMA MoE Array".into(),
+            q_star_ratio: node.compute_q_star_ratio(),
+            node,
+        }
+    })
+    .collect();
+
+    (
+        apple_m4_catalog,
+        rpi_cm4_catalog,
+        tegra_x1_catalog,
+        kendryte_k230_catalog,
+        phone_farm_catalog,
+    )
+}
+
+async fn get_platforms_overview() -> Json<PlatformFamiliesOverviewResponse> {
+    let apple_m4_probe = M4MacMiniLanBridge::probe_and_verify(None);
+    let apple_m4_deep_metal4 = if apple_m4_probe.physical_board_online {
+        M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(
+            kadmium_core::DEFAULT_M4_MAC_MINI_IP,
+            4,
+            256,
+        )
+    } else {
+        None
+    };
+    let rpi_cm4_probe = ReTerminalCm4LanBridge::probe_and_verify(None);
+    let tegra_x1_active_spec = ModdedSwitchController::build_spec(
+        SwitchSiliconRevision::MarikoT210B01_16nm4Gb,
+        SwitchRuntimeEnvironment::SwitchrootL4tJetPackCuda,
+    );
+    let kendryte_k230_probe = K230UsbComputeBridge::probe_attached_k230();
+    let phone_farm_active_spec = PhoneFarmBoxController::build_chassis_spec(
+        PhoneFarmBoxPreset::Snapdragon865S20Box20,
+        PhoneFarmTransportMode::Usb3AdbMultiplexedTunnel,
+        PhoneFarmTopologyMode::CoherentMoEAndDreamRsiArray,
+    );
+
+    let (
+        apple_m4_catalog,
+        rpi_cm4_catalog,
+        tegra_x1_catalog,
+        kendryte_k230_catalog,
+        phone_farm_catalog,
+    ) = build_platform_catalogs();
+
+    let total_catalog_skus = apple_m4_catalog.len()
+        + rpi_cm4_catalog.len()
+        + tegra_x1_catalog.len()
+        + kendryte_k230_catalog.len()
+        + phone_farm_catalog.len();
+
+    Json(PlatformFamiliesOverviewResponse {
+        total_platform_families: 5,
+        total_catalog_skus,
+        apple_m4_probe,
+        apple_m4_deep_metal4,
+        apple_m4_catalog,
+        rpi_cm4_probe,
+        rpi_cm4_catalog,
+        tegra_x1_active_spec,
+        tegra_x1_catalog,
+        kendryte_k230_probe,
+        kendryte_k230_catalog,
+        phone_farm_active_spec,
+        phone_farm_catalog,
+    })
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PlatformAttachRequest {
+    pub family: Option<String>,
+    pub sku_slug: Option<String>,
+    pub custom_ip: Option<String>,
+    pub run_deep_bench: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformAttachResponse {
+    pub attached_family: String,
+    pub attached_hostnames: Vec<String>,
+    pub live_silicon_verified: bool,
+    pub apple_m4_deep_metal4: Option<AppleM4DeepMetalSuiteReport>,
+    pub overview: ClusterOverviewResponse,
+    pub workers: LiveClusterWorkersOverview,
+}
+
+async fn register_bridged_worker_if_needed(
+    state: &Arc<Mutex<GatewayState>>,
+    node: HardwareNode,
+    rtt_ms: f64,
+    os_name: String,
+    cpu_arch: String,
+    board_or_model: String,
+    network_channel: String,
+    display_ip_port: Option<(String, u16)>,
+) {
+    let already_has_bridge = {
+        let guard = state.lock().expect("gateway state lock");
+        guard.live_workers.contains_key(&node.id.0)
+    };
+    if !already_has_bridge {
+        if let Ok(srv) =
+            LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, node.clone(), true).await
+        {
+            let bridge_addr = srv.local_addr.to_string();
+            let mut guard = state.lock().expect("gateway state lock");
+            let live_only = guard.live_only_mode;
+            guard.register_live_worker_with_meta(
+                node.clone(),
+                bridge_addr,
+                rtt_ms.max(0.25),
+                live_only,
+                os_name.clone(),
+                cpu_arch.clone(),
+                board_or_model.clone(),
+                network_channel.clone(),
+            );
+            if let Some((dip, dport)) = display_ip_port
+                && let Some(w) = guard.live_workers.get_mut(&node.id.0)
+            {
+                w.worker_lan_ip = dip;
+                w.worker_tcp_port = dport;
+            }
+            guard.spawned_fleet_instances.push(SpawnedLocalWorkerInstance {
+                server: srv,
+                os_name,
+                cpu_arch,
+                board_or_model,
+                network_channel,
+            });
+            return;
+        }
+    }
+    let mut guard = state.lock().expect("gateway state lock");
+    if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == node.id) {
+        *existing = node;
+    } else {
+        guard.nodes.push(node);
+    }
+    guard.epoch += 1;
+    guard.recompute_plans();
+}
+
+async fn post_attach_platform(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    req: Option<Json<PlatformAttachRequest>>,
+) -> Json<PlatformAttachResponse> {
+    let params = req.map(|Json(r)| r).unwrap_or_default();
+    let family = params
+        .family
+        .unwrap_or_else(|| "apple-m4".to_string())
+        .to_ascii_lowercase();
+    let sku_slug = params.sku_slug.as_deref();
+    let (
+        apple_m4_catalog,
+        rpi_cm4_catalog,
+        tegra_x1_catalog,
+        kendryte_k230_catalog,
+        phone_farm_catalog,
+    ) = build_platform_catalogs();
+
+    let mut attached_hostnames = Vec::new();
+    let mut live_silicon_verified = false;
+    let mut apple_m4_deep_metal4 = None;
+
+    match family.as_str() {
+        "apple-m4" | "m4" => {
+            if let Some(slug) = sku_slug
+                && let Some(sku) = apple_m4_catalog.into_iter().find(|e| e.sku_slug == slug)
+            {
+                attached_hostnames.push(sku.node.hostname.clone());
+                let mut guard = state.lock().expect("gateway state lock");
+                if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == sku.node.id) {
+                    *existing = sku.node;
+                } else {
+                    guard.nodes.push(sku.node);
+                }
+                guard.epoch += 1;
+                guard.recompute_plans();
+            } else {
+                let ip = params
+                    .custom_ip
+                    .as_deref()
+                    .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+                let probe = M4MacMiniLanBridge::probe_and_verify(Some(ip));
+                live_silicon_verified = probe.physical_board_online;
+                if probe.physical_board_online && params.run_deep_bench.unwrap_or(true) {
+                    apple_m4_deep_metal4 =
+                        M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(ip, 6, 256);
+                }
+                attached_hostnames.push(probe.hardware_node.hostname.clone());
+                register_bridged_worker_if_needed(
+                    &state,
+                    probe.hardware_node,
+                    probe.execution_proof.lan_round_trip_ms,
+                    "macOS 26 (Darwin 25.0.0)".into(),
+                    "arm64e (Apple M4 · Metal 4 + AMX)".into(),
+                    probe.board_model,
+                    "LocalLAN".into(),
+                    Some((ip.to_string(), kadmium_core::DEFAULT_M4_MAC_MINI_PORT)),
+                )
+                .await;
+            }
+        }
+        "rpi-cm4" | "cm4" | "reterminal" => {
+            if let Some(slug) = sku_slug
+                && let Some(sku) = rpi_cm4_catalog.into_iter().find(|e| e.sku_slug == slug)
+            {
+                attached_hostnames.push(sku.node.hostname.clone());
+                let mut guard = state.lock().expect("gateway state lock");
+                if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == sku.node.id) {
+                    *existing = sku.node;
+                } else {
+                    guard.nodes.push(sku.node);
+                }
+                guard.epoch += 1;
+                guard.recompute_plans();
+            } else {
+                let ip = params
+                    .custom_ip
+                    .as_deref()
+                    .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+                let probe = ReTerminalCm4LanBridge::probe_and_verify(Some(ip));
+                live_silicon_verified = probe.physical_board_online;
+                attached_hostnames.push(probe.hardware_node.hostname.clone());
+                register_bridged_worker_if_needed(
+                    &state,
+                    probe.hardware_node,
+                    probe.execution_proof.lan_round_trip_ms,
+                    "Linux 6.12 (Debian Bookworm)".into(),
+                    "aarch64 (BCM2711 Cortex-A72 NEON)".into(),
+                    probe.board_model,
+                    "LocalLAN".into(),
+                    Some((ip.to_string(), kadmium_core::DEFAULT_RETERMINAL_CM4_PORT)),
+                )
+                .await;
+            }
+        }
+        "tegra-x1" | "switch" | "tegra" => {
+            let chosen = sku_slug
+                .and_then(|s| tegra_x1_catalog.iter().find(|e| e.sku_slug == s).cloned())
+                .unwrap_or_else(|| tegra_x1_catalog[0].clone());
+            attached_hostnames.push(chosen.node.hostname.clone());
+            let mut guard = state.lock().expect("gateway state lock");
+            if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == chosen.node.id) {
+                *existing = chosen.node;
+            } else {
+                guard.nodes.push(chosen.node);
+            }
+            guard.epoch += 1;
+            guard.recompute_plans();
+        }
+        "kendryte-k230" | "k230" => {
+            if let Some(slug) = sku_slug
+                && let Some(sku) = kendryte_k230_catalog.into_iter().find(|e| e.sku_slug == slug)
+            {
+                attached_hostnames.push(sku.node.hostname.clone());
+                let mut guard = state.lock().expect("gateway state lock");
+                if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == sku.node.id) {
+                    *existing = sku.node;
+                } else {
+                    guard.nodes.push(sku.node);
+                }
+                guard.epoch += 1;
+                guard.recompute_plans();
+            } else {
+                let probe = K230UsbComputeBridge::probe_attached_k230();
+                live_silicon_verified = probe.physical_board_detected;
+                attached_hostnames.push(probe.hardware_node.hostname.clone());
+                let rtt = probe
+                    .live_execution_proof
+                    .as_ref()
+                    .map(|p| p.usb_round_trip_latency_ms)
+                    .unwrap_or(0.85);
+                register_bridged_worker_if_needed(
+                    &state,
+                    probe.hardware_node,
+                    rtt,
+                    "rt-smart v1.8 (CanMV K230)".into(),
+                    "riscv64-c908-rvv1.0 (6 TOPS KPU)".into(),
+                    format!("{} [{}]", probe.board_model, probe.chip_unique_die_id),
+                    format!(
+                        "USB-CDC ({})",
+                        probe.detected_serial_port.as_deref().unwrap_or("USB")
+                    ),
+                    None,
+                )
+                .await;
+            }
+        }
+        "phone-farm" => {
+            let chosen = sku_slug
+                .and_then(|s| phone_farm_catalog.iter().find(|e| e.sku_slug == s).cloned())
+                .unwrap_or_else(|| phone_farm_catalog[1].clone());
+            attached_hostnames.push(chosen.node.hostname.clone());
+            let mut guard = state.lock().expect("gateway state lock");
+            if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == chosen.node.id) {
+                *existing = chosen.node;
+            } else {
+                guard.nodes.push(chosen.node);
+            }
+            guard.epoch += 1;
+            guard.recompute_plans();
+        }
+        "all-live" => {
+            let m4_probe = M4MacMiniLanBridge::probe_and_verify(None);
+            if m4_probe.physical_board_online {
+                live_silicon_verified = true;
+                apple_m4_deep_metal4 = M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(
+                    kadmium_core::DEFAULT_M4_MAC_MINI_IP,
+                    4,
+                    256,
+                );
+                attached_hostnames.push(m4_probe.hardware_node.hostname.clone());
+                register_bridged_worker_if_needed(
+                    &state,
+                    m4_probe.hardware_node,
+                    m4_probe.execution_proof.lan_round_trip_ms,
+                    "macOS 26 (Darwin 25.0.0)".into(),
+                    "arm64e (Apple M4 · Metal 4 + AMX)".into(),
+                    m4_probe.board_model,
+                    "LocalLAN".into(),
+                    Some((
+                        kadmium_core::DEFAULT_M4_MAC_MINI_IP.to_string(),
+                        kadmium_core::DEFAULT_M4_MAC_MINI_PORT,
+                    )),
+                )
+                .await;
+            }
+            let cm4_probe = ReTerminalCm4LanBridge::probe_and_verify(None);
+            if cm4_probe.physical_board_online {
+                live_silicon_verified = true;
+                attached_hostnames.push(cm4_probe.hardware_node.hostname.clone());
+                register_bridged_worker_if_needed(
+                    &state,
+                    cm4_probe.hardware_node,
+                    cm4_probe.execution_proof.lan_round_trip_ms,
+                    "Linux 6.12 (Debian Bookworm)".into(),
+                    "aarch64 (BCM2711 Cortex-A72 NEON)".into(),
+                    cm4_probe.board_model,
+                    "LocalLAN".into(),
+                    Some((
+                        kadmium_core::DEFAULT_RETERMINAL_CM4_IP.to_string(),
+                        kadmium_core::DEFAULT_RETERMINAL_CM4_PORT,
+                    )),
+                )
+                .await;
+            }
+            let k230_probe = K230UsbComputeBridge::probe_attached_k230();
+            if k230_probe.physical_board_detected {
+                live_silicon_verified = true;
+                attached_hostnames.push(k230_probe.hardware_node.hostname.clone());
+                register_bridged_worker_if_needed(
+                    &state,
+                    k230_probe.hardware_node,
+                    2.5,
+                    "rt-smart v1.8 (CanMV K230)".into(),
+                    "riscv64-c908-rvv1.0 (6 TOPS KPU)".into(),
+                    format!("{} [{}]", k230_probe.board_model, k230_probe.chip_unique_die_id),
+                    format!(
+                        "USB-CDC ({})",
+                        k230_probe.detected_serial_port.as_deref().unwrap_or("USB")
+                    ),
+                    None,
+                )
+                .await;
+            }
+        }
+        _ => {}
+    }
+
+    let guard = state.lock().expect("gateway state lock");
+    Json(PlatformAttachResponse {
+        attached_family: family,
+        attached_hostnames,
+        live_silicon_verified,
+        apple_m4_deep_metal4,
+        overview: guard.snapshot(),
+        workers: guard.workers_overview(),
+    })
 }

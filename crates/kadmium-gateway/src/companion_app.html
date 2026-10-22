@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kadmium Desktop Companion — Cd‑48</title>
+  <title>Kadmium Desktop Application — Cd‑48</title>
   <link rel="icon" href="/assets/Logos/kadmium-favicon.svg">
   <link rel="stylesheet" href="/tokens.css">
   <link rel="stylesheet" href="/components/bundle.css">
@@ -40,13 +40,13 @@
     }
     .top .spacer { flex: 1; }
     .shell {
-      max-width: 1180px;
+      max-width: 1280px;
       margin: 0 auto;
-      padding: var(--space-8) clamp(16px, 3.5vw, 40px) var(--space-16);
+      padding: var(--space-6) clamp(16px, 3.5vw, 40px) var(--space-16);
       display: grid;
-      gap: var(--space-6);
+      gap: var(--space-5);
     }
-    .shell > *, .two > * {
+    .shell > *, .two > *, .three > * {
       min-width: 0;
     }
     .eyebrow {
@@ -71,6 +71,45 @@
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: var(--space-5);
       align-items: stretch;
+    }
+    .three {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--space-4);
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(195px, 1fr));
+      gap: var(--space-4);
+    }
+    .stat-card {
+      background: var(--graphite-1);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      display: grid;
+      gap: 4px;
+    }
+    .stat-card .l {
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--ink-muted);
+    }
+    .stat-card .v {
+      font-family: var(--font-mono);
+      font-size: 23px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .stat-card .v.cadmium { color: var(--cadmium-text); }
+    .stat-card .v.ok { color: var(--ok); }
+    .stat-card .v.cloud { color: var(--cherenkov-text); }
+    .stat-card .m {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink-muted);
     }
     .mode-card {
       background: var(--graphite-2);
@@ -122,8 +161,41 @@
       border-bottom: 1px solid var(--line);
       color: var(--ink);
     }
-    @media (max-width: 860px) {
-      .two { grid-template-columns: 1fr; }
+    .toast-bar {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      z-index: 50;
+      background: var(--graphite-1);
+      border: 1px solid var(--cadmium-edge);
+      border-radius: var(--radius-md);
+      padding: 10px 16px;
+      box-shadow: var(--shadow-lg);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .toast-bar .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 99px;
+      background: var(--cadmium);
+    }
+    .select-box {
+      height: var(--control-md);
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-sm);
+      background: var(--graphite-0);
+      color: var(--ink);
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      padding: 0 10px;
+    }
+    @media (max-width: 900px) {
+      .two, .three { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -137,28 +209,63 @@
 (function () {
   var K = window.Kadmium, h = React.createElement;
 
+  function hex(n) {
+    try { return '0x' + BigInt(n || 0).toString(16).slice(0, 12); }
+    catch (e) { return '0x' + Number(n || 0).toString(16).slice(0, 12); }
+  }
+
   function CompanionApp() {
     var themeState = React.useState('dark'), theme = themeState[0], setTheme = themeState[1];
+    var tabState = React.useState('host'), tab = tabState[0], setTab = tabState[1];
+    var toastState = React.useState(null), toastMsg = toastState[0], setToastMsg = toastState[1];
+
     var statusState = React.useState(null), status = statusState[0], setStatus = statusState[1];
     var probeState = React.useState(null), probe = probeState[0], setProbe = probeState[1];
+    var platformsState = React.useState(null), platforms = platformsState[0], setPlatforms = platformsState[1];
+    var deepM4State = React.useState(null), deepM4 = deepM4State[0], setDeepM4 = deepM4State[1];
     var execState = React.useState(null), execReport = execState[0], setExecReport = execState[1];
     var supplyState = React.useState(null), supply = supplyState[0], setSupply = supplyState[1];
     var pairingState = React.useState(null), pairing = pairingState[0], setPairing = pairingState[1];
     var watcherState = React.useState(null), watcher = watcherState[0], setWatcher = watcherState[1];
+
     var workspaceState = React.useState('cameron-lab'), workspace = workspaceState[0], setWorkspace = workspaceState[1];
     var budgetState = React.useState('2.50'), budget = budgetState[0], setBudget = budgetState[1];
+
+    // Studio state (.ktb import, EXL3 quantizer, KV migration, FTS3 stream)
+    var impModelState = React.useState('qwen2.5-coder-32b-instruct'), impModel = impModelState[0], setImpModel = impModelState[1];
+    var impFormatState = React.useState('gguf'), impFormat = impFormatState[0], setImpFormat = impFormatState[1];
+    var impResultState = React.useState(null), impResult = impResultState[0], setImpResult = impResultState[1];
+    var exlModelState = React.useState('deepseek-v3-671b-exl3-2.5bpw'), exlModel = exlModelState[0], setExlModel = exlModelState[1];
+    var exlBpwState = React.useState('2.55'), exlBpw = exlBpwState[0], setExlBpw = exlBpwState[1];
+    var exlResultState = React.useState(null), exlResult = exlResultState[0], setExlResult = exlResultState[1];
+    var kvMigState = React.useState(null), kvMig = kvMigState[0], setKvMig = kvMigState[1];
+    var ftsStreamState = React.useState(null), ftsStream = ftsStreamState[0], setFtsStream = ftsStreamState[1];
+    var busyState = React.useState(false), busy = busyState[0], setBusy = busyState[1];
+
+    function notify(msg) {
+      setToastMsg(msg);
+      setTimeout(function () { setToastMsg(null); }, 4200);
+    }
+
+    function refreshAll() {
+      fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
+      fetch('/api/v1/host/probe').then(function (r) { return r.json(); }).then(setProbe);
+      fetch('/api/v1/platforms/overview').then(function (r) { return r.json(); }).then(function (d) {
+        setPlatforms(d);
+        if (d && d.apple_m4_deep_metal4) setDeepM4(d.apple_m4_deep_metal4);
+      });
+      fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
+      fetch('/api/v1/supply/marketplace').then(function (r) { return r.json(); }).then(setSupply);
+      fetch('/api/v1/companion/pairing').then(function (r) { return r.json(); }).then(setPairing);
+      fetch('/api/v1/cloud-shield/watcher').then(function (r) { return r.json(); }).then(setWatcher);
+    }
 
     React.useEffect(function () {
       document.documentElement.setAttribute('data-theme', theme);
     }, [theme]);
 
     React.useEffect(function () {
-      fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
-      fetch('/api/v1/host/probe').then(function (r) { return r.json(); }).then(setProbe);
-      fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
-      fetch('/api/v1/supply/marketplace').then(function (r) { return r.json(); }).then(setSupply);
-      fetch('/api/v1/companion/pairing').then(function (r) { return r.json(); }).then(setPairing);
-      fetch('/api/v1/cloud-shield/watcher').then(function (r) { return r.json(); }).then(setWatcher);
+      refreshAll();
     }, []);
 
     function approveLanPeer(candidateId, newStatus) {
@@ -168,6 +275,7 @@
         return Object.assign({}, c, { status: newStatus });
       });
       setPairing(Object.assign({}, pairing, { lan_candidates: nextCandidates }));
+      notify('LAN peer ' + candidateId + ' approved as ' + newStatus);
     }
 
     function updateSupplyPolicy(nextEnabled, nextHours, nextPayoutCredits) {
@@ -183,7 +291,10 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updated)
-      }).then(function (r) { return r.json(); }).then(setSupply);
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        setSupply(d);
+        notify('Reactor Supply Grid policy updated (' + (nextEnabled ? nextHours + 'h/day active' : 'paused') + ')');
+      });
     }
 
     function switchMode(useCloud) {
@@ -206,7 +317,10 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
-      }).then(function (r) { return r.json(); }).then(setStatus);
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        setStatus(d);
+        notify(useCloud ? 'Linked to Kadmium Cloud (' + workspace + ')' : 'Switched to 100% Self-Hosted Open-Source mode ($0.00/hr)');
+      });
     }
 
     function setHostPoliteMode(scenario) {
@@ -217,87 +331,417 @@
       }).then(function () {
         fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
         fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
+        notify(scenario === 'gaming_mode' ? 'Polite Governor: Host yielded to 15% (<200ms swapchain hook) — shards shifted to Mac mini' : 'Polite Governor: Restored 100% Dedicated Idle capacity');
       });
+    }
+
+    function triggerKvMigrate() {
+      setBusy(true);
+      fetch('/api/v1/kv-cache/migrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: 'companion-polite-yield-01', start_layer: 0, end_layer: 15 })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        setKvMig(d);
+        notify('Migrated ' + d.pages_migrated + ' KV-cache pages (' + d.tokens_preserved + ' tokens) over TCP in ' + d.total_migration_wall_ms.toFixed(2) + ' ms');
+      }).finally(function () { setBusy(false); });
+    }
+
+    function attachPlatform(family, skuSlug, label) {
+      setBusy(true);
+      fetch('/api/v1/platforms/attach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ family: family, sku_slug: skuSlug || undefined, run_deep_bench: family === 'apple-m4' && !skuSlug })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (d.apple_m4_deep_metal4) setDeepM4(d.apple_m4_deep_metal4);
+        fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
+        fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
+        fetch('/api/v1/supply/marketplace').then(function (r) { return r.json(); }).then(setSupply);
+        notify('Attached ' + (label || (d.attached_hostnames && d.attached_hostnames.join(', ')) || family) + (d.live_silicon_verified ? ' (LIVE SILICON VERIFIED)' : ''));
+      }).finally(function () { setBusy(false); });
+    }
+
+    function runM4DeepSuite() {
+      setBusy(true);
+      fetch('/api/v1/m4-mac-mini/deep-suite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ iterations: 8, seq_len: 256 })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        if (d.deep_metal4_suite) {
+          setDeepM4(d.deep_metal4_suite);
+          notify('Apple M4 Deep Metal 4 Suite: 1024×1024 GEMM ' + d.deep_metal4_suite.tiled_gemm1024_gflops.toFixed(1) + ' GFLOP/s · 10-Core GCD ' + d.deep_metal4_suite.gcd_10core_speedup.toFixed(2) + '×');
+        } else {
+          notify('Apple M4 probed (' + d.probe.lan_endpoint + ')');
+        }
+      }).finally(function () { setBusy(false); });
+    }
+
+    function runImportKtb() {
+      setBusy(true);
+      fetch('/api/v1/models/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: impModel, format_hint: impFormat, start_layer: 0, end_layer: 3 })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        setImpResult(d);
+        notify('Compiled 64 KiB page-aligned .ktb bank: ' + d.compiled_ktb_path + ' (Merkle ' + hex(d.merkle_root_fnv64) + ')');
+      }).finally(function () { setBusy(false); });
+    }
+
+    function runExl3Quantize() {
+      setBusy(true);
+      fetch('/api/v1/models/exl3-convert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: exlModel, target_bpw: parseFloat(exlBpw) || 2.55 })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        setExlResult(d);
+        notify('EXL3 / QTIP Trellis Quantization complete: +' + d.snr_gain_over_scalar_db.toFixed(2) + ' dB SNR gain · -' + d.vram_savings_vs_q4k_gb.toFixed(1) + ' GB vs Q4_K');
+      }).finally(function () { setBusy(false); });
+    }
+
+    function runFts3Stream() {
+      setBusy(true);
+      fetch('/api/v1/fts3/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        setFtsStream(d);
+        notify('Streamed ' + d.shard_name + ' (' + (d.ktb_total_bytes / 1024).toFixed(0) + ' KiB) at ' + d.aggregate_goodput_mbps.toFixed(0) + ' Mbps');
+      }).finally(function () { setBusy(false); });
     }
 
     var wordmark = theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg';
     var isCloud = status && status.mode && status.mode.KadmiumCloudManaged;
+    var m4 = platforms && platforms.apple_m4_probe;
+    var cm4 = platforms && platforms.rpi_cm4_probe;
+    var k230 = platforms && platforms.kendryte_k230_probe;
 
     return h(React.Fragment, null,
       h('header', { className: 'top' },
         h('img', { src: wordmark, alt: 'Kadmium' }),
-        h('span', { className: 'cd' }, 'Cd‑48 · Companion v' + (status ? status.app_version : '0.1.0')),
+        h('span', { className: 'cd' }, 'Cd‑48 · Desktop App v' + (status ? status.app_version : '0.1.0')),
         status ? h(K.Badge, { tone: isCloud ? 'cloud' : 'local', dot: true }, isCloud ? 'kadmium cloud' : 'self-hosted oss') : null,
+        m4 && m4.physical_board_online ? h(K.Badge, { tone: 'ok', dot: true }, 'Apple M4 Live (' + m4.lan_endpoint + ')') : null,
         h('span', { className: 'spacer' }),
+        h(K.Button, { variant: 'primary', size: 'sm', onClick: function () { attachPlatform('all-live', null, 'All Live LAN/USB Silicon'); } }, 'Auto-Attach Live Silicon'),
         h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/'; } }, 'Control room'),
-        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/site'; } }, 'kadmium.ai site'),
+        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/#/platforms'; } }, 'Platforms'),
         h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/docs'; } }, 'Docs'),
         h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { setTheme(theme === 'dark' ? 'light' : 'dark'); } }, theme === 'dark' ? 'Light theme' : 'Dark theme')),
 
+      toastMsg ? h('div', { className: 'toast-bar', role: 'status' }, h('span', { className: 'dot' }), h('span', null, toastMsg)) : null,
+
       h('main', { className: 'shell' },
-        h('section', { className: 'panel' },
-          h('p', { className: 'eyebrow' }, 'Operating mode · one binary for open-source and Kadmium Cloud'),
-          h('h1', { className: 'headline', style: { margin: '0 0 var(--space-4)' } }, 'Desktop Companion Node Agent'),
-          h('div', { className: 'two' },
-            h('div', { className: 'mode-card ' + (!isCloud ? 'active-local' : '') },
-              h('div', { className: 'kd-row' },
-                h(K.Badge, { tone: 'local', dot: !isCloud }, 'self-hosted'),
-                h('span', { className: 'code-sm', style: { marginLeft: 'auto' } }, '$0.00 / hr')),
-              h('div', { className: 'title' }, 'Open-source local mesh'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'Connects strictly to your LAN coordinator (127.0.0.1:7848) via UDP KDMD beacons. Zero cloud account required.'),
-              h(K.Button, {
-                variant: !isCloud ? 'primary' : 'quiet',
-                onClick: function () { switchMode(false); }
-              }, !isCloud ? 'Active: Self-hosted mode' : 'Switch to self-hosted')),
+        h('div', { className: 'stats' },
+          h('div', { className: 'stat-card' },
+            h('span', { className: 'l' }, 'Local Host Governor'),
+            h('span', { className: 'v cadmium' }, status ? (status.local_host_polite_state === 'GamingOrHeavyApp' ? 'Yielded (15%)' : 'Idle Dedicated (100%)') : 'Probing…'),
+            h('span', { className: 'm' }, probe ? probe.local_node.hostname + ' · q* ' + probe.q_star_ratio : 'DXGI / IOKit < 200 ms hook')),
+          h('div', { className: 'stat-card' },
+            h('span', { className: 'l' }, 'Active Cluster Nodes'),
+            h('span', { className: 'v' }, status ? status.active_cluster_nodes + ' nodes' : '—'),
+            h('span', { className: 'm' }, 'Leader: ' + (status ? status.active_coordinator_leader : 'local'))),
+          h('div', { className: 'stat-card' },
+            h('span', { className: 'l' }, 'Apple M4 Metal 4 Bridge'),
+            h('span', { className: 'v ' + (m4 && m4.physical_board_online ? 'ok' : '') }, m4 ? (m4.physical_board_online ? 'ONLINE · ' + m4.execution_proof.amx_sgemm_512_gflops.toFixed(0) + ' GF/s' : 'Standby') : 'Probing…'),
+            h('span', { className: 'm' }, m4 ? m4.lan_endpoint + ' · ' + m4.board_model : '192.168.40.237:7860')),
+          h('div', { className: 'stat-card' },
+            h('span', { className: 'l' }, 'Pipeline Throughput'),
+            h('span', { className: 'v cadmium' }, execReport ? execReport.effective_tokens_per_sec + ' tok/s' : '—'),
+            h('span', { className: 'm' }, execReport ? execReport.speculative_verification.effective_speedup_multiplier + '× speculative speedup' : 'Asymmetric Q* pipeline')),
+          h('div', { className: 'stat-card' },
+            h('span', { className: 'l' }, 'Reactor Supply Net'),
+            h('span', { className: 'v ' + (supply && supply.policy.enabled ? 'ok' : '') }, supply ? (supply.policy.enabled ? '+$' + (supply.total_net_monthly_profit_after_power_usd || 0).toFixed(0) + '/mo' : 'Paused') : '—'),
+            h('span', { className: 'm' }, '75% Host · $0.14/kWh power deducted'))),
 
-            h('div', { className: 'mode-card ' + (isCloud ? 'active-cloud' : '') },
-              h('div', { className: 'kd-row' },
-                h(K.Badge, { tone: 'cloud', dot: Boolean(isCloud) }, 'kadmium cloud'),
-                h('span', { className: 'code-sm', style: { marginLeft: 'auto' } }, status ? '$' + status.current_hourly_cloud_burn_usd.toFixed(2) + ' / hr active' : '$0.89 / GPU-hr')),
-              h('div', { className: 'title' }, 'Kadmium Cloud + Failover Shield'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                'Links this node to kadmium.ai for WAN hole-punching, multi-provider spot arbitrage, and < 400 ms bidirectional failover.'),
-              h('div', { className: 'two' },
-                h(K.Input, { label: 'Workspace', mono: true, value: workspace, onChange: function (e) { setWorkspace(e.target.value); } }),
-                h(K.Input, { label: 'Max spend cap', mono: true, prefix: '$', value: budget, onChange: function (e) { setBudget(e.target.value); } })),
-              h(K.Button, {
-                variant: 'cloud',
-                icon: 'cloud',
-                onClick: function () { switchMode(true); }
-              }, isCloud ? 'Active: Linked to ' + workspace : 'Link to Kadmium Cloud')))),
+        h(K.Tabs, {
+          label: 'Desktop application views',
+          value: tab,
+          onChange: setTab,
+          items: [
+            { id: 'host', label: 'Host & Polite Governor' },
+            { id: 'platforms', label: 'Silicon Platforms & LAN Bridges', count: platforms ? platforms.total_catalog_skus : 26 },
+            { id: 'studio', label: 'Local .ktb Studio & EXL3 Quantizer' },
+            { id: 'reactor', label: 'Reactor Supply Grid' },
+            { id: 'shield', label: 'CloudShield Watcher' }
+          ]
+        }),
 
-        probe ? h('section', { className: 'two' },
-          h('div', { className: 'panel' },
-            h('p', { className: 'eyebrow' }, 'This machine · live hardware profiler'),
-            h(K.NodeCard, {
-              name: probe.local_node.hostname,
-              hardware: String(probe.local_node.backend || probe.local_node.compute_backend || 'cpu').toLowerCase() + ' · ' + probe.local_node.memory.vram_gb + ' gb vram · ' + probe.local_node.memory.system_ram_gb + ' gb ram · q* ' + probe.q_star_ratio,
-              kind: 'desktop',
-              placement: 'local',
-              status: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 'yielded' : 'resident',
-              shards: 'leader: ' + (status ? status.active_coordinator_leader : 'main-gaming-pc'),
-              meters: [
-                { label: 'VRAM', value: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 0.5 : Math.max(1.2, probe.local_node.memory.vram_gb * 0.6), max: Math.max(4, probe.local_node.memory.vram_gb), unit: 'GB' },
-                { label: 'RAM', value: Math.round(probe.local_node.memory.system_ram_gb * 0.35), max: probe.local_node.memory.system_ram_gb, unit: 'GB' },
-                { label: 'NVMe', value: probe.local_node.memory.nvme_read_bw_gbps, max: 14, unit: 'GB/s' }
-              ]
-            })),
-          h('div', { className: 'panel' },
-            h('p', { className: 'eyebrow' }, 'Polite host governor · < 200 ms gaming & battery auto-yield'),
-            h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 var(--space-3)' } },
-              'When you launch a game or unplug a laptop, Kadmium yields local VRAM/compute within 200 ms and hands active shards to your Mac Mini.'),
-            h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-4)' } },
-              h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { setHostPoliteMode('gaming_mode'); } }, 'Simulate gaming yield (15 %)'),
-              h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { setHostPoliteMode('reset'); } }, 'Restore dedicated idle (100 %)')),
-            h(K.Input, {
-              label: 'LAN / WAN Join Ticket (kdm1)',
-              mono: true,
-              defaultValue: probe.join_ticket_token,
-              hint: 'UDP LAN beacon active on port 7849 (KDMD magic).'
-            }))) : null,
+        tab === 'host' ? h(React.Fragment, null,
+          h('section', { className: 'panel' },
+            h('p', { className: 'eyebrow' }, 'Operating mode · one binary for open-source and Kadmium Cloud'),
+            h('h1', { className: 'headline', style: { margin: '0 0 var(--space-4)' } }, 'Desktop Companion Node Agent'),
+            h('div', { className: 'two' },
+              h('div', { className: 'mode-card ' + (!isCloud ? 'active-local' : '') },
+                h('div', { className: 'kd-row' },
+                  h(K.Badge, { tone: 'local', dot: !isCloud }, 'self-hosted'),
+                  h('span', { className: 'code-sm', style: { marginLeft: 'auto' } }, '$0.00 / hr')),
+                h('div', { className: 'title' }, 'Open-source local mesh'),
+                h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
+                  'Connects strictly to your LAN coordinator (127.0.0.1:7848) via UDP KDMD beacons. Zero cloud account required.'),
+                h(K.Button, {
+                  variant: !isCloud ? 'primary' : 'quiet',
+                  onClick: function () { switchMode(false); }
+                }, !isCloud ? 'Active: Self-hosted mode' : 'Switch to self-hosted')),
 
-        supply ? h('section', { className: 'panel' },
+              h('div', { className: 'mode-card ' + (isCloud ? 'active-cloud' : '') },
+                h('div', { className: 'kd-row' },
+                  h(K.Badge, { tone: 'cloud', dot: Boolean(isCloud) }, 'kadmium cloud'),
+                  h('span', { className: 'code-sm', style: { marginLeft: 'auto' } }, status ? '$' + status.current_hourly_cloud_burn_usd.toFixed(2) + ' / hr active' : '$0.89 / GPU-hr')),
+                h('div', { className: 'title' }, 'Kadmium Cloud + Failover Shield'),
+                h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
+                  'Links this node to kadmium.ai for WAN hole-punching, multi-provider spot arbitrage, and < 400 ms bidirectional failover.'),
+                h('div', { className: 'two' },
+                  h(K.Input, { label: 'Workspace', mono: true, value: workspace, onChange: function (e) { setWorkspace(e.target.value); } }),
+                  h(K.Input, { label: 'Max spend cap', mono: true, prefix: '$', value: budget, onChange: function (e) { setBudget(e.target.value); } })),
+                h(K.Button, {
+                  variant: 'cloud',
+                  icon: 'cloud',
+                  onClick: function () { switchMode(true); }
+                }, isCloud ? 'Active: Linked to ' + workspace : 'Link to Kadmium Cloud')))),
+
+          probe ? h('section', { className: 'two' },
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'This machine · live hardware profiler'),
+              h(K.NodeCard, {
+                name: probe.local_node.hostname,
+                hardware: String(probe.local_node.backend || probe.local_node.compute_backend || 'cpu').toLowerCase() + ' · ' + probe.local_node.memory.vram_gb + ' gb vram · ' + probe.local_node.memory.system_ram_gb + ' gb ram · q* ' + probe.q_star_ratio,
+                kind: 'desktop',
+                placement: 'local',
+                status: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 'yielded' : 'resident',
+                shards: 'leader: ' + (status ? status.active_coordinator_leader : 'main-gaming-pc'),
+                meters: [
+                  { label: 'VRAM', value: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 0.5 : Math.max(1.2, probe.local_node.memory.vram_gb * 0.6), max: Math.max(4, probe.local_node.memory.vram_gb), unit: 'GB' },
+                  { label: 'RAM', value: Math.round(probe.local_node.memory.system_ram_gb * 0.35), max: probe.local_node.memory.system_ram_gb, unit: 'GB' },
+                  { label: 'NVMe', value: probe.local_node.memory.nvme_read_bw_gbps, max: 14, unit: 'GB/s' }
+                ]
+              })),
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Polite host governor · < 200 ms gaming & battery auto-yield'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 var(--space-3)' } },
+                'When you launch a game or unplug a laptop, Kadmium yields local VRAM/compute within 200 ms and hands active shards & KV-cache pages to your Apple M4 Mac mini.'),
+              h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)', flexWrap: 'wrap', gap: '8px' } },
+                h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { setHostPoliteMode('gaming_mode'); } }, 'Simulate gaming yield (15 %)'),
+                h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { setHostPoliteMode('reset'); } }, 'Restore dedicated idle (100 %)'),
+                h(K.Button, { variant: 'primary', size: 'sm', disabled: busy, onClick: triggerKvMigrate }, 'Migrate KV-Cache to LAN peer')),
+              kvMig ? h('div', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ok)', marginBottom: 'var(--space-3)' } },
+                '✓ Migrated ' + kvMig.pages_migrated + ' KV pages (' + kvMig.tokens_preserved + ' tokens) ' + kvMig.source_hostname + ' → ' + kvMig.target_hostname + ' in ' + kvMig.total_migration_wall_ms.toFixed(2) + ' ms (bit_exact=' + String(kvMig.ack.bit_exact_verified) + ')') : null,
+              h(K.Input, {
+                label: 'LAN / WAN Join Ticket (kdm1)',
+                mono: true,
+                defaultValue: probe.join_ticket_token,
+                hint: 'UDP LAN beacon active on port 7849 (KDMD magic).'
+              }))) : null,
+
+          pairing ? h('section', { className: 'two' },
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Zero-click LAN pairing · UDP KDMD beacon queue'),
+              h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Approve discovered local peers via 6-digit SAS code'),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'DISCOVERED PEER'),
+                    h('th', null, 'SAS CODE'),
+                    h('th', null, 'STATUS'),
+                    h('th', null, 'ACTION'))),
+                  h('tbody', null, pairing.lan_candidates.map(function (c) {
+                    var approved = c.status !== 'PendingTrayApproval';
+                    return h('tr', { key: c.candidate_id },
+                      h('td', null,
+                        h('div', { style: { color: 'var(--ink)' } }, c.hostname),
+                        h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, c.hardware_summary)),
+                      h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, c.short_auth_code),
+                      h('td', null,
+                        h(K.Badge, { tone: approved ? 'ok' : 'warn', dot: true },
+                          c.status === 'ApprovedTrustedCore' ? 'trusted core' : c.status === 'ApprovedVerifiedMiddleOnly' ? 'middle only' : 'pending tray')),
+                      h('td', null,
+                        h('div', { className: 'kd-row' },
+                          h(K.Button, {
+                            variant: c.status === 'ApprovedTrustedCore' ? 'primary' : 'quiet',
+                            size: 'sm',
+                            onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedTrustedCore'); }
+                          }, 'TrustedCore'),
+                          h(K.Button, {
+                            variant: c.status === 'ApprovedVerifiedMiddleOnly' ? 'primary' : 'quiet',
+                            size: 'sm',
+                            onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedVerifiedMiddleOnly'); }
+                          }, 'Middle-only'))));
+                  }))))),
+
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'OS swapchain & thermal hooks · ' + pairing.os_hysteresis.hook_backend),
+              h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Fast-yield (' + pairing.os_hysteresis.fast_yield_sla_ms + ' ms) & 15 s anti-thrash hysteresis'),
+              h('div', { className: 'table-wrap' },
+                h('table', { className: 'mono-table' },
+                  h('thead', null, h('tr', null,
+                    h('th', null, 'T (MS)'),
+                    h('th', null, 'OS HOOK EVENT'),
+                    h('th', null, 'STATE'),
+                    h('th', null, 'VRAM CAP'))),
+                  h('tbody', null, pairing.os_hysteresis.timeline.map(function (step) {
+                    return h('tr', { key: step.timestamp_ms },
+                      h('td', null, step.timestamp_ms + ' ms'),
+                      h('td', null, step.event_label),
+                      h('td', null, h(K.Badge, { tone: step.new_state === 'GamingOrHeavyApp' ? 'warn' : 'local' }, step.new_state)),
+                      h('td', { style: { color: 'var(--cadmium-text)' } }, step.allocated_vram_gb.toFixed(1) + ' GB'));
+                  })))))) : null) : null,
+
+        tab === 'platforms' ? (platforms ? h(React.Fragment, null,
+          h('section', { className: 'two' },
+            h('div', { className: 'panel' },
+              h('div', { className: 'kd-row', style: { justifyContent: 'space-between', marginBottom: 'var(--space-2)' } },
+                h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Apple M4 Silicon Platform Bridge · ' + m4.lan_endpoint),
+                h(K.Badge, { tone: m4.physical_board_online ? 'ok' : 'warn', dot: true }, m4.physical_board_online ? 'LIVE METAL 4 + AMX' : 'Standby')),
+              h('div', { className: 'title', style: { marginBottom: '8px' } }, m4.board_model + ' (' + m4.telemetry.cpu_brand + ')'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 12px', fontSize: '13px' } },
+                m4.telemetry.cpu_cores_total + ' CPU cores (' + m4.telemetry.cpu_cores_perf + 'P+' + m4.telemetry.cpu_cores_eff + 'E) · ' + m4.telemetry.gpu_cores + ' Metal 4 GPU cores · ' + m4.telemetry.ane_cores + ' ANE cores · ' + m4.telemetry.unified_memory_gib + ' GiB LPDDR5X @ ' + m4.telemetry.unified_mem_bw_gbps + ' GB/s · NVMe ' + m4.telemetry.ssd_free_gib.toFixed(1) + ' GiB free'),
+              h('div', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ink)', marginBottom: '12px', display: 'grid', gap: '4px' } },
+                h('div', null, '• Metal 4 64×64 GEMM: ' + m4.execution_proof.metal_gpu_gemm_64x64_ms.toFixed(3) + ' ms (FNV-1a ' + hex(m4.execution_proof.metal_gpu_gemm_fnv1a64) + ')'),
+                h('div', null, '• Apple M4 AMX SGEMM (512×512): ' + m4.execution_proof.amx_sgemm_512_gflops.toFixed(1) + ' GFLOP/s (' + m4.execution_proof.amx_sgemm_512_ms.toFixed(3) + ' ms)'),
+                h('div', null, '• HW ARMv9.2-A CRC32C (.ktb verify): ' + m4.execution_proof.hw_crc32c_gbps.toFixed(2) + ' GB/s · RTT ' + m4.execution_proof.lan_round_trip_ms.toFixed(2) + ' ms')),
+              h('div', { className: 'kd-row', style: { gap: '8px', flexWrap: 'wrap' } },
+                h(K.Button, { variant: 'primary', size: 'sm', disabled: busy, onClick: function () { attachPlatform('apple-m4', null, m4.board_model); } }, 'Attach Live M4 to Cluster'),
+                h(K.Button, { variant: 'quiet', size: 'sm', disabled: busy, onClick: runM4DeepSuite }, busy ? 'Running Metal 4…' : 'Run 5-Kernel Deep Metal 4 Suite'))),
+
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Deep Metal 4 + 10-Core GCD + Zero-Copy mmap .ktb Telemetry'),
+              deepM4 ? h('div', { style: { fontFamily: 'var(--font-mono)', fontSize: '12px', display: 'grid', gap: '8px' } },
+                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '1. Metal 4 Tiled 1024×1024 GEMM: '), deepM4.tiled_gemm1024_gflops.toFixed(2) + ' GFLOP/s (' + deepM4.tiled_gemm1024_ms.toFixed(3) + ' ms · ' + hex(deepM4.tiled_gemm1024_fnv1a64) + ')'),
+                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '2. Metal 4 Fused RMSNorm + RoPE: '), deepM4.rmsnorm_rope_ms.toFixed(4) + ' ms · Bit-Exact RepOps ' + hex(deepM4.rmsnorm_rope_repops_digest)),
+                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '3. Metal 4 Flash-GQA Paged (256 KV): '), deepM4.flash_gqa_seq256_ms.toFixed(4) + ' ms · RepOps ' + hex(deepM4.flash_gqa_repops_digest)),
+                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '4. 10-Core GCD (4P+6E) Scaling: '), deepM4.gcd_1core_256_ms.toFixed(3) + ' ms → ' + deepM4.gcd_10core_256_ms.toFixed(3) + ' ms (' + deepM4.gcd_10core_speedup.toFixed(2) + '× speedup)'),
+                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '5. ARMv9.2 INT8 DotProd & FP16: '), 'vdotq_s32 ' + deepM4.armv9_int8_dotprod_gops.toFixed(1) + ' GOPS · vfmaq_f16 ' + deepM4.armv9_fp16_neon_gflops.toFixed(1) + ' GFLOP/s'),
+                h('div', null, h('strong', { style: { color: 'var(--ok)' } }, '6. Zero-Copy mmap .ktb -> Metal 4: '), deepM4.zerocopy_mmap_ktb_ms.toFixed(4) + ' ms · NoCopy verified=' + String(deepM4.zerocopy_mmap_verified) + ' (' + hex(deepM4.zerocopy_mmap_repops_digest) + ')'))
+              : h('p', { className: 'body', style: { color: 'var(--ink-muted)' } }, 'Click "Run 5-Kernel Deep Metal 4 Suite" to benchmark tiled 1024×1024 GEMM, Fused RMSNorm+RoPE, Flash-GQA, 10-Core GCD, and Zero-Copy mmap .ktb on Apple M4 silicon.'))),
+
+          h('section', { className: 'three' },
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Raspberry Pi CM4 (BCM2711)'),
+              h('div', { className: 'title', style: { marginBottom: '6px' } }, cm4.board_model),
+              h('p', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ink-muted)', margin: '0 0 12px' } },
+                cm4.lan_endpoint + ' · ' + cm4.telemetry.temp_c.toFixed(1) + '°C · NEON 64² GEMM ' + cm4.execution_proof.neon_gemm_64x64_ms.toFixed(3) + ' ms · 6 CM4 carrier SKUs'),
+              h(K.Button, { size: 'sm', variant: 'quiet', onClick: function () { attachPlatform('rpi-cm4', null, cm4.board_model); } }, 'Attach CM4 Node')),
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'NVIDIA Tegra X1 / X1+ (T210/T214)'),
+              h('div', { className: 'title', style: { marginBottom: '6px' } }, platforms.tegra_x1_active_spec.display_name),
+              h('p', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ink-muted)', margin: '0 0 12px' } },
+                '256 Maxwell CUDA cores (sm_53 FP16) · BQ24193 80% battery bypass · 5 Switch / Jetson / Shield SKUs'),
+              h(K.Button, { size: 'sm', variant: 'quiet', onClick: function () { attachPlatform('tegra-x1', null, platforms.tegra_x1_active_spec.display_name); } }, 'Attach Tegra X1 Node')),
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Kendryte K230 RISC-V + Phone Farm'),
+              h('div', { className: 'title', style: { marginBottom: '6px' } }, k230.board_model + ' & 20-Slot Box'),
+              h('p', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ink-muted)', margin: '0 0 12px' } },
+                'Xuantie C908 RVV 1.0 + 6 TOPS KPU (' + k230.chip_unique_die_id + ') · 20× Snapdragon 865 160 GB UMA'),
+              h('div', { className: 'kd-row', style: { gap: '8px' } },
+                h(K.Button, { size: 'sm', variant: 'quiet', onClick: function () { attachPlatform('kendryte-k230', null, k230.board_model); } }, 'Attach K230'),
+                h(K.Button, { size: 'sm', variant: 'quiet', onClick: function () { attachPlatform('phone-farm', 'sd865', '20-Slot Phone Farm'); } }, 'Attach Phone Farm')))),
+
+          h('section', { className: 'panel' },
+            h('p', { className: 'eyebrow' }, 'Unified Silicon Platform Catalog · 26 SKUs across 5 platform families'),
+            h('div', { className: 'table-wrap' },
+              h('table', { className: 'mono-table' },
+                h('thead', null, h('tr', null,
+                  h('th', null, 'FAMILY'),
+                  h('th', null, 'PRODUCT / CARRIER FORM FACTOR'),
+                  h('th', null, 'SILICON TIER'),
+                  h('th', null, 'HOSTNAME'),
+                  h('th', null, 'COMPUTE'),
+                  h('th', null, 'FAST MEMORY'),
+                  h('th', null, 'q*'),
+                  h('th', null, 'ACTION'))),
+                h('tbody', null, [].concat(
+                  platforms.apple_m4_catalog,
+                  platforms.rpi_cm4_catalog,
+                  platforms.tegra_x1_catalog,
+                  platforms.kendryte_k230_catalog,
+                  platforms.phone_farm_catalog
+                ).map(function (s) {
+                  return h('tr', { key: s.family + '-' + s.sku_slug },
+                    h('td', null, h(K.Badge, { tone: s.family === 'apple-m4' ? 'local' : 'neutral' }, s.family)),
+                    h('td', { style: { fontWeight: 600 } }, s.form_factor),
+                    h('td', null, s.silicon_tier),
+                    h('td', null, s.node.hostname),
+                    h('td', null, s.node.fp16_tflops.toFixed(2) + ' TF · ' + s.node.int4_tops.toFixed(1) + ' TOPS'),
+                    h('td', null, (s.node.memory.unified_mem_gb || s.node.memory.system_ram_gb).toFixed(1) + ' GB @ ' + (s.node.memory.unified_mem_bw_gbps || s.node.memory.system_ram_bw_gbps).toFixed(1) + ' GB/s'),
+                    h('td', null, s.q_star_ratio.toFixed(2)),
+                    h('td', null, h(K.Button, {
+                      size: 'sm',
+                      variant: 'quiet',
+                      onClick: function () { attachPlatform(s.family, s.sku_slug, s.form_factor + ' (' + s.silicon_tier + ')'); }
+                    }, 'Attach')));
+                })))))
+        ) : h('div', { className: 'panel' }, 'Probing silicon platforms…')) : null,
+
+        tab === 'studio' ? h(React.Fragment, null,
+          h('section', { className: 'two' },
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Local GGUF / SafeTensors → 64 KiB .ktb Disk Importer'),
+              h('div', { className: 'title', style: { marginBottom: '8px' } }, 'Zero-Copy mmap / io_uring / Metal NoCopy Tensor Bank Compiler'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 12px', fontSize: '13px' } },
+                'Transcodes local .gguf v3 or .safetensors weights into a 64 KiB page-aligned .ktb archive verified by an FNV-1a64 Merkle tree.'),
+              h('div', { className: 'two', style: { marginBottom: '12px' } },
+                h(K.Input, { label: 'Model ID', mono: true, value: impModel, onChange: function (e) { setImpModel(e.target.value); } }),
+                h('div', null,
+                  h('div', { style: { fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--ink-muted)', marginBottom: '6px' } }, 'SOURCE FORMAT'),
+                  h('select', { className: 'select-box', style: { width: '100%' }, value: impFormat, onChange: function (e) { setImpFormat(e.target.value); } },
+                    h('option', { value: 'gguf' }, 'GGUF v3 (.gguf)'),
+                    h('option', { value: 'safetensors' }, 'HuggingFace SafeTensors (.safetensors)')))),
+              h('div', { className: 'kd-row', style: { gap: '8px' } },
+                h(K.Button, { variant: 'primary', size: 'sm', disabled: busy, onClick: runImportKtb }, busy ? 'Compiling .ktb…' : 'Import & Compile .ktb Bank'),
+                h(K.Button, { variant: 'quiet', size: 'sm', disabled: busy, onClick: runFts3Stream }, 'Stream .ktb Across LAN Swarm')),
+              impResult ? h('div', { style: { marginTop: '14px', fontFamily: 'var(--font-mono)', fontSize: '11.5px', display: 'grid', gap: '4px', color: 'var(--ok)' } },
+                h('div', null, '✓ Compiled .ktb: ' + impResult.compiled_ktb_path + ' (' + (impResult.ktb_size_bytes / 1024).toFixed(0) + ' KiB · ' + impResult.ktb_page_count + ' × 64 KiB pages)'),
+                h('div', null, '✓ Merkle Root (FNV64): ' + hex(impResult.merkle_root_fnv64) + ' · 64 KiB Alignment Verified=' + String(impResult.zero_copy_alignment_verified))) : null,
+              ftsStream ? h('div', { style: { marginTop: '10px', fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--cadmium-text)' } },
+                '✓ FTS3 Swarm Stream: ' + ftsStream.shard_name + ' → ' + ftsStream.target_receipts.length + ' workers at ' + ftsStream.aggregate_goodput_mbps.toFixed(0) + ' Mbps') : null),
+
+            h('div', { className: 'panel' },
+              h('p', { className: 'eyebrow' }, 'Distributed EXL3 / QTIP Trellis Quantizer'),
+              h('div', { className: 'title', style: { marginBottom: '8px' } }, 'FWHT Incoherence + On-the-Fly Hessian + Fused Viterbi'),
+              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 12px', fontSize: '13px' } },
+                'Partitions extreme-compression trellis quantization across your desktop GPU, Apple M4 Mac mini, and LAN workers in a single pass.'),
+              h('div', { className: 'two', style: { marginBottom: '12px' } },
+                h(K.Input, { label: 'Target Model', mono: true, value: exlModel, onChange: function (e) { setExlModel(e.target.value); } }),
+                h(K.Input, { label: 'Target Bitrate (bpw)', mono: true, value: exlBpw, onChange: function (e) { setExlBpw(e.target.value); } })),
+              h(K.Button, { variant: 'primary', size: 'sm', disabled: busy, onClick: runExl3Quantize }, busy ? 'Quantizing…' : 'Run Distributed EXL3 Conversion'),
+              exlResult ? h('div', { style: { marginTop: '14px', fontFamily: 'var(--font-mono)', fontSize: '11.5px', display: 'grid', gap: '4px' } },
+                h('div', { style: { color: 'var(--ok)' } }, '✓ Footprint: ' + exlResult.original_fp16_size_gb.toFixed(1) + ' GB (FP16) → ' + exlResult.exl3_ktb_size_gb.toFixed(1) + ' GB (EXL3 .ktb) [-' + exlResult.vram_savings_vs_q4k_gb.toFixed(1) + ' GB vs Q4_K]'),
+                h('div', null, '• Fused Viterbi SNR: ' + exlResult.exl3_viterbi_snr_db.toFixed(2) + ' dB (+' + exlResult.snr_gain_over_scalar_db.toFixed(2) + ' dB over scalar) · FWHT Peak/RMS ' + exlResult.pre_fwht_peak_to_rms.toFixed(2) + '× → ' + exlResult.post_fwht_peak_to_rms.toFixed(2) + '×'),
+                h('div', null, '• Cluster Schedule: ' + exlResult.node_conversion_shards.length + ' nodes (~' + exlResult.estimated_cluster_conversion_minutes.toFixed(1) + ' min total)')) : null)),
+
+          execReport ? h('section', { className: 'panel' },
+            h('p', { className: 'eyebrow' }, 'Live pipeline execution trace · Top-4 MoE router + Speculative draft verification'),
+            h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)' } },
+              h(K.Badge, { tone: 'local' }, execReport.effective_tokens_per_sec + ' tok/s effective'),
+              h(K.Badge, { tone: 'ok', dot: true }, execReport.speculative_verification.accepted_draft_tokens + ' / ' + execReport.speculative_verification.proposed_draft_tokens + ' draft tokens accepted (' + execReport.speculative_verification.effective_speedup_multiplier + '× speedup)'),
+              h(K.Badge, { tone: 'neutral' }, execReport.total_pipeline_latency_ms + ' ms forward pass')),
+            h('div', { className: 'table-wrap' },
+              h('table', { className: 'mono-table' },
+                h('thead', null, h('tr', null,
+                  h('th', null, 'STAGE NODE'),
+                  h('th', null, 'LAYERS'),
+                  h('th', null, 'TOP-4 ROUTED EXPERTS (SOFTMAX)'),
+                  h('th', null, 'COLD NVMe'),
+                  h('th', null, 'INT8 BOUNDARY'),
+                  h('th', null, 'LATENCY'))),
+                h('tbody', null, execReport.stages.map(function (st) {
+                  var expText = st.routed_experts_sample.map(function (e) {
+                    return 'E' + e.expert_id + '(' + e.gating_weight.toFixed(2) + ')';
+                  }).join(' ');
+                  return h('tr', { key: st.node_id },
+                    h('td', null, st.hostname),
+                    h('td', null, st.start_layer + '–' + st.end_layer),
+                    h('td', null, expText),
+                    h('td', null, st.cold_nvme_expert_fetches + ' .ktb pages'),
+                    h('td', null, st.boundary_int8_payload_bytes + ' B'),
+                    h('td', null, st.stage_latency_ms + ' ms'));
+                }))))) : null) : null,
+
+        tab === 'reactor' ? (supply ? h('section', { className: 'panel' },
           h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
             h('div', null,
               h('p', { className: 'eyebrow' }, 'Kadmium Reactor Supply Grid · open-book 5-factor valuation & $0.14/kWh power deduction'),
@@ -306,7 +750,7 @@
                 supply.datacenter_avoidance && supply.datacenter_avoidance.people_powered_compute_thesis
                   ? '\u201C' + supply.datacenter_avoidance.people_powered_compute_thesis + '\u201D'
                   : 'No-Demand = No-Compute-Payout solvency.')),
-            h('div', { className: 'kd-row' },
+            h('div', { className: 'kd-row', style: { flexWrap: 'wrap', gap: '8px' } },
               h(K.Badge, { tone: supply.policy.enabled ? 'local' : 'neutral', dot: true },
                 supply.policy.enabled
                   ? 'Leasing active · +$' + (supply.total_net_monthly_profit_after_power_usd || 0).toFixed(2) + '/mo net after power'
@@ -352,90 +796,9 @@
           h('div', { className: 'well', style: { marginTop: 'var(--space-3)', borderColor: 'var(--cadmium-edge)' } },
             h('p', { className: 'eyebrow', style: { margin: '0 0 4px', color: 'var(--cadmium-text)' } }, '⚠️ Battery & Power Safety Advisory'),
             h('p', { className: 'body', style: { margin: 0, color: 'var(--ink-muted)' } },
-              supply.battery_and_power_safety_advisory || 'If your device has a removable battery, we recommend removing the battery and plugging into an alternative stable power source to avoid additional battery wear and potential risks of swelling. Most battery-powered devices operate normally without a battery when plugged into wall power.'))) : null,
+              supply.battery_and_power_safety_advisory || 'If your device has a removable battery, we recommend removing the battery and plugging into an alternative stable power source to avoid additional battery wear and potential risks of swelling. Most battery-powered devices operate normally without a battery when plugged into wall power.'))) : null) : null,
 
-        execReport ? h('section', { className: 'panel' },
-          h('p', { className: 'eyebrow' }, 'Live pipeline execution trace · Top-4 MoE router + Speculative draft verification'),
-          h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)' } },
-            h(K.Badge, { tone: 'local' }, execReport.effective_tokens_per_sec + ' tok/s effective'),
-            h(K.Badge, { tone: 'ok', dot: true }, execReport.speculative_verification.accepted_draft_tokens + ' / ' + execReport.speculative_verification.proposed_draft_tokens + ' draft tokens accepted (' + execReport.speculative_verification.effective_speedup_multiplier + '× speedup)'),
-            h(K.Badge, { tone: 'neutral' }, execReport.total_pipeline_latency_ms + ' ms forward pass')),
-          h('div', { className: 'table-wrap' },
-            h('table', { className: 'mono-table' },
-              h('thead', null, h('tr', null,
-                h('th', null, 'STAGE NODE'),
-                h('th', null, 'LAYERS'),
-                h('th', null, 'TOP-4 ROUTED EXPERTS (SOFTMAX)'),
-                h('th', null, 'COLD NVMe'),
-                h('th', null, 'INT8 BOUNDARY'),
-                h('th', null, 'LATENCY'))),
-              h('tbody', null, execReport.stages.map(function (st) {
-                var expText = st.routed_experts_sample.map(function (e) {
-                  return 'E' + e.expert_id + '(' + e.gating_weight.toFixed(2) + ')';
-                }).join(' ');
-                return h('tr', { key: st.node_id },
-                  h('td', null, st.hostname),
-                  h('td', null, st.start_layer + '–' + st.end_layer),
-                  h('td', null, expText),
-                  h('td', null, st.cold_nvme_expert_fetches + ' .ktb pages'),
-                  h('td', null, st.boundary_int8_payload_bytes + ' B'),
-                  h('td', null, st.stage_latency_ms + ' ms'));
-              }))))) : null,
-
-        pairing ? h('section', { className: 'two' },
-          h('div', { className: 'panel' },
-            h('p', { className: 'eyebrow' }, 'Zero-click LAN pairing · UDP KDMD beacon queue'),
-            h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Approve discovered local peers via 6-digit SAS code'),
-            h('div', { className: 'table-wrap' },
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'DISCOVERED PEER'),
-                  h('th', null, 'SAS CODE'),
-                  h('th', null, 'STATUS'),
-                  h('th', null, 'ACTION'))),
-                h('tbody', null, pairing.lan_candidates.map(function (c) {
-                  var approved = c.status !== 'PendingTrayApproval';
-                  return h('tr', { key: c.candidate_id },
-                    h('td', null,
-                      h('div', { style: { color: 'var(--ink)' } }, c.hostname),
-                      h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, c.hardware_summary)),
-                    h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, c.short_auth_code),
-                    h('td', null,
-                      h(K.Badge, { tone: approved ? 'ok' : 'warn', dot: true },
-                        c.status === 'ApprovedTrustedCore' ? 'trusted core' : c.status === 'ApprovedVerifiedMiddleOnly' ? 'middle only' : 'pending tray')),
-                    h('td', null,
-                      h('div', { className: 'kd-row' },
-                        h(K.Button, {
-                          variant: c.status === 'ApprovedTrustedCore' ? 'primary' : 'quiet',
-                          size: 'sm',
-                          onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedTrustedCore'); }
-                        }, 'TrustedCore'),
-                        h(K.Button, {
-                          variant: c.status === 'ApprovedVerifiedMiddleOnly' ? 'primary' : 'quiet',
-                          size: 'sm',
-                          onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedVerifiedMiddleOnly'); }
-                        }, 'Middle-only'))));
-                }))))),
-
-          h('div', { className: 'panel' },
-            h('p', { className: 'eyebrow' }, 'OS swapchain & thermal hooks · ' + pairing.os_hysteresis.hook_backend),
-            h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Fast-yield (' + pairing.os_hysteresis.fast_yield_sla_ms + ' ms) & 15 s anti-thrash hysteresis'),
-            h('div', { className: 'table-wrap' },
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'T (MS)'),
-                  h('th', null, 'OS HOOK EVENT'),
-                  h('th', null, 'STATE'),
-                  h('th', null, 'VRAM CAP'))),
-                h('tbody', null, pairing.os_hysteresis.timeline.map(function (step) {
-                  return h('tr', { key: step.timestamp_ms },
-                    h('td', null, step.timestamp_ms + ' ms'),
-                    h('td', null, step.event_label),
-                    h('td', null, h(K.Badge, { tone: step.new_state === 'GamingOrHeavyApp' ? 'warn' : 'local' }, step.new_state)),
-                    h('td', { style: { color: 'var(--cadmium-text)' } }, step.allocated_vram_gb.toFixed(1) + ' GB'));
-                })))))) : null,
-
-        watcher ? h('section', { className: 'panel' },
+        tab === 'shield' ? (watcher ? h('section', { className: 'panel' },
           h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
             h('div', null,
               h('p', { className: 'eyebrow' }, 'Automated CloudShield heartbeat watcher · < 400 ms cutover & failback'),
@@ -461,7 +824,7 @@
                   h('td', null, st.active_middle_shard_host),
                   h('td', { style: { color: isCloudStep ? 'var(--cherenkov)' : 'var(--cadmium-text)' } }, '$' + st.instantaneous_hourly_burn_usd.toFixed(2) + ' / hr'),
                   h('td', null, '$' + st.cumulative_incident_cost_usd.toFixed(2)));
-              }))))) : null));
+              }))))) : null) : null));
   }
 
   ReactDOM.createRoot(document.getElementById('app')).render(h(CompanionApp));
