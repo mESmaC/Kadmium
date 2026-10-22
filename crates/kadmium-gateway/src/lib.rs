@@ -44,6 +44,11 @@ pub use routes::*;
 pub struct ClusterOverviewResponse {
     pub coordinator_quorum: CoordinatorFailoverQuorum,
     pub nodes: Vec<HardwareNode>,
+    pub active_model_loaded: bool,
+    pub executed_inference_requests: u64,
+    pub last_measured_tokens_per_sec: Option<f64>,
+    pub last_measured_pipeline_latency_ms: Option<f64>,
+    pub imported_models: Vec<ImportedModelManifest>,
     pub inference_plan: ClusterShardPlan,
     pub training_plan: ClusterShardPlan,
     pub rl_plan: DisaggregatedRlPlan,
@@ -143,6 +148,13 @@ pub struct GatewayState {
     pub last_fts3_stream_report: Option<LiveFts3SwarmStreamReport>,
     pub last_kv_migration_report: Option<LiveKvCacheMigrationReport>,
     pub imported_models: Vec<ImportedModelManifest>,
+    /// True only when a model has been explicitly loaded/selected, imported as `.ktb`, or executed in this session.
+    pub active_model_loaded: bool,
+    /// True when the user has explicitly selected a model ID via `/api/v1/cluster/model` or `/api/v1/models/import`.
+    pub user_selected_model: bool,
+    pub executed_inference_requests: u64,
+    pub last_measured_tokens_per_sec: Option<f64>,
+    pub last_measured_pipeline_latency_ms: Option<f64>,
 }
 
 /// On-disk persistent journal written to `target/kadmium-state/cluster_state.json`
@@ -222,6 +234,11 @@ impl GatewayState {
             last_fts3_stream_report: None,
             last_kv_migration_report: None,
             imported_models: Vec::new(),
+            active_model_loaded: false,
+            user_selected_model: false,
+            executed_inference_requests: 0,
+            last_measured_tokens_per_sec: None,
+            last_measured_pipeline_latency_ms: None,
         }
     }
 
@@ -256,6 +273,11 @@ impl GatewayState {
         if self.nodes.is_empty() {
             self.nodes = vec![LiveHardwareProfiler::probe_local_host()];
         }
+        if self.live_only_mode && !self.user_selected_model {
+            let recommended = ModelSpec::recommended_for_cluster(&self.nodes);
+            self.inference_model = recommended.clone();
+            self.training_model = recommended;
+        }
         self.coordinator_quorum = CoordinatorFailoverQuorum::from_cluster(&self.nodes);
         self.inference_plan = ShardPlanner::compute_plan(
             self.epoch,
@@ -270,7 +292,9 @@ impl GatewayState {
             &self.nodes,
         );
         if self.live_only_mode {
-            if self.last_fts3_stream_report.is_none() && self.last_shift.is_none() {
+            if (self.last_fts3_stream_report.is_none() && self.last_shift.is_none())
+                || !self.active_model_loaded
+            {
                 self.fts3_transfers.clear();
             }
         } else {
@@ -290,6 +314,7 @@ impl GatewayState {
             self.last_checkpoint_step = 0;
             self.supply_policy.enabled = false;
             self.fts3_transfers.clear();
+            self.active_model_loaded = !self.imported_models.is_empty();
             let live_nodes: Vec<HardwareNode> = self
                 .live_workers
                 .values()
@@ -302,6 +327,11 @@ impl GatewayState {
                 live_nodes
             };
         } else {
+            self.active_model_loaded = true;
+            if !self.user_selected_model {
+                self.inference_model = ModelSpec::deepseek_v3_671b_moe();
+                self.training_model = ModelSpec::llama_3_70b_lora();
+            }
             if self.training_step_counter == 0 {
                 self.training_step_counter = 1_420;
                 self.last_training_loss = 1.184;
@@ -428,6 +458,7 @@ impl GatewayState {
             self.last_checkpoint_step = 0;
             self.supply_policy.enabled = false;
             self.fts3_transfers.clear();
+            self.active_model_loaded = !self.imported_models.is_empty();
             self.nodes = self
                 .live_workers
                 .values()
@@ -865,6 +896,11 @@ impl GatewayState {
         ClusterOverviewResponse {
             coordinator_quorum: self.coordinator_quorum.clone(),
             nodes: self.nodes.clone(),
+            active_model_loaded: self.active_model_loaded,
+            executed_inference_requests: self.executed_inference_requests,
+            last_measured_tokens_per_sec: self.last_measured_tokens_per_sec,
+            last_measured_pipeline_latency_ms: self.last_measured_pipeline_latency_ms,
+            imported_models: self.imported_models.clone(),
             inference_plan: self.inference_plan.clone(),
             training_plan: self.training_plan.clone(),
             rl_plan,
@@ -897,9 +933,15 @@ impl GatewayState {
 
         out.push_str("# HELP kadmium_inference_throughput_tokens_per_sec Estimated aggregate inference throughput.\n");
         out.push_str("# TYPE kadmium_inference_throughput_tokens_per_sec gauge\n");
+        let reported_tps = if self.active_model_loaded {
+            self.last_measured_tokens_per_sec
+                .unwrap_or(self.inference_plan.estimated_throughput)
+        } else {
+            0.0
+        };
         out.push_str(&format!(
             "kadmium_inference_throughput_tokens_per_sec{{model=\"{}\"}} {:.2}\n",
-            self.inference_plan.model_id, self.inference_plan.estimated_throughput
+            self.inference_plan.model_id, reported_tps
         ));
 
         out.push_str("# HELP kadmium_diloco_demo_compression_ratio DeMo DCT gradient wire compression factor.\n");
@@ -941,22 +983,29 @@ impl GatewayState {
     /// Exports a structured Weights & Biases (`wandb://`) / OpenTelemetry run summary payload.
     pub fn export_wandb_summary(&self) -> serde_json::Value {
         let snap = self.snapshot();
+        let reported_tps = if self.active_model_loaded {
+            self.last_measured_tokens_per_sec
+                .unwrap_or(self.inference_plan.estimated_throughput)
+        } else {
+            0.0
+        };
         serde_json::json!({
             "project": "kadmium-cd48-fabric",
             "run_id": format!("kadmium-run-e{}", self.epoch),
             "signature": "Cd-48",
             "active_version": self.active_cluster_version,
-            "model_id": self.inference_plan.model_id,
-            "training_model_id": self.training_plan.model_id,
+            "model_id": if self.active_model_loaded { self.inference_plan.model_id.as_str() } else { "idle" },
+            "training_model_id": if self.training_step_counter > 0 { self.training_plan.model_id.as_str() } else { "idle" },
             "metrics": {
-                "inference/tokens_per_sec": self.inference_plan.estimated_throughput,
-                "training/pipeline_bubble_pct": snap.training_telemetry.pipeline_bubble_pct,
-                "training/demo_compression_ratio": snap.training_telemetry.gradient_compression_ratio,
+                "inference/tokens_per_sec": reported_tps,
+                "inference/executed_requests": self.executed_inference_requests,
+                "training/pipeline_bubble_pct": if self.training_step_counter > 0 { snap.training_telemetry.pipeline_bubble_pct } else { 0.0 },
+                "training/demo_compression_ratio": if self.training_step_counter > 0 { snap.training_telemetry.gradient_compression_ratio } else { 0.0 },
                 "training/current_step": self.training_step_counter,
                 "training/loss": self.last_training_loss,
                 "rl/vectorized_env_slots": snap.rl_plan.total_vectorized_env_slots,
-                "dream_rsi/cost_savings_pct": snap.rl_plan.dream_rsi_report.as_ref().map(|r| r.cost_savings_pct).unwrap_or(62.5),
-                "dream_rsi/peak_speedup": snap.rl_plan.dream_rsi_report.as_ref().map(|r| r.peak_speedup_achieved).unwrap_or(2.31),
+                "dream_rsi/cost_savings_pct": snap.rl_plan.dream_rsi_report.as_ref().map(|r| r.cost_savings_pct).unwrap_or(0.0),
+                "dream_rsi/peak_speedup": snap.rl_plan.dream_rsi_report.as_ref().map(|r| r.peak_speedup_achieved).unwrap_or(0.0),
                 "cluster/active_nodes": self.nodes.len(),
                 "cluster/live_workers": self.live_workers.len(),
                 "cluster/quorum_term": self.coordinator_quorum.term

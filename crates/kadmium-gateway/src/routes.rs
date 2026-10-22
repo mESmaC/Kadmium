@@ -32,9 +32,9 @@ use kadmium_data::{
 use kadmium_network::{
     FleetUpdatePushSummary, HolePunchNegotiationResult, JoinTicket, LanPairingCandidate,
     LiveClusterWorkersOverview, MultiPathInterfaceStriper, MultiPathStripedSchedule,
-    NatTraversalCoordinator, RaidStripedPassReport, SwarmRaidStriper, UpdatePayloadKind,
-    UpdateTargetScope, WorkerHeartbeatAck, WorkerHeartbeatRequest, WorkerRegisterRequest,
-    WorkerRegistrationAck, WorkerUpdatePushAck, ZeroClickLanPairingEngine,
+    NatTraversalCoordinator, PairingApprovalStatus, RaidStripedPassReport, SwarmRaidStriper,
+    UpdatePayloadKind, UpdateTargetScope, WorkerHeartbeatAck, WorkerHeartbeatRequest,
+    WorkerRegisterRequest, WorkerRegistrationAck, WorkerUpdatePushAck, ZeroClickLanPairingEngine,
 };
 use kadmium_rl::{
     DiscoveryTree, DreamRsiWorldRegistry, GrpoEpochExecutor, GrpoVerifiedStepReport,
@@ -105,6 +105,8 @@ pub struct ShiftRequest {
 pub struct ModelSwapRequest {
     pub inference_model_id: Option<String>,
     pub training_model_id: Option<String>,
+    #[serde(default)]
+    pub unload: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -587,11 +589,22 @@ async fn post_cluster_model(
     Json(req): Json<ModelSwapRequest>,
 ) -> Json<ClusterOverviewResponse> {
     let mut guard = state.lock().expect("gateway state lock");
-    if let Some(inf_id) = req.inference_model_id.as_deref() {
-        guard.inference_model = ModelSpec::from_id(inf_id);
-    }
-    if let Some(trn_id) = req.training_model_id.as_deref() {
-        guard.training_model = ModelSpec::from_id(trn_id);
+    if req.unload == Some(true) || req.inference_model_id.as_deref() == Some("none") {
+        guard.active_model_loaded = false;
+        guard.user_selected_model = false;
+        guard.executed_inference_requests = 0;
+        guard.last_measured_tokens_per_sec = None;
+        guard.last_measured_pipeline_latency_ms = None;
+    } else {
+        if let Some(inf_id) = req.inference_model_id.as_deref() {
+            guard.inference_model = ModelSpec::from_id(inf_id);
+            guard.active_model_loaded = true;
+            guard.user_selected_model = true;
+        }
+        if let Some(trn_id) = req.training_model_id.as_deref() {
+            guard.training_model = ModelSpec::from_id(trn_id);
+            guard.user_selected_model = true;
+        }
     }
     guard.epoch += 1;
     guard.recompute_plans();
@@ -702,13 +715,20 @@ async fn get_pool_slices(
 ) -> Json<ClusterPoolSliceLayout> {
     let guard = state.lock().expect("gateway state lock");
     if guard.live_only_mode {
-        return Json(ClusterPoolSliceLayout {
-            total_pool_nodes: guard.nodes.len(),
-            num_slices: 0,
-            nodes_per_slice: 0,
-            unassigned_reserve_nodes: guard.nodes.len(),
-            slices: Vec::new(),
-        });
+        if !guard.active_model_loaded {
+            return Json(ClusterPoolSliceLayout {
+                total_pool_nodes: guard.nodes.len(),
+                num_slices: 0,
+                nodes_per_slice: 0,
+                unassigned_reserve_nodes: guard.nodes.len(),
+                slices: Vec::new(),
+            });
+        }
+        return Json(SubClusterPartitioner::partition_pool(
+            &guard.nodes,
+            1,
+            &guard.inference_model,
+        ));
     }
     let pool = sample_node_pool(100);
     let model = ModelSpec::deepseek_v3_671b_moe();
@@ -1210,6 +1230,10 @@ async fn get_pipeline_execution(
     .await;
     {
         let mut guard = state.lock().expect("gateway state lock");
+        guard.active_model_loaded = true;
+        guard.executed_inference_requests += 1;
+        guard.last_measured_tokens_per_sec = Some(report.effective_tokens_per_sec);
+        guard.last_measured_pipeline_latency_ms = Some(report.total_pipeline_latency_ms);
         for h in &hops {
             if let Some(w) = guard.live_workers.get_mut(&h.node_id) {
                 w.executed_forward_stages += 1;
@@ -1239,6 +1263,10 @@ async fn get_live_pipeline_execution(
         DistributedLanExecutor::execute_live_pipeline(&plan, &prompt_text, &workers).await;
     {
         let mut guard = state.lock().expect("gateway state lock");
+        guard.active_model_loaded = true;
+        guard.executed_inference_requests += 1;
+        guard.last_measured_tokens_per_sec = Some(report.effective_tokens_per_sec);
+        guard.last_measured_pipeline_latency_ms = Some(report.total_pipeline_latency_ms);
         for h in &live_hops {
             if let Some(w) = guard.live_workers.get_mut(&h.node_id) {
                 w.executed_forward_stages += 1;
@@ -1343,7 +1371,41 @@ async fn get_companion_pairing(
     let guard = state.lock().expect("gateway state lock");
     let coord_id = &guard.coordinator_quorum.active_leader;
     let lan_candidates = if guard.live_only_mode {
-        Vec::new()
+        guard
+            .live_workers
+            .values()
+            .map(|w| {
+                let addr = format!("{}:{}", w.worker_lan_ip, w.worker_tcp_port);
+                let sas = ZeroClickLanPairingEngine::compute_sas_code(
+                    &coord_id.0,
+                    &w.node.hostname,
+                    &addr,
+                );
+                let ticket = JoinTicket::generate(
+                    coord_id.clone(),
+                    vec![format!(
+                        "{}:{}",
+                        guard.coordinator_lan_ip, guard.coordinator_http_port
+                    )],
+                    Some("slice-01-prod-deploy".into()),
+                    w.node.trust_tier,
+                )
+                .encode_token();
+                LanPairingCandidate {
+                    candidate_id: w.node.id.0.clone(),
+                    hostname: w.node.hostname.clone(),
+                    lan_socket_addr: addr,
+                    hardware_summary: format!("{} ({} / {})", w.board_or_model, w.os_name, w.cpu_arch),
+                    fp16_tflops: w.node.fp16_tflops,
+                    fast_memory_gb: (w.node.memory.vram_gb + w.node.memory.unified_mem_gb)
+                        .max(w.node.memory.system_ram_gb),
+                    q_star_ratio: w.node.compute_q_star_ratio(),
+                    short_auth_code: sas,
+                    status: PairingApprovalStatus::ApprovedTrustedCore,
+                    issued_join_ticket: Some(ticket),
+                }
+            })
+            .collect()
     } else {
         ZeroClickLanPairingEngine::discover_lan_candidates(coord_id)
     };
@@ -1536,7 +1598,27 @@ async fn post_cluster_shift(
             guard.coordinator_quorum.trigger_failover(&current_leader);
         }
         _ => {
-            *guard = GatewayState::new();
+            if guard.live_only_mode {
+                for w in guard.live_workers.values_mut() {
+                    w.node.polite_state = PoliteState::IdleDedicated;
+                }
+                let live_nodes: Vec<HardwareNode> = guard
+                    .live_workers
+                    .values()
+                    .filter(|w| w.online)
+                    .map(|w| w.node.clone())
+                    .collect();
+                guard.nodes = if live_nodes.is_empty() {
+                    vec![LiveHardwareProfiler::probe_local_host()]
+                } else {
+                    live_nodes
+                };
+                guard.last_shift = None;
+                guard.fts3_transfers.clear();
+                guard.recompute_plans();
+            } else {
+                *guard = GatewayState::new();
+            }
         }
     }
 
@@ -1628,79 +1710,80 @@ async fn openai_list_models(
 ) -> Json<serde_json::Value> {
     let guard = state.lock().expect("gateway state lock");
     let epoch = guard.epoch;
-    let inf_tps = guard.inference_plan.estimated_throughput;
+    let inf_tps = if guard.active_model_loaded {
+        guard
+            .last_measured_tokens_per_sec
+            .unwrap_or(guard.inference_plan.estimated_throughput)
+    } else {
+        0.0
+    };
     let live_cnt = guard.live_workers.len();
+    let active_model_id = if guard.active_model_loaded {
+        Some(guard.inference_model.id.clone())
+    } else {
+        None
+    };
+
+    let catalog = [
+        ModelSpec::llama_3_2_3b_instruct(),
+        ModelSpec::qwen2_5_coder_7b(),
+        ModelSpec::qwen2_5_coder_14b(),
+        ModelSpec::qwen2_5_coder_32b(),
+        ModelSpec::llama_3_70b_lora(),
+        ModelSpec::qwen3_235b_moe(),
+        ModelSpec::deepseek_v3_671b_moe(),
+        ModelSpec::deepseek_v3_671b_exl3(),
+    ];
+
+    let mut data: Vec<serde_json::Value> = catalog
+        .iter()
+        .map(|spec| {
+            let is_loaded = active_model_id.as_deref() == Some(spec.id.as_str());
+            serde_json::json!({
+                "id": spec.id,
+                "object": "model",
+                "created": 1735689600,
+                "owned_by": "kadmium-cd48-fabric",
+                "kadmium_fabric": {
+                    "display_name": spec.display_name,
+                    "weight_gb": (spec.total_weight_footprint_gb() * 10.0).round() / 10.0,
+                    "total_layers": spec.num_layers,
+                    "active_loaded": is_loaded,
+                    "epoch": epoch,
+                    "estimated_tokens_per_sec": if is_loaded { inf_tps } else { 0.0 },
+                    "live_tcp_workers": live_cnt,
+                    "sharding": "Asymmetric Q* + Colibri NVMe MoE Streaming"
+                }
+            })
+        })
+        .collect();
+
+    data.push(serde_json::json!({
+        "id": "kadmium-embed-v1",
+        "object": "model",
+        "created": 1735689600,
+        "owned_by": "kadmium-cd48-fabric",
+        "kadmium_fabric": {
+            "epoch": epoch,
+            "dimensions": 64,
+            "sharding": "Distributed Hidden-State Pooling + Verde RepOps"
+        }
+    }));
+
+    data.push(serde_json::json!({
+        "id": "kadmium-vision-siglip-400m",
+        "object": "model",
+        "created": 1735689600,
+        "owned_by": "kadmium-cd48-fabric",
+        "kadmium_fabric": {
+            "epoch": epoch,
+            "sharding": "Strata Multimodal Vision Offloading (Metal / SBC NPU)"
+        }
+    }));
 
     Json(serde_json::json!({
         "object": "list",
-        "data": [
-            {
-                "id": "deepseek-v3-671b-moe",
-                "object": "model",
-                "created": 1735689600,
-                "owned_by": "kadmium-cd48-fabric",
-                "kadmium_fabric": {
-                    "epoch": epoch,
-                    "estimated_tokens_per_sec": inf_tps,
-                    "live_tcp_workers": live_cnt,
-                    "sharding": "Asymmetric Q* + Colibri NVMe MoE Streaming"
-                }
-            },
-            {
-                "id": "deepseek-v3-671b-exl3-2.5bpw",
-                "object": "model",
-                "created": 1735689600,
-                "owned_by": "kadmium-cd48-fabric",
-                "kadmium_fabric": {
-                    "epoch": epoch,
-                    "live_tcp_workers": live_cnt,
-                    "sharding": "EXL3 QTIP Trellis 2.55 bpw (FWHT Incoherence + Fused Viterbi)"
-                }
-            },
-            {
-                "id": "qwen3-235b-moe",
-                "object": "model",
-                "created": 1735689600,
-                "owned_by": "kadmium-cd48-fabric",
-                "kadmium_fabric": {
-                    "epoch": epoch,
-                    "live_tcp_workers": live_cnt,
-                    "sharding": "Asymmetric Q* + Colibri NVMe MoE Streaming"
-                }
-            },
-            {
-                "id": "llama-3-70b-lora",
-                "object": "model",
-                "created": 1735689600,
-                "owned_by": "kadmium-cd48-fabric",
-                "kadmium_fabric": {
-                    "epoch": epoch,
-                    "live_tcp_workers": live_cnt,
-                    "sharding": "1F1B Asymmetric QLoRA + DeMo DCT + DiLoCo"
-                }
-            },
-            {
-                "id": "kadmium-embed-v1",
-                "object": "model",
-                "created": 1735689600,
-                "owned_by": "kadmium-cd48-fabric",
-                "kadmium_fabric": {
-                    "epoch": epoch,
-                    "dimensions": 64,
-                    "sharding": "Distributed Hidden-State Pooling + Verde RepOps"
-                }
-            },
-            {
-                "id": "kadmium-vision-siglip-400m",
-                "object": "model",
-                "created": 1735689600,
-                "owned_by": "kadmium-cd48-fabric",
-                "kadmium_fabric": {
-                    "epoch": epoch,
-                    "sharding": "Strata Multimodal Vision Offloading (Metal / SBC NPU)"
-                }
-            }
-        ]
+        "data": data
     }))
 }
 
@@ -1839,6 +1922,10 @@ async fn openai_chat_completions(
 
     {
         let mut guard = state.lock().expect("gateway state lock");
+        guard.active_model_loaded = true;
+        guard.executed_inference_requests += 1;
+        guard.last_measured_tokens_per_sec = Some(exec_report.effective_tokens_per_sec);
+        guard.last_measured_pipeline_latency_ms = Some(exec_report.total_pipeline_latency_ms);
         for h in &live_hops {
             if let Some(w) = guard.live_workers.get_mut(&h.node_id) {
                 w.executed_forward_stages += 1;
@@ -1945,6 +2032,10 @@ async fn anthropic_messages(
 
     {
         let mut guard = state.lock().expect("gateway state lock");
+        guard.active_model_loaded = true;
+        guard.executed_inference_requests += 1;
+        guard.last_measured_tokens_per_sec = Some(exec_report.effective_tokens_per_sec);
+        guard.last_measured_pipeline_latency_ms = Some(exec_report.total_pipeline_latency_ms);
         for h in &live_hops {
             if let Some(w) = guard.live_workers.get_mut(&h.node_id) {
                 w.executed_forward_stages += 1;
@@ -2050,6 +2141,11 @@ async fn post_import_local_model(
             .imported_models
             .retain(|m| m.model_id != manifest.model_id);
         guard.imported_models.push(manifest.clone());
+        guard.inference_model = ModelSpec::from_id(&model_id);
+        guard.active_model_loaded = true;
+        guard.user_selected_model = true;
+        guard.epoch += 1;
+        guard.recompute_plans();
         let _ = guard.save_persistent_state();
     }
 

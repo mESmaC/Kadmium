@@ -87,9 +87,12 @@ enum Commands {
         /// Optional path to `kadmium.toml` workspace configuration
         #[arg(short, long)]
         config: Option<String>,
-        /// Start with only real probed hardware nodes (disabling the simulated demo fleet)
+        /// Start with only real probed hardware nodes (default: true unless --demo is passed)
         #[arg(long)]
         live: bool,
+        /// Include the 7-node simulated demo fleet alongside live hardware
+        #[arg(long)]
+        demo: bool,
         /// Spawn a 5-node local + online TCP worker test fleet on ports 7851..=7855 for single-machine testing
         #[arg(long)]
         spawn_fleet: bool,
@@ -250,9 +253,12 @@ enum Commands {
         /// Port to bind the local HTTP coordinator and API gateway
         #[arg(short, long, default_value_t = 7848)]
         port: u16,
-        /// Start with only real probed hardware nodes (Local Host + Apple M4 + RPi CM4 + K230)
+        /// Start with only real probed hardware nodes (default: true unless --demo is passed)
         #[arg(long)]
         live: bool,
+        /// Include the 7-node simulated demo fleet alongside live hardware
+        #[arg(long)]
+        demo: bool,
         /// Also open the Cluster Control Room window alongside the Desktop Companion App
         #[arg(long)]
         control_room: bool,
@@ -287,9 +293,10 @@ async fn main() {
             port,
             config,
             live,
+            demo,
             worker_port,
             spawn_fleet,
-        } => run_server(port, config.as_deref(), live, worker_port, spawn_fleet).await,
+        } => run_server(port, config.as_deref(), live || !demo, worker_port, spawn_fleet).await,
         Commands::Join {
             coordinator,
             ticket,
@@ -346,9 +353,10 @@ async fn main() {
         Commands::Desktop {
             port,
             live,
+            demo,
             control_room,
             check_only,
-        } => run_desktop(port, live, control_room, check_only).await,
+        } => run_desktop(port, live || !demo, control_room, check_only).await,
     }
 }
 

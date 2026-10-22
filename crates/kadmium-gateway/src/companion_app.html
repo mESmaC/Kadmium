@@ -254,10 +254,17 @@
         setPlatforms(d);
         if (d && d.apple_m4_deep_metal4) setDeepM4(d.apple_m4_deep_metal4);
       });
-      fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
       fetch('/api/v1/supply/marketplace').then(function (r) { return r.json(); }).then(setSupply);
       fetch('/api/v1/companion/pairing').then(function (r) { return r.json(); }).then(setPairing);
       fetch('/api/v1/cloud-shield/watcher').then(function (r) { return r.json(); }).then(setWatcher);
+    }
+
+    function runLivePipelinePass() {
+      setBusy(true);
+      fetch('/api/v1/pipeline/execute-live').then(function (r) { return r.json(); }).then(function (d) {
+        if (d && d.execution) setExecReport(d.execution);
+        notify('Executed live TCP pipeline across ' + ((d && d.live_hops && d.live_hops.length) || 1) + ' stage(s) · ' + (d && d.execution ? d.execution.effective_tokens_per_sec.toFixed(1) + ' tok/s' : 'done'));
+      }).finally(function () { setBusy(false); });
     }
 
     React.useEffect(function () {
@@ -428,6 +435,7 @@
         m4 && m4.physical_board_online ? h(K.Badge, { tone: 'ok', dot: true }, 'Apple M4 Live (' + m4.lan_endpoint + ')') : null,
         h('span', { className: 'spacer' }),
         h(K.Button, { variant: 'primary', size: 'sm', onClick: function () { attachPlatform('all-live', null, 'All Live LAN/USB Silicon'); } }, 'Auto-Attach Live Silicon'),
+        h(K.Button, { variant: 'quiet', size: 'sm', disabled: busy, onClick: runLivePipelinePass }, 'Run Live TCP Pass'),
         h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/'; } }, 'Control room'),
         h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/#/platforms'; } }, 'Platforms'),
         h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/docs'; } }, 'Docs'),
@@ -451,8 +459,8 @@
             h('span', { className: 'm' }, m4 ? m4.lan_endpoint + ' · ' + m4.board_model : '192.168.40.237:7860')),
           h('div', { className: 'stat-card' },
             h('span', { className: 'l' }, 'Pipeline Throughput'),
-            h('span', { className: 'v cadmium' }, execReport ? execReport.effective_tokens_per_sec + ' tok/s' : '—'),
-            h('span', { className: 'm' }, execReport ? execReport.speculative_verification.effective_speedup_multiplier + '× speculative speedup' : 'Asymmetric Q* pipeline')),
+            h('span', { className: 'v ' + (execReport ? 'cadmium' : '') }, execReport ? execReport.effective_tokens_per_sec + ' tok/s' : 'Idle'),
+            h('span', { className: 'm' }, execReport ? execReport.model_id + ' · ' + execReport.total_pipeline_latency_ms + ' ms total' : 'No model loaded · click Run Live TCP Pass')),
           h('div', { className: 'stat-card' },
             h('span', { className: 'l' }, 'Reactor Supply Net'),
             h('span', { className: 'v ' + (supply && supply.policy.enabled ? 'ok' : '') }, supply ? (supply.policy.enabled ? '+$' + (supply.total_net_monthly_profit_after_power_usd || 0).toFixed(0) + '/mo' : 'Paused') : '—'),
@@ -512,11 +520,11 @@
                 hardware: String(probe.local_node.backend || probe.local_node.compute_backend || 'cpu').toLowerCase() + ' · ' + probe.local_node.memory.vram_gb + ' gb vram · ' + probe.local_node.memory.system_ram_gb + ' gb ram · q* ' + probe.q_star_ratio,
                 kind: 'desktop',
                 placement: 'local',
-                status: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 'yielded' : 'resident',
-                shards: 'leader: ' + (status ? status.active_coordinator_leader : 'main-gaming-pc'),
+                status: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 'yielded' : (execReport ? 'resident' : 'idle'),
+                shards: execReport ? ('active: ' + execReport.model_id) : ('idle · leader: ' + (status ? status.active_coordinator_leader : probe.local_node.hostname)),
                 meters: [
-                  { label: 'VRAM', value: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 0.5 : Math.max(1.2, probe.local_node.memory.vram_gb * 0.6), max: Math.max(4, probe.local_node.memory.vram_gb), unit: 'GB' },
-                  { label: 'RAM', value: Math.round(probe.local_node.memory.system_ram_gb * 0.35), max: probe.local_node.memory.system_ram_gb, unit: 'GB' },
+                  { label: 'VRAM', value: !execReport ? 0 : (status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 0.5 : Math.max(1.2, probe.local_node.memory.vram_gb * 0.6)), max: Math.max(4, probe.local_node.memory.vram_gb), unit: 'GB' },
+                  { label: 'RAM', value: !execReport ? 0 : Math.round(probe.local_node.memory.system_ram_gb * 0.25), max: probe.local_node.memory.system_ram_gb, unit: 'GB' },
                   { label: 'NVMe', value: probe.local_node.memory.nvme_read_bw_gbps, max: 14, unit: 'GB/s' }
                 ]
               })),

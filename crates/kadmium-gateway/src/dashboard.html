@@ -270,8 +270,8 @@
     if (m.nvme_read_bw_gbps) parts.push('nvme ' + m.nvme_read_bw_gbps + ' gb/s');
     return parts.join(' · ');
   }
-  function nodeMeters(node, assignment) {
-    const m = node.memory || {}, tm = assignment && assignment.tiered_memory;
+  function nodeMeters(node, assignment, activeModelLoaded) {
+    const m = node.memory || {}, tm = (activeModelLoaded !== false) && assignment && assignment.tiered_memory;
     const meters = [];
     const yielded = node.polite_state === 'GamingOrHeavyApp';
     if (m.unified_mem_gb > 0) meters.push({ label: 'UMA', value: tm ? tm.hot_vram_or_unified_gb : 0, max: m.unified_mem_gb, unit: 'GB' });
@@ -288,11 +288,16 @@
       return { id: n.id, name: shortLabel(n.hostname), share: a ? a.layer_count / total : 0, placement: nodePlacement(n) };
     });
   }
-  function shardText(assignment, node) {
+  function shardText(assignment, node, activeModelLoaded) {
+    if (activeModelLoaded === false) {
+      const m = (node && node.memory) || {};
+      const fast = (m.unified_mem_gb || 0) + (m.vram_gb || 0);
+      return 'idle · ' + fmt.gb(fast > 0 ? fast : (m.system_ram_gb || 0)) + ' ready';
+    }
     if (assignment && assignment.layer_count > 0) return 'layers ' + assignment.start_layer + '–' + assignment.end_layer + ' · ' + fmt.num(assignment.compute_share_pct, 1) + ' %';
     const aux = (assignment && assignment.auxiliary_tasks) || [];
     if (aux.length) return fmt.words(aux[0]).replace('fts3 weight seed and checkpoint vault', '.ktb seed vault').replace('tokenization and stream ingress', 'tokenizer + drafts').replace('canary verifier and embedding host', 'canary + embeddings').replace('verde refereed layer bisection auditor', 'verde auditor');
-    if ((node.roles || []).indexOf('StorageVault') >= 0) return '.ktb seed vault';
+    if (node && (node.roles || []).indexOf('StorageVault') >= 0) return '.ktb seed vault';
     return 'utility';
   }
 
@@ -479,9 +484,9 @@
           h(K.Button, { variant: 'ghost', size: 'sm', onClick: onClose, 'aria-label': 'Close' }, I('close'))),
         h('div', { className: 'cr-drawer-body' },
           h('div', { className: 'cr-rowwrap' }, h(K.Badge, { tone: nodePlacement(node) }, nodePlacement(node)), StatusBadge(nodeStatus(node, inf, worker)), h(K.Badge, null, fmt.words(node.trust_tier)), (node.roles || []).map(r => h(K.Badge, { key: r }, fmt.words(r)))),
-          h('div', null, h('h3', null, 'Memory tiers'), h('div', { className: 'kd-stack', style: { marginTop: '8px' } }, nodeMeters(node, inf).map((mt, i) => h(K.Meter, Object.assign({ key: i, tone: nodePlacement(node) }, mt))))),
+          h('div', null, h('h3', null, 'Memory tiers'), h('div', { className: 'kd-stack', style: { marginTop: '8px' } }, nodeMeters(node, inf, overview.active_model_loaded).map((mt, i) => h(K.Meter, Object.assign({ key: i, tone: nodePlacement(node) }, mt))))),
           h('div', null, h('h3', null, 'Hardware'), h('div', { style: { marginTop: '8px' } }, h(KV, { items: [['backend', node.backend], ['fp16', fmt.num(node.fp16_tflops, 1) + ' TFLOPS'], ['int4', fmt.num(node.int4_tops, 0) + ' TOPS'], ['cpu', node.cpu_threads + ' threads · ' + fmt.num(node.cpu_tflops, 1) + ' TFLOPS'], m.vram_gb ? ['vram', m.vram_gb + ' GB @ ' + fmt.num(m.vram_bw_gbps, 0) + ' GB/s'] : null, m.unified_mem_gb ? ['unified', m.unified_mem_gb + ' GB @ ' + fmt.num(m.unified_mem_bw_gbps, 0) + ' GB/s'] : null, m.system_ram_gb ? ['ram', m.system_ram_gb + ' GB @ ' + fmt.num(m.system_ram_bw_gbps, 0) + ' GB/s'] : null, ['nvme', fmt.gb(m.nvme_cache_gb) + ' @ ' + m.nvme_read_bw_gbps + ' GB/s'], ['interconnect', m.interconnect_bw_gbps + ' Gbps'], ['uplink', node.network_uplink_gbps + ' Gbps · ' + node.network_latency_ms + ' ms'], ['polite state', fmt.words(node.polite_state)]] }))),
-          h('div', null, h('h3', null, 'Shards'), h('div', { style: { marginTop: '8px' } }, h(KV, { items: [['inference', shardText(inf, node)], ['training', shardText(tr, node) + (tr && tr.training_checkpoint_policy && tr.training_checkpoint_policy !== 'NotApplicable' ? ' · ' + fmt.words(tr.training_checkpoint_policy) : '')], inf && inf.tiered_memory ? ['tiers', 'hot ' + fmt.num(inf.tiered_memory.hot_vram_or_unified_gb, 1) + ' · warm ' + fmt.num(inf.tiered_memory.warm_system_ram_gb, 1) + ' · cold ' + fmt.num(inf.tiered_memory.cold_nvme_stream_gb, 1) + ' GB · q* ' + inf.tiered_memory.q_star_accel_ratio] : null, rl ? ['rl roles', (rl.rl_roles || []).map(fmt.words).join(', ') + (rl.parallel_env_slots ? ' · ' + rl.parallel_env_slots + ' env slots' : '')] : null] }))),
+          h('div', null, h('h3', null, 'Shards'), h('div', { style: { marginTop: '8px' } }, h(KV, { items: [['inference', shardText(inf, node, overview.active_model_loaded)], ['training', overview.active_model_loaded ? shardText(tr, node, true) + (tr && tr.training_checkpoint_policy && tr.training_checkpoint_policy !== 'NotApplicable' ? ' · ' + fmt.words(tr.training_checkpoint_policy) : '') : 'idle'], overview.active_model_loaded && inf && inf.tiered_memory ? ['tiers', 'hot ' + fmt.num(inf.tiered_memory.hot_vram_or_unified_gb, 1) + ' · warm ' + fmt.num(inf.tiered_memory.warm_system_ram_gb, 1) + ' · cold ' + fmt.num(inf.tiered_memory.cold_nvme_stream_gb, 1) + ' GB · q* ' + inf.tiered_memory.q_star_accel_ratio] : null, rl && overview.active_model_loaded ? ['rl roles', (rl.rl_roles || []).map(fmt.words).join(', ') + (rl.parallel_env_slots ? ' · ' + rl.parallel_env_slots + ' env slots' : '')] : null] }))),
           links.length ? h('div', null, h('h3', null, 'Mesh links'), h(Table, { cols: [{ key: 'peer', label: 'peer', render: l => shortLabel(peerName(l, node, overview)) }, { key: 'transport', label: 'transport', render: l => fmt.words(l.transport) }, { key: 'bw', label: 'bw', num: true, render: l => l.bandwidth_gbps + ' Gbps' }, { key: 'rtt', label: 'rtt', num: true, render: l => fmt.num(l.rtt_latency_ms, 1) + ' ms' }], rows: links.slice(0, 8) })) : null,
           worker ? h('div', null, h('h3', null, 'Live worker'), h('div', { style: { marginTop: '8px' } }, h(KV, { items: [['channel', worker.network_channel + ' · ' + worker.worker_lan_ip + ':' + worker.worker_tcp_port], ['os', worker.os_name + ' / ' + worker.cpu_arch + ' · ' + worker.board_or_model], ['version', worker.installed_version], ['work', worker.executed_forward_stages + ' fwd · ' + worker.executed_training_steps + ' train · ' + worker.last_measured_rtt_ms + ' ms rtt']] }))) : null,
           h('div', null, h('h3', null, 'Actions'), h('div', { className: 'cr-rowwrap', style: { marginTop: '8px' } },
@@ -529,10 +534,24 @@
 
   function ModelSwitcher(props) {
     const models = useApi('/v1/models');
-    const active = props.active;
+    const active = props.activeLoaded !== false ? props.active : null;
     const list = ((models && models.data) || []).filter(m => !/^kadmium-(embed|vision)/.test(m.id));
     if (!list.length) return null;
-    return h('div', { className: 'cr-rowwrap' }, list.map(m => h(K.Button, { key: m.id, size: 'sm', variant: m.id === active ? 'primary' : 'ghost', onClick: () => m.id !== active && act(post('/api/v1/cluster/model', { inference_model_id: m.id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Serving ' + m.id + ' — shard plan recomputed') }, m.id)));
+    return h('div', { className: 'cr-rowwrap' },
+      list.map(m => {
+        const kf = m.kadmium_fabric || {};
+        return h(K.Button, {
+          key: m.id,
+          size: 'sm',
+          variant: m.id === active ? 'primary' : 'ghost',
+          onClick: () => act(post('/api/v1/cluster/model', { inference_model_id: m.id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Loaded ' + m.id + ' (' + fmt.gb(kf.weight_gb || 0) + ') — shard plan computed across active nodes')
+        }, m.id + (kf.weight_gb ? ' (' + fmt.gb(kf.weight_gb) + ')' : ''));
+      }),
+      active ? h(K.Button, {
+        size: 'sm',
+        variant: 'ghost',
+        onClick: () => act(post('/api/v1/cluster/model', { unload: true }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), 'Unloaded model — cluster returned to idle', 'warn')
+      }, 'Unload model') : null);
   }
   C.ModelSwitcher = ModelSwitcher;
 
@@ -540,12 +559,15 @@
   function Overview(props) {
     const { overview, workers, companion } = props;
     const ota = useApi('/api/v1/update/status', 10000);
-    const bucket = useApi('/api/v1/storage/pool-bucket?bucket=small', 10000);
     if (!overview) return Loading('Connecting to the coordinator…');
     const nodes = overview.nodes, inf = overview.inference_plan, tt = overview.training_telemetry;
+    const modelLoaded = !!overview.active_model_loaded;
+    const measuredTps = overview.last_measured_tokens_per_sec;
+    const measuredLatMs = overview.last_measured_pipeline_latency_ms;
+    const importedBanks = overview.imported_models || [];
     const workerById = {}; ((workers && workers.workers) || []).forEach(w => { if (w.node) workerById[w.node.id] = w; });
-    const statuses = nodes.map(n => C.nodeStatus(n, C.findAssignment(inf, n), workerById[n.id]));
-    const resident = statuses.filter(s => s === 'resident' || s === 'training' || s === 'prefetching').length;
+    const statuses = nodes.map(n => C.nodeStatus(n, modelLoaded ? C.findAssignment(inf, n) : null, workerById[n.id]));
+    const resident = statuses.filter(s => s === 'resident' || s === 'training' || s === 'prefetching' || s === 'idle').length;
     const yielded = statuses.filter(s => s === 'yielded' || s === 'throttled').length, offline = statuses.filter(s => s === 'offline').length;
     const cloudNodes = nodes.filter(C.isCloudNode).length;
     const burn = companion ? companion.current_hourly_cloud_burn_usd : 0;
@@ -566,28 +588,55 @@
     const estBwGbps = links.length ? links.reduce((a, l) => a + (l.bandwidth_gbps || 0), 0) / links.length : nodes.reduce((a, n) => a + (n.network_uplink_gbps || 0), 0);
     const uplinkGbps = nodes.reduce((a, n) => a + (n.network_uplink_gbps || 0), 0);
     const activity = buildActivity(overview, ota);
+    const runLivePass = () => act(fetch('/api/v1/pipeline/execute-live').then(r => r.json()).then(d => { C.refresh(C.CLUSTER_PATHS); return d; }), d => 'Executed live TCP pass across ' + (d.live_hops || []).length + ' stages · ' + fmt.num(d.execution.effective_tokens_per_sec, 1) + ' tok/s (' + fmt.ms(d.execution.total_pipeline_latency_ms) + ')', 'ok');
+    const importLocalKtb = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), m => 'Compiled & loaded ' + m.model_id + ' (' + m.page_count_64k + ' × 64 KiB pages) on disk', 'ok');
     return h(F, null,
       h('div', { className: 'cr-stats' },
         h(Stat, { label: 'Nodes', value: resident, unit: '/ ' + nodes.length, meta: (yielded ? yielded + ' yielded · ' : '') + (offline ? offline + ' offline · ' : '') + cloudNodes + ' cloud · ' + ((workers && workers.live_worker_count) || 0) + ' live tcp' }),
         h(Stat, { label: 'Compute', value: fmt.num(totalFp16, 1), unit: 'TFLOPS', meta: fmt.num(totalTops, 0) + ' INT4 TOPS · ' + fmt.num(totalCpuTf, 1) + ' CPU TF' }),
         h(Stat, { label: 'Memory & storage', value: fmt.gb(fastMemGb + sysRamGb), meta: fmt.gb(fastMemGb) + ' fast VRAM/UMA · ' + fmt.gb(sysRamGb) + ' RAM · ' + fmt.gb(nvmeGb) + ' NVMe' }),
-        h(Stat, { label: 'Storage bucket', value: bucket ? fmt.words(bucket.bucket_tier).split(' ')[0] : fmt.gb(nvmeGb), meta: bucket ? fmt.gb(bucket.usable_effective_gb) + ' usable · ' + bucket.replication_factor + '× rep · RS(' + bucket.reed_solomon_data_shards + ',' + bucket.reed_solomon_parity_shards + ')' : fmt.gb(nvmeGb) + ' local .ktb pool' }),
+        h(Stat, { label: 'Local .ktb banks', value: importedBanks.length, unit: importedBanks.length === 1 ? 'bank' : 'banks', meta: importedBanks.length ? importedBanks[importedBanks.length - 1].model_id + ' (' + importedBanks[importedBanks.length - 1].page_count_64k + ' × 64K pages)' : fmt.gb(nvmeGb) + ' local NVMe pool · 0 imported' }),
         h(Stat, { label: 'Network & RTT', value: fmt.ms(avgRtt), meta: 'min ' + fmt.ms(minRtt) + ' · est ' + fmt.num(estBwGbps, 1) + ' Gbps mesh · ' + fmt.num(uplinkGbps, 1) + ' Gbps uplink' }),
-        h(Stat, { label: 'Inference', value: fmt.num(inf.estimated_throughput, 1), unit: inf.throughput_unit.replace('tokens/sec', 'tok/s'), meta: inf.model_id + ' · ' + inf.total_layers + ' layers · epoch ' + inf.epoch, tone: 'cadmium' }),
-        h(Stat, { label: 'Training', value: trainActive ? fmt.num(tt.current_step) : '—', unit: trainActive && tt.total_steps ? '/ ' + fmt.num(tt.total_steps) : '', meta: trainActive ? tt.model_id + ' · loss ' + fmt.num(tt.loss, 3) + ' · lr ' + tt.learning_rate : '—' }),
-        h(Stat, { label: 'Cloud burn', value: cloudActive ? fmt.usd(burn) : '—', unit: cloudActive ? '/ hr' : '', meta: cloudNodes ? cloudNodes + ' burst node' + (cloudNodes > 1 ? 's' : '') + ' attached' : (cloudMode ? 'linked · idle' : '—'), tone: burn > 0 ? 'cloud' : '' })),
+        h(Stat, { label: 'Inference', value: !modelLoaded ? 'Idle' : (measuredTps ? fmt.num(measuredTps, 1) : 'Staged'), unit: (modelLoaded && measuredTps) ? 'tok/s' : '', meta: !modelLoaded ? 'No model loaded · ' + fmt.gb(fastMemGb) + ' VRAM/UMA ready' : (measuredTps ? inf.model_id + ' · ' + overview.executed_inference_requests + ' passes · ' + fmt.ms(measuredLatMs || 0) : inf.model_id + ' · ' + inf.total_layers + ' layers (' + fmt.gb(inf.total_model_weight_gb) + ')'), tone: modelLoaded ? 'cadmium' : '' }),
+        h(Stat, { label: 'Training', value: trainActive ? fmt.num(tt.current_step) : 'Idle', unit: trainActive && tt.total_steps ? '/ ' + fmt.num(tt.total_steps) : '', meta: trainActive ? tt.model_id + ' · loss ' + fmt.num(tt.loss, 3) + ' · lr ' + tt.learning_rate : 'No training job running' }),
+        h(Stat, { label: 'Cloud burn', value: cloudActive ? fmt.usd(burn) : '—', unit: cloudActive ? '/ hr' : '', meta: cloudNodes ? cloudNodes + ' burst node' + (cloudNodes > 1 ? 's' : '') + ' attached' : (cloudMode ? 'linked · idle' : 'Self-hosted ($0.00/hr)'), tone: burn > 0 ? 'cloud' : '' })),
       h(ShiftStrip, { shift: overview.last_shift }),
       h('div', { className: 'cr-main-aside' },
         h('div', { className: 'kd-stack', style: { gap: 'var(--space-5)' } },
-          h(Panel, { title: 'Shard plan', sub: inf.model_display_name, tools: h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => go('models') }, 'All models', I('external', 14)) },
-            h(ModelSwitcher, { active: inf.model_id }),
-            h(K.ShardRail, { label: 'Inference shard plan for ' + inf.model_id, depth: 120, pitch: 64, nodes: C.railNodes(nodes, inf) }),
-            h('div', { className: 'cr-rowwrap cr-muted', style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px' } }, inf.total_layers + ' layers · ' + fmt.gb(inf.total_model_weight_gb) + ' of .ktb weight · ' + inf.assignments.filter(a => a.layer_count > 0).length + ' pipeline stages · ' + nodes.filter(n => (C.findAssignment(inf, n) || {}).layer_count === 0).length + ' utility nodes')),
+          h(Panel, {
+              title: 'Shard plan',
+              sub: modelLoaded ? (inf.model_display_name + ' · ' + (measuredTps ? fmt.num(measuredTps, 1) + ' tok/s measured' : 'staged across ' + inf.assignments.filter(a => a.layer_count > 0).length + ' nodes')) : ('No model currently loaded — cluster idle (' + fmt.gb(fastMemGb) + ' fast VRAM/UMA across ' + nodes.length + ' node' + (nodes.length === 1 ? '' : 's') + ')'),
+              tools: h('div', { className: 'cr-rowwrap' },
+                modelLoaded ? h(K.Button, { size: 'sm', variant: 'primary', icon: 'bolt', onClick: runLivePass }, 'Run live TCP pass') : null,
+                h(K.Button, { size: 'sm', variant: 'ghost', onClick: importLocalKtb }, 'Compile local .ktb'),
+                h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => go('models') }, 'All models', I('external', 14)))
+            },
+            h(ModelSwitcher, { active: inf.model_id, activeLoaded: modelLoaded }),
+            modelLoaded ? h(F, null,
+              h(K.ShardRail, { label: 'Inference shard plan for ' + inf.model_id, depth: 120, pitch: 64, nodes: C.railNodes(nodes, inf) }),
+              h('div', { className: 'cr-rowwrap cr-muted', style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px' } }, inf.total_layers + ' layers · ' + fmt.gb(inf.total_model_weight_gb) + ' of .ktb weight · ' + inf.assignments.filter(a => a.layer_count > 0).length + ' pipeline stages · ' + (measuredTps ? fmt.num(measuredTps, 1) + ' tok/s measured (' + overview.executed_inference_requests + ' passes)' : 'click "Run live TCP pass" to measure live pipeline throughput')))
+            : h(Empty, {
+                action: h('div', { className: 'cr-rowwrap', style: { justifyContent: 'center' } },
+                  h(K.Button, { size: 'sm', variant: 'primary', onClick: () => act(post('/api/v1/cluster/model', { inference_model_id: inf.model_id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Loaded ' + inf.model_id + ' across ' + nodes.length + ' node(s)') }, 'Load recommended: ' + inf.model_id + ' (' + fmt.gb(inf.total_model_weight_gb) + ')'),
+                  h(K.Button, { size: 'sm', variant: 'ghost', onClick: importLocalKtb }, 'Compile & load .ktb on disk'))
+              }, 'No model weights are currently allocated on your nodes. Select a model above or load the hardware-matched recommendation (' + inf.model_display_name + ') for your ' + fmt.gb(fastMemGb) + ' fast VRAM/UMA.')),
           h('div', { className: 'cr-two' },
             h(Panel, { title: 'Mesh links', sub: overview.mesh_links.length + ' pairwise probes', flush: true },
               h(Table, { cols: [{ key: 'p', label: 'link', render: l => l.from_node.replace('node-', '') + ' → ' + l.to_node.replace('node-', '') }, { key: 't', label: 'transport', cls: 'muted', render: l => transportName(l.transport) }, { key: 'bw', label: 'gbps', num: true, render: l => l.bandwidth_gbps }, { key: 'rtt', label: 'rtt', num: true, render: l => fmt.num(l.rtt_latency_ms, 1) + ' ms' }], rows: overview.mesh_links.slice().sort((a, b) => b.bandwidth_gbps - a.bandwidth_gbps).slice(0, 7) })),
-            h(Panel, { title: 'Verification workunits', sub: 'polite scheduler · spot checks', flush: true },
-              h(Table, { cols: [{ key: 'w', label: 'workunit', cls: 'wrap sans', render: w => h('div', null, h('div', null, w.title), h('div', { className: 'cr-muted', style: { fontFamily: 'var(--font-mono)', fontSize: '11px' } }, w.workunit_id + ' · ' + w.assigned_node.replace('node-', ''))) }, { key: 'p', label: 'progress', num: true, render: w => fmt.pct(w.progress_pct, 0) }, { key: 'v', label: 'verified', render: w => h(K.Badge, { tone: w.verified ? 'ok' : 'warn', dot: true }, w.verified ? 'verified' : 'pending') }, { key: 'c', label: 'credit', num: true, render: w => fmt.num(w.credits_awarded, 1) }], rows: overview.boinc_workunits })))),
+            (overview.boinc_workunits && overview.boinc_workunits.length) ?
+              h(Panel, { title: 'Verification workunits', sub: 'polite scheduler · spot checks', flush: true },
+                h(Table, { cols: [{ key: 'w', label: 'workunit', cls: 'wrap sans', render: w => h('div', null, h('div', null, w.title), h('div', { className: 'cr-muted', style: { fontFamily: 'var(--font-mono)', fontSize: '11px' } }, w.workunit_id + ' · ' + w.assigned_node.replace('node-', ''))) }, { key: 'p', label: 'progress', num: true, render: w => fmt.pct(w.progress_pct, 0) }, { key: 'v', label: 'verified', render: w => h(K.Badge, { tone: w.verified ? 'ok' : 'warn', dot: true }, w.verified ? 'verified' : 'pending') }, { key: 'c', label: 'credit', num: true, render: w => fmt.num(w.credits_awarded, 1) }], rows: overview.boinc_workunits }))
+              : h(Panel, { title: 'Live TCP workers & silicon proofs', sub: ((workers && workers.live_worker_count) || 0) + ' active WireFrame listeners', flush: true },
+                h(Table, {
+                  rows: (workers && workers.workers) || [],
+                  rowKey: w => w.node.id,
+                  cols: [
+                    { key: 'h', label: 'worker', render: w => h('div', null, h('div', { className: 'sans', style: { fontWeight: 600 } }, w.node.hostname), h('div', { className: 'cr-muted', style: { fontFamily: 'var(--font-mono)', fontSize: '11px' } }, w.worker_lan_ip + ':' + w.worker_tcp_port)) },
+                    { key: 'hw', label: 'silicon', render: w => w.board_or_model || w.cpu_arch },
+                    { key: 'p', label: 'passes', num: true, render: w => w.executed_forward_stages + ' fwd · ' + w.executed_training_steps + ' trn' },
+                    { key: 'rtt', label: 'rtt', num: true, render: w => fmt.ms(w.last_measured_rtt_ms) }
+                  ]
+                })))),
         h('div', { className: 'kd-stack', style: { gap: 'var(--space-5)' } },
           h(Panel, { title: 'Quick actions' },
             h('div', { className: 'kd-stack', style: { gap: '8px' } },
@@ -598,9 +647,9 @@
               h(K.Button, { onClick: () => scenario('gaming_mode', 'Desktop yielded to its owner', 'warn') }, 'Yield the desktop (gaming mode)'),
               h(K.Button, { variant: 'cloud', icon: 'cloud', onClick: () => scenario('cloud_burst', 'Burst H100 attached', 'cloud') }, 'Attach a burst GPU'),
               h(K.Button, { onClick: () => scenario('coordinator_failover', 'Coordinator failover', 'warn') }, 'Fail over the coordinator'),
-              h(K.Button, { variant: 'ghost', onClick: () => scenario('reset', 'Reset', 'ok') }, 'Reset the demo fabric'))),
+              h(K.Button, { variant: 'ghost', onClick: () => scenario('reset', 'Reset', 'ok') }, liveOnly ? 'Restore yielded / offline nodes' : 'Reset cluster state'))),
           h(Panel, { title: 'Activity', sub: 'this epoch', flush: true },
-            activity.length ? h('div', { className: 'cr-timeline', style: { padding: '8px 16px' } }, activity.map((a, i) => h('div', { key: i, className: 'cr-tl' }, h('span', { className: 'pip ' + a.tone }), h('div', null, h('div', { className: 't' }, a.text), h('div', { className: 'm' }, a.meta))))) : h('div', { className: 'cr-empty' }, '—')))));
+            activity.length ? h('div', { className: 'cr-timeline', style: { padding: '8px 16px' } }, activity.map((a, i) => h('div', { key: i, className: 'cr-tl' }, h('span', { className: 'pip ' + a.tone }), h('div', null, h('div', { className: 't' }, a.text), h('div', { className: 'm' }, a.meta))))) : h('div', { className: 'cr-empty' }, 'No shard migrations or transfers recorded in this session yet.')))));
   }
   function buildActivity(o, ota) {
     const items = [];
@@ -649,9 +698,9 @@
           h(Seg, { value: filter, onChange: setFilter, items: [{ id: 'all', label: 'All' }, { id: 'local', label: 'Local' }, { id: 'cloud', label: 'Cloud' }, { id: 'live', label: 'Live TCP' }] }),
           h(K.Button, { size: 'sm', variant: liveOnly ? 'primary' : 'quiet', onClick: () => act(post('/api/v1/cluster/mode', { live_only: !liveOnly }, { into: '/api/v1/cluster/workers' }), liveOnly ? 'Hybrid fleet: demo archetypes + live hardware' : 'Live hardware only', 'ok') }, liveOnly ? 'Live hardware only' : 'Hybrid demo fleet')) },
         nodes.length ? h('div', { className: 'cr-grid' }, nodes.map(node => {
-          const a = C.findAssignment(inf, node), w = workerById[node.id];
+          const a = C.findAssignment(inf, node), w = workerById[node.id], ml = !!overview.active_model_loaded;
           return h('div', { key: node.id, onClick: () => selectNode(node.id), role: 'button', tabIndex: 0, onKeyDown: e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectNode(node.id); } }, className: 'cr-nodewrap' },
-            h(K.NodeCard, { className: selected === node.id ? 'selected' : '', name: node.hostname, hardware: C.hardwareLine(node), kind: C.nodeKind(node), placement: C.nodePlacement(node), status: C.nodeStatus(node, a, w), shards: C.shardText(a, node), meters: C.nodeMeters(node, a) }));
+            h(K.NodeCard, { className: selected === node.id ? 'selected' : '', name: node.hostname, hardware: C.hardwareLine(node), kind: C.nodeKind(node), placement: C.nodePlacement(node), status: C.nodeStatus(node, ml ? a : null, w), shards: C.shardText(a, node, ml), meters: C.nodeMeters(node, a, ml) }));
         })) : h(Empty, { action: h(K.Button, { variant: 'primary', size: 'sm', onClick: () => go('nodes/add') }, 'Add a node') }, filter === 'live' ? 'No live TCP workers have registered yet.' : filter === 'cloud' ? 'No cloud nodes attached. Attach a burst GPU from Kadmium Cloud.' : 'No nodes.')),
       h(Panel, { title: 'Live workers', sub: 'tcp wireframe · port 7850+ · udp discovery 7849', flush: true, tools: h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => C.refresh(['/api/v1/cluster/workers']) }, 'Refresh') },
         h(Table, { empty: '—', rows: (workers && workers.workers) || [], rowKey: w => w.node.id, cols: [
@@ -801,28 +850,36 @@
     const [trace, setTrace] = useState(null);
     const [tab, setTab] = useState('plan');
     if (!overview) return Loading();
-    const inf = overview.inference_plan, nodes = overview.nodes;
+    const inf = overview.inference_plan, nodes = overview.nodes, modelLoaded = !!overview.active_model_loaded;
+    const measuredTps = overview.last_measured_tokens_per_sec;
     const list = (models && models.data) || [];
-    const runTrace = () => act(fetch('/api/v1/pipeline/execute').then(r => r.json()).then(t => { setTrace(t); return t; }), t => 'Traced ' + t.stages.length + ' stages · ' + fmt.num(t.effective_tokens_per_sec, 1) + ' tok/s');
+    const runTrace = () => act(fetch('/api/v1/pipeline/execute-live').then(r => r.json()).then(d => { setTrace(d.execution); C.refresh(C.CLUSTER_PATHS); return d.execution; }), t => 'Executed live TCP pipeline across ' + t.stages.length + ' stages · ' + fmt.num(t.effective_tokens_per_sec, 1) + ' tok/s');
+    const importLocalKtb = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), m => 'Compiled & loaded ' + m.model_id + ' (' + m.page_count_64k + ' × 64 KiB pages) on disk', 'ok');
     return h(F, null,
-      h(Panel, { title: 'Served model', sub: 'switching recomputes the shard plan and prestages .ktb banks from the vault' },
+      h(Panel, {
+          title: 'Model catalog & active weights',
+          sub: modelLoaded ? ('Currently loaded: ' + inf.model_display_name + ' (' + fmt.gb(inf.total_model_weight_gb) + ')') : 'No model currently loaded — click any model below to compute its shard plan and allocate stages across your nodes',
+          tools: h('div', { className: 'cr-rowwrap' },
+            h(K.Button, { size: 'sm', variant: 'primary', onClick: importLocalKtb }, 'Compile local .ktb (' + inf.model_id + ')'),
+            modelLoaded ? h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => act(post('/api/v1/cluster/model', { unload: true }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), 'Unloaded model — cluster returned to idle', 'warn') }, 'Unload model') : null)
+        },
         h('div', { className: 'cr-grid', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))' } }, list.map(m => {
-          const active = m.id === inf.model_id, kf = m.kadmium_fabric || {};
-          return h('div', { key: m.id, className: 'cr-modelcard' + (active ? ' active' : ''), role: 'button', tabIndex: 0, onClick: () => !active && act(post('/api/v1/cluster/model', { inference_model_id: m.id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Serving ' + m.id), onKeyDown: e => { if (e.key === 'Enter') e.currentTarget.click(); } },
-            h('div', { className: 'cr-rowwrap', style: { justifyContent: 'space-between' } }, h('span', { className: 'n' }, m.id), active ? h(K.Badge, { tone: 'local', dot: true }, 'serving') : null),
-            h('div', { className: 'm' }, kf.sharding || 'asymmetric'),
-            h('div', { className: 'm' }, (kf.estimated_tokens_per_sec ? fmt.num(kf.estimated_tokens_per_sec, 1) + ' tok/s · ' : '') + 'epoch ' + (kf.epoch || inf.epoch) + ' · ' + m.owned_by));
+          const active = modelLoaded && m.id === inf.model_id, kf = m.kadmium_fabric || {};
+          return h('div', { key: m.id, className: 'cr-modelcard' + (active ? ' active' : ''), role: 'button', tabIndex: 0, onClick: () => act(post('/api/v1/cluster/model', { inference_model_id: m.id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Loaded ' + m.id), onKeyDown: e => { if (e.key === 'Enter') e.currentTarget.click(); } },
+            h('div', { className: 'cr-rowwrap', style: { justifyContent: 'space-between' } }, h('span', { className: 'n' }, m.id), active ? h(K.Badge, { tone: 'local', dot: true }, 'loaded') : h(K.Badge, { tone: 'neutral' }, kf.weight_gb ? fmt.gb(kf.weight_gb) : 'utility')),
+            h('div', { className: 'm' }, kf.display_name || kf.sharding || 'asymmetric'),
+            h('div', { className: 'm' }, (kf.total_layers ? kf.total_layers + ' layers · ' : '') + (active && measuredTps ? fmt.num(measuredTps, 1) + ' tok/s measured' : 'click to load')));
         }))),
-      h(K.Tabs, { label: 'Model views', value: tab, onChange: setTab, items: [{ id: 'plan', label: 'Shard plan', count: inf.assignments.filter(a => a.layer_count > 0).length }, { id: 'dataflow', label: 'Dataflow modes' }, { id: 'kernels', label: 'Kernels' }, { id: 'trace', label: 'Pipeline trace' }] }),
+      h(K.Tabs, { label: 'Model views', value: tab, onChange: setTab, items: [{ id: 'plan', label: 'Shard plan', count: modelLoaded ? inf.assignments.filter(a => a.layer_count > 0).length : 0 }, { id: 'dataflow', label: 'Dataflow modes' }, { id: 'kernels', label: 'Kernels' }, { id: 'trace', label: 'Pipeline trace' }] }),
       tab === 'plan' ? h(F, null,
         h('div', { className: 'cr-stats' },
-          h(Stat, { label: 'Throughput', value: fmt.num(inf.estimated_throughput, 1), unit: inf.throughput_unit.replace('tokens/sec', 'tok/s'), tone: 'cadmium' }),
-          h(Stat, { label: 'Layers', value: inf.total_layers, meta: inf.assignments.filter(a => a.layer_count > 0).length + ' pipeline stages' }),
-          h(Stat, { label: 'Weights', value: fmt.gb(inf.total_model_weight_gb), meta: '.ktb 64 KiB pages · seeded from the vault' }),
-          h(Stat, { label: 'Workload', value: inf.workload, meta: inf.training_strategy ? fmt.words(inf.training_strategy) : 'decode + prefill' })),
-        h(Panel, { title: 'Shard rail', sub: inf.model_display_name, tools: h(ModelSwitcher, { active: inf.model_id }) },
-          h(K.ShardRail, { label: 'Inference shard plan', depth: 128, pitch: 72, nodes: C.railNodes(nodes, inf) })),
-        h(Panel, { title: 'Assignments', sub: 'per node · tiered memory', flush: true },
+          h(Stat, { label: 'Status / Throughput', value: !modelLoaded ? 'Idle' : (measuredTps ? fmt.num(measuredTps, 1) : 'Staged'), unit: (modelLoaded && measuredTps) ? 'tok/s' : '', meta: !modelLoaded ? 'No model loaded' : (measuredTps ? overview.executed_inference_requests + ' passes executed' : 'Ready to execute'), tone: modelLoaded ? 'cadmium' : '' }),
+          h(Stat, { label: 'Layers', value: modelLoaded ? inf.total_layers : '0', meta: modelLoaded ? inf.assignments.filter(a => a.layer_count > 0).length + ' pipeline stages' : 'Recommended: ' + inf.model_id + ' (' + inf.total_layers + 'L)' }),
+          h(Stat, { label: 'Weights allocated', value: modelLoaded ? fmt.gb(inf.total_model_weight_gb) : '0.0 GB', meta: modelLoaded ? '.ktb 64 KiB pages' : 'Select a model above to allocate' }),
+          h(Stat, { label: 'Local .ktb banks', value: (overview.imported_models || []).length, unit: 'on disk', meta: (overview.imported_models || []).length ? overview.imported_models[overview.imported_models.length - 1].ktb_output_path : 'None compiled yet' })),
+        h(Panel, { title: 'Shard rail', sub: modelLoaded ? inf.model_display_name : ('Preview for recommended model: ' + inf.model_display_name + ' (not yet loaded)'), tools: h(ModelSwitcher, { active: inf.model_id, activeLoaded: modelLoaded }) },
+          modelLoaded ? h(K.ShardRail, { label: 'Inference shard plan', depth: 128, pitch: 72, nodes: C.railNodes(nodes, inf) }) : h(Empty, { action: h(K.Button, { size: 'sm', variant: 'primary', onClick: () => act(post('/api/v1/cluster/model', { inference_model_id: inf.model_id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Loaded ' + inf.model_id) }, 'Load ' + inf.model_id + ' (' + fmt.gb(inf.total_model_weight_gb) + ')') }, 'No model is currently loaded. Click above to load ' + inf.model_display_name + ' onto your ' + nodes.length + ' connected node(s).')),
+        modelLoaded ? h(Panel, { title: 'Assignments', sub: 'per node · tiered memory', flush: true },
           h(Table, { rows: inf.assignments.slice().sort((a, b) => (a.pipeline_stage_index == null ? 99 : a.pipeline_stage_index) - (b.pipeline_stage_index == null ? 99 : b.pipeline_stage_index)), rowKey: a => a.node_id, cols: [
             { key: 's', label: 'stage', render: a => a.pipeline_stage_index == null ? h('span', { className: 'cr-muted' }, 'utility') : 'S' + a.pipeline_stage_index },
             { key: 'n', label: 'node', render: a => h('span', { className: 'sans', style: { fontWeight: 600 } }, a.hostname) },
@@ -832,7 +889,7 @@
             { key: 'warm', label: 'warm', num: true, render: a => a.tiered_memory ? fmt.num(a.tiered_memory.warm_system_ram_gb, 1) + ' GB' : '—' },
             { key: 'cold', label: 'cold', num: true, render: a => a.tiered_memory ? fmt.num(a.tiered_memory.cold_nvme_stream_gb, 1) + ' GB' : '—' },
             { key: 'q', label: 'q*', num: true, render: a => a.tiered_memory ? a.tiered_memory.q_star_accel_ratio : '—' },
-            { key: 'aux', label: 'auxiliary', cls: 'wrap', render: a => (a.auxiliary_tasks || []).length ? Badges(a.auxiliary_tasks.map(t => h(K.Badge, { key: t }, fmt.words(t).replace('fts3 weight seed and checkpoint vault', '.ktb vault')))) : h('span', { className: 'cr-muted' }, '—') }] }))) : null,
+            { key: 'aux', label: 'auxiliary', cls: 'wrap', render: a => (a.auxiliary_tasks || []).length ? Badges(a.auxiliary_tasks.map(t => h(K.Badge, { key: t }, fmt.words(t).replace('fts3 weight seed and checkpoint vault', '.ktb vault')))) : h('span', { className: 'cr-muted' }, '—') }] })) : null) : null,
       tab === 'dataflow' ? h(Panel, { title: 'Dataflow modes', sub: dataflow ? dataflow.model_id + ' · ' + dataflow.evaluated_batch_tokens + ' batch tokens' : '', flush: true, foot: dataflow ? h(F, null, h('span', null, 'low batch → ' + fmt.words(dataflow.recommended_low_batch_mode)), h('span', null, 'high batch → ' + fmt.words(dataflow.recommended_high_batch_mode)), h('span', null, 'crossover at ' + dataflow.crossover_batch_tokens + ' tokens')) : null },
         dataflow ? h(Table, { rows: dataflow.profiles, rowKey: p => p.mode, cols: [
           { key: 'm', label: 'mode', render: p => h('span', { className: 'sans', style: { fontWeight: 600 } }, fmt.words(p.mode)) },
@@ -1063,8 +1120,8 @@
         h(Stat, { label: 'Vault', value: vault ? vault.hostname : '—', meta: vault ? fmt.gb(vault.memory.nvme_cache_gb) + ' nvme · ' + vault.memory.nvme_read_bw_gbps + ' GB/s · seeds every .ktb bank' : '—' }),
         h(Stat, { label: 'Storage bucket', value: bucket ? fmt.words(bucket.bucket_tier).split(' ')[0] : '—', meta: bucket ? fmt.gb(bucket.usable_effective_gb) + ' usable of ' + fmt.gb(bucket.allocated_raw_gb) + ' · ' + bucket.replication_factor + '× rep' : '—' }),
         h(Stat, { label: 'Transfers', value: tx.length ? tx.length : '—', meta: tx.length ? fmt.gb(totalGb) + ' this epoch · ' + tx.filter(t => t.state === 'CompletedReady').length + ' complete' : '—', tone: tx.length ? 'cadmium' : '' }),
-        h(Stat, { label: 'Weights served', value: fmt.gb(overview.inference_plan.total_model_weight_gb), meta: overview.inference_plan.model_id + ' · 64 KiB pages' }),
-        h(Stat, { label: 'HF selective pull', value: hf ? fmt.gb(hf.node_pulls.reduce((s, p) => s + p.selective_download_gb, 0)) : '—', meta: hf ? 'of ' + fmt.gb(hf.total_model_gb) + ' · ' + fmt.gb(hf.node_pulls.reduce((s, p) => s + p.full_repo_avoided_gb, 0)) + ' avoided' : '—' })),
+        h(Stat, { label: 'Weights served', value: overview.active_model_loaded ? fmt.gb(overview.inference_plan.total_model_weight_gb) : '0.0 GB', meta: overview.active_model_loaded ? (overview.inference_plan.model_id + ' · 64 KiB pages') : 'No model currently loaded' }),
+        h(Stat, { label: 'Local .ktb banks', value: (overview.imported_models || []).length, unit: 'on disk', meta: (overview.imported_models || []).length ? overview.imported_models[overview.imported_models.length - 1].model_id + ' (' + overview.imported_models[overview.imported_models.length - 1].page_count_64k + ' pages)' : (hf ? fmt.gb(hf.node_pulls.reduce((s, p) => s + p.selective_download_gb, 0)) + ' HF selective' : '0 imported') })),
       h(K.Tabs, { label: 'Data views', value: tab, onChange: setTab, items: [{ id: 'transfers', label: 'Transfers', count: tx.length || undefined }, { id: 'bucket', label: 'Storage bucket' }, { id: 'sources', label: 'Sources', count: integ ? integ.connectors.length : undefined }, { id: 'hf', label: 'Hugging Face pull' }, { id: 'gh', label: 'GitHub worlds' }] }),
       tab === 'bucket' ? h(Panel, { title: 'Decentralized storage pool bucket', sub: bucket ? bucket.bucket_tier + ' · HRW Rendezvous + RS(' + bucket.reed_solomon_data_shards + ',' + bucket.reed_solomon_parity_shards + ') erasure coding' : 'loading…', tools: h(Seg, { value: bucketTier, onChange: setBucketTier, items: [{ id: 'small', label: 'Small (100G)' }, { id: 'medium', label: 'Medium (500G)' }, { id: 'large', label: 'Large (1T)' }, { id: 'enterprise', label: 'Enterprise (10T+)' }] }), flush: true },
         bucket ? h(Table, { rows: bucket.node_allocations || [], rowKey: a => a.node_id, cols: [

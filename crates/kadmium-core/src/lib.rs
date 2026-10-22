@@ -465,11 +465,65 @@ impl ModelSpec {
         }
     }
 
-    /// Preset: Qwen2.5-Coder-32B-Instruct Dense (Q4_K `.ktb` for consumer LAN/SBC clusters).
+    /// Preset: Llama-3.2-3B-Instruct Dense (Q4_K `.ktb`, 2.0 GiB across 28 layers for single SBC / edge / laptop).
+    pub fn llama_3_2_3b_instruct() -> Self {
+        Self {
+            id: "llama-3.2-3b-instruct".to_string(),
+            display_name: "Llama-3.2-3B-Instruct (Q4_K KTB · 2.0 GB)".to_string(),
+            total_params_billions: 3.2,
+            num_layers: 28,
+            is_moe: false,
+            dense_layer_size_gb: 0.072,
+            experts_per_layer: 0,
+            active_experts_per_token: 0,
+            single_expert_size_gb: 0.0,
+            kv_cache_per_layer_gb: 0.018,
+            training_activation_per_layer_gb: 0.06,
+            lora_state_per_layer_gb: 0.015,
+        }
+    }
+
+    /// Preset: Qwen2.5-Coder-7B-Instruct Dense (Q4_K `.ktb`, 4.7 GiB across 28 layers).
+    pub fn qwen2_5_coder_7b() -> Self {
+        Self {
+            id: "qwen2.5-coder-7b-instruct".to_string(),
+            display_name: "Qwen2.5-Coder-7B-Instruct (Q4_K KTB · 4.7 GB)".to_string(),
+            total_params_billions: 7.6,
+            num_layers: 28,
+            is_moe: false,
+            dense_layer_size_gb: 0.168,
+            experts_per_layer: 0,
+            active_experts_per_token: 0,
+            single_expert_size_gb: 0.0,
+            kv_cache_per_layer_gb: 0.032,
+            training_activation_per_layer_gb: 0.11,
+            lora_state_per_layer_gb: 0.025,
+        }
+    }
+
+    /// Preset: Qwen2.5-Coder-14B-Instruct Dense (Q4_K `.ktb`, 9.0 GiB across 48 layers).
+    pub fn qwen2_5_coder_14b() -> Self {
+        Self {
+            id: "qwen2.5-coder-14b-instruct".to_string(),
+            display_name: "Qwen2.5-Coder-14B-Instruct (Q4_K KTB · 9.0 GB)".to_string(),
+            total_params_billions: 14.7,
+            num_layers: 48,
+            is_moe: false,
+            dense_layer_size_gb: 0.188,
+            experts_per_layer: 0,
+            active_experts_per_token: 0,
+            single_expert_size_gb: 0.0,
+            kv_cache_per_layer_gb: 0.048,
+            training_activation_per_layer_gb: 0.18,
+            lora_state_per_layer_gb: 0.04,
+        }
+    }
+
+    /// Preset: Qwen2.5-Coder-32B-Instruct Dense (Q4_K `.ktb`, 18.6 GiB across 64 layers for consumer LAN/M4/GPU clusters).
     pub fn qwen2_5_coder_32b() -> Self {
         Self {
             id: "qwen2.5-coder-32b-instruct".to_string(),
-            display_name: "Qwen2.5-Coder-32B-Instruct (Q4_K KTB)".to_string(),
+            display_name: "Qwen2.5-Coder-32B-Instruct (Q4_K KTB · 18.6 GB)".to_string(),
             total_params_billions: 32.5,
             num_layers: 64,
             is_moe: false,
@@ -502,12 +556,37 @@ impl ModelSpec {
         }
     }
 
+    /// Selects a realistic model preset sized to fit the actual fast memory (VRAM + Unified Memory)
+    /// of the connected cluster nodes without ungrounded overflow.
+    pub fn recommended_for_cluster(nodes: &[HardwareNode]) -> Self {
+        let fast_mem_gb: f64 = nodes
+            .iter()
+            .map(|n| n.memory.vram_gb + n.memory.unified_mem_gb)
+            .sum();
+        if fast_mem_gb < 6.0 {
+            Self::llama_3_2_3b_instruct()
+        } else if fast_mem_gb < 11.5 {
+            Self::qwen2_5_coder_7b()
+        } else if fast_mem_gb < 20.0 {
+            Self::qwen2_5_coder_14b()
+        } else if fast_mem_gb < 52.0 {
+            Self::qwen2_5_coder_32b()
+        } else if fast_mem_gb < 120.0 {
+            Self::llama_3_70b_lora()
+        } else {
+            Self::deepseek_v3_671b_moe()
+        }
+    }
+
     /// Resolves a model preset by ID or returns `deepseek_v3_671b_moe()` by default.
     pub fn from_id(id: &str) -> Self {
         match id {
+            "llama-3.2-3b-instruct" | "llama-3.2-3b" => Self::llama_3_2_3b_instruct(),
+            "qwen2.5-coder-7b-instruct" | "qwen2.5-coder-7b" => Self::qwen2_5_coder_7b(),
+            "qwen2.5-coder-14b-instruct" | "qwen2.5-coder-14b" => Self::qwen2_5_coder_14b(),
+            "qwen2.5-coder-32b-instruct" | "qwen2.5-coder-32b" => Self::qwen2_5_coder_32b(),
             "qwen3-235b-moe" => Self::qwen3_235b_moe(),
             "llama-3-70b-lora" | "llama-3.3-70b-instruct" => Self::llama_3_70b_lora(),
-            "qwen2.5-coder-32b-instruct" | "qwen2.5-coder-32b" => Self::qwen2_5_coder_32b(),
             "deepseek-v3-671b-exl3-2.5bpw" | "deepseek-v3-exl3" | "exl3" => {
                 Self::deepseek_v3_671b_exl3()
             }
