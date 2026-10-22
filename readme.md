@@ -232,6 +232,7 @@ cargo test --workspace
 ## 📖 Documentation
 
 - [**`docs/ARCHITECTURE.md`**](docs/ARCHITECTURE.md) — Deep-dive mathematical and systems specification covering capability vectors, $q^*$ bandwidth-adaptive routing, live responsibility shifting, asymmetric 1F1B & Sharded-Island DiLoCo training, `.ktb` tensor banks, and Verde reproducible verification.
+- [**`docs/BUSINESS_PLAN_AND_STANCE.md`**](docs/BUSINESS_PLAN_AND_STANCE.md) — Master Business Plan, Pay-In & Pay-Out Pricing Model, `75 / 20 / 5` Steward-Ownership Charter, and Moral/Ethical Stance.
 - **Interactive Docs Portal** — Run `cargo run --bin kadmium -- serve` and visit **`http://localhost:7848/docs`**.
 
 ---
