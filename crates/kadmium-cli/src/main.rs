@@ -223,21 +223,24 @@ enum Commands {
         #[arg(short, long, default_value_t = 2.55)]
         bpw: f32,
     },
-    /// Profile and attach a modded Nintendo Switch 1 (Mariko T210B01 16nm / Erista T210 Jetson Nano equivalent) e-waste node
+    /// Profile and attach an NVIDIA Tegra X1 / X1+ platform node (Modded Nintendo Switch Mariko/Erista, Jetson Nano B01, Shield TV Pro)
+    #[command(visible_alias = "tegra-x1")]
     Switch {
         /// Silicon revision: mariko (16nm T210B01 4GB) | erista (20nm T210 4GB) | mariko-8gb (8GB LPDDR4X BGA mod)
         #[arg(short, long, default_value = "mariko")]
         revision: String,
     },
-    /// Probe and benchmark the live Seeed Studio reTerminal CM4 (BCM2711 Cortex-A72 aarch64 NEON) over LAN TCP
+    /// Probe and benchmark a live Raspberry Pi Compute Module 4 (BCM2711 Cortex-A72 aarch64 NEON) platform node over LAN TCP
+    #[command(visible_alias = "cm4", visible_alias = "rpi-cm4")]
     Reterminal {
-        /// Optional LAN IP of the Seeed Studio reTerminal CM4 (defaults to 192.168.40.75)
+        /// Optional LAN IP of the Raspberry Pi CM4 node (defaults to 192.168.40.75)
         #[arg(short, long)]
         ip: Option<String>,
     },
-    /// Probe and benchmark the live Apple M4 Mac mini (Mac16,10 · 10-Core Metal 4 GPU + AMX Accelerate) over LAN TCP
+    /// Probe and benchmark a live Apple M4 platform node (M4 / M4 Pro / M4 Max / M4 Ultra · Metal 4 GPU + AMX Accelerate) over LAN TCP
+    #[command(visible_alias = "apple-m4")]
     M4 {
-        /// Optional LAN IP of the Apple M4 Mac mini (defaults to 192.168.40.237)
+        /// Optional LAN IP of the Apple M4 node (defaults to 192.168.40.237)
         #[arg(short, long)]
         ip: Option<String>,
     },

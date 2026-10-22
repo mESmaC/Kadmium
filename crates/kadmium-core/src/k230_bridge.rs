@@ -931,7 +931,79 @@ for line in text.splitlines():
         let floats = accum.iter().map(|&v| (v as f32) / 100.0).collect();
         (accum, floats, hash)
     }
+
+    /// Returns a reference catalog of all Kendryte K230 RISC-V (`Xuantie C908 RVV 1.0` + `6 TOPS KPU`)
+    /// platform boards across memory SKUs (`512 MB` SiP K230D up to `2 GB` LPDDR4).
+    pub fn catalog_all_k230_platforms() -> Vec<(KendryteK230BoardFormFactor, HardwareNode)> {
+        let specs = vec![
+            (
+                KendryteK230BoardFormFactor::CanMvK230_01Studio,
+                "node-k230-01studio-1gb",
+                1.0,
+                32.0,
+            ),
+            (
+                KendryteK230BoardFormFactor::CanaanCanMvK230Official,
+                "node-k230-canaan-v11-1gb",
+                1.0,
+                32.0,
+            ),
+            (
+                KendryteK230BoardFormFactor::CanMvK230DZeroSip,
+                "node-k230d-zero-512mb",
+                0.5,
+                16.0,
+            ),
+            (
+                KendryteK230BoardFormFactor::BananaPiBpiCanMvK230D,
+                "node-k230d-bpi-512mb",
+                0.5,
+                32.0,
+            ),
+            (
+                KendryteK230BoardFormFactor::YahboomK230VisionAi2Gb,
+                "node-k230-yahboom-2gb",
+                2.0,
+                64.0,
+            ),
+        ];
+
+        specs
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (ff, id_str, ram_gb, sd_gb))| {
+                let mut node = Self::build_k230_hardware_node(
+                    &format!("K230-11ADD33A7799E0{:02X}", idx),
+                    None,
+                );
+                node.id = NodeId(id_str.to_string());
+                node.hostname = id_str.to_string();
+                node.memory.unified_mem_gb = ram_gb;
+                node.memory.system_ram_gb = ram_gb;
+                node.memory.nvme_cache_gb = sd_gb;
+                (ff, node)
+            })
+            .collect()
+    }
 }
+
+/// Board / carrier form factor across the Canaan Kendryte K230 / K230D RISC-V (`RVV 1.0` + `KPU`) platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum KendryteK230BoardFormFactor {
+    /// **01Studio CanMV K230:** 1 GB LPDDR4 + HDMI + MIPI-CSI + Dual USB-C OTG (`COMx`).
+    CanMvK230_01Studio,
+    /// **Canaan Official CanMV-K230 V1.0 / V1.1:** 512 MB / 1 GB LPDDR4 + Ethernet + Audio.
+    CanaanCanMvK230Official,
+    /// **CanMV-K230D Zero:** Ultra-compact Raspberry Pi Zero form factor with SiP LPDDR4.
+    CanMvK230DZeroSip,
+    /// **Banana Pi BPI-CanMV-K230D-Zero:** Open-source K230D edge AI board.
+    BananaPiBpiCanMvK230D,
+    /// **Yahboom K230 AI Vision Module (`2 GB` LPDDR4):** High-RAM K230 module with touchscreen.
+    YahboomK230VisionAi2Gb,
+}
+
+/// Platform-level alias for [`K230UsbComputeBridge`] across all Kendryte K230 / K230D RISC-V boards.
+pub type KendryteK230PlatformBridge = K230UsbComputeBridge;
 
 #[cfg(test)]
 mod tests {

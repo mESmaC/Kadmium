@@ -80,11 +80,71 @@ fn send_cm4_json_rpc(addr: &str, request_json: &serde_json::Value) -> Option<(se
     None
 }
 
-/// Live SoC, eMMC, and I2C peripheral telemetry read from the Seeed Studio reTerminal CM4.
+/// Carrier board / chassis form factor for a Raspberry Pi Compute Module 4 (`BCM2711 Cortex-A72`) node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Cm4CarrierFormFactor {
+    /// **Seeed Studio reTerminal / reTerminal DM:** Industrial 5" MIPI-DSI HMI with `lis331dlh` accelerometer,
+    /// `ltr303` ambient light sensor, `mcp23008` front keys, and `/sys/class/leds/usr_led0..2`.
+    SeeedReTerminalHmi,
+    /// **Official Raspberry Pi CM4 IO Board:** Full-size carrier with PCIe Gen 2 x1 slot (for NVMe SSD) + `pcf85063` RTC.
+    OfficialRpiCm4IoBoard,
+    /// **Turing Pi 2 Cluster Blade:** Headless 4-node mini-ITX cluster carrier with onboard L2 managed GbE switch.
+    TuringPi2ClusterBlade,
+    /// **Waveshare CM4 Industrial / PoE / Dual-GbE Carrier:** DIN-rail industrial gateway carrier.
+    WaveshareCm4Industrial,
+    /// **ClockworkPi uConsole / DevTerm CM4:** Portable battery-powered handheld cyberdeck terminal.
+    ClockworkPiUConsoleCm4,
+    /// **Generic BCM2711 CM4 Carrier / Raspberry Pi 4B / Pi 400:** Any standard or custom BCM2711 board.
+    GenericBcm2711Cm4Carrier,
+}
+
+impl Cm4CarrierFormFactor {
+    /// Automatically detects the CM4 carrier board form factor from `/proc/device-tree/model` and I2C peripherals.
+    pub fn detect(board_model: &str, i2c_peripherals: &[String]) -> Self {
+        let m = board_model.to_ascii_lowercase();
+        let has_reterminal_hmi = i2c_peripherals.iter().any(|p| {
+            p.contains("ili9881") || p.contains("lis331") || p.contains("ltr303")
+        });
+        if has_reterminal_hmi || m.contains("reterminal") {
+            Self::SeeedReTerminalHmi
+        } else if m.contains("turing") {
+            Self::TuringPi2ClusterBlade
+        } else if m.contains("waveshare") {
+            Self::WaveshareCm4Industrial
+        } else if m.contains("uconsole") || m.contains("clockwork") {
+            Self::ClockworkPiUConsoleCm4
+        } else if m.contains("compute module 4 io")
+            || i2c_peripherals.iter().any(|p| p.contains("pcf85063") || p.contains("pcf8563"))
+        {
+            Self::OfficialRpiCm4IoBoard
+        } else {
+            Self::GenericBcm2711Cm4Carrier
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::SeeedReTerminalHmi => "Seeed Studio reTerminal CM4 HMI",
+            Self::OfficialRpiCm4IoBoard => "Raspberry Pi CM4 IO Board (PCIe Gen2)",
+            Self::TuringPi2ClusterBlade => "Turing Pi 2 CM4 Cluster Blade",
+            Self::WaveshareCm4Industrial => "Waveshare CM4 PoE Industrial Carrier",
+            Self::ClockworkPiUConsoleCm4 => "ClockworkPi uConsole CM4 Terminal",
+            Self::GenericBcm2711Cm4Carrier => "Raspberry Pi CM4 / BCM2711 Generic Carrier",
+        }
+    }
+}
+
+fn default_cm4_ram_gib() -> f64 {
+    3.7
+}
+
+/// Live SoC, memory, storage, and I2C peripheral telemetry read from any Raspberry Pi CM4 (`BCM2711`) node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReTerminalCm4Telemetry {
     pub temp_c: f64,
     pub cpu_freq_mhz: u32,
+    #[serde(default = "default_cm4_ram_gib")]
+    pub ram_total_gib: f64,
     pub i2c_peripherals: Vec<String>,
     pub emmc_total_gib: f64,
     pub emmc_free_gib: f64,
@@ -95,6 +155,7 @@ impl Default for ReTerminalCm4Telemetry {
         Self {
             temp_c: 33.1,
             cpu_freq_mhz: 1500,
+            ram_total_gib: 3.7,
             i2c_peripherals: vec![
                 "1-0019:lis331dlh".into(),
                 "1-0029:ltr303".into(),
@@ -108,8 +169,19 @@ impl Default for ReTerminalCm4Telemetry {
     }
 }
 
+/// Platform-level alias for [`ReTerminalCm4Telemetry`] across all Raspberry Pi CM4 (`BCM2711`) boards.
+pub type RpiCm4Telemetry = ReTerminalCm4Telemetry;
+/// Platform-level alias for [`ReTerminalCm4ExecutionProof`] across all Raspberry Pi CM4 (`BCM2711`) boards.
+pub type RpiCm4ExecutionProof = ReTerminalCm4ExecutionProof;
+/// Platform-level alias for [`ReTerminalCm4ProbeReport`] across all Raspberry Pi CM4 (`BCM2711`) boards.
+pub type RpiCm4ProbeReport = ReTerminalCm4ProbeReport;
+/// Platform-level alias for [`ReTerminalCm4StressReport`] across all Raspberry Pi CM4 (`BCM2711`) boards.
+pub type RpiCm4StressReport = ReTerminalCm4StressReport;
+/// Platform-level alias for [`ReTerminalCm4LanBridge`] across all Raspberry Pi CM4 (`BCM2711`) boards.
+pub type RpiCm4PlatformBridge = ReTerminalCm4LanBridge;
+
 /// Live execution proof from running ARMv8-A `aarch64` NEON (`vfmaq_f32` / `veorq_u32`) and Gensyn
-/// Verde `RepOps` kernels on the physical Seeed Studio reTerminal CM4 over LAN TCP.
+/// Verde `RepOps` kernels on a physical Raspberry Pi CM4 (`BCM2711`) over LAN TCP.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReTerminalCm4ExecutionProof {
     pub executed_on_physical_silicon: bool,
@@ -125,7 +197,7 @@ pub struct ReTerminalCm4ExecutionProof {
     pub front_bezel_leds_pulsed: bool,
 }
 
-/// Complete discovery and live verification report for the Seeed Studio reTerminal CM4 node.
+/// Complete discovery and live verification report for a Raspberry Pi CM4 (`BCM2711`) node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReTerminalCm4ProbeReport {
     pub physical_board_online: bool,
@@ -138,12 +210,32 @@ pub struct ReTerminalCm4ProbeReport {
     pub execution_proof: ReTerminalCm4ExecutionProof,
 }
 
-/// Live LAN TCP Compute Bridge for the Seeed Studio reTerminal CM4 (`192.168.40.75:7859`).
+/// Live LAN TCP Compute Bridge for all Raspberry Pi Compute Module 4 (`BCM2711 Cortex-A72`) platforms.
 pub struct ReTerminalCm4LanBridge;
 
 impl ReTerminalCm4LanBridge {
-    /// Builds the canonical Kadmium `HardwareNode` descriptor for the Seeed Studio reTerminal CM4.
-    pub fn build_hardware_node(endpoint_ip: &str) -> HardwareNode {
+    /// Dynamically builds a `HardwareNode` descriptor for any Raspberry Pi CM4 (`1 GB / 2 GB / 4 GB / 8 GB`
+    /// LPDDR4-3200, `eMMC / microSD / PCIe Gen2 NVMe`, any carrier form factor) from its telemetry.
+    pub fn build_platform_hardware_node(
+        endpoint_ip: &str,
+        telemetry: &ReTerminalCm4Telemetry,
+        carrier: Cm4CarrierFormFactor,
+    ) -> HardwareNode {
+        let freq_scale = (telemetry.cpu_freq_mhz.max(1500) as f64) / 1500.0;
+        let fp16_tflops = (0.38 * freq_scale * 100.0).round() / 100.0;
+        let int4_tops = (1.25 * freq_scale * 100.0).round() / 100.0;
+        let cpu_tflops = (0.24 * freq_scale * 100.0).round() / 100.0;
+        let ram_gb = telemetry.ram_total_gib.max(1.0);
+        let storage_bw = match carrier {
+            Cm4CarrierFormFactor::OfficialRpiCm4IoBoard
+            | Cm4CarrierFormFactor::TuringPi2ClusterBlade => 0.42, // PCIe Gen 2 x1 NVMe
+            _ => 0.34, // HS200 eMMC / UHS-I microSD
+        };
+        let polite_state = match carrier {
+            Cm4CarrierFormFactor::ClockworkPiUConsoleCm4 => PoliteState::BatteryOrThermalThrottle,
+            _ => PoliteState::IdleDedicated,
+        };
+
         HardwareNode {
             id: NodeId("node-reterminal-cm4".into()),
             hostname: format!("reterminal-cm4-{endpoint_ip}"),
@@ -155,29 +247,115 @@ impl ReTerminalCm4LanBridge {
                 NodeRole::StorageVault,
             ],
             trust_tier: NodeTrustTier::TrustedCore,
-            fp16_tflops: 0.38, // 4x Cortex-A72 @ 1.5 GHz ARMv8 NEON + VideoCore VI V3D
-            int4_tops: 1.25,   // ARMv8 NEON T-MAC LUT / INT8 dot-product throughput
+            fp16_tflops,
+            int4_tops,
             cpu_threads: 4,
-            cpu_tflops: 0.24,
+            cpu_tflops,
             memory: MemoryTierProfile {
                 vram_gb: 0.0,
                 vram_bw_gbps: 0.0,
-                unified_mem_gb: 3.7,
+                unified_mem_gb: ram_gb,
                 unified_mem_bw_gbps: 12.8, // LPDDR4-3200 dual-channel
-                system_ram_gb: 3.7,
+                system_ram_gb: ram_gb,
                 system_ram_bw_gbps: 12.8,
                 interconnect_bw_gbps: 0.0,
-                nvme_cache_gb: 28.09, // 32 GB eMMC (/dev/mmcblk0p2)
-                nvme_read_bw_gbps: 0.34,
+                nvme_cache_gb: telemetry.emmc_total_gib.max(8.0),
+                nvme_read_bw_gbps: storage_bw,
             },
-            polite_state: PoliteState::IdleDedicated,
+            polite_state,
             network_uplink_gbps: 1.0,
             network_latency_ms: 1.8,
         }
     }
 
-    /// Probes the Seeed Studio reTerminal CM4 over LAN TCP (`192.168.40.75:7859`), executing the
-    /// native `libkadmium_cm4_neon.so` 64x64 NEON GEMM and 64 KiB eMMC `.ktb` witness test.
+    /// Builds the default Kadmium `HardwareNode` descriptor for a Raspberry Pi CM4 node.
+    pub fn build_hardware_node(endpoint_ip: &str) -> HardwareNode {
+        Self::build_platform_hardware_node(
+            endpoint_ip,
+            &ReTerminalCm4Telemetry::default(),
+            Cm4CarrierFormFactor::SeeedReTerminalHmi,
+        )
+    }
+
+    /// Returns a reference catalog of all supported Raspberry Pi CM4 (`BCM2711`) platform configurations
+    /// across carrier boards (`Seeed reTerminal`, `CM4 IO Board + PCIe NVMe`, `Turing Pi 2 Blade`,
+    /// `Waveshare Industrial`, `ClockworkPi uConsole`, and `Generic 1GB–8GB CM4`).
+    pub fn catalog_all_cm4_platforms() -> Vec<(Cm4CarrierFormFactor, HardwareNode)> {
+        let variants = vec![
+            (
+                Cm4CarrierFormFactor::SeeedReTerminalHmi,
+                3.7,
+                1500,
+                28.09,
+                "node-cm4-reterminal-4gb",
+            ),
+            (
+                Cm4CarrierFormFactor::OfficialRpiCm4IoBoard,
+                7.8,
+                1800,
+                256.0,
+                "node-cm4-ioboard-8gb-nvme",
+            ),
+            (
+                Cm4CarrierFormFactor::TuringPi2ClusterBlade,
+                7.8,
+                2000,
+                512.0,
+                "node-cm4-turingpi2-8gb",
+            ),
+            (
+                Cm4CarrierFormFactor::WaveshareCm4Industrial,
+                3.7,
+                1500,
+                32.0,
+                "node-cm4-waveshare-4gb",
+            ),
+            (
+                Cm4CarrierFormFactor::ClockworkPiUConsoleCm4,
+                3.7,
+                1500,
+                64.0,
+                "node-cm4-uconsole-4gb",
+            ),
+            (
+                Cm4CarrierFormFactor::GenericBcm2711Cm4Carrier,
+                1.9,
+                1500,
+                16.0,
+                "node-cm4-generic-2gb",
+            ),
+        ];
+
+        variants
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (carrier, ram_gib, freq_mhz, storage_gib, node_id))| {
+                let telem = ReTerminalCm4Telemetry {
+                    temp_c: 36.0,
+                    cpu_freq_mhz: freq_mhz,
+                    ram_total_gib: ram_gib,
+                    i2c_peripherals: if carrier == Cm4CarrierFormFactor::SeeedReTerminalHmi {
+                        ReTerminalCm4Telemetry::default().i2c_peripherals
+                    } else {
+                        vec!["3-0051:pcf85063".into()]
+                    },
+                    emmc_total_gib: storage_gib,
+                    emmc_free_gib: storage_gib * 0.75,
+                };
+                let mut node = Self::build_platform_hardware_node(
+                    &format!("192.168.40.{}", 75 + idx),
+                    &telem,
+                    carrier,
+                );
+                node.id = NodeId(node_id.to_string());
+                node.hostname = format!("{}-{}", node_id, 75 + idx);
+                (carrier, node)
+            })
+            .collect()
+    }
+
+    /// Probes a Raspberry Pi CM4 (`BCM2711`) node over LAN TCP (`192.168.40.75:7859` or custom IP),
+    /// executing the native `libkadmium_cm4_neon.so` 64x64 NEON GEMM and 64 KiB storage `.ktb` witness test.
     pub fn probe_and_verify(custom_ip: Option<&str>) -> ReTerminalCm4ProbeReport {
         let ip = custom_ip.unwrap_or(DEFAULT_RETERMINAL_CM4_IP);
         let addr = if ip.contains(':') {
@@ -185,7 +363,6 @@ impl ReTerminalCm4LanBridge {
         } else {
             format!("{ip}:{DEFAULT_RETERMINAL_CM4_PORT}")
         };
-        let hw_node = Self::build_hardware_node(ip);
 
         if let Some((resp, rtt_ms)) = send_cm4_json_rpc(&addr, &serde_json::json!({"op": "probe"}))
             && resp.get("ok").and_then(|v| v.as_bool()) == Some(true)
@@ -194,6 +371,13 @@ impl ReTerminalCm4LanBridge {
                 .get("telemetry")
                 .and_then(|t| serde_json::from_value(t.clone()).ok())
                 .unwrap_or_default();
+            let board_model = resp
+                .get("board")
+                .and_then(|s| s.as_str())
+                .unwrap_or("Raspberry Pi Compute Module 4 (BCM2711 Cortex-A72)")
+                .to_string();
+            let carrier = Cm4CarrierFormFactor::detect(&board_model, &telemetry.i2c_peripherals);
+            let hw_node = Self::build_platform_hardware_node(ip, &telemetry, carrier);
             let sample4: Vec<f32> = resp
                 .get("neon_sample4")
                 .and_then(|a| serde_json::from_value(a.clone()).ok())
@@ -201,14 +385,14 @@ impl ReTerminalCm4LanBridge {
 
             return ReTerminalCm4ProbeReport {
                 physical_board_online: true,
-                board_model: resp
-                    .get("board")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("Seeed Studio reTerminal (Raspberry Pi CM4 Rev 1.0)")
-                    .to_string(),
+                board_model: format!("{} [{}]", board_model, carrier.display_name()),
                 lan_endpoint: addr.clone(),
-                mac_address_oui: "e4:5f:01:3e:99:50 (Raspberry Pi Trading Ltd)".to_string(),
-                soc_architecture: "Broadcom BCM2711 (4x ARM Cortex-A72 @ 1.50 GHz, aarch64 NEON + VideoCore VI V3D)".to_string(),
+                mac_address_oui: "e4:5f:01:3e:99:50 (Raspberry Pi Trading Ltd · BCM2711 CM4)".to_string(),
+                soc_architecture: format!(
+                    "Broadcom BCM2711 (4x ARM Cortex-A72 @ {:.2} GHz, aarch64 NEON + VideoCore VI V3D · {:.1} GiB LPDDR4)",
+                    (telemetry.cpu_freq_mhz as f64) / 1000.0,
+                    telemetry.ram_total_gib
+                ),
                 telemetry,
                 hardware_node: hw_node,
                 execution_proof: ReTerminalCm4ExecutionProof {
@@ -241,21 +425,26 @@ impl ReTerminalCm4LanBridge {
                         .get("emmc_witness_verified")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(true),
-                    front_bezel_leds_pulsed: true,
+                    front_bezel_leds_pulsed: carrier == Cm4CarrierFormFactor::SeeedReTerminalHmi,
                 },
             };
         }
 
+        let default_telem = ReTerminalCm4Telemetry::default();
+        let hw_node = Self::build_platform_hardware_node(
+            ip,
+            &default_telem,
+            Cm4CarrierFormFactor::SeeedReTerminalHmi,
+        );
         ReTerminalCm4ProbeReport {
             physical_board_online: false,
-            board_model: "Seeed Studio reTerminal (Raspberry Pi CM4 Rev 1.0, BCM2711 Cortex-A72)"
-                .to_string(),
+            board_model: "Raspberry Pi Compute Module 4 Rev 1.0 (BCM2711 Cortex-A72)".to_string(),
             lan_endpoint: addr.clone(),
-            mac_address_oui: "e4:5f:01:3e:99:50 (Raspberry Pi Trading Ltd)".to_string(),
+            mac_address_oui: "e4:5f:01:3e:99:50 (Raspberry Pi Trading Ltd · BCM2711 CM4)".to_string(),
             soc_architecture:
-                "Broadcom BCM2711 (4x ARM Cortex-A72 @ 1.50 GHz, aarch64 NEON + VideoCore VI V3D)"
+                "Broadcom BCM2711 (4x ARM Cortex-A72 @ 1.50 GHz, aarch64 NEON + VideoCore VI V3D · 3.7 GiB LPDDR4)"
                     .to_string(),
-            telemetry: ReTerminalCm4Telemetry::default(),
+            telemetry: default_telem,
             hardware_node: hw_node,
             execution_proof: ReTerminalCm4ExecutionProof {
                 executed_on_physical_silicon: false,

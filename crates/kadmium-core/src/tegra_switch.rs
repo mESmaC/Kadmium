@@ -271,4 +271,71 @@ impl ModdedSwitchController {
             network_latency_ms: 0.45,
         }
     }
+
+    /// Returns a reference catalog of all NVIDIA Tegra X1 / X1+ (`T210` & `T210B01 / T214`) platform devices:
+    /// Nintendo Switch 1 (`Mariko`, `Erista`, `8GB Mod`), `NVIDIA Jetson Nano B01`, and `NVIDIA Shield TV Pro (T214)`.
+    pub fn catalog_all_tegra_x1_platforms() -> Vec<(TegraX1PlatformFormFactor, HardwareNode)> {
+        let mut nodes = Vec::new();
+
+        let mariko = Self::build_spec(
+            SwitchSiliconRevision::MarikoT210B01_16nm4Gb,
+            SwitchRuntimeEnvironment::SwitchrootL4tJetPackCuda,
+        );
+        nodes.push((
+            TegraX1PlatformFormFactor::NintendoSwitchMariko,
+            Self::to_hardware_node(&mariko),
+        ));
+
+        let erista = Self::build_spec(
+            SwitchSiliconRevision::EristaT210_20nm4Gb,
+            SwitchRuntimeEnvironment::SwitchrootL4tJetPackCuda,
+        );
+        nodes.push((
+            TegraX1PlatformFormFactor::NintendoSwitchErista,
+            Self::to_hardware_node(&erista),
+        ));
+
+        let mariko_8gb = Self::build_spec(
+            SwitchSiliconRevision::MarikoT210B01_16nm8GbMod,
+            SwitchRuntimeEnvironment::SalvagedBoardHeadlessCluster,
+        );
+        nodes.push((
+            TegraX1PlatformFormFactor::SalvagedSwitch8GbModBlade,
+            Self::to_hardware_node(&mariko_8gb),
+        ));
+
+        let mut jetson_nano = Self::to_hardware_node(&erista);
+        jetson_nano.id = NodeId("node-tegra-jetson-nano-b01".into());
+        jetson_nano.hostname = "jetson-nano-b01-t210".into();
+        nodes.push((TegraX1PlatformFormFactor::NvidiaJetsonNanoB01, jetson_nano));
+
+        let mut shield_pro = Self::to_hardware_node(&mariko);
+        shield_pro.id = NodeId("node-tegra-shield-tv-pro-t214".into());
+        shield_pro.hostname = "shield-tv-pro-t214".into();
+        shield_pro.memory.unified_mem_gb = 3.0;
+        shield_pro.memory.system_ram_gb = 3.0;
+        nodes.push((TegraX1PlatformFormFactor::NvidiaShieldTvProT214, shield_pro));
+
+        nodes
+    }
 }
+
+/// Platform-wide form factor across all NVIDIA Tegra X1 (`T210` 20nm) and Tegra X1+ (`T210B01 / T214` 16nm) devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TegraX1PlatformFormFactor {
+    /// Nintendo Switch 1 V2 / Lite / OLED (`T210B01` 16nm Mariko, 4 GB LPDDR4X).
+    NintendoSwitchMariko,
+    /// Nintendo Switch 1 V1 (`T210` 20nm Erista RCM, 4 GB LPDDR4).
+    NintendoSwitchErista,
+    /// Salvaged BGA-upgraded 8 GB LPDDR4X Switch Mariko headless compute blade.
+    SalvagedSwitch8GbModBlade,
+    /// Official NVIDIA Jetson Nano (`B01` 4 GB / `2GB` Developer Kit, `T210` 20nm).
+    NvidiaJetsonNanoB01,
+    /// NVIDIA Shield TV Pro (`2019` `T210B01 / T214` 16nm, 3 GB LPDDR4X + Dual USB 3.0 + GbE).
+    NvidiaShieldTvProT214,
+}
+
+/// Platform-level alias for [`ModdedSwitchController`] across all NVIDIA Tegra X1 / X1+ devices.
+pub type TegraX1PlatformController = ModdedSwitchController;
+/// Platform-level alias for [`ModdedSwitchNodeSpec`] across all NVIDIA Tegra X1 / X1+ devices.
+pub type TegraX1NodeSpec = ModdedSwitchNodeSpec;

@@ -1,11 +1,13 @@
-//! # Apple M4 Mac mini (`Mac16,10`) Metal 4 GPU + AMX Accelerate Live LAN Bridge (`Cd-48`)
+//! # Apple M4 Silicon Platform (`M4` / `M4 Pro` / `M4 Max` / `M4 Ultra`) Metal 4 GPU + AMX Bridge (`Cd-48`)
 //!
-//! Provides live LAN TCP RPC integration with the physical **Apple M4 Mac mini (`Mac16,10` · Model `MU9D3LL/A`)**:
-//! - **SoC:** Apple M4 (`arm64-apple-darwin25.5.0`, 10-Core CPU: 4 Performance + 6 Efficiency cores,
-//!   10-Core Metal 4 GPU, 16-Core Apple Neural Engine, Hardware AMX/SME Matrix Co-Processor)
-//! - **Memory:** 16 GB LPDDR5X-7500 Unified Memory (`120 GB/s` bandwidth, `11.84 GiB` Metal working set)
-//! - **Storage:** 256 GB Apple NVMe SSD (`> 2.1 GB/s` zero-copy `.ktb` page streaming)
-//! - **Network:** Gigabit Ethernet / Wi-Fi 6E (`192.168.40.237:7860`, `Mac.lan`)
+//! Targets **all Apple M4-family products** across macOS and iPadOS (`ARMv9.2-A` + `Metal 4` `MTLGPUFamilyApple9`
+//! + Hardware `AMX / SME` Matrix Co-Processor + `16/32-Core Apple Neural Engine`):
+//! - **Mac mini (`Mac16,10` M4 · `Mac16,11` M4 Pro)** (`16–64 GB` LPDDR5X, `120–273 GB/s`, 1GbE/10GbE)
+//! - **MacBook Pro 14" & 16" (`Mac16,1` M4 · `Mac16,6`/`Mac16,8` M4 Pro · `Mac16,5`/`Mac16,7` M4 Max)** (`16–128 GB` LPDDR5X, `120–546 GB/s`)
+//! - **MacBook Air 13" & 15" (`Mac16,12` / `Mac16,13` M4)** (`16–32 GB` LPDDR5X, fanless polite thermal envelope)
+//! - **iMac 24" (`Mac16,2` / `Mac16,3` M4)** (`16–32 GB` LPDDR5X, all-in-one desktop)
+//! - **Mac Studio (`M4 Max` / `M4 Ultra`)** (`36–256 GB` LPDDR5X, `410–819+ GB/s` UltraFusion)
+//! - **iPad Pro M4 (`iPad16,3`–`iPad16,6`)** (`8–16 GB` LPDDR5X, 9/10-Core M4 + 16-Core ANE)
 
 use crate::{
     ComputeBackend, DeviceKind, HardwareNode, MemoryTierProfile, NodeId, NodeRole, NodeTrustTier,
@@ -17,14 +19,149 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// Default LAN IP of the physical Apple M4 Mac mini (`Mac.lan`).
+/// Default LAN IP of an Apple M4 worker node (`Mac.lan`).
 pub const DEFAULT_M4_MAC_MINI_IP: &str = "192.168.40.237";
 /// Default TCP port for the Kadmium Apple M4 Metal 4 + AMX RPC daemon (`com.kadmium.m4-worker`).
 pub const DEFAULT_M4_MAC_MINI_PORT: u16 = 7860;
 
-/// Live SoC, Metal 4 GPU, Unified Memory, and NVMe telemetry reported by the Apple M4 Mac mini.
+/// Silicon die tier across the Apple M4 family (`ARMv9.2-A` + `Metal 4` + `AMX/SME`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AppleM4SiliconTier {
+    /// **Apple M4 (`120 GB/s` LPDDR5X-7500):** 9/10-core CPU (3–4P + 6E), 8/10-core Metal 4 GPU, 16-core ANE (`38 TOPS`), 8–32 GB Unified Memory.
+    M4,
+    /// **Apple M4 Pro (`273 GB/s` LPDDR5X-8533):** 12/14-core CPU (8–10P + 4E), 16/20-core Metal 4 GPU, 16-core ANE (`38 TOPS`), 24–64 GB Unified Memory.
+    M4Pro,
+    /// **Apple M4 Max (`410–546 GB/s` LPDDR5X-8533):** 14/16-core CPU (10–12P + 4E), 32/40-core Metal 4 GPU, 16-core ANE (`38 TOPS`), 36–128 GB Unified Memory.
+    M4Max,
+    /// **Apple M4 Ultra (`819+ GB/s` UltraFusion LPDDR5X):** 28/32-core CPU (20–24P + 8E), 64/80-core Metal 4 GPU, 32-core ANE (`76 TOPS`), 96–256 GB Unified Memory.
+    M4Ultra,
+}
+
+impl AppleM4SiliconTier {
+    pub fn from_telemetry(cpu_brand: &str, hw_model: &str, gpu_cores: u32) -> Self {
+        if cpu_brand.contains("Ultra") || gpu_cores >= 60 {
+            Self::M4Ultra
+        } else if cpu_brand.contains("Max")
+            || matches!(hw_model, "Mac16,5" | "Mac16,7")
+            || gpu_cores >= 32
+        {
+            Self::M4Max
+        } else if cpu_brand.contains("Pro")
+            || matches!(hw_model, "Mac16,11" | "Mac16,6" | "Mac16,8")
+            || gpu_cores >= 16
+        {
+            Self::M4Pro
+        } else {
+            Self::M4
+        }
+    }
+
+    pub fn default_memory_bandwidth_gbps(self, gpu_cores: u32) -> f64 {
+        match self {
+            Self::M4 => 120.0,
+            Self::M4Pro => 273.0,
+            Self::M4Max => {
+                if gpu_cores >= 40 {
+                    546.0
+                } else {
+                    410.0
+                }
+            }
+            Self::M4Ultra => 819.0,
+        }
+    }
+}
+
+/// Physical product form factor across the Apple M4 lineup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AppleM4ProductFormFactor {
+    /// **Mac mini (`Mac16,10` M4 / `Mac16,11` M4 Pro):** Compact AC-powered desktop node.
+    MacMini,
+    /// **MacBook Pro 14"/16" (`Mac16,1` / `Mac16,5`–`Mac16,8`):** Active-cooled mobile workstation (`M4` / `M4 Pro` / `M4 Max`).
+    MacBookPro,
+    /// **MacBook Air 13"/15" (`Mac16,12` / `Mac16,13`):** Fanless ultra-portable (`M4`), uses thermal-aware polite scheduling.
+    MacBookAir,
+    /// **iMac 24" (`Mac16,2` / `Mac16,3`):** All-in-one AC-powered desktop (`M4`).
+    IMac,
+    /// **Mac Studio (`M4 Max` / `M4 Ultra`):** High-TDP desktop AI workstation.
+    MacStudio,
+    /// **iPad Pro M4 (`iPad16,3`–`iPad16,6`):** Ultra-thin tablet (`9/10-core M4`, `8/16 GB` UMA).
+    IPadPro,
+}
+
+impl AppleM4ProductFormFactor {
+    pub fn from_hw_model(hw_model: &str, tier: AppleM4SiliconTier) -> Self {
+        let m = hw_model.trim();
+        if matches!(m, "Mac16,10" | "Mac16,11") || m.contains("Macmini") {
+            Self::MacMini
+        } else if matches!(m, "Mac16,1" | "Mac16,5" | "Mac16,6" | "Mac16,7" | "Mac16,8")
+            || m.contains("MacBookPro")
+        {
+            Self::MacBookPro
+        } else if matches!(m, "Mac16,12" | "Mac16,13") || m.contains("MacBookAir") {
+            Self::MacBookAir
+        } else if matches!(m, "Mac16,2" | "Mac16,3") || m.contains("iMac") {
+            Self::IMac
+        } else if m.starts_with("iPad16,") {
+            Self::IPadPro
+        } else if matches!(tier, AppleM4SiliconTier::M4Max | AppleM4SiliconTier::M4Ultra) {
+            Self::MacStudio
+        } else {
+            Self::MacMini
+        }
+    }
+
+    pub fn display_product_name(self) -> &'static str {
+        match self {
+            Self::MacMini => "Apple Mac mini",
+            Self::MacBookPro => "Apple MacBook Pro",
+            Self::MacBookAir => "Apple MacBook Air",
+            Self::IMac => "Apple iMac 24-inch",
+            Self::MacStudio => "Apple Mac Studio",
+            Self::IPadPro => "Apple iPad Pro (M4)",
+        }
+    }
+}
+
+fn default_hw_model() -> String {
+    "Mac16,10".to_string()
+}
+fn default_cpu_brand() -> String {
+    "Apple M4".to_string()
+}
+fn default_product_name() -> String {
+    "Apple Mac mini".to_string()
+}
+fn default_form_factor() -> String {
+    "MacMini".to_string()
+}
+fn default_silicon_tier() -> String {
+    "M4".to_string()
+}
+fn default_mac_addr() -> String {
+    "7a:d1:1b:ac:73:1e".to_string()
+}
+fn default_mem_bw() -> f64 {
+    120.0
+}
+
+/// Live SoC, Metal 4 GPU, Unified Memory, and NVMe telemetry reported by any Apple M4-family device.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct M4MacMiniTelemetry {
+    #[serde(default = "default_hw_model")]
+    pub hw_model: String,
+    #[serde(default = "default_cpu_brand")]
+    pub cpu_brand: String,
+    #[serde(default = "default_product_name")]
+    pub product_name: String,
+    #[serde(default = "default_form_factor")]
+    pub form_factor: String,
+    #[serde(default = "default_silicon_tier")]
+    pub silicon_tier: String,
+    #[serde(default = "default_mac_addr")]
+    pub mac_address: String,
+    #[serde(default = "default_mem_bw")]
+    pub unified_mem_bw_gbps: f64,
     pub metal_gpu_name: String,
     pub metal_pipeline_ready: bool,
     pub metal_recommended_working_set_gib: f64,
@@ -41,6 +178,13 @@ pub struct M4MacMiniTelemetry {
 impl Default for M4MacMiniTelemetry {
     fn default() -> Self {
         Self {
+            hw_model: default_hw_model(),
+            cpu_brand: default_cpu_brand(),
+            product_name: default_product_name(),
+            form_factor: default_form_factor(),
+            silicon_tier: default_silicon_tier(),
+            mac_address: default_mac_addr(),
+            unified_mem_bw_gbps: 120.0,
             metal_gpu_name: "Apple M4".to_string(),
             metal_pipeline_ready: true,
             metal_recommended_working_set_gib: 11.84,
@@ -55,6 +199,17 @@ impl Default for M4MacMiniTelemetry {
         }
     }
 }
+
+/// Platform-level alias for [`M4MacMiniTelemetry`] across all Apple M4 products.
+pub type AppleM4PlatformTelemetry = M4MacMiniTelemetry;
+/// Platform-level alias for [`M4MacMiniExecutionProof`] across all Apple M4 products.
+pub type AppleM4ExecutionProof = M4MacMiniExecutionProof;
+/// Platform-level alias for [`M4MacMiniProbeReport`] across all Apple M4 products.
+pub type AppleM4ProbeReport = M4MacMiniProbeReport;
+/// Platform-level alias for [`M4MacMiniStressReport`] across all Apple M4 products.
+pub type AppleM4StressReport = M4MacMiniStressReport;
+/// Platform-level alias for [`M4MacMiniLanBridge`] across all Apple M4 products.
+pub type AppleM4PlatformBridge = M4MacMiniLanBridge;
 
 /// Cryptographic and timing proof of native Metal 4 GPU + Apple M4 AMX execution on `192.168.40.237:7860`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,20 +257,40 @@ pub struct M4MacMiniStressReport {
     pub total_rpc_wall_ms: f64,
 }
 
-static M4_PERSISTENT_CONN: Mutex<Option<(String, TcpStream)>> = Mutex::new(None);
+struct PooledM4TcpConn {
+    addr: String,
+    stream: TcpStream,
+    reader: BufReader<TcpStream>,
+}
+
+static M4_PERSISTENT_CONN: Mutex<Option<PooledM4TcpConn>> = Mutex::new(None);
 
 fn send_m4_json_rpc(addr_str: &str, payload: &serde_json::Value) -> Option<(serde_json::Value, f64)> {
+    let mut guard = M4_PERSISTENT_CONN.lock().ok()?;
     let mut line = serde_json::to_string(payload).ok()?;
     line.push('\n');
 
-    let t0 = Instant::now();
-    if let Ok(mut guard) = M4_PERSISTENT_CONN.lock() {
-        if let Some((cached_addr, stream)) = guard.as_mut() {
-            if cached_addr == addr_str && stream.write_all(line.as_bytes()).is_ok() {
-                let _ = stream.flush();
-                let mut reader = BufReader::new(stream.try_clone().ok()?);
+    for attempt in 0..2 {
+        if guard.as_ref().map(|c| c.addr != addr_str).unwrap_or(true) || attempt > 0 {
+            *guard = None;
+            let sock_addr: SocketAddr = addr_str.parse().ok()?;
+            let stream = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(900)).ok()?;
+            let _ = stream.set_nodelay(true);
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(2500)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(2500)));
+            let reader_stream = stream.try_clone().ok()?;
+            *guard = Some(PooledM4TcpConn {
+                addr: addr_str.to_string(),
+                stream,
+                reader: BufReader::new(reader_stream),
+            });
+        }
+
+        if let Some(conn) = guard.as_mut() {
+            let t0 = Instant::now();
+            if conn.stream.write_all(line.as_bytes()).is_ok() && conn.stream.flush().is_ok() {
                 let mut resp_line = String::new();
-                if reader.read_line(&mut resp_line).is_ok() && !resp_line.trim().is_empty() {
+                if conn.reader.read_line(&mut resp_line).is_ok() && !resp_line.trim().is_empty() {
                     let rtt_ms = t0.elapsed().as_secs_f64() * 1000.0;
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(resp_line.trim()) {
                         return Some((val, rtt_ms));
@@ -123,37 +298,47 @@ fn send_m4_json_rpc(addr_str: &str, payload: &serde_json::Value) -> Option<(serd
                 }
             }
         }
-        *guard = None;
     }
-
-    let sock_addr: SocketAddr = addr_str.parse().ok()?;
-    let t_conn = Instant::now();
-    let mut stream = TcpStream::connect_timeout(&sock_addr, Duration::from_millis(900)).ok()?;
-    let _ = stream.set_nodelay(true);
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(2500)));
-    let _ = stream.set_write_timeout(Some(Duration::from_millis(1500)));
-
-    stream.write_all(line.as_bytes()).ok()?;
-    stream.flush().ok()?;
-
-    let mut reader = BufReader::new(stream.try_clone().ok()?);
-    let mut resp_line = String::new();
-    reader.read_line(&mut resp_line).ok()?;
-    let rtt_ms = t_conn.elapsed().as_secs_f64() * 1000.0;
-
-    let val: serde_json::Value = serde_json::from_str(resp_line.trim()).ok()?;
-    if let Ok(mut guard) = M4_PERSISTENT_CONN.lock() {
-        *guard = Some((addr_str.to_string(), stream));
-    }
-    Some((val, rtt_ms))
+    None
 }
 
-/// Live LAN bridge to the Apple M4 Mac mini (`Mac16,10` @ `192.168.40.237:7860`).
+/// Live LAN bridge for all Apple M4-family products (`M4`, `M4 Pro`, `M4 Max`, `M4 Ultra`).
 pub struct M4MacMiniLanBridge;
 
 impl M4MacMiniLanBridge {
-    /// Builds the `HardwareNode` descriptor for the physical Apple M4 Mac mini (`16 GB Unified Memory`).
-    pub fn build_hardware_node(endpoint_ip: &str) -> HardwareNode {
+    /// Dynamically builds a `HardwareNode` descriptor for any Apple M4-family product (`Mac mini`,
+    /// `MacBook Pro`, `MacBook Air`, `iMac`, `Mac Studio`, `iPad Pro`) from its live hardware telemetry.
+    pub fn build_platform_hardware_node(
+        endpoint_ip: &str,
+        telemetry: &M4MacMiniTelemetry,
+    ) -> HardwareNode {
+        let tier = AppleM4SiliconTier::from_telemetry(
+            &telemetry.cpu_brand,
+            &telemetry.hw_model,
+            telemetry.gpu_cores,
+        );
+        let form_factor = AppleM4ProductFormFactor::from_hw_model(&telemetry.hw_model, tier);
+        let mem_bw_gbps = if telemetry.unified_mem_bw_gbps > 10.0 {
+            telemetry.unified_mem_bw_gbps
+        } else {
+            tier.default_memory_bandwidth_gbps(telemetry.gpu_cores)
+        };
+        let fp16_tflops = (telemetry.gpu_cores as f64) * 1.42;
+        let int4_tops = (telemetry.ane_cores as f64) * 2.375;
+        let cpu_tflops = (telemetry.cpu_cores_perf as f64) * 0.65
+            + (telemetry.cpu_cores_eff as f64) * 0.10;
+        let polite_state = match form_factor {
+            AppleM4ProductFormFactor::MacBookAir | AppleM4ProductFormFactor::IPadPro => {
+                PoliteState::LightDesktopUse
+            }
+            _ => PoliteState::IdleDedicated,
+        };
+        let nvme_read_bw = match tier {
+            AppleM4SiliconTier::M4 => 2.8,
+            AppleM4SiliconTier::M4Pro => 5.5,
+            AppleM4SiliconTier::M4Max | AppleM4SiliconTier::M4Ultra => 7.4,
+        };
+
         HardwareNode {
             id: NodeId("node-m4-mac-mini".to_string()),
             hostname: format!("apple-m4-mac-mini-{endpoint_ip}"),
@@ -165,42 +350,239 @@ impl M4MacMiniLanBridge {
                 NodeRole::StorageVault,
             ],
             trust_tier: NodeTrustTier::TrustedCore,
-            fp16_tflops: 14.2,
-            int4_tops: 38.0, // 16-Core Apple Neural Engine (38 TOPS) + 10-Core Metal 4 GPU + AMX
-            cpu_threads: 10,
-            cpu_tflops: 3.2,
+            fp16_tflops: (fp16_tflops * 100.0).round() / 100.0,
+            int4_tops: (int4_tops * 100.0).round() / 100.0,
+            cpu_threads: telemetry.cpu_cores_total.max(1),
+            cpu_tflops: (cpu_tflops * 100.0).round() / 100.0,
             memory: MemoryTierProfile {
                 vram_gb: 0.0,
                 vram_bw_gbps: 0.0,
-                unified_mem_gb: 16.0,
-                unified_mem_bw_gbps: 120.0, // LPDDR5X-7500 Unified Memory
-                system_ram_gb: 16.0,
-                system_ram_bw_gbps: 120.0,
+                unified_mem_gb: telemetry.unified_memory_gib,
+                unified_mem_bw_gbps: mem_bw_gbps,
+                system_ram_gb: telemetry.unified_memory_gib,
+                system_ram_bw_gbps: mem_bw_gbps,
                 interconnect_bw_gbps: 0.0,
-                nvme_cache_gb: 110.4,
-                nvme_read_bw_gbps: 2.8,
+                nvme_cache_gb: telemetry.ssd_free_gib.max(8.0),
+                nvme_read_bw_gbps: nvme_read_bw,
             },
-            polite_state: PoliteState::IdleDedicated,
-            network_uplink_gbps: 1.0,
+            polite_state,
+            network_uplink_gbps: if matches!(
+                tier,
+                AppleM4SiliconTier::M4Max | AppleM4SiliconTier::M4Ultra
+            ) {
+                10.0
+            } else {
+                1.0
+            },
             network_latency_ms: 0.85,
         }
     }
 
-    /// Probes the physical Apple M4 Mac mini at `192.168.40.237:7860` (or custom IP), executing a
-    /// live 10-core Metal 4 GPU 64x64 GEMM + Apple M4 AMX `cblas_sgemm` 512x512 + 64 KiB NVMe `.ktb` witness.
+    /// Builds the default `HardwareNode` descriptor for an Apple M4 node at `endpoint_ip`.
+    pub fn build_hardware_node(endpoint_ip: &str) -> HardwareNode {
+        Self::build_platform_hardware_node(endpoint_ip, &M4MacMiniTelemetry::default())
+    }
+
+    /// Returns a reference catalog of all Apple M4-family product configurations (`Mac mini M4/M4 Pro`,
+    /// `MacBook Pro M4/Pro/Max`, `MacBook Air M4`, `iMac 24" M4`, `Mac Studio M4 Max/Ultra`, and `iPad Pro M4`).
+    pub fn catalog_all_m4_products() -> Vec<(AppleM4ProductFormFactor, AppleM4SiliconTier, HardwareNode)> {
+        let configs = vec![
+            (
+                "Mac16,10",
+                "Apple M4",
+                "Apple Mac mini",
+                "MacMini",
+                "M4",
+                16.0,
+                120.0,
+                10,
+                4,
+                6,
+                10,
+                16,
+                110.4,
+            ),
+            (
+                "Mac16,11",
+                "Apple M4 Pro",
+                "Apple Mac mini",
+                "MacMini",
+                "M4Pro",
+                48.0,
+                273.0,
+                14,
+                10,
+                4,
+                20,
+                16,
+                512.0,
+            ),
+            (
+                "Mac16,7",
+                "Apple M4 Max",
+                "Apple MacBook Pro",
+                "MacBookPro",
+                "M4Max",
+                128.0,
+                546.0,
+                16,
+                12,
+                4,
+                40,
+                16,
+                1024.0,
+            ),
+            (
+                "Mac16,12",
+                "Apple M4",
+                "Apple MacBook Air",
+                "MacBookAir",
+                "M4",
+                24.0,
+                120.0,
+                10,
+                4,
+                6,
+                10,
+                16,
+                256.0,
+            ),
+            (
+                "Mac16,3",
+                "Apple M4",
+                "Apple iMac",
+                "IMac",
+                "M4",
+                24.0,
+                120.0,
+                10,
+                4,
+                6,
+                10,
+                16,
+                256.0,
+            ),
+            (
+                "Mac16,9",
+                "Apple M4 Ultra",
+                "Apple Mac Studio",
+                "MacStudio",
+                "M4Ultra",
+                192.0,
+                819.0,
+                32,
+                24,
+                8,
+                80,
+                32,
+                2048.0,
+            ),
+            (
+                "iPad16,5",
+                "Apple M4",
+                "Apple iPad Pro (M4)",
+                "IPadPro",
+                "M4",
+                16.0,
+                120.0,
+                10,
+                4,
+                6,
+                10,
+                16,
+                256.0,
+            ),
+        ];
+
+        configs
+            .into_iter()
+            .enumerate()
+            .map(
+                |(
+                    idx,
+                    (
+                        hw_model,
+                        cpu_brand,
+                        product_name,
+                        form_factor,
+                        silicon_tier,
+                        mem_gib,
+                        bw_gbps,
+                        ncpu,
+                        pcpu,
+                        ecpu,
+                        gpu_cores,
+                        ane_cores,
+                        ssd_free_gib,
+                    ),
+                )| {
+                    let telem = M4MacMiniTelemetry {
+                        hw_model: hw_model.to_string(),
+                        cpu_brand: cpu_brand.to_string(),
+                        product_name: product_name.to_string(),
+                        form_factor: form_factor.to_string(),
+                        silicon_tier: silicon_tier.to_string(),
+                        mac_address: format!("7a:d1:1b:ac:73:{:02x}", 0x10 + idx),
+                        unified_mem_bw_gbps: bw_gbps,
+                        metal_gpu_name: cpu_brand.to_string(),
+                        metal_pipeline_ready: true,
+                        metal_recommended_working_set_gib: mem_gib * 0.74,
+                        unified_memory_gib: mem_gib,
+                        cpu_cores_total: ncpu,
+                        cpu_cores_perf: pcpu,
+                        cpu_cores_eff: ecpu,
+                        gpu_cores,
+                        ane_cores,
+                        ssd_total_gib: ssd_free_gib * 1.5,
+                        ssd_free_gib,
+                    };
+                    let tier = AppleM4SiliconTier::from_telemetry(cpu_brand, hw_model, gpu_cores);
+                    let ff = AppleM4ProductFormFactor::from_hw_model(hw_model, tier);
+                    let mut node = Self::build_platform_hardware_node(
+                        &format!("192.168.40.{}", 230 + idx),
+                        &telem,
+                    );
+                    node.id = NodeId(format!(
+                        "node-apple-{}-{}",
+                        form_factor.to_ascii_lowercase(),
+                        silicon_tier.to_ascii_lowercase()
+                    ));
+                    (ff, tier, node)
+                },
+            )
+            .collect()
+    }
+
+    /// Probes an Apple M4-family node at `192.168.40.237:7860` (or custom IP), executing a
+    /// live Metal 4 GPU 64x64 GEMM + Apple M4 AMX `cblas_sgemm` 512x512 + 64 KiB NVMe `.ktb` witness.
     pub fn probe_and_verify(custom_ip: Option<&str>) -> M4MacMiniProbeReport {
         let ip = custom_ip.unwrap_or(DEFAULT_M4_MAC_MINI_IP);
         let addr = format!("{ip}:{DEFAULT_M4_MAC_MINI_PORT}");
-        let hw_node = Self::build_hardware_node(ip);
 
         if let Some((resp, rtt_ms)) = send_m4_json_rpc(&addr, &serde_json::json!({ "op": "probe" }))
             && resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)
         {
+            let telemetry: M4MacMiniTelemetry = resp
+                .get("telemetry")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let hw_node = Self::build_platform_hardware_node(ip, &telemetry);
             let board_model = resp
                 .get("board")
                 .and_then(|v| v.as_str())
-                .unwrap_or("Apple Mac mini (Mac16,10 · Apple M4 10-Core CPU / 10-Core Metal 4 GPU · 16 GB Unified)")
-                .to_string();
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    format!(
+                        "{} ({} · {} {}-Core CPU / {}-Core Metal 4 GPU / {}-Core ANE · {} GB Unified)",
+                        telemetry.product_name,
+                        telemetry.hw_model,
+                        telemetry.cpu_brand,
+                        telemetry.cpu_cores_total,
+                        telemetry.gpu_cores,
+                        telemetry.ane_cores,
+                        telemetry.unified_memory_gib as u32
+                    )
+                });
             let uname = resp
                 .get("uname")
                 .and_then(|v| v.as_str())
@@ -246,19 +628,29 @@ impl M4MacMiniLanBridge {
                 .get("nvme_witness_verified")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            let telemetry: M4MacMiniTelemetry = resp
-                .get("telemetry")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default();
+
+            let mac_address_oui = format!(
+                "{} (Apple, Inc. · {} {})",
+                telemetry.mac_address, telemetry.hw_model, telemetry.product_name
+            );
+            let soc_architecture = format!(
+                "{} ({}-Core ARMv9.2-A CPU [{}P+{}E] + {}-Core Metal 4 GPU + {}-Core ANE + AMX/SME · {:.0} GB LPDDR5X @ {:.0} GB/s)",
+                telemetry.cpu_brand,
+                telemetry.cpu_cores_total,
+                telemetry.cpu_cores_perf,
+                telemetry.cpu_cores_eff,
+                telemetry.gpu_cores,
+                telemetry.ane_cores,
+                telemetry.unified_memory_gib,
+                telemetry.unified_mem_bw_gbps
+            );
 
             return M4MacMiniProbeReport {
                 physical_board_online: true,
                 board_model,
                 lan_endpoint: addr.clone(),
-                mac_address_oui: "7a:d1:1b:ac:73:1e (Apple, Inc. · Mac16,10 MU9D3LL/A)".to_string(),
-                soc_architecture:
-                    "Apple M4 (10-Core ARMv9.2-A CPU + 10-Core Metal 4 GPU + 16-Core ANE + AMX/SME · 16 GB LPDDR5X Unified)"
-                        .to_string(),
+                mac_address_oui,
+                soc_architecture,
                 telemetry,
                 hardware_node: hw_node,
                 execution_proof: M4MacMiniExecutionProof {
@@ -280,17 +672,19 @@ impl M4MacMiniLanBridge {
             };
         }
 
+        let default_telem = M4MacMiniTelemetry::default();
+        let hw_node = Self::build_platform_hardware_node(ip, &default_telem);
         M4MacMiniProbeReport {
             physical_board_online: false,
             board_model:
                 "Apple Mac mini (Mac16,10 · Apple M4 10-Core CPU / 10-Core Metal 4 GPU / 16-Core ANE · 16 GB Unified)"
                     .to_string(),
             lan_endpoint: addr.clone(),
-            mac_address_oui: "7a:d1:1b:ac:73:1e (Apple, Inc. · Mac16,10 MU9D3LL/A)".to_string(),
+            mac_address_oui: "7a:d1:1b:ac:73:1e (Apple, Inc. · Mac16,10 Apple Mac mini)".to_string(),
             soc_architecture:
-                "Apple M4 (10-Core ARMv9.2-A CPU + 10-Core Metal 4 GPU + 16-Core ANE + AMX/SME · 16 GB LPDDR5X Unified)"
+                "Apple M4 (10-Core ARMv9.2-A CPU [4P+6E] + 10-Core Metal 4 GPU + 16-Core ANE + AMX/SME · 16 GB LPDDR5X @ 120 GB/s)"
                     .to_string(),
-            telemetry: M4MacMiniTelemetry::default(),
+            telemetry: default_telem,
             hardware_node: hw_node,
             execution_proof: M4MacMiniExecutionProof {
                 executed_on_physical_silicon: false,
