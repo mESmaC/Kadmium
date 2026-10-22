@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/components/bundle.css">
   <style>
     *, *::before, *::after { box-sizing: border-box; }
+    :root { --cp-ease: cubic-bezier(.2, .8, .2, 1); --cp-fast: 120ms; --cp-base: 200ms; --cp-slow: 280ms; }
     html, body, #app { height: 100%; margin: 0; }
     body {
       background: var(--graphite-0);
@@ -37,6 +38,7 @@
       position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px;
       padding: 9px 0 7px; border: 0; border-radius: var(--radius-sm); background: transparent;
       color: var(--ink-muted); font-size: 10.5px; line-height: 12px; font-weight: 500; cursor: pointer;
+      transition: background-color var(--cp-fast) ease, color var(--cp-fast) ease;
     }
     .cp-nav button:hover { background: var(--graphite-2); color: var(--ink); }
     .cp-nav button.active { background: var(--graphite-2); color: var(--ink); }
@@ -61,6 +63,7 @@
     }
     .cp-top .titles { min-width: 0; }
     .cp-top h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 600; letter-spacing: -0.01em; }
+    .cp-top h1:focus, .cp-top h1:focus-visible { outline: none; box-shadow: none; }
     .cp-top .sub { color: var(--ink-muted); font-size: 12.5px; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .cp-top .spacer { flex: 1; }
     .cp-conn {
@@ -87,6 +90,16 @@
     .cp-banner.down svg { color: var(--danger); }
 
     .cp-scroll { flex: 1; min-height: 0; overflow: auto; }
+    .cp-scroll:focus, .cp-scroll:focus-visible { outline: none; box-shadow: none; }
+    .cp-skip {
+      position: fixed; left: 12px; top: 12px; z-index: 60; transform: translateY(-200%); padding: 8px 14px;
+      border-radius: var(--radius-sm); background: var(--graphite-1); border: 1px solid var(--line-strong); color: var(--ink);
+      font-size: 14px; font-weight: 600; text-decoration: none; box-shadow: var(--shadow-lg);
+    }
+    .cp-skip:focus { transform: none; }
+    .cp-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+    .cp-lede { margin: 0; max-width: 74ch; color: var(--ink-muted); font-size: 14px; line-height: 21px; }
+    .cp-lede b { color: var(--ink); font-weight: 600; }
     .cp-page { display: grid; gap: 20px; max-width: 1160px; padding: 24px 28px 48px; }
     .cp-page > * { min-width: 0; }
 
@@ -174,7 +187,7 @@
 
     .cp-field { display: grid; gap: 6px; min-width: 0; }
     .cp-field > .lbl { font-size: 13px; line-height: 18px; font-weight: 500; color: var(--ink); }
-    .cp-page .kd-field { min-width: 0; }
+    .cp-page .kd-field { min-width: 0; grid-template-columns: minmax(0, 1fr); }
     .cp-field .cp-seg, .cp-mode > .kd-badge, .cp-mode > .kd-btn { justify-self: start; }
     .cp-field > .hint { font-size: 12px; color: var(--ink-muted); }
     .cp-select, .cp-range { width: 100%; }
@@ -237,11 +250,63 @@
       pointer-events: auto;
     }
     .cp-toast .bar { flex: none; width: 3px; border-radius: 2px; background: var(--ok); }
+
+    /* ---------- next steps on Home ---------- */
+    .cp-next { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .cp-step {
+      display: grid; grid-template-columns: 34px minmax(0, 1fr) 16px; gap: 2px 12px; align-items: start; padding: 13px 14px;
+      border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--graphite-1); color: var(--ink);
+      font: inherit; text-align: left; cursor: pointer; transition: border-color var(--cp-fast) ease, background-color var(--cp-fast) ease;
+    }
+    .cp-step:hover { border-color: var(--line-strong); background: var(--graphite-2); }
+    .cp-step .ic { grid-row: 1 / span 2; width: 34px; height: 34px; border-radius: var(--radius-sm); display: grid; place-items: center; background: var(--cadmium-soft); color: var(--cadmium-text); }
+    .cp-step .t { grid-column: 2; font-size: 14px; line-height: 20px; font-weight: 600; }
+    .cp-step .d { grid-column: 2; color: var(--ink-muted); font-size: 12.5px; line-height: 18px; }
+    .cp-step .go { grid-column: 3; grid-row: 1; align-self: center; color: var(--ink-muted); transition: transform var(--cp-base) var(--cp-ease), color var(--cp-fast) ease; }
+    .cp-step:hover .go, .cp-step:focus-visible .go { color: var(--ink); transform: translateX(3px); }
+
+    /* ---------- glossary terms ---------- */
+    .cp-term {
+      -webkit-appearance: none; appearance: none; display: inline; margin: 0; padding: 0; border: 0; background: none;
+      font: inherit; color: inherit; letter-spacing: inherit; text-transform: inherit; line-height: inherit; text-align: inherit;
+      cursor: help; text-decoration: underline dotted; text-decoration-thickness: 1px; text-underline-offset: 3px;
+      text-decoration-color: color-mix(in srgb, currentColor 55%, transparent); border-radius: 2px;
+    }
+    .cp-term:hover { text-decoration-color: currentColor; }
+    .cp-tip {
+      position: fixed; z-index: 70; max-width: min(300px, calc(100vw - 24px)); padding: 8px 11px; border-radius: var(--radius-sm);
+      background: var(--graphite-3); border: 1px solid var(--line-strong); color: var(--ink); box-shadow: var(--shadow-lg);
+      font: 400 12.5px/18px var(--font-sans); letter-spacing: 0; text-transform: none;
+    }
+    .cp-tablewrap:focus-visible, .kd-code pre:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+    /* ---------- motion: short, eased, and only when the system allows it ---------- */
+    @media (prefers-reduced-motion: no-preference) {
+      .cp-page > * { animation: cp-rise var(--cp-slow) var(--cp-ease) both; }
+      .cp-page > *:nth-child(2) { animation-delay: 40ms; }
+      .cp-page > *:nth-child(3) { animation-delay: 80ms; }
+      .cp-page > *:nth-child(4) { animation-delay: 120ms; }
+      .cp-page > *:nth-child(n+5) { animation-delay: 160ms; }
+      .cp-nav button.active::before { animation: cp-bar var(--cp-base) var(--cp-ease); }
+      .cp-toast { animation: cp-toast-in var(--cp-base) var(--cp-ease) both; }
+      .cp-toast.out { animation: cp-toast-out 180ms ease forwards; }
+      .cp-tip, .cp-banner { animation: cp-appear var(--cp-fast) ease both; }
+      .cp-railstate:not(.down) .dot { animation: cp-breathe 3s ease-in-out infinite; }
+      .cp-hero.share .cp-orb { animation: cp-glow 4s ease-in-out infinite; }
+    }
+    @keyframes cp-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    @keyframes cp-appear { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes cp-bar { from { opacity: 0; transform: scaleY(.3); } to { opacity: 1; transform: none; } }
+    @keyframes cp-toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+    @keyframes cp-toast-out { to { opacity: 0; transform: translateY(6px); } }
+    @keyframes cp-breathe { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+    @keyframes cp-glow { 0%, 100% { box-shadow: 0 0 0 0 var(--cadmium-soft); } 50% { box-shadow: 0 0 0 7px var(--cadmium-soft); } }
     .cp-toast.danger .bar { background: var(--danger); }
     .cp-toast.warn .bar { background: var(--warn); }
 
     @media (max-width: 980px) {
       .cp-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .cp-next { grid-template-columns: minmax(0, 1fr); }
       .cp-grid2, .cp-modes { grid-template-columns: minmax(0, 1fr); }
       .cp-hero { grid-template-columns: auto minmax(0, 1fr); }
       .cp-hero .act { grid-column: 1 / -1; justify-items: start; }
@@ -268,6 +333,7 @@
     }
     @media (prefers-reduced-motion: reduce) {
       .cp-loading .spin, .cp-conn.down .dot, .cp-railstate.down .dot { animation: none; }
+      .cp-switch, .cp-switch::after, .cp-step .go { transition: none; }
     }
   </style>
 </head>
@@ -408,14 +474,16 @@
     const [items, setItems] = useState([]);
     useEffect(() => {
       const fn = t => {
+        const life = t.tone === 'danger' ? 7000 : 4500;
         setItems(xs => xs.concat([t]).slice(-4));
-        setTimeout(() => setItems(xs => xs.filter(x => x.id !== t.id)), t.tone === 'danger' ? 7000 : 4500);
+        setTimeout(() => setItems(xs => xs.map(x => x.id === t.id ? Object.assign({}, x, { out: true }) : x)), life - 200);
+        setTimeout(() => setItems(xs => xs.filter(x => x.id !== t.id)), life);
       };
       toastSubs.add(fn);
       return () => { toastSubs.delete(fn); };
     }, []);
     return h('div', { className: 'cp-toasts', role: 'status', 'aria-live': 'polite' },
-      items.map(t => h('div', { key: t.id, className: 'cp-toast ' + t.tone }, h('span', { className: 'bar' }), h('span', null, t.text))));
+      items.map(t => h('div', { key: t.id, className: 'cp-toast ' + t.tone + (t.out ? ' out' : '') }, h('span', { className: 'bar' }), h('span', null, t.text))));
   }
   function useBusy() {
     const [busy, setBusy] = useState(null);
@@ -472,7 +540,8 @@
     info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 8h.01',
     window: 'M3 5h18v14H3zM3 9h18M6 7h.01M9 7h.01',
     close: 'M6 6l12 12M18 6L6 18',
-    plug: 'M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4'
+    plug: 'M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4',
+    arrow: 'M5 12h14M13 6l6 6-6 6'
   };
   function Icon(name, size) {
     return h('svg', { viewBox: '0 0 24 24', width: size || 20, height: size || 20, fill: 'none', stroke: 'currentColor', strokeWidth: 1.75, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true', focusable: 'false' },
@@ -500,7 +569,7 @@
   }
   function Table(p) {
     return h('div', { className: 'cp-tablewrap' }, h('table', { className: 'cp-table' + (p.wide ? ' wide' : '') },
-      h('thead', null, h('tr', null, p.cols.map((c, i) => h('th', { key: i, className: c.num ? 'num' : undefined, scope: 'col' }, c.label)))),
+      h('thead', null, h('tr', null, p.cols.map((c, i) => h('th', { key: i, className: c.num ? 'num' : undefined, scope: 'col' }, c.label === '' ? h('span', { className: 'cp-sr' }, c.sr || 'Actions') : c.label)))),
       h('tbody', null, (p.rows || []).length
         ? p.rows.map((row, i) => h('tr', { key: p.rowKey ? p.rowKey(row, i) : i }, p.cols.map((c, j) => h('td', { key: j, className: [c.num ? 'num' : '', c.className || ''].join(' ').trim() || undefined }, c.render(row, i)))))
         : h('tr', null, h('td', { className: 'empty', colSpan: p.cols.length }, p.empty || 'Nothing here yet.')))));
@@ -508,10 +577,93 @@
   function Empty(text, action) { return h('div', { className: 'cp-empty' }, h('p', null, text), action || null); }
   function Loading(text) { return h('div', { className: 'cp-loading', role: 'status' }, h('span', { className: 'spin' }), text || 'Loading…'); }
   function Note(tone, children) { return h('div', { className: 'cp-note ' + (tone || '') }, Icon(tone === 'warn' ? 'alert' : tone === 'ok' ? 'check' : 'info', 16), h('div', null, children)); }
+  /* A single choice among a few: a radio group, arrow keys move the choice. */
   function Seg(p) {
-    return h('div', { className: 'cp-seg', role: 'radiogroup', 'aria-label': p.label },
-      p.items.map(it => h('button', { key: it.id, type: 'button', role: 'radio', 'aria-checked': p.value === it.id, className: p.value === it.id ? 'on' : undefined, onClick: () => p.onChange(it.id) }, it.label)));
+    const at = Math.max(0, p.items.findIndex(it => it.id === p.value));
+    const onKey = e => {
+      const d = (e.key === 'ArrowRight' || e.key === 'ArrowDown') ? 1 : (e.key === 'ArrowLeft' || e.key === 'ArrowUp') ? -1 : 0;
+      if (!d) return;
+      e.preventDefault();
+      const n = (at + d + p.items.length) % p.items.length, btn = e.currentTarget.querySelectorAll('button')[n];
+      p.onChange(p.items[n].id); if (btn) btn.focus();
+    };
+    return h('div', { className: 'cp-seg', role: 'radiogroup', 'aria-label': p.label, onKeyDown: onKey },
+      p.items.map((it, i) => h('button', { key: it.id, type: 'button', role: 'radio', 'aria-checked': p.value === it.id, tabIndex: i === at ? 0 : -1, className: p.value === it.id ? 'on' : undefined, onClick: () => p.onChange(it.id) }, it.label)));
   }
+
+  /* ---------- glossary: technical words keep a dotted underline and explain themselves on hover, focus or tap ---------- */
+  const GLOSSARY = {
+    tflops: 'Trillions of operations per second: a rough measure of how much maths the hardware can do. TFLOPS counts 16-bit floating point; TOPS counts low-precision integer maths (INT8, INT4).',
+    fastmem: 'Fast memory is GPU memory (VRAM) or the unified memory of Apple-style chips. Layers that fit there run fastest; the rest spill to system RAM or stream from NVMe disk.',
+    layers: 'A model is a stack of layers. Kadmium gives each machine a run of consecutive layers that fits its memory.',
+    tiers: 'Where this machine keeps its layers: hot in VRAM or unified memory, warm in system RAM, cold streamed from NVMe disk.',
+    ktb: '.ktb is Kadmium’s weight-bank file: model weights packed into 64 KiB pages, each with its own checksum, so a machine can load them straight from disk.',
+    merkle: 'A fingerprint of the whole file built from the checksum of every page. Change one byte anywhere and the fingerprint changes.',
+    toks: 'Tokens per second: how fast the model writes. A token is roughly three quarters of a word.',
+    rtt: 'Round-trip time: how long a message takes to reach the other machine and come back.',
+    repops: 'Every machine computes with reproducible operations, so the same input gives bit-identical results on every chip. That is how Kadmium checks a machine’s work.',
+    kv: 'The KV cache is a chat session’s saved attention state, so the model doesn’t redo work for earlier messages.',
+    exl3: 'EXL3 stores weights in fewer bits while keeping quality close to the original, so a big model fits on smaller machines.',
+    bpw: 'Bits per weight: how many bits each model weight takes. Fewer bits make a smaller model, at some cost in quality.',
+    ticket: 'A signed token that lets a machine join this cluster. Share it only with hardware you own.',
+    trust: 'How far a machine is trusted. Trusted-core machines can hold any layer; others only get blind middle layers.',
+    autoyield: 'Auto-yield watches for games and heavy apps and steps Kadmium back within a fraction of a second, then takes back the machine once it has been idle for a while.',
+    leader: 'Coordinators elect one leader to make decisions; the others stand by and take over if it fails. The term counts elections.',
+    middle: 'Renters only get the middle layers of a model, never the first and last, so they can’t see the prompts or the answers.',
+    diloco: 'DiLoCo trains in islands that work locally and only sync every few hundred steps, so slow links between sites barely matter.',
+    wasi: 'WASI sandboxes run untrusted code with no access to your files or network.'
+  };
+  const tipSubs = new Set(); let tipHide = 0;
+  const tip = {
+    show(el, text) { clearTimeout(tipHide); const s = { text, rect: el.getBoundingClientRect() }; tipSubs.forEach(fn => fn(s)); },
+    hide(now) { clearTimeout(tipHide); tipHide = setTimeout(() => tipSubs.forEach(fn => fn(null)), now ? 0 : 140); },
+    keep() { clearTimeout(tipHide); }
+  };
+  function Term(p) {
+    const id = React.useId();
+    const text = p.tip || GLOSSARY[p.k];
+    if (!text) return h(F, null, p.children);
+    return h(F, null,
+      h('button', { type: 'button', className: 'cp-term', 'aria-describedby': id,
+        onMouseEnter: e => tip.show(e.currentTarget, text), onMouseLeave: () => tip.hide(), onFocus: e => tip.show(e.currentTarget, text), onBlur: () => tip.hide(true), onClick: e => { e.stopPropagation(); tip.show(e.currentTarget, text); } }, p.children),
+      h('span', { id, hidden: true }, text));
+  }
+  const T = (k, label, tipText) => h(Term, { k, tip: tipText }, label);
+  function TipLayer() {
+    const [s, setS] = useState(null), [pos, setPos] = useState(null);
+    const ref = useRef(null);
+    useEffect(() => {
+      const off = () => setS(null), esc = e => { if (e.key === 'Escape') setS(null); };
+      tipSubs.add(setS); window.addEventListener('keydown', esc); window.addEventListener('scroll', off, true); window.addEventListener('resize', off);
+      return () => { tipSubs.delete(setS); window.removeEventListener('keydown', esc); window.removeEventListener('scroll', off, true); window.removeEventListener('resize', off); };
+    }, []);
+    React.useLayoutEffect(() => {
+      if (!s || !ref.current) { setPos(null); return; }
+      const w = ref.current.offsetWidth, ht = ref.current.offsetHeight, vw = window.innerWidth;
+      const left = Math.max(12, Math.min(s.rect.left + s.rect.width / 2 - w / 2, vw - w - 12));
+      const above = s.rect.top - ht - 8 >= 8;
+      setPos({ left, top: above ? s.rect.top - ht - 8 : s.rect.bottom + 8 });
+    }, [s]);
+    if (!s) return null;
+    return h('div', { ref, className: 'cp-tip', 'aria-hidden': 'true', style: pos ? { left: pos.left + 'px', top: pos.top + 'px' } : { left: '-9999px', top: '0px' }, onMouseEnter: tip.keep, onMouseLeave: () => tip.hide() }, s.text);
+  }
+  /* Wide tables and code blocks scroll sideways; the ones that do become reachable from the keyboard. */
+  function markScrollables() {
+    document.querySelectorAll('.cp-tablewrap, .kd-code pre').forEach(el => {
+      const scrolls = el.scrollWidth > el.clientWidth + 1;
+      if (scrolls && !el.hasAttribute('tabindex')) {
+        const owner = el.closest('figure, section'), name = owner && owner.querySelector('figcaption > span, h2');
+        el.setAttribute('tabindex', '0'); el.setAttribute('role', 'region'); el.setAttribute('data-cp-scroll', '');
+        el.setAttribute('aria-label', ((name && name.textContent) || 'Wide content') + ' (scrolls sideways)');
+      } else if (!scrolls && el.hasAttribute('data-cp-scroll')) {
+        ['tabindex', 'role', 'aria-label', 'data-cp-scroll'].forEach(a => el.removeAttribute(a));
+      }
+    });
+  }
+  let scrollRaf = 0;
+  const queueScrollables = () => { cancelAnimationFrame(scrollRaf); scrollRaf = requestAnimationFrame(markScrollables); };
+  new MutationObserver(queueScrollables).observe(document.body, { childList: true, subtree: true });
+  window.addEventListener('resize', queueScrollables);
   function Switch(p) {
     return h('button', { type: 'button', role: 'switch', className: 'cp-switch', 'aria-checked': !!p.checked, 'aria-label': p.label, disabled: p.disabled, onClick: () => p.onChange(!p.checked) });
   }
@@ -530,12 +682,12 @@
 
   /* ---------- routing ---------- */
   const PAGES = [
-    { id: 'home', label: 'Home', icon: 'home', title: 'This machine' },
-    { id: 'cluster', label: 'Cluster', icon: 'cluster', title: 'Cluster' },
-    { id: 'models', label: 'Models', icon: 'models', title: 'Models' },
-    { id: 'earn', label: 'Earn', icon: 'earn', title: 'Supply Grid' },
-    { id: 'tools', label: 'Tools', icon: 'tools', title: 'Tools' },
-    { id: 'settings', label: 'Settings', icon: 'settings', title: 'Settings' }
+    { id: 'home', label: 'Home', icon: 'home', title: 'This machine', lede: 'What this computer is doing for your cluster right now. Yield it whenever you need it back; it rejoins when you’re done.' },
+    { id: 'cluster', label: 'Cluster', icon: 'cluster', title: 'Cluster', lede: 'All the machines working together. Add another computer with one command, or check the code of one Kadmium found on your network.' },
+    { id: 'models', label: 'Models', icon: 'models', title: 'Models', lede: 'Choose a model to run across your machines, or turn weights you already have (.gguf or .safetensors) into a Kadmium .ktb file.' },
+    { id: 'earn', label: 'Earn', icon: 'earn', title: 'Earn from idle time', lede: 'Rent this machine’s idle time to verified jobs and get paid in dollars or Kadmium Cloud credits. You choose the hours, the memory share and the kinds of work.' },
+    { id: 'tools', label: 'Tools', icon: 'tools', title: 'Tools and tests', lede: 'Check the cluster end to end from this machine: send a test prompt, hand off a chat session, send a test shard, size a smaller model, or attach a board.' },
+    { id: 'settings', label: 'Settings', icon: 'settings', title: 'Settings', lede: 'Choose self-hosted or Kadmium Cloud, pick a theme, and see versions.' }
   ];
   const currentPage = () => { const id = (location.hash || '').replace(/^#\/?/, '').split(/[/?]/)[0]; return PAGES.some(p => p.id === id) ? id : 'home'; };
   function useRoute() {
@@ -559,9 +711,11 @@
     const s = props.core.status;
     const st = s ? POLITE[s.local_host_polite_state] || POLITE.IdleDedicated : null;
     const state = !props.up ? ['down', 'offline'] : !st ? ['ok', '…'] : st.yielded ? ['yield', st.badge] : ['ok', 'sharing'];
+    const mod = (desktop && desktop.platform === 'macos') || /Mac/.test(navigator.platform) ? 'Meta' : 'Control';
     const nav = list => h('div', { className: 'cp-nav' }, list.map(p => h('button', {
       key: p.id, type: 'button', className: props.page === p.id ? 'active' : undefined,
-      'aria-current': props.page === p.id ? 'page' : undefined, title: p.title, onClick: () => go(p.id)
+      'aria-current': props.page === p.id ? 'page' : undefined, title: p.title + ' (' + (mod === 'Meta' ? '⌘' : 'Ctrl+') + (PAGES.indexOf(p) + 1) + ')',
+      'aria-keyshortcuts': mod + '+' + (PAGES.indexOf(p) + 1), onClick: () => go(p.id)
     }, Icon(p.icon, 20), h('span', null, p.label))));
     return h('nav', { className: 'cp-rail', 'aria-label': 'Companion' },
       h('img', { className: 'tile', src: '/assets/Logos/kadmium-tile-graphite.svg', alt: 'Kadmium', width: 38, height: 38, draggable: false }),
@@ -575,15 +729,15 @@
     if (page === 'home') return probe ? probe.local_node.hostname + ' · ' + (DEVICE[probe.local_node.device_kind] || words(probe.local_node.device_kind)) : 'Probing this machine…';
     if (page === 'cluster') return workers ? plural(workers.total_cluster_nodes, 'machine') + ' · ' + workers.live_worker_count + ' connected · leader ' + (status ? status.active_coordinator_leader : '…') : '…';
     if (page === 'models') return overview ? (overview.active_model_loaded ? overview.inference_plan.model_id + ' is loaded' : 'No model loaded') : '…';
-    if (page === 'earn') return 'Lease this machine’s idle time and get paid for it';
-    if (page === 'tools') return 'Exercise the fabric end to end from this machine';
+    if (page === 'earn') return 'Supply Grid · lease this machine’s idle time';
+    if (page === 'tools') return 'Test the cluster from this machine';
     return 'Connection, appearance and versions';
   }
   function TopBar(props) {
     const s = props.core.status;
     const cloud = s && s.mode && s.mode.KadmiumCloudManaged;
     return h('header', { className: 'cp-top' },
-      h('div', { className: 'titles' }, h('h1', null, props.meta.title), h('div', { className: 'sub' }, subtitle(props.meta.id, props.core))),
+      h('div', { className: 'titles' }, h('h1', { id: 'cp-page-title', tabIndex: -1 }, props.meta.title), h('div', { className: 'sub' }, subtitle(props.meta.id, props.core))),
       h('div', { className: 'spacer' }),
       s ? h(K.Badge, { tone: cloud ? 'cloud' : 'local', dot: true }, cloud ? 'Kadmium Cloud' : 'Self-hosted') : null,
       h('span', { className: 'cp-conn' + (props.up ? '' : ' down'), title: props.up ? 'Connected to the coordinator' : 'Trying to reach the coordinator' },
@@ -632,25 +786,36 @@
       h('div', { className: 'cp-tiles' },
         Tile('Cluster', plural(workers ? workers.total_cluster_nodes : status.active_cluster_nodes, 'machine'), workers ? workers.live_worker_count + ' connected live' : 'leader ' + status.active_coordinator_leader),
         Tile('Model', loaded ? inf.model_id : 'None loaded', loaded ? inf.total_layers + ' layers · ' + gb(inf.total_model_weight_gb) : 'Pick one on the Models page', loaded ? 'mono' : 'muted'),
-        Tile('Throughput', isNum(tps) ? fixed(tps, 1) + ' tok/s' : '—', isNum(tps) ? plural(overview.executed_inference_requests, 'request') + ' served' : 'No requests served yet', 'mono'),
+        Tile(T('toks', 'Speed'), isNum(tps) ? fixed(tps, 1) + ' tok/s' : '—', isNum(tps) ? plural(overview.executed_inference_requests, 'request') + ' served' : 'No requests served yet', 'mono'),
         Tile('Cloud spend', usd(status.current_hourly_cloud_burn_usd) + ' / hr', cloud ? 'cap ' + usd(cloud.max_hourly_spend_cap_usd) + ' / hr' : 'Self-hosted, no cloud costs', 'mono')),
+      h('section', { className: 'cp-next', 'aria-label': 'Next steps' },
+        NextStep('cluster', 'cluster', 'Add a machine', 'Join another computer with one command.'),
+        NextStep('models', 'models', loaded ? 'Change the model' : 'Run a model', loaded ? inf.model_id + ' is running; pick another any time.' : 'Pick a model and load it across your machines.'),
+        NextStep('earn', 'earn', 'Earn from idle time', 'Rent this machine to verified jobs while you’re away.')),
       h('div', { className: 'cp-grid2' },
         h(MachineCard, { node }),
         h(WorkCard, { node, mine, inf, loaded })),
       hook ? h(YieldCard, { hook, on: status.gaming_auto_yield_active }) : null);
   }
+  function NextStep(to, icon, title, desc) {
+    return h('button', { type: 'button', className: 'cp-step', onClick: () => go(to) },
+      h('span', { className: 'ic', 'aria-hidden': 'true' }, Icon(icon, 18)),
+      h('span', { className: 't' }, title),
+      h('span', { className: 'go', 'aria-hidden': 'true' }, Icon('arrow', 16)),
+      h('span', { className: 'd' }, desc));
+  }
   function MachineCard({ node }) {
     const m = node.memory || {};
     const memory = [m.vram_gb ? gb(m.vram_gb) + ' VRAM' : null, m.unified_mem_gb ? gb(m.unified_mem_gb) + ' unified' : null,
       m.system_ram_gb ? gb(m.system_ram_gb) + ' RAM' : null, m.nvme_cache_gb ? gb(m.nvme_cache_gb) + ' NVMe cache' : null].filter(Boolean).join(' · ');
-    return h(Card, { title: 'Hardware', sub: node.hostname, tools: h(K.Badge, { tone: 'local' }, TRUST[node.trust_tier] || words(node.trust_tier)) },
+    return h(Card, { title: 'Hardware', sub: node.hostname, tools: h(K.Badge, { tone: 'local', title: GLOSSARY.trust }, TRUST[node.trust_tier] || words(node.trust_tier)) },
       KV([
         ['Type', DEVICE[node.device_kind] || words(node.device_kind)],
         ['Processor', node.cpu_name + (node.cpu_threads ? ' · ' + node.cpu_threads + ' threads' : '')],
         ['Graphics', node.gpu_name],
         node.npu_name ? ['NPU', node.npu_name + ' · ' + fixed(node.npu_tops, 0) + ' TOPS'] : null,
-        ['Memory', memory || '—'],
-        ['Compute', fixed(node.fp16_tflops, 1) + ' TFLOPS FP16 · ' + fixed(node.int4_tops, 1) + ' TOPS INT4', true],
+        [T('fastmem', 'Memory'), memory || '—'],
+        [T('tflops', 'Compute'), fixed(node.fp16_tflops, 1) + ' TFLOPS FP16 · ' + fixed(node.int4_tops, 1) + ' TOPS INT4', true],
         ['Runtime', BACKEND[node.backend] || words(node.backend)],
         ['Network', fixed(node.network_uplink_gbps, 1) + ' Gbps · ' + fixed(node.network_latency_ms, 2) + ' ms to the coordinator', true]
       ]));
@@ -664,7 +829,7 @@
     return h(Card, { title: 'Its share of the work', sub: loaded ? inf.model_id : undefined, tools: StateBadge(holds ? 'resident' : 'idle') },
       holds ? h(F, null,
         KV([
-          ['Layers', 'L' + mine.start_layer + '–L' + mine.end_layer + ' · ' + mine.layer_count + ' of ' + inf.total_layers, true],
+          [T('layers', 'Layers'), 'L' + mine.start_layer + '–L' + mine.end_layer + ' · ' + mine.layer_count + ' of ' + inf.total_layers, true],
           ['Compute share', pct(mine.compute_share_pct, 1), true],
           mine.pipeline_stage_index != null ? ['Pipeline stage', String(mine.pipeline_stage_index), true] : null,
           aux.length ? ['Also runs', aux.join(' · ')] : null
@@ -682,7 +847,7 @@
         loaded || !takesLayers(node) ? null : h(K.Button, { size: 'sm', onClick: () => go('models') }, 'Choose a model')));
   }
   function YieldCard({ hook, on }) {
-    return h(Card, { title: 'Auto-yield', sub: words(hook.hook_backend), flush: true, tools: h(K.Badge, { tone: on ? 'ok' : 'neutral', dot: true }, on ? 'on' : 'off') },
+    return h(Card, { title: T('autoyield', 'Auto-yield'), sub: words(hook.hook_backend), flush: true, tools: h(K.Badge, { tone: on ? 'ok' : 'neutral', dot: true }, on ? 'on' : 'off') },
       h('div', { className: 'cp-pad' }, KV([
         ['Watches', h('code', null, hook.api_signature)],
         ['Steps back', 'within ' + Math.round(hook.fast_yield_sla_ms) + ' ms of a game or heavy app taking the GPU'],
@@ -753,12 +918,12 @@
           h(K.CodeBlock, { code: commands[os][1], language: 'shell', title: commands[os][0] }),
           h('p', { className: 'cp-help' }, 'Run it on the other machine, inside a Kadmium checkout or with ', h('code', null, 'kadmium'), ' on its PATH. It joins this coordinator at ',
             h('code', null, url), ' and the machine appears in the list above within a few seconds.')),
-        h(Card, { title: 'Join ticket', sub: 'kdm1 token',
+        h(Card, { title: T('ticket', 'Join ticket'), sub: 'kdm1 token',
           tools: h(K.Button, { size: 'sm', variant: 'ghost', icon: Icon('copy', 16), onClick: () => copyText(workers.join_ticket_token, 'the join ticket') }, 'Copy') },
-          h('div', { className: 'cp-ticket' }, workers.join_ticket_token),
+          h('div', { className: 'cp-ticket', tabIndex: 0, role: 'region', 'aria-label': 'Join ticket' }, workers.join_ticket_token),
           h('p', { className: 'cp-help' }, 'The ticket carries this coordinator’s address and the trust tier the new machine gets. Pass it with ', h('code', null, '--ticket'), ' when a machine cannot discover this one on the LAN.'))),
       h('div', { className: 'cp-grid2' },
-        h(Card, { title: 'Pairing', sub: workers.live_only_mode ? 'Codes to compare on both machines' : 'Simulated candidates from the demo fleet', flush: true },
+        h(Card, { title: 'Found on your network', sub: workers.live_only_mode ? 'Compare the code on both machines' : 'Simulated machines from the demo fleet', flush: true },
           Table({
             rows: candidates,
             rowKey: c => c.candidate_id,
@@ -771,7 +936,7 @@
           })),
         h(Card, { title: 'Coordinator', sub: workers.active_cluster_version },
           KV([
-            ['Leader', quorum.active_leader || '—', true],
+            [T('leader', 'Leader'), quorum.active_leader || '—', true],
             ['Term', String(quorum.term == null ? '—' : quorum.term), true],
             ['Standbys', (quorum.standby_candidates || []).length ? quorum.standby_candidates.join(', ') : 'none yet', true],
             ['Address', url, true],
@@ -827,7 +992,7 @@
             { label: 'Machine', render: a => h(F, null, h('span', { className: 'name' }, a.hostname), h('span', { className: 'sub' }, TRUST[a.trust_tier] || words(a.trust_tier))) },
             { label: 'Layers', className: 'mono nowrap', render: a => 'L' + a.start_layer + '–L' + a.end_layer },
             { label: 'Share', num: true, render: a => pct(a.compute_share_pct, 1) },
-            { label: 'Hot', num: true, render: a => gb(a.tiered_memory.hot_vram_or_unified_gb) },
+            { label: T('tiers', 'Hot'), num: true, render: a => gb(a.tiered_memory.hot_vram_or_unified_gb) },
             { label: 'Warm', num: true, render: a => gb(a.tiered_memory.warm_system_ram_gb) },
             { label: 'Cold', num: true, render: a => gb(a.tiered_memory.cold_nvme_stream_gb) }
           ]
@@ -837,7 +1002,7 @@
           h(K.Button, { variant: 'primary', disabled: busy === 'load:' + inf.model_id, onClick: () => loadModel(inf.model_id) }, 'Load ' + inf.model_id))
         : Empty('None of your machines takes model layers yet. Machines with a GPU or unified memory join as compute workers; ' + (nodes.length === 1 ? 'this one runs as ' + roleWords(nodes[0]) + '.' : 'these run as utility workers.'),
           h(K.Button, { variant: 'primary', onClick: () => go('cluster') }, 'Add a machine'))),
-      h(Card, { title: 'Model library', sub: 'Weights the planner can shard across your machines', flush: true,
+      h(Card, { title: 'Choose a model', sub: 'Load one and Kadmium splits it across your machines', flush: true,
         foot: services.length ? h('span', null, 'Embedding and vision models served through the API: ', services.map((m, i) => h(F, { key: m.id }, i ? ', ' : '', h('code', null, m.id)))) : null },
         catalog ? Table({
         wide: true,
@@ -849,13 +1014,13 @@
             { label: 'Layers', num: true, render: m => (m.kadmium_fabric ? m.kadmium_fabric.total_layers : '—') },
             { label: 'Weights', num: true, render: m => (m.kadmium_fabric ? gb(m.kadmium_fabric.weight_gb) : '—') },
             { label: 'Fit', className: 'nowrap', render: m => fit(m.kadmium_fabric.weight_gb || 0) },
-            { label: '', num: true, render: m => (m.kadmium_fabric && m.kadmium_fabric.active_loaded && loaded)
+            { label: '', sr: 'Load', num: true, render: m => (m.kadmium_fabric && m.kadmium_fabric.active_loaded && loaded)
               ? (holders.length ? StateBadge('resident') : h(K.Badge, { tone: 'neutral' }, 'loaded'))
               : h(K.Button, { size: 'sm', disabled: busy === 'load:' + m.id, onClick: () => loadModel(m.id) }, 'Load') }
           ]
         }) : Loading('Reading the model library…')),
       h('div', { className: 'cp-grid2' },
-        h(Card, { title: 'Import local weights', sub: '.gguf or .safetensors → .ktb' },
+        h(Card, { title: 'Import local weights', sub: h(F, null, '.gguf or .safetensors → ', T('ktb', '.ktb')) },
           h('div', { className: 'cp-formgrid' },
             h(K.Input, { label: 'Model id', mono: true, value: imp.model_id, onChange: e => setImp(Object.assign({}, imp, { model_id: e.target.value })) }),
             h(Field, { label: 'Source format' }, h(Select, { value: imp.format_hint, onChange: v => setImp(Object.assign({}, imp, { format_hint: v })), options: [{ value: 'gguf', label: 'GGUF v3 (.gguf)' }, { value: 'safetensors', label: 'SafeTensors (.safetensors)' }] })),
@@ -867,16 +1032,16 @@
             ['Bank', h('code', null, imported.compiled_ktb_path)],
             ['Size', bytes(imported.ktb_size_bytes) + ' · ' + plural(imported.ktb_page_count, 'page') + ' of 64 KiB', true],
             ['Tensors', String(imported.parsed_tensor_count) + ' from ' + words(imported.source_format), true],
-            ['Merkle root', hex48(imported.merkle_root_fnv64), true],
+            [T('merkle', 'Merkle root'), hex48(imported.merkle_root_fnv64), true],
             ['Zero-copy', imported.zero_copy_alignment_verified ? 'page-aligned, ready to mmap' : 'not aligned']
           ]) : null),
-        h(Card, { title: 'Compiled banks', sub: plural(banks.length, 'bank'), flush: true },
+        h(Card, { title: 'Compiled .ktb files', sub: plural(banks.length, 'file') + ' on this coordinator', flush: true },
           Table({
             rows: banks,
             rowKey: (b, i) => b.compiled_ktb_path + i,
-            empty: 'No .ktb banks compiled on this coordinator yet.',
+            empty: 'No .ktb files compiled on this coordinator yet.',
             cols: [
-              { label: 'Bank', render: b => h(F, null, h('span', { className: 'name mono' }, b.model_id), h('span', { className: 'sub' }, 'L' + b.start_layer + '–L' + b.end_layer + ' · ' + words(b.source_format))) },
+              { label: 'File', render: b => h(F, null, h('span', { className: 'name mono' }, b.model_id), h('span', { className: 'sub' }, 'L' + b.start_layer + '–L' + b.end_layer + ' · ' + words(b.source_format))) },
               { label: 'Size', num: true, render: b => bytes(b.ktb_size_bytes) },
               { label: 'Pages', num: true, render: b => String(b.ktb_page_count) }
             ]
@@ -937,7 +1102,7 @@
           h(Field, { label: 'Payout' }, h(Seg, { label: 'Payout', value: credits ? 'credits' : 'usd', onChange: v => set({ payout_mode: v === 'credits' ? { KadmiumCloudCredits: { bonus_multiplier: 1.25 } } : 'UsdDirectPayout' }),
             items: [{ id: 'usd', label: 'USD' }, { id: 'credits', label: 'Cloud credits · +25%' }] })),
           h('div', { className: 'cp-minihead' }, 'Workloads renters may run'),
-          h(Check, { label: 'Middle-layer inference', hint: 'Blind middle shards; the first and last layers stay with the renter.', checked: mask.allow_middle_layer_inference, onChange: v => setMask('allow_middle_layer_inference', v) }),
+          h(Check, { label: 'Middle-layer inference', hint: 'Blind middle layers only: renters never see prompts or answers.', checked: mask.allow_middle_layer_inference, onChange: v => setMask('allow_middle_layer_inference', v) }),
           h(Check, { label: 'DiLoCo training', hint: 'Low-bandwidth data-parallel training steps.', checked: mask.allow_diloco_demo_training, onChange: v => setMask('allow_diloco_demo_training', v) }),
           h(Check, { label: 'RL sandboxes (WASI)', hint: 'Sandboxed reward and rollout workers.', checked: mask.allow_wasi_rl_sandboxes, onChange: v => setMask('allow_wasi_rl_sandboxes', v) }),
           h(Check, { label: '.ktb seed caching', hint: 'Stores and serves weight pages from NVMe to other nodes.', checked: mask.allow_ktb_seed_caching, onChange: v => setMask('allow_ktb_seed_caching', v) })),
@@ -961,7 +1126,7 @@
             quote ? Note('', h(F, null, h('strong', null, 'Privacy. '), quote.privacy_isolation)) : null,
             quote ? Note('', h(F, null, h('strong', null, 'Verification. '), quote.verification_protocol)) : null,
             Note('warn', 'Leasing keeps this machine busy for hours at a time. Run it on wall power with good airflow. Laptops and phones left plugged in for long stretches age their batteries faster, so turn on a charge limit if the machine has one.')))),
-      h(Card, { title: 'Receipts', sub: core.workers && !core.workers.live_only_mode ? 'Includes sample receipts from the simulated demo fleet' : 'Verified work your machines were paid for', flush: true },
+      h(Card, { title: 'Payments', sub: core.workers && !core.workers.live_only_mode ? 'Includes sample payments from the simulated demo fleet' : 'Verified work your machines were paid for', flush: true },
         Table({
         wide: true,
           rows: receipts,
@@ -994,11 +1159,11 @@
     if (!models.some(m => m.value === exlModel)) models.unshift({ value: exlModel, label: exlModel });
     return h(F, null,
       h('div', { className: 'cp-grid2 stretch' },
-        h(Card, { title: 'Test pass', sub: 'Live TCP pipeline across your machines' },
+        h(Card, { title: 'Send a test prompt', sub: 'Runs through the live workers on your machines' },
           h('textarea', { className: 'cp-textarea', value: prompt, onChange: e => setPrompt(e.target.value), 'aria-label': 'Prompt', rows: 2 }),
           h('div', { className: 'cp-row' },
             h(K.Button, { variant: 'primary', icon: Icon('play', 16), disabled: busy === 'pass' || !prompt.trim(), onClick: () => run('pass', () => postJSON('/api/v1/pipeline/live', { prompt: prompt.trim(), max_tokens: 32 }).then(d => { setPass(d); return d; }),
-              d => (d.live_hops || []).length ? 'Pass finished across ' + plural(d.live_hops.length, 'stage') : 'No stages ran', CORE) }, busy === 'pass' ? 'Running…' : 'Run test pass'),
+              d => (d.live_hops || []).length ? 'Answered across ' + plural(d.live_hops.length, 'machine') : 'Nothing ran', CORE) }, busy === 'pass' ? 'Sending…' : 'Send'),
             loaded ? null : h('span', { className: 'cp-help' }, 'Load a model first so the pass has layers to run.')),
           pass ? h(F, null,
             (pass.live_hops || []).length ? h('pre', { className: 'cp-output' }, pass.generated_response)
@@ -1009,7 +1174,7 @@
               ['Stages', String((pass.live_hops || []).length), true],
               ['Latency', (pass.live_hops || []).length ? ms(pass.total_pipeline_latency_ms) : '—', true],
               ['Throughput', (pass.live_hops || []).length ? fixed(pass.effective_tokens_per_sec, 1) + ' tok/s' : '—', true],
-              ['Bit-identical', (pass.live_hops || []).length ? (pass.all_stages_bit_identical ? 'yes, every stage matched its RepOps digest' : 'no, a stage diverged') : '—']
+              [T('repops', 'Bit-identical'), (pass.live_hops || []).length ? (pass.all_stages_bit_identical ? 'yes, every machine got the same result' : 'no, a machine’s result differed') : '—']
             ]),
             (pass.live_hops || []).length ? Table({
         wide: true,
@@ -1022,8 +1187,8 @@
                 { label: 'Wire + compute', num: true, render: hop => ms(hop.wire_plus_compute_ms) }
               ]
             }) : null) : null),
-        h(Card, { title: 'KV-cache hand-off', sub: 'What happens to a chat session when this machine yields' },
-          h('p', { className: 'cp-help' }, 'Moves a session’s attention cache for layers 0–13 to another live worker over TCP and checks that every page arrives bit-exact.'),
+        h(Card, { title: 'Hand off a chat session', sub: 'What happens to a conversation when this machine yields' },
+          h('p', { className: 'cp-help' }, 'Moves a session’s ', T('kv', 'attention cache'), ' for layers 0–13 to another live worker and checks that every page arrives bit-exact.'),
           h('div', { className: 'cp-row' }, h(K.Button, { disabled: busy === 'kv', onClick: () => run('kv', () => postJSON('/api/v1/runtime/kv-migrate', { session_id: 'companion-handoff-test', start_layer: 0, end_layer: 13 }).then(d => { setKv(d); return d; }),
             d => 'Moved ' + d.pages_migrated + ' pages to ' + d.target_hostname + ' in ' + ms(d.migration_rtt_ms)) }, busy === 'kv' ? 'Moving…' : 'Run hand-off')),
           kv ? h(F, null,
@@ -1037,8 +1202,8 @@
               ['Bit-exact', kv.ack && kv.ack.bit_exact_verified ? 'yes' : 'no']
             ])) : null)),
       h('div', { className: 'cp-grid2 stretch' },
-        h(Card, { title: 'Shard stream', sub: 'Push a .ktb shard to every live worker' },
-          h('p', { className: 'cp-help' }, 'Streams the current model’s first shard page by page and has each worker verify its Merkle proof.'),
+        h(Card, { title: 'Send a test shard', sub: 'Push a .ktb file to every live worker' },
+          h('p', { className: 'cp-help' }, 'Streams the current model’s first shard page by page and has each worker check it against its ', T('merkle', 'fingerprint'), '.'),
           h('div', { className: 'cp-row' }, h(K.Button, { disabled: busy === 'fts', onClick: () => run('fts', () => postJSON('/api/v1/fts3/stream', {}).then(d => { setStream(d); return d; }),
             d => 'Streamed ' + bytes(d.ktb_total_bytes) + ' to ' + plural(new Set((d.target_receipts || []).map(r => r.target_node_id)).size, 'worker'), CORE) }, busy === 'fts' ? 'Streaming…' : 'Stream shard')),
           stream ? h(F, null,
@@ -1050,7 +1215,7 @@
               ['Wall time', ms(stream.total_stream_wall_ms), true],
               ['Verified', (stream.target_receipts || []).filter(r => r.verified_merkle_proof).length + ' of ' + (stream.target_receipts || []).length + ' page receipts', true]
             ])) : null),
-        h(Card, { title: 'EXL3 size estimate', sub: 'Trellis quantization, planned across the cluster' },
+        h(Card, { title: 'Estimate a smaller model', sub: h(F, null, T('exl3', 'EXL3'), ' at a chosen ', T('bpw', 'bits per weight')) },
           h('div', { className: 'cp-formgrid' },
             h(Field, { label: 'Model' }, h(Select, { value: exlModel, onChange: setExlModel, options: models })),
             h(K.Input, { label: 'Bits per weight', mono: true, inputMode: 'decimal', value: bpw, onChange: e => setBpw(e.target.value.replace(/[^0-9.]/g, '')) })),
@@ -1093,7 +1258,7 @@
           { label: 'Address', className: 'nowrap', render: b => b.ip
             ? h('input', { className: 'cp-select', style: { width: '150px' }, 'aria-label': b.name + ' address', placeholder: host(b.where), value: ips[b.key], onChange: e => setIps(Object.assign({}, ips, { [b.key]: e.target.value })) })
             : h('span', { className: 'mono muted' }, b.where) },
-          { label: '', num: true, render: b => h(K.Button, { size: 'sm', disabled: busy === 'attach:' + b.key, onClick: () => attach(b) }, b.online ? 'Attach' : b.ip && ips[b.key].trim() ? 'Probe and attach' : 'Add emulated') }
+          { label: '', sr: 'Attach', num: true, render: b => h(K.Button, { size: 'sm', disabled: busy === 'attach:' + b.key, onClick: () => attach(b) }, b.online ? 'Attach' : b.ip && ips[b.key].trim() ? 'Probe and attach' : 'Add emulated') }
         ]
       }) : h('div', { className: 'cp-pad' }, Loading('Probing the LAN and USB for boards…')),
       scan ? h('div', { className: 'cp-pad' }, h('p', { className: 'cp-help' }, 'Kadmium looks for each board at its usual address. Type another address to probe a different one. ',
@@ -1176,7 +1341,13 @@
       window.addEventListener('keydown', onKey);
       return () => window.removeEventListener('keydown', onKey);
     }, []);
-    useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [page]);
+    const first = useRef(true);
+    useEffect(() => {
+      if (scrollRef.current) scrollRef.current.scrollTop = 0;
+      document.title = (PAGES.find(p => p.id === page) || PAGES[0]).title + ' · Kadmium Companion';
+      if (first.current) { first.current = false; return; }
+      const t = document.getElementById('cp-page-title'); if (t) t.focus({ preventScroll: true });
+    }, [page]);
     const core = { status, overview, workers, probe };
     const meta = PAGES.find(p => p.id === page) || PAGES[0];
     const body = {
@@ -1188,12 +1359,14 @@
       settings: () => h(SettingsPage, { core, theme, setTheme })
     }[page];
     return h('div', { className: 'cp-app' },
+      h('a', { className: 'cp-skip', href: '#cp-main', onClick: e => { e.preventDefault(); if (scrollRef.current) scrollRef.current.focus(); } }, 'Skip to content'),
       h(Rail, { page, core, up }),
       h('div', { className: 'cp-main' },
         desktop ? null : h(BrowserBanner),
         up ? null : h('div', { className: 'cp-banner down', role: 'alert' }, Icon('alert', 18), h('span', null, 'Lost the connection to the coordinator at ', h('code', null, location.host), '. Retrying every few seconds.')),
         h(TopBar, { meta, core, up }),
-        h('main', { className: 'cp-scroll', ref: scrollRef }, h('div', { className: 'cp-page', key: page }, body()))),
+        h('main', { className: 'cp-scroll', ref: scrollRef, id: 'cp-main', tabIndex: -1 }, h('div', { className: 'cp-page', key: page }, h('p', { className: 'cp-lede' }, meta.lede), body()))),
+      h(TipLayer),
       h(Toasts));
   }
 

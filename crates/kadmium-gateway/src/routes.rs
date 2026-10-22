@@ -210,6 +210,14 @@ pub struct LivePipelineRequest {
     pub max_tokens: Option<u32>,
 }
 
+/// Optional body of `POST /api/v1/training/step`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TrainingStepRequest {
+    /// Step size for this update; defaults to 0.05 and is clamped to (0, 1].
+    #[serde(default)]
+    pub learning_rate: Option<f32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LivePipelineExecutionApiResponse {
     pub total_pipeline_latency_ms: f64,
@@ -329,6 +337,14 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/training/checkpoint",
             get(post_export_training_checkpoint).post(post_export_training_checkpoint),
+        )
+        .route(
+            "/api/v1/training/checkpoints",
+            get(crate::checkpoints::get_training_checkpoints),
+        )
+        .route(
+            "/api/v1/training/resume",
+            post(crate::checkpoints::post_training_resume),
         )
         .route("/api/v1/slices", get(get_pool_slices))
         .route("/api/v1/dataflow", get(get_dataflow_comparison))
@@ -1196,7 +1212,7 @@ async fn post_export_training_checkpoint(
         )
     };
 
-    let output_dir = std::env::temp_dir().join("kadmium-checkpoints");
+    let output_dir = crate::checkpoints::checkpoint_dir();
     let report =
         DistributedLanExecutor::export_checkpoint_ktb_to_disk(&model_id, step_idx, &output_dir)
             .unwrap_or_else(|e| KtbCheckpointExportReport {
@@ -1338,7 +1354,12 @@ async fn get_live_pipeline_execution(
 
 async fn run_live_training_step(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    maybe_req: Option<Json<TrainingStepRequest>>,
 ) -> Json<LiveTrainingStepApiResponse> {
+    let learning_rate = maybe_req
+        .and_then(|Json(req)| req.learning_rate)
+        .filter(|lr| lr.is_finite() && *lr > 0.0)
+        .map_or(0.05, |lr| lr.min(1.0));
     let (plan, step_idx, workers) = {
         let mut guard = state.lock().expect("gateway state lock");
         guard.training_step_counter += 1;
@@ -1349,8 +1370,13 @@ async fn run_live_training_step(
         )
     };
 
-    let report =
-        DistributedLanExecutor::execute_live_training_step(&plan, step_idx, 0.05, &workers).await;
+    let report = DistributedLanExecutor::execute_live_training_step(
+        &plan,
+        step_idx,
+        learning_rate,
+        &workers,
+    )
+    .await;
 
     let loss_history = {
         let mut guard = state.lock().expect("gateway state lock");

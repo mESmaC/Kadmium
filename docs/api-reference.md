@@ -119,6 +119,36 @@ Returns [`Pipeline1F1BSchedule`](../crates/kadmium-runtime/src/lib.rs), the exac
 
 ---
 
+### `POST /api/v1/training/step`
+Runs one live training step across the machines that hold training layers. The body is optional: `{"learning_rate": 0.02}` sets the step size (default `0.05`, clamped to `(0, 1]`). Returns the step report (loss before and after on each stage, `DeMo` compression, RepOps digests) with `global_step` and the recent `loss_history`.
+
+---
+
+### `POST /api/v1/training/checkpoint`
+Saves a `.ktb` checkpoint of the training model at the current step to `kadmium-checkpoints/kadmium-<model>-step-<n>.ktb` in the system temp folder, lists it in the bucket under `kdm://pool-bucket/checkpoints/`, and returns its `checkpoint_id`, `file_path`, `merkle_root_fnv64` and `zero_copy_verified` (every page matched its checksum).
+
+---
+
+### `GET /api/v1/training/checkpoints`
+Lists the saved checkpoints, newest step first. Each file is read back and its page checksums checked, so the list survives a restart: `checkpoint_id`, `model_id`, `step_index`, `file_path`, `file_size_bytes`, `saved_at_unix_secs` and `verified`. The response also carries `directory`, `training_model_id`, `current_step` and `resumed_from`.
+
+```bash
+curl -s http://127.0.0.1:7848/api/v1/training/checkpoints
+```
+
+---
+
+### `POST /api/v1/training/resume`
+Points training at a saved checkpoint: its model, its step and its weights' Merkle root. The next step continues from `step_index + 1`, and loss history after that step is dropped. Unknown ids answer `404`; a damaged file or a model this coordinator has no profile for answers `422`, both as `{"error": "..."}`.
+
+```bash
+curl -s http://127.0.0.1:7848/api/v1/training/resume \
+  -H "Content-Type: application/json" \
+  -d '{"checkpoint_id": "ckpt-step0042-1a2b3c4d"}'
+```
+
+---
+
 ### `GET /api/v1/rl/dream-rsi`
 Returns [`DreamRsiApiResponse`](../crates/kadmium-gateway/src/lib.rs), including the full [`DiscoveryTree`](../crates/kadmium-rl/src/lib.rs) and the offline causal replay [`DreamRsiEvolutionReport`](../crates/kadmium-rl/src/lib.rs) executed on low-power SBCs/legacy laptops.
 

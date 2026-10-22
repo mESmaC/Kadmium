@@ -110,6 +110,10 @@
       color: var(--ink);
       font-weight: 600;
     }
+    .doc-item:focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+    }
     .doc-item small {
       display: block;
       color: var(--ink-muted);
@@ -117,6 +121,18 @@
       font-size: 11px;
       margin-top: 2px;
     }
+    main:focus { outline: none; }
+    .skip {
+      position: fixed; left: 12px; top: 12px; z-index: 60; transform: translateY(-200%); padding: 8px 14px;
+      border-radius: var(--radius-sm); background: var(--graphite-1); border: 1px solid var(--line-strong); color: var(--ink);
+      font-size: 14px; font-weight: 600; text-decoration: none; box-shadow: var(--shadow-lg);
+    }
+    .skip:focus { transform: none; outline: none; box-shadow: var(--focus-ring); }
+    .table-wrap:focus-visible, .doc-content pre:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+    @media (prefers-reduced-motion: no-preference) {
+      .doc-content.enter { animation: doc-rise 260ms cubic-bezier(.2, .8, .2, 1) both; }
+    }
+    @keyframes doc-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     main {
       padding: var(--space-8) clamp(20px, 4vw, 56px) var(--space-16);
       max-width: 1020px;
@@ -291,6 +307,7 @@
   </style>
 </head>
 <body>
+  <a class="skip" href="#docMain" onclick="event.preventDefault(); document.getElementById('docMain').focus();">Skip to the document</a>
   <header>
     <img id="brandWordmark" src="/assets/Logos/kadmium-wordmark-dark.svg" alt="Kadmium" />
     <span class="cd">Cd‑48 · Docs</span>
@@ -305,10 +322,10 @@
 
   <div class="layout">
     <aside>
-      <input type="text" id="docSearch" class="search-input" placeholder="Filter documentation..." oninput="filterDocs()" />
-      <div id="sidebarList"></div>
+      <input type="search" id="docSearch" class="search-input" placeholder="Filter documentation..." aria-label="Filter documentation" oninput="filterDocs()" />
+      <nav id="sidebarList" aria-label="Documentation"></nav>
     </aside>
-    <main>
+    <main id="docMain" tabindex="-1">
       <div class="doc-meta-bar">
         <span id="currentPath">docs/README.md</span>
         <span id="currentCat">1. Getting Started & Core Reference</span>
@@ -512,7 +529,9 @@
       let inTable = false;
       const lists = [];
       let quote = [];
-      const closeLists = () => { while (lists.length) html += "</" + lists.pop().type + ">"; };
+      /* Each open list remembers whether its last <li> is still open, so a nested list lands inside that item. */
+      const closeList = () => { const l = lists.pop(); html += (l.open ? "</li>" : "") + "</" + l.type + ">"; };
+      const closeLists = () => { while (lists.length) closeList(); };
       const closeQuote = () => { if (quote.length) { html += "<blockquote>" + quote.map(q => "<p>" + formatInline(q) + "</p>").join("") + "</blockquote>"; quote = []; } };
 
       for (let i = 0; i < lines.length; i++) {
@@ -540,14 +559,17 @@
           closeQuote();
           const indent = item[1].replace(/\t/g, "    ").length;
           const type = /\d/.test(item[2]) ? "ol" : "ul";
-          while (lists.length && indent < lists[lists.length - 1].indent) html += "</" + lists.pop().type + ">";
+          while (lists.length && indent < lists[lists.length - 1].indent) closeList();
           const top = lists[lists.length - 1];
-          if (top && indent === top.indent && type !== top.type) html += "</" + lists.pop().type + ">";
+          if (top && indent === top.indent && type !== top.type) closeList();
           if (!lists.length || indent > lists[lists.length - 1].indent) {
-            lists.push({ indent, type });
+            lists.push({ indent, type, open: false });
             html += type === "ol" ? `<ol start="${parseInt(item[2], 10)}">` : "<ul>";
+          } else if (lists[lists.length - 1].open) {
+            html += "</li>";
           }
-          html += "<li>" + formatInline(item[3]) + "</li>";
+          html += "<li>" + formatInline(item[3]);
+          lists[lists.length - 1].open = true;
           continue;
         }
 
@@ -621,7 +643,7 @@
         html += `<div class="cat-header">${cat}</div>`;
         for (const doc of items) {
           const active = doc.slug === activeSlug ? "active" : "";
-          html += `<button class="doc-item ${active}" onclick="selectDoc('${doc.slug}')">
+          html += `<button class="doc-item ${active}" ${active ? 'aria-current="page"' : ""} onclick="selectDoc('${doc.slug}')">
             ${doc.title}
             <small>${doc.file_path}</small>
           </button>`;
@@ -636,9 +658,16 @@
       if (!doc) return;
       document.getElementById("currentPath").textContent = doc.file_path;
       document.getElementById("currentCat").textContent = doc.category;
-      document.getElementById("docBody").innerHTML = renderMarkdown(doc.markdown);
+      const body = document.getElementById("docBody");
+      body.innerHTML = renderMarkdown(doc.markdown);
+      body.classList.remove("enter"); void body.offsetWidth; body.classList.add("enter");
+      document.title = doc.title + " · Kadmium docs";
+      body.querySelectorAll(".table-wrap, pre").forEach(el => {
+        if (el.scrollWidth > el.clientWidth + 1) { el.setAttribute("tabindex", "0"); el.setAttribute("role", "region"); el.setAttribute("aria-label", "Wide content (scrolls sideways)"); }
+      });
       renderSidebar(document.getElementById("docSearch").value);
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      const calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      window.scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" });
     }
 
     function filterDocs() {

@@ -33,11 +33,13 @@ use kadmium_sharding::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod checkpoints;
 pub mod coordinator;
 pub mod docs;
 pub mod mcp;
 pub mod routes;
 
+pub use checkpoints::{TrainingCheckpoint, TrainingCheckpointList, TrainingResumeReport};
 pub use coordinator::{CoordinatorOptions, run_coordinator};
 pub(crate) use docs::DOC_OVERVIEW_MD;
 pub use docs::{DocumentationPage, build_documentation_catalog};
@@ -164,6 +166,8 @@ pub struct GatewayState {
     pub executed_inference_requests: u64,
     pub last_measured_tokens_per_sec: Option<f64>,
     pub last_measured_pipeline_latency_ms: Option<f64>,
+    /// Checkpoint id training was last resumed from via `/api/v1/training/resume`.
+    pub resumed_from_checkpoint: Option<String>,
 }
 
 /// On-disk persistent journal written to `target/kadmium-state/cluster_state.json`
@@ -254,6 +258,7 @@ impl GatewayState {
             executed_inference_requests: 0,
             last_measured_tokens_per_sec: None,
             last_measured_pipeline_latency_ms: None,
+            resumed_from_checkpoint: None,
         }
     }
 
@@ -329,6 +334,7 @@ impl GatewayState {
             self.last_training_loss = 0.0;
             self.training_loss_history.clear();
             self.last_checkpoint_step = 0;
+            self.resumed_from_checkpoint = None;
             self.supply_policy.enabled = false;
             self.fts3_transfers.clear();
             self.active_model_loaded = !self.imported_models.is_empty();
@@ -482,6 +488,7 @@ impl GatewayState {
             self.last_training_loss = 0.0;
             self.training_loss_history.clear();
             self.last_checkpoint_step = 0;
+            self.resumed_from_checkpoint = None;
             self.supply_policy.enabled = false;
             self.fts3_transfers.clear();
             self.active_model_loaded = !self.imported_models.is_empty();
@@ -1210,7 +1217,8 @@ mod tests {
         let dash_html = http_get("/");
         assert!(dash_html.contains("/api/v1/platforms/overview"));
         assert!(dash_html.contains("/api/v1/m4-mac-mini/deep-suite"));
-        assert!(dash_html.contains("Silicon platforms"));
+        assert!(dash_html.contains("Boards & devices"));
+        assert!(dash_html.contains("/api/v1/training/resume"));
 
         let comp_html = http_get("/companion");
         assert!(comp_html.contains("Boards and bridges"));
@@ -1276,5 +1284,22 @@ mod tests {
         let bucket_scale: kadmium_data::DecentralizedStoragePoolReport =
             serde_json::from_str(&bucket_scale_json).unwrap();
         assert_eq!(bucket_scale.total_participating_nodes, 100);
+
+        // 5. Verify the training checkpoint list and resume endpoints
+        let ckpt_json = http_get("/api/v1/training/checkpoints");
+        let ckpts: TrainingCheckpointList = serde_json::from_str(&ckpt_json).unwrap();
+        assert!(ckpts.directory.ends_with("kadmium-checkpoints"));
+
+        let resume_json = http_post(
+            "/api/v1/training/resume",
+            r#"{"checkpoint_id":"ckpt-step0000-not-a-real-file"}"#,
+        );
+        let resume: serde_json::Value = serde_json::from_str(&resume_json).unwrap();
+        assert!(resume["error"].as_str().unwrap().contains("No checkpoint"));
+
+        // 6. Verify a training step uses the learning rate it was sent
+        let step_json = http_post("/api/v1/training/step", r#"{"learning_rate":0.02}"#);
+        let step: serde_json::Value = serde_json::from_str(&step_json).unwrap();
+        assert!((step["learning_rate"].as_f64().unwrap() - 0.02).abs() < 1e-6);
     }
 }
