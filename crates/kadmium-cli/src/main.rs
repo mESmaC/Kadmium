@@ -1501,6 +1501,37 @@ fn run_m4_mac_mini(custom_ip: Option<&str>) {
                 stress.amx_sgemm_512_gflops, stress.amx_sgemm_512_ms, stress.hw_crc32c_gbps
             );
         }
+        if let Some(deep) = kadmium_core::M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(ip, 10, 256) {
+            println!("------------------------------------------------------------------------------------");
+            println!(
+                "  Metal 4 Tiled 1024x1024 GEMM:  {:.3} ms ({:.2} GFLOP/s | FNV-1a64: {:#018x})",
+                deep.tiled_gemm1024_ms, deep.tiled_gemm1024_gflops, deep.tiled_gemm1024_fnv1a64
+            );
+            println!(
+                "  Metal 4 Fused RMSNorm+RoPE:    {:.4} ms (RepOps: {:#018x} | sample: {:?})",
+                deep.rmsnorm_rope_ms,
+                deep.rmsnorm_rope_repops_digest,
+                &deep.rmsnorm_rope_sample8[..4]
+            );
+            println!(
+                "  Metal 4 Flash-GQA Paged (256): {:.4} ms (RepOps: {:#018x} | sample: {:?})",
+                deep.flash_gqa_seq256_ms, deep.flash_gqa_repops_digest, deep.flash_gqa_sample4
+            );
+            println!(
+                "  10-Core GCD (4P+6E) Scaling:   1-Core {:.3} ms -> 10-Core {:.3} ms ({:.2}x speedup)",
+                deep.gcd_1core_256_ms, deep.gcd_10core_256_ms, deep.gcd_10core_speedup
+            );
+            println!(
+                "  ARMv9.2-A INT8 DotProd & FP16: vdotq_s32={:.2} GOPS | vfmaq_f16={:.2} GFLOP/s",
+                deep.armv9_int8_dotprod_gops, deep.armv9_fp16_neon_gflops
+            );
+            println!(
+                "  Zero-Copy mmap .ktb -> Metal:  {:.4} ms (NoCopy UMA verified={} | RepOps: {:#018x})",
+                deep.zerocopy_mmap_ktb_ms,
+                deep.zerocopy_mmap_verified,
+                deep.zerocopy_mmap_repops_digest
+            );
+        }
     }
     println!("====================================================================================");
 }

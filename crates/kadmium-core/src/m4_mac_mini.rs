@@ -969,4 +969,84 @@ impl M4MacMiniLanBridge {
             total_rpc_wall_ms: (rtt_ms * 100.0).round() / 100.0,
         })
     }
+
+    /// Executes the 5-kernel Deep Metal 4 + 10-Core Grand Central Dispatch + Zero-Copy `mmap` `.ktb`
+    /// hardware suite on an Apple M4 node:
+    /// 1. `kadmium_m4_tiled_gemm1024` ($1024 \times 1024$ threadgroup-tiled FP32 GEMM across 10 Metal 4 GPU cores)
+    /// 2. `kadmium_m4_fused_rmsnorm_rope` (Metal 4 GPU fused RMSNorm + RoPE shader)
+    /// 3. `kadmium_m4_flash_gqa_paged` (Metal 4 GPU online-softmax Paged Flash-GQA attention shader)
+    /// 4. `m4_dispatch_10core_int8_fp16_bench` (10-core GCD `dispatch_apply` scaling + ARMv9.2-A `vdotq_s32` INT8 & `vfmaq_f16` FP16)
+    /// 5. `m4_zero_copy_mmap_ktb_metal_exec` (POSIX `mmap` 64 KiB `.ktb` page bound zero-copy via `newBufferWithBytesNoCopy` into Metal 4 GPU)
+    pub fn run_deep_metal4_suite_on_m4(
+        endpoint_ip: &str,
+        iterations: usize,
+        seq_len: u32,
+    ) -> Option<AppleM4DeepMetalSuiteReport> {
+        let addr = format!("{endpoint_ip}:{DEFAULT_M4_MAC_MINI_PORT}");
+        let (resp, rtt_ms) = send_m4_json_rpc(
+            &addr,
+            &serde_json::json!({
+                "op": "deep_metal4_suite",
+                "iterations": iterations,
+                "seq_len": seq_len,
+            }),
+        )?;
+        if !resp.get("ok")?.as_bool()? {
+            return None;
+        }
+        Some(AppleM4DeepMetalSuiteReport {
+            tiled_gemm1024_ms: resp.get("tiled_gemm1024_ms")?.as_f64()?,
+            tiled_gemm1024_gflops: resp.get("tiled_gemm1024_gflops")?.as_f64()?,
+            tiled_gemm1024_fnv1a64: resp.get("tiled_gemm1024_fnv1a64")?.as_u64()?,
+            rmsnorm_rope_ms: resp.get("rmsnorm_rope_ms")?.as_f64()?,
+            rmsnorm_rope_sample8: serde_json::from_value(
+                resp.get("rmsnorm_rope_sample8")?.clone(),
+            )
+            .ok()?,
+            rmsnorm_rope_repops_digest: resp.get("rmsnorm_rope_repops_digest")?.as_u64()?,
+            flash_gqa_seq256_ms: resp.get("flash_gqa_seq256_ms")?.as_f64()?,
+            flash_gqa_sample4: serde_json::from_value(resp.get("flash_gqa_sample4")?.clone())
+                .ok()?,
+            flash_gqa_repops_digest: resp.get("flash_gqa_repops_digest")?.as_u64()?,
+            gcd_1core_256_ms: resp.get("gcd_1core_256_ms")?.as_f64()?,
+            gcd_10core_256_ms: resp.get("gcd_10core_256_ms")?.as_f64()?,
+            gcd_10core_speedup: resp.get("gcd_10core_speedup")?.as_f64()?,
+            armv9_int8_dotprod_gops: resp.get("armv9_int8_dotprod_gops")?.as_f64()?,
+            armv9_fp16_neon_gflops: resp.get("armv9_fp16_neon_gflops")?.as_f64()?,
+            gcd_fnv1a64: resp.get("gcd_fnv1a64")?.as_u64()?,
+            zerocopy_mmap_ktb_ms: resp.get("zerocopy_mmap_ktb_ms")?.as_f64()?,
+            zerocopy_mmap_verified: resp.get("zerocopy_mmap_verified")?.as_bool()?,
+            zerocopy_mmap_sample4: serde_json::from_value(
+                resp.get("zerocopy_mmap_sample4")?.clone(),
+            )
+            .ok()?,
+            zerocopy_mmap_repops_digest: resp.get("zerocopy_mmap_repops_digest")?.as_u64()?,
+            total_rpc_wall_ms: (rtt_ms * 100.0).round() / 100.0,
+        })
+    }
+}
+
+/// Deep Metal 4 GPU + 10-Core Grand Central Dispatch + Zero-Copy `mmap` `.ktb` execution report on Apple M4 silicon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppleM4DeepMetalSuiteReport {
+    pub tiled_gemm1024_ms: f64,
+    pub tiled_gemm1024_gflops: f64,
+    pub tiled_gemm1024_fnv1a64: u64,
+    pub rmsnorm_rope_ms: f64,
+    pub rmsnorm_rope_sample8: Vec<f32>,
+    pub rmsnorm_rope_repops_digest: u64,
+    pub flash_gqa_seq256_ms: f64,
+    pub flash_gqa_sample4: Vec<f32>,
+    pub flash_gqa_repops_digest: u64,
+    pub gcd_1core_256_ms: f64,
+    pub gcd_10core_256_ms: f64,
+    pub gcd_10core_speedup: f64,
+    pub armv9_int8_dotprod_gops: f64,
+    pub armv9_fp16_neon_gflops: f64,
+    pub gcd_fnv1a64: u64,
+    pub zerocopy_mmap_ktb_ms: f64,
+    pub zerocopy_mmap_verified: bool,
+    pub zerocopy_mmap_sample4: Vec<f32>,
+    pub zerocopy_mmap_repops_digest: u64,
+    pub total_rpc_wall_ms: f64,
 }

@@ -2080,4 +2080,148 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_live_apple_m4_deep_metal4_shaders_gcd_10core_and_zerocopy_mmap_ktb() {
+        use kadmium_core::{AppleM4PlatformBridge, DEFAULT_M4_MAC_MINI_IP};
+
+        let probe = AppleM4PlatformBridge::probe_and_verify(Some(DEFAULT_M4_MAC_MINI_IP));
+        if !probe.physical_board_online {
+            return;
+        }
+
+        let deep_256 =
+            AppleM4PlatformBridge::run_deep_metal4_suite_on_m4(DEFAULT_M4_MAC_MINI_IP, 10, 256)
+                .expect("execute deep Metal 4 + 10-Core GCD + zero-copy mmap suite (seq=256)");
+        let deep_1024 =
+            AppleM4PlatformBridge::run_deep_metal4_suite_on_m4(DEFAULT_M4_MAC_MINI_IP, 15, 1024)
+                .expect("execute deep Metal 4 + 10-Core GCD + zero-copy mmap suite (seq=1024)");
+
+        // 1. Verify 1024x1024 Threadgroup-Tiled Metal 4 GPU GEMM determinism & throughput
+        assert_eq!(
+            deep_256.tiled_gemm1024_fnv1a64,
+            deep_1024.tiled_gemm1024_fnv1a64
+        );
+        assert!(deep_256.tiled_gemm1024_gflops > 50.0);
+
+        // 2. Verify Cross-ISA Metal 4 GPU Fused RMSNorm + RoPE against Windows x86_64 Host Reference
+        let num_heads = 8usize;
+        let head_dim = 64usize;
+        let pos_offset = 12usize;
+        let eps = 1e-5f32;
+        let theta = 10000.0f32;
+        let total_rr = num_heads * head_dim;
+        let rr_in: Vec<f32> = (0..total_rr)
+            .map(|i| (((i * 17 + 5) % 29) as f32 - 14.0) * 0.08)
+            .collect();
+        let rr_w: Vec<f32> = (0..head_dim)
+            .map(|i| 1.0 + ((i % 11) as f32) * 0.02)
+            .collect();
+        let mut rr_out_x86 = vec![0.0f32; total_rr];
+        for h in 0..num_heads {
+            let base = h * head_dim;
+            let mut sq_sum = 0.0f32;
+            for i in 0..head_dim {
+                let v = rr_in[base + i];
+                sq_sum += v * v;
+            }
+            let inv_rms = 1.0f32 / ((sq_sum / (head_dim as f32) + eps).sqrt());
+            for pair in 0..(head_dim / 2) {
+                let i0 = 2 * pair;
+                let i1 = i0 + 1;
+                let x0 = rr_in[base + i0] * inv_rms * rr_w[i0];
+                let x1 = rr_in[base + i1] * inv_rms * rr_w[i1];
+                let exponent = (2 * pair) as f32 / (head_dim as f32);
+                let freq = ((pos_offset + h) as f32) / theta.powf(exponent);
+                let c = freq.cos();
+                let s = freq.sin();
+                rr_out_x86[base + i0] = x0 * c - x1 * s;
+                rr_out_x86[base + i1] = x0 * s + x1 * c;
+            }
+        }
+        for i in 0..8 {
+            assert!((rr_out_x86[i] - deep_256.rmsnorm_rope_sample8[i]).abs() < 1e-4);
+        }
+        let rr_f64: Vec<f64> = rr_out_x86.iter().map(|&v| v as f64).collect();
+        let rr_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&rr_f64);
+        let rr_q = (rr_sum * 10_000.0).round() as i64;
+        let mut rr_buf = [0u8; 16];
+        rr_buf[0..4].copy_from_slice(&(pos_offset as u32).to_le_bytes());
+        rr_buf[4..8].copy_from_slice(&(num_heads as u32).to_le_bytes());
+        rr_buf[8..16].copy_from_slice(&(rr_q as u64).to_le_bytes());
+        let mut x86_rr_digest: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in &rr_buf {
+            x86_rr_digest ^= b as u64;
+            x86_rr_digest = x86_rr_digest.wrapping_mul(0x0100_0000_01b3);
+        }
+        assert_eq!(x86_rr_digest, deep_256.rmsnorm_rope_repops_digest);
+
+        // 3. Verify Metal 4 Flash-GQA Online-Softmax PagedAttention scaling (seq=256 vs seq=1024)
+        assert_ne!(
+            deep_256.flash_gqa_repops_digest,
+            deep_1024.flash_gqa_repops_digest
+        );
+        assert!(deep_256.flash_gqa_seq256_ms > 0.0);
+
+        // 4. Verify 10-Core Grand Central Dispatch (4P + 6E) Parallel Scaling & ARMv9.2-A INT8 DotProd + FP16 NEON
+        assert!(deep_256.gcd_10core_speedup > 1.5);
+        assert!(deep_256.armv9_int8_dotprod_gops > 20.0);
+        assert!(deep_256.armv9_fp16_neon_gflops > 10.0);
+        assert_eq!(deep_256.gcd_fnv1a64, deep_1024.gcd_fnv1a64);
+
+        // 5. Verify Zero-Copy POSIX mmap() + Metal 4 newBufferWithBytesNoCopy Unified Memory .ktb Execution against x86_64 Reference
+        assert!(deep_256.zerocopy_mmap_verified);
+        let mut zc_y_x86 = vec![0.0f64; 64];
+        for r in 0..64usize {
+            let mut acc = 0.0f32;
+            for c in 0..256usize {
+                let idx = r * 256 + c;
+                let w = (((idx * 19 + 7) % 37) as f32 - 18.0) * 0.025;
+                let x = ((c as f32) * 0.09).cos() * 0.5;
+                acc = w.mul_add(x, acc);
+            }
+            zc_y_x86[r] = acc as f64;
+            if r < 4 {
+                assert!((acc - deep_256.zerocopy_mmap_sample4[r]).abs() < 1e-4);
+            }
+        }
+        let zc_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&zc_y_x86);
+        let zc_q = (zc_sum * 10_000.0).round() as i64;
+        let mut zc_buf = [0u8; 16];
+        zc_buf[0..4].copy_from_slice(&0u32.to_le_bytes());
+        zc_buf[4..8].copy_from_slice(&64u32.to_le_bytes());
+        zc_buf[8..16].copy_from_slice(&(zc_q as u64).to_le_bytes());
+        let mut x86_zc_digest: u64 = 0xcbf2_9ce4_8422_2325;
+        for &b in &zc_buf {
+            x86_zc_digest ^= b as u64;
+            x86_zc_digest = x86_zc_digest.wrapping_mul(0x0100_0000_01b3);
+        }
+        assert_eq!(x86_zc_digest, deep_256.zerocopy_mmap_repops_digest);
+
+        println!(
+            "=== LIVE APPLE M4 DEEP METAL 4 + 10-CORE GCD + ZERO-COPY MMAP .KTB SUITE PASSED ===\n\
+             - 1. Metal 4 Tiled 1024x1024 GPU GEMM: {:.3} ms ({:.2} GFLOP/s | FNV-1a64: {:#018x})\n\
+             - 2. Cross-ISA Metal 4 Fused RMSNorm+RoPE (x86_64 == M4 GPU): {:.4} ms [RepOps {:#018x}]\n\
+             - 3. Metal 4 Flash-GQA PagedAttention (seq=256 vs 1024): {:.4} ms vs {:.4} ms [RepOps {:#018x}]\n\
+             - 4. 10-Core GCD (4P+6E) Parallel Scaling: 1-Core {:.3} ms -> 10-Core {:.3} ms ({:.2}x speedup)\n\
+             - 5. ARMv9.2-A Hardware Vector Throughput: INT8 DotProd (vdotq_s32)={:.2} GOPS | FP16 NEON (vfmaq_f16)={:.2} GFLOP/s\n\
+             - 6. Zero-Copy POSIX mmap() + newBufferWithBytesNoCopy .ktb Metal 4 Exec: {:.4} ms (NoCopy UMA verified={} | x86_64 == M4 RepOps {:#018x})",
+            deep_256.tiled_gemm1024_ms,
+            deep_256.tiled_gemm1024_gflops,
+            deep_256.tiled_gemm1024_fnv1a64,
+            deep_256.rmsnorm_rope_ms,
+            deep_256.rmsnorm_rope_repops_digest,
+            deep_256.flash_gqa_seq256_ms,
+            deep_1024.flash_gqa_seq256_ms,
+            deep_256.flash_gqa_repops_digest,
+            deep_256.gcd_1core_256_ms,
+            deep_256.gcd_10core_256_ms,
+            deep_256.gcd_10core_speedup,
+            deep_256.armv9_int8_dotprod_gops,
+            deep_256.armv9_fp16_neon_gflops,
+            deep_256.zerocopy_mmap_ktb_ms,
+            deep_256.zerocopy_mmap_verified,
+            deep_256.zerocopy_mmap_repops_digest,
+        );
+    }
 }
