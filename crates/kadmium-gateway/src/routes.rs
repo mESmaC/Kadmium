@@ -34,7 +34,7 @@ use kadmium_network::{
     FleetUpdatePushSummary, HolePunchNegotiationResult, JoinTicket, LanPairingCandidate,
     LiveClusterWorkersOverview, MultiPathInterfaceStriper, MultiPathStripedSchedule,
     NatTraversalCoordinator, PairingApprovalStatus, RaidStripedPassReport, SwarmRaidStriper,
-    UpdatePayloadKind, UpdateTargetScope, WorkerHeartbeatAck, WorkerHeartbeatRequest,
+    UpdatePayloadKind, UpdateTargetScope, UsbCDirectInterconnectScanner, UsbCHostDiscoveryReport, WorkerHeartbeatAck, WorkerHeartbeatRequest,
     WorkerRegisterRequest, WorkerRegistrationAck, WorkerUpdatePushAck, ZeroClickLanPairingEngine,
 };
 use kadmium_rl::{
@@ -373,6 +373,8 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         )
         .route("/api/v1/runtime/kernels", get(get_runtime_kernels))
         .route("/api/v1/network/nat", get(get_network_nat_matrix))
+        .route("/api/v1/network/usbc", get(get_network_usbc_interconnect).post(get_network_usbc_interconnect))
+        .route("/api/v1/network/usbc-interconnect", get(get_network_usbc_interconnect).post(get_network_usbc_interconnect))
         .route("/api/v1/companion/pairing", get(get_companion_pairing))
         .route(
             "/api/v1/cloud-shield/watcher",
@@ -1422,6 +1424,16 @@ async fn get_network_nat_matrix(
     ))
 }
 
+async fn get_network_usbc_interconnect(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<UsbCHostDiscoveryReport> {
+    let nodes = {
+        let guard = state.lock().expect("gateway state lock");
+        guard.nodes.clone()
+    };
+    Json(UsbCDirectInterconnectScanner::scan_host_usbc_links(&nodes))
+}
+
 async fn get_companion_pairing(
     State(state): State<Arc<Mutex<GatewayState>>>,
 ) -> Json<CompanionPairingApiResponse> {
@@ -1632,6 +1644,34 @@ async fn post_cluster_shift(
             }
             let trigger = ShiftTriggerReason::CloudBurstNodeJoined {
                 node_id: pfb_node.id,
+            };
+            let shift = ShardPlanner::plan_responsibility_shift(
+                &guard.inference_plan,
+                &guard.inference_model,
+                &guard.nodes,
+                trigger,
+            );
+            guard.fts3_transfers =
+                Fts3TransferScheduler::plan_live_shift_transfers(&shift, &guard.nodes);
+            guard.inference_plan = shift.new_plan.clone();
+            guard.training_plan = ShardPlanner::compute_plan(
+                guard.epoch,
+                &guard.training_model,
+                WorkloadKind::DistributedTraining,
+                &guard.nodes,
+            );
+            guard.last_shift = Some(shift);
+        }
+        "usb4_handheld" | "usbc_handheld" => {
+            let handheld_node = UsbCDirectInterconnectScanner::build_usb4_handheld_gaming_node(
+                Some("node-usb4-handheld-30gbps"),
+                Some(30.0),
+            );
+            if !guard.nodes.iter().any(|n| n.id == handheld_node.id) {
+                guard.nodes.push(handheld_node.clone());
+            }
+            let trigger = ShiftTriggerReason::CloudBurstNodeJoined {
+                node_id: handheld_node.id,
             };
             let shift = ShardPlanner::plan_responsibility_shift(
                 &guard.inference_plan,
@@ -2641,10 +2681,8 @@ async fn get_m4_deep_metal4_suite(
     req: Option<Json<M4DeepSuiteRequest>>,
 ) -> Json<M4DeepSuiteApiResponse> {
     let params = req.map(|Json(r)| r).unwrap_or_default();
-    let ip = params
-        .custom_ip
-        .as_deref()
-        .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+    let resolved_ip = M4MacMiniLanBridge::resolve_endpoint_ip(params.custom_ip.as_deref());
+    let ip = resolved_ip.as_str();
     let probe = M4MacMiniLanBridge::probe_and_verify(Some(ip));
     let deep_metal4_suite = if probe.physical_board_online {
         M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(
@@ -2669,12 +2707,17 @@ pub struct PlatformCatalogSkuEntry {
     pub silicon_tier: String,
     pub node: HardwareNode,
     pub q_star_ratio: f64,
+    pub platform_profile: kadmium_core::PlatformProfile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformFamiliesOverviewResponse {
     pub total_platform_families: usize,
+    pub total_silicon_architecture_families: usize,
     pub total_catalog_skus: usize,
+    pub local_host_platform: kadmium_core::PlatformProfile,
+    pub silicon_os_compatibility_matrix: Vec<kadmium_core::PlatformMatrixEntry>,
+    pub usbc_interconnect_report: UsbCHostDiscoveryReport,
     pub apple_m4_probe: M4MacMiniProbeReport,
     pub apple_m4_deep_metal4: Option<AppleM4DeepMetalSuiteReport>,
     pub apple_m4_catalog: Vec<PlatformCatalogSkuEntry>,
@@ -2704,6 +2747,7 @@ fn build_platform_catalogs() -> (
                 form_factor: format!("{} ({:?})", ff.display_product_name(), tier),
                 silicon_tier: format!("{tier:?}"),
                 q_star_ratio: node.compute_q_star_ratio(),
+                platform_profile: node.platform_profile(),
                 node,
             })
             .collect();
@@ -2717,6 +2761,7 @@ fn build_platform_catalogs() -> (
                 form_factor: carrier.display_name().to_string(),
                 silicon_tier: "BCM2711 Cortex-A72 NEON".into(),
                 q_star_ratio: node.compute_q_star_ratio(),
+                platform_profile: node.platform_profile(),
                 node,
             })
             .collect();
@@ -2730,6 +2775,7 @@ fn build_platform_catalogs() -> (
                 form_factor: format!("{ff:?}"),
                 silicon_tier: "Maxwell sm_53 CUDA (T210/T214)".into(),
                 q_star_ratio: node.compute_q_star_ratio(),
+                platform_profile: node.platform_profile(),
                 node,
             })
             .collect();
@@ -2743,6 +2789,7 @@ fn build_platform_catalogs() -> (
                 form_factor: format!("{ff:?}"),
                 silicon_tier: "Xuantie C908 RVV 1.0 + 6 TOPS KPU".into(),
                 q_star_ratio: node.compute_q_star_ratio(),
+                platform_profile: node.platform_profile(),
                 node,
             })
             .collect();
@@ -2778,6 +2825,7 @@ fn build_platform_catalogs() -> (
             form_factor: label.to_string(),
             silicon_tier: "20-Slot ARM64 UMA MoE Array".into(),
             q_star_ratio: node.compute_q_star_ratio(),
+            platform_profile: node.platform_profile(),
             node,
         }
     })
@@ -2793,13 +2841,14 @@ fn build_platform_catalogs() -> (
 }
 
 async fn get_platforms_overview() -> Json<PlatformFamiliesOverviewResponse> {
+    let local_host_node = LiveHardwareProfiler::probe_local_host();
+    let local_host_platform = local_host_node.platform_profile();
+    let silicon_os_compatibility_matrix = kadmium_core::PlatformDetector::compatibility_matrix();
+
     let apple_m4_probe = M4MacMiniLanBridge::probe_and_verify(None);
+    let m4_ip = M4MacMiniLanBridge::resolve_endpoint_ip(None);
     let apple_m4_deep_metal4 = if apple_m4_probe.physical_board_online {
-        M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(
-            kadmium_core::DEFAULT_M4_MAC_MINI_IP,
-            4,
-            256,
-        )
+        M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(&m4_ip, 4, 256)
     } else {
         None
     };
@@ -2831,7 +2880,13 @@ async fn get_platforms_overview() -> Json<PlatformFamiliesOverviewResponse> {
 
     Json(PlatformFamiliesOverviewResponse {
         total_platform_families: 5,
+        total_silicon_architecture_families: silicon_os_compatibility_matrix.len(),
         total_catalog_skus,
+        local_host_platform,
+        silicon_os_compatibility_matrix,
+        usbc_interconnect_report: UsbCDirectInterconnectScanner::scan_host_usbc_links(
+            std::slice::from_ref(&local_host_node),
+        ),
         apple_m4_probe,
         apple_m4_deep_metal4,
         apple_m4_catalog,
@@ -2958,10 +3013,9 @@ async fn post_attach_platform(
                 guard.epoch += 1;
                 guard.recompute_plans();
             } else {
-                let ip = params
-                    .custom_ip
-                    .as_deref()
-                    .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+                let resolved_ip =
+                    M4MacMiniLanBridge::resolve_endpoint_ip(params.custom_ip.as_deref());
+                let ip = resolved_ip.as_str();
                 let probe = M4MacMiniLanBridge::probe_and_verify(Some(ip));
                 live_silicon_verified = probe.physical_board_online;
                 if probe.physical_board_online && params.run_deep_bench.unwrap_or(true) {
@@ -2974,7 +3028,7 @@ async fn post_attach_platform(
                     probe.hardware_node,
                     probe.execution_proof.lan_round_trip_ms,
                     "macOS 26 (Darwin 25.0.0)".into(),
-                    "arm64e (Apple M4 · Metal 4 + AMX)".into(),
+                    "arm64e (Apple Silicon · Metal 4 + AMX)".into(),
                     probe.board_model,
                     "LocalLAN".into(),
                     Some((ip.to_string(), kadmium_core::DEFAULT_M4_MAC_MINI_PORT)),
@@ -2982,7 +3036,7 @@ async fn post_attach_platform(
                 .await;
             }
         }
-        "rpi-cm4" | "cm4" | "reterminal" => {
+        "rpi-cm4" | "cm4" | "reterminal" | "arm-sbc" => {
             if let Some(slug) = sku_slug
                 && let Some(sku) = rpi_cm4_catalog.into_iter().find(|e| e.sku_slug == slug)
             {
@@ -2996,10 +3050,9 @@ async fn post_attach_platform(
                 guard.epoch += 1;
                 guard.recompute_plans();
             } else {
-                let ip = params
-                    .custom_ip
-                    .as_deref()
-                    .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+                let resolved_ip =
+                    ReTerminalCm4LanBridge::resolve_endpoint_ip(params.custom_ip.as_deref());
+                let ip = resolved_ip.as_str();
                 let probe = ReTerminalCm4LanBridge::probe_and_verify(Some(ip));
                 live_silicon_verified = probe.physical_board_online;
                 attached_hostnames.push(probe.hardware_node.hostname.clone());
@@ -3008,7 +3061,7 @@ async fn post_attach_platform(
                     probe.hardware_node,
                     probe.execution_proof.lan_round_trip_ms,
                     "Linux 6.12 (Debian Bookworm)".into(),
-                    "aarch64 (BCM2711 Cortex-A72 NEON)".into(),
+                    "aarch64 (ARM64 NEON + V3D)".into(),
                     probe.board_model,
                     "LocalLAN".into(),
                     Some((ip.to_string(), kadmium_core::DEFAULT_RETERMINAL_CM4_PORT)),
@@ -3145,6 +3198,43 @@ async fn post_attach_platform(
                 )
                 .await;
             }
+        }
+        "usbc-handheld" | "usb4-handheld" | "usb4" | "thunderbolt" => {
+            let handheld_node = UsbCDirectInterconnectScanner::build_usb4_handheld_gaming_node(
+                sku_slug,
+                Some(30.0),
+            );
+            let profile = handheld_node.platform_profile();
+            live_silicon_verified = true;
+            attached_hostnames.push(handheld_node.hostname.clone());
+            register_bridged_worker_if_needed(
+                &state,
+                handheld_node,
+                0.12,
+                profile.os_display_name,
+                profile.cpu_isa.display_name().to_string(),
+                profile.silicon_display_name,
+                "USB4-P2P (169.254.78.11:7848 · 30Gbps Direct DMA)".into(),
+                Some(("169.254.78.11".to_string(), 7848)),
+            )
+            .await;
+        }
+        "local" | "host" => {
+            let host_node = LiveHardwareProfiler::probe_local_host();
+            let profile = host_node.platform_profile();
+            live_silicon_verified = true;
+            attached_hostnames.push(host_node.hostname.clone());
+            register_bridged_worker_if_needed(
+                &state,
+                host_node,
+                0.15,
+                profile.os_display_name,
+                profile.cpu_isa.display_name().to_string(),
+                profile.silicon_display_name,
+                "LocalHost".into(),
+                None,
+            )
+            .await;
         }
         _ => {}
     }

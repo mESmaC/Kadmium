@@ -74,6 +74,16 @@ impl LiveHardwareProfiler {
 
         let is_apple_silicon =
             cfg!(target_os = "macos") || backend == ComputeBackend::MetalUnified;
+        let cpu_gpu_lower = format!("{} {}", cpu_name.to_lowercase(), gpu_name.to_lowercase());
+        let is_uma_apu = is_apple_silicon
+            || is_sbc
+            || cpu_gpu_lower.contains("ryzen ai max")
+            || cpu_gpu_lower.contains("strix halo")
+            || cpu_gpu_lower.contains("radeon 8060s")
+            || cpu_gpu_lower.contains("snapdragon x")
+            || cpu_gpu_lower.contains("tegra")
+            || cpu_gpu_lower.contains("jetson")
+            || cpu_gpu_lower.contains("orin");
 
         let device_kind = if is_sbc {
             DeviceKind::LinuxSbc
@@ -81,9 +91,12 @@ impl LiveHardwareProfiler {
             DeviceKind::AppleSiliconMac
         } else if is_nas_vault && vram_gb == 0.0 {
             DeviceKind::HomeNas
-        } else if vram_gb >= 12.0 || (vram_gb > 0.0 && cpu_threads >= 16 && total_ram_gb >= 32.0) {
+        } else if vram_gb >= 12.0
+            || (vram_gb > 0.0 && cpu_threads >= 16 && total_ram_gb >= 32.0)
+            || (is_uma_apu && total_ram_gb >= 64.0)
+        {
             DeviceKind::DesktopWorkstation
-        } else if vram_gb > 0.0 {
+        } else if vram_gb > 0.0 || is_uma_apu {
             DeviceKind::GamingLaptop
         } else {
             DeviceKind::LegacyLaptop
@@ -93,7 +106,7 @@ impl LiveHardwareProfiler {
         if !is_sbc {
             roles.push(NodeRole::Coordinator);
         }
-        if vram_gb > 0.0 || is_apple_silicon || total_ram_gb >= 8.0 {
+        if vram_gb > 0.0 || is_uma_apu || total_ram_gb >= 8.0 {
             roles.push(NodeRole::ComputeWorker);
         }
         roles.push(NodeRole::DraftAndUtilityWorker);
@@ -103,7 +116,9 @@ impl LiveHardwareProfiler {
 
         let (unified_mem_gb, unified_mem_bw_gbps, system_ram_gb, system_ram_bw_gbps) =
             if is_apple_silicon {
-                let bw = if total_ram_gb >= 64.0 {
+                let bw = if total_ram_gb >= 96.0 {
+                    546.0
+                } else if total_ram_gb >= 64.0 {
                     400.0
                 } else if total_ram_gb >= 32.0 {
                     273.0
@@ -111,8 +126,22 @@ impl LiveHardwareProfiler {
                     120.0
                 };
                 (total_ram_gb, bw, 0.0, 0.0)
+            } else if is_uma_apu && !is_sbc {
+                let bw = if cpu_gpu_lower.contains("8060s") || cpu_gpu_lower.contains("ryzen ai max") {
+                    256.0
+                } else {
+                    135.0
+                };
+                (total_ram_gb, bw, 0.0, 0.0)
             } else if is_sbc {
-                (total_ram_gb, 34.0, 0.0, 0.0)
+                let sbc_bw = if cpu_gpu_lower.contains("orin") {
+                    102.0
+                } else if cpu_gpu_lower.contains("xavier") {
+                    59.7
+                } else {
+                    34.0
+                };
+                (total_ram_gb, sbc_bw, 0.0, 0.0)
             } else {
                 let ram_bw = if total_ram_gb >= 64.0 {
                     89.6
@@ -179,9 +208,9 @@ impl LiveHardwareProfiler {
         }
     }
 
-    /// Probes physical host RAM in GiB across Linux (`/proc/meminfo`), macOS (`sysctl`), and Windows.
+    /// Probes physical host RAM in GiB across Linux/Android (`/proc/meminfo`), macOS/FreeBSD (`sysctl`), and Windows (`wmic` + PowerShell CIM).
     pub fn probe_system_memory_gb() -> f64 {
-        // 1. Linux (/proc/meminfo)
+        // 1. Linux & Android (/proc/meminfo)
         if let Ok(meminfo) = std::fs::read_to_string("/proc/meminfo") {
             for line in meminfo.lines() {
                 if let Some(rest) = line.strip_prefix("MemTotal:") {
@@ -194,10 +223,17 @@ impl LiveHardwareProfiler {
             }
         }
 
-        // 2. macOS (sysctl -n hw.memsize)
-        if cfg!(target_os = "macos")
+        // 2. macOS & FreeBSD (sysctl -n hw.memsize / hw.physmem)
+        if (cfg!(target_os = "macos") || cfg!(target_os = "freebsd"))
             && let Ok(out) = std::process::Command::new("sysctl")
-                .args(["-n", "hw.memsize"])
+                .args([
+                    "-n",
+                    if cfg!(target_os = "macos") {
+                        "hw.memsize"
+                    } else {
+                        "hw.physmem"
+                    },
+                ])
                 .output()
             && out.status.success()
             && let Ok(bytes) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>()
@@ -206,44 +242,71 @@ impl LiveHardwareProfiler {
             return (gb * 10.0).round() / 10.0;
         }
 
-        // 3. Windows (wmic computersystem get TotalPhysicalMemory /value)
-        if cfg!(target_os = "windows")
-            && let Ok(out) = std::process::Command::new("wmic")
+        // 3. Windows (wmic computersystem get TotalPhysicalMemory /value + PowerShell CIM fallback for Win11 24H2+)
+        if cfg!(target_os = "windows") {
+            if let Ok(out) = std::process::Command::new("wmic")
                 .args(["computersystem", "get", "TotalPhysicalMemory", "/value"])
                 .output()
-            && out.status.success()
-        {
-            let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines() {
-                if let Some(val) = line.trim().strip_prefix("TotalPhysicalMemory=")
-                    && let Ok(bytes) = val.trim().parse::<u64>()
-                {
-                    let gb = (bytes as f64) / (1024.0 * 1024.0 * 1024.0);
-                    return (gb * 10.0).round() / 10.0;
+                && out.status.success()
+            {
+                let text = String::from_utf8_lossy(&out.stdout);
+                for line in text.lines() {
+                    if let Some(val) = line.trim().strip_prefix("TotalPhysicalMemory=")
+                        && let Ok(bytes) = val.trim().parse::<u64>()
+                    {
+                        let gb = (bytes as f64) / (1024.0 * 1024.0 * 1024.0);
+                        return (gb * 10.0).round() / 10.0;
+                    }
                 }
+            }
+
+            if let Ok(out) = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
+                ])
+                .output()
+                && out.status.success()
+                && let Ok(bytes) = String::from_utf8_lossy(&out.stdout).trim().parse::<u64>()
+            {
+                let gb = (bytes as f64) / (1024.0 * 1024.0 * 1024.0);
+                return (gb * 10.0).round() / 10.0;
             }
         }
 
         32.0
     }
 
-    /// Reads SBC device-tree model on Linux ARM/RISC-V or CPU brand string on macOS.
+    /// Reads SBC device-tree model on Linux ARM/RISC-V, SoC properties on Android, or CPU/board brand on macOS/FreeBSD.
     pub fn probe_sbc_or_board_model() -> Option<String> {
         for path in [
             "/proc/device-tree/model",
             "/sys/firmware/devicetree/base/model",
             "/etc/nv_tegra_release",
+            "/proc/device-tree/compatible",
+            "/sys/devices/virtual/dmi/id/product_name",
         ] {
             if let Ok(raw) = std::fs::read_to_string(path) {
-                let cleaned = raw.trim_matches(char::from(0)).trim().to_string();
-                if !cleaned.is_empty() {
+                let cleaned = raw
+                    .replace(char::from(0), " ")
+                    .trim()
+                    .to_string();
+                if !cleaned.is_empty() && !cleaned.eq_ignore_ascii_case("System Product Name") {
                     return Some(cleaned);
                 }
             }
         }
-        if cfg!(target_os = "macos")
+        if (cfg!(target_os = "macos") || cfg!(target_os = "freebsd"))
             && let Ok(out) = std::process::Command::new("sysctl")
-                .args(["-n", "machdep.cpu.brand_string"])
+                .args([
+                    "-n",
+                    if cfg!(target_os = "macos") {
+                        "machdep.cpu.brand_string"
+                    } else {
+                        "hw.model"
+                    },
+                ])
                 .output()
             && out.status.success()
         {
@@ -263,15 +326,27 @@ impl LiveHardwareProfiler {
         if let Some(model) = board_model {
             let lower = model.to_lowercase();
             if lower.contains("raspberry pi")
+                || lower.contains("bcm2711")
+                || lower.contains("bcm2712")
+                || lower.contains("reterminal")
                 || lower.contains("rk3588")
+                || lower.contains("rk3576")
+                || lower.contains("rk3568")
                 || lower.contains("rockchip")
                 || lower.contains("orange pi")
                 || lower.contains("radxa")
                 || lower.contains("rock 5")
                 || lower.contains("jetson")
+                || lower.contains("tegra")
                 || lower.contains("visionfive")
+                || lower.contains("jh7110")
                 || lower.contains("spacemit")
                 || lower.contains("bananapi")
+                || lower.contains("milk-v")
+                || lower.contains("lichee")
+                || lower.contains("k230")
+                || lower.contains("kendryte")
+                || lower.contains("th1520")
             {
                 return true;
             }
@@ -279,6 +354,7 @@ impl LiveHardwareProfiler {
         let arch = std::env::consts::ARCH;
         (arch == "aarch64" || arch == "arm" || arch == "riscv64")
             && !cfg!(target_os = "macos")
+            && !cfg!(target_os = "windows")
             && total_ram_gb <= 32.0
             && cpu_threads <= 16
     }
@@ -321,24 +397,34 @@ impl LiveHardwareProfiler {
             }
         }
 
-        // 2. Linux (/proc/cpuinfo)
+        // 2. Linux (/proc/cpuinfo across x86_64, aarch64, and riscv64)
         if cpu_name.is_empty()
             && let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo")
         {
+            let mut uarch_hint = String::new();
             for line in cpuinfo.lines() {
                 if let Some((k, v)) = line.split_once(':') {
                     let key = k.trim();
+                    let val = v.trim();
                     if (key == "model name" || key == "Hardware" || key == "Processor")
-                        && !v.trim().is_empty()
+                        && !val.is_empty()
                     {
-                        cpu_name = v.trim().to_string();
+                        cpu_name = val.to_string();
                         break;
+                    } else if (key == "uarch" || key == "isa") && !val.is_empty() {
+                        if !uarch_hint.is_empty() {
+                            uarch_hint.push(' ');
+                        }
+                        uarch_hint.push_str(val);
                     }
                 }
             }
+            if cpu_name.is_empty() && !uarch_hint.is_empty() {
+                cpu_name = format!("RISC-V {uarch_hint} ({cpu_threads}C)");
+            }
         }
 
-        // 3. macOS / Device-Tree fallback
+        // 3. macOS / FreeBSD / Device-Tree fallback
         if cpu_name.is_empty() {
             cpu_name = board_model
                 .clone()
@@ -346,17 +432,30 @@ impl LiveHardwareProfiler {
         }
 
         let lower = cpu_name.to_lowercase();
-        let cpu_tflops = if lower.contains("ultra 9") {
+        let cpu_tflops = if lower.contains("apple m4") || lower.contains("apple m3") {
+            ((cpu_threads as f64) * 0.22 * 10.0).round() / 10.0
+        } else if lower.contains("apple m2") || lower.contains("apple m1") {
+            ((cpu_threads as f64) * 0.18 * 10.0).round() / 10.0
+        } else if lower.contains("ryzen ai max")
+            || lower.contains("ryzen 9")
+            || lower.contains("epyc")
+            || lower.contains("threadripper")
+            || lower.contains("xeon")
+        {
+            ((cpu_threads as f64) * 0.16 * 10.0).round() / 10.0
+        } else if lower.contains("snapdragon x") || lower.contains("oryon") {
+            ((cpu_threads as f64) * 0.15 * 10.0).round() / 10.0
+        } else if lower.contains("ultra 9") {
             ((cpu_threads as f64) * 0.13 * 10.0).round() / 10.0
         } else if lower.contains("ultra 7") {
             // Intel Core Ultra 7 265F (Arrow Lake 8P + 12E AVX2 FMA = 2.4 TFLOPS FP32/FP16)
             ((cpu_threads as f64) * 0.12 * 10.0).round() / 10.0
         } else if lower.contains("ultra 5") {
             ((cpu_threads as f64) * 0.11 * 10.0).round() / 10.0
-        } else if lower.contains("ryzen 9") || lower.contains("epyc") || lower.contains("threadripper") {
-            ((cpu_threads as f64) * 0.16 * 10.0).round() / 10.0
-        } else if lower.contains("apple m4") {
-            ((cpu_threads as f64) * 0.22 * 10.0).round() / 10.0
+        } else if lower.contains("bcm2711") || lower.contains("cortex-a72") {
+            ((cpu_threads as f64) * 0.06 * 10.0).round() / 10.0
+        } else if lower.contains("bcm2712") || lower.contains("rk3588") || lower.contains("cortex-a76") {
+            ((cpu_threads as f64) * 0.09 * 10.0).round() / 10.0
         } else {
             ((cpu_threads as f64) * 0.12 * 10.0).round() / 10.0
         };
@@ -365,12 +464,18 @@ impl LiveHardwareProfiler {
     }
 
     /// Probes dedicated Neural Processing Units (NPUs) across Windows MCDM (`ComputeAccelerator` class),
-    /// Apple Silicon Neural Engine (ANE), AMD Ryzen AI XDNA, Qualcomm Hexagon, and RISC-V/ARM SBC NPUs.
+    /// Linux `/sys/class/accel`, Apple Silicon Neural Engine (ANE), AMD Ryzen AI XDNA, Qualcomm Hexagon,
+    /// and RISC-V/ARM SBC NPUs.
     pub fn probe_npu_accelerator(
         cpu_name: &str,
         board_model: &Option<String>,
     ) -> (Option<String>, f64) {
         let cpu_lower = cpu_name.to_lowercase();
+        let board_lower = board_model
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase();
+        let combined = format!("{cpu_lower} {board_lower}");
 
         // 1. Windows MCDM ComputeAccelerator device class ({f01a9d53-3ff6-48d2-9f97-c8a7004be10c})
         if cfg!(target_os = "windows")
@@ -409,43 +514,79 @@ impl LiveHardwareProfiler {
                             11.5
                         };
                         return (Some(desc), tops);
-                    } else if d_lower.contains("ryzen ai") || d_lower.contains("amd ipu") {
-                        let tops = if cpu_lower.contains("ai 9") || cpu_lower.contains("ai 3") {
+                    } else if d_lower.contains("ryzen ai") || d_lower.contains("amd ipu") || d_lower.contains("xdna") {
+                        let tops = if cpu_lower.contains("ai 9")
+                            || cpu_lower.contains("ai 3")
+                            || cpu_lower.contains("ai max")
+                        {
                             50.0
                         } else {
                             16.0
                         };
                         return (Some(desc), tops);
-                    } else if d_lower.contains("hexagon") || d_lower.contains("qualcomm") {
+                    } else if d_lower.contains("hexagon") || d_lower.contains("qualcomm") || d_lower.contains("snapdragon") {
                         return (Some(desc), 45.0);
                     }
                 }
             }
         }
 
-        // 2. Apple Silicon Neural Engine (ANE)
-        if cfg!(target_os = "macos") || cpu_lower.contains("apple m") {
-            if cpu_lower.contains("m4 ultra") {
-                return (Some("Apple M4 32-Core Neural Engine".into()), 76.0);
-            } else if cpu_lower.contains("m4") {
-                return (Some("Apple M4 16-Core Neural Engine".into()), 38.0);
-            } else if cpu_lower.contains("m3") {
-                return (Some("Apple M3 16-Core Neural Engine".into()), 18.0);
-            } else if cpu_lower.contains("m2") {
-                return (Some("Apple M2 16-Core Neural Engine".into()), 15.8);
-            } else if cpu_lower.contains("m1") {
-                return (Some("Apple M1 16-Core Neural Engine".into()), 11.0);
+        // 2. Linux /sys/class/accel/accel* (Intel VPU / AMD XDNA / Qualcomm QAIC)
+        for accel_idx in 0..4 {
+            let uevent_path = format!("/sys/class/accel/accel{accel_idx}/device/uevent");
+            if let Ok(uevent) = std::fs::read_to_string(&uevent_path) {
+                let u_low = uevent.to_lowercase();
+                if u_low.contains("intel_vpu") {
+                    return (Some("Intel AI Boost NPU (Linux IVPU)".into()), 13.0);
+                } else if u_low.contains("amdxdna") {
+                    let tops = if combined.contains("ai 9") || combined.contains("ai max") {
+                        50.0
+                    } else {
+                        16.0
+                    };
+                    return (Some("AMD Ryzen AI XDNA NPU (Linux amdxdna)".into()), tops);
+                }
             }
         }
 
-        // 3. ARM / RISC-V SBC NPU detection
-        if let Some(b) = board_model {
-            let b_low = b.to_lowercase();
-            if b_low.contains("rk3588") {
-                return (Some("Rockchip RK3588 6-TOPS NPU".into()), 6.0);
-            } else if b_low.contains("k230") {
-                return (Some("Kendryte K230 3rd-Gen KPU".into()), 6.0);
+        // 3. Apple Silicon Neural Engine (ANE across M1–M4 & A17/A18)
+        if cfg!(target_os = "macos")
+            || cfg!(target_os = "ios")
+            || combined.contains("apple m")
+            || combined.contains("apple a1")
+        {
+            if combined.contains("m4 ultra") {
+                return (Some("Apple M4 32-Core Neural Engine".into()), 76.0);
+            } else if combined.contains("m4") {
+                return (Some("Apple M4 16-Core Neural Engine".into()), 38.0);
+            } else if combined.contains("m3 ultra") {
+                return (Some("Apple M3 32-Core Neural Engine".into()), 36.0);
+            } else if combined.contains("m3") {
+                return (Some("Apple M3 16-Core Neural Engine".into()), 18.0);
+            } else if combined.contains("m2 ultra") {
+                return (Some("Apple M2 32-Core Neural Engine".into()), 31.6);
+            } else if combined.contains("m2") {
+                return (Some("Apple M2 16-Core Neural Engine".into()), 15.8);
+            } else if combined.contains("m1 ultra") {
+                return (Some("Apple M1 32-Core Neural Engine".into()), 22.0);
+            } else if combined.contains("m1") {
+                return (Some("Apple M1 16-Core Neural Engine".into()), 11.0);
+            } else if combined.contains("a17") || combined.contains("a18") {
+                return (Some("Apple A-Series 16-Core Neural Engine".into()), 35.0);
             }
+        }
+
+        // 4. ARM / RISC-V / x86 SoC NPU signature detection
+        if combined.contains("rk3588") || combined.contains("rk3576") {
+            return (Some("Rockchip RKNPU2 6-TOPS NPU".into()), 6.0);
+        } else if combined.contains("k230") || combined.contains("kendryte") {
+            return (Some("Kendryte K230 3rd-Gen KPU".into()), 6.0);
+        } else if combined.contains("spacemit") {
+            return (Some("SpacemiT K1 2.0-TOPS RVA22 NPU".into()), 2.0);
+        } else if combined.contains("snapdragon x") || combined.contains("oryon") {
+            return (Some("Qualcomm Hexagon NPU (45 TOPS)".into()), 45.0);
+        } else if combined.contains("orin") {
+            return (Some("NVIDIA Jetson Orin NVDLA v2".into()), 40.0);
         }
 
         (None, 0.0)
@@ -479,25 +620,26 @@ impl LiveHardwareProfiler {
                         (raw_gb * 10.0).round() / 10.0
                     };
                     let lower = name.to_lowercase();
-                    // Calibrated NVIDIA GPU architectural specifications (NVIDIA Blackwell / Ada / Ampere Whitepapers):
+                    // Calibrated NVIDIA GPU architectural specifications (Blackwell / Hopper / Ada / Ampere / Turing / Volta / Pascal / Maxwell):
                     // (fp16_bf16_tflops, fp4_int4_dense_tops, vram_bw_gbps, pcie_bw_gbps)
                     let (fp16_tflops, int4_tops, vram_bw_gbps, pcie_bw_gbps) =
-                        if lower.contains("5090") {
-                            // RTX 5090: 104.8 TF FP32, 209.5 TF FP16/BF16, 838.0 TF FP8/INT8, 1676.0 TF FP4/INT4 dense (3352 sparse)
+                        if lower.contains("b200") || lower.contains("gb200") {
+                            (2250.0, 9000.0, 8000.0, 128.0)
+                        } else if lower.contains("h200") || lower.contains("gh200") {
+                            (989.0, 1979.0, 4800.0, 63.0)
+                        } else if lower.contains("h100") {
+                            (989.0, 1979.0, 3350.0, 63.0)
+                        } else if lower.contains("l40s") {
+                            (362.0, 733.0, 864.0, 63.0)
+                        } else if lower.contains("a100") {
+                            (312.0, 624.0, 2039.0, 31.5)
+                        } else if lower.contains("5090") {
                             (209.5, 1676.0, 1792.0, 63.0)
                         } else if lower.contains("5080") {
-                            // RTX 5080: 56.3 TF FP32, 112.6 TF FP16/BF16, 450.2 TF FP8/INT8, 900.4 TF FP4/INT4 dense (1801 sparse)
                             (112.6, 900.4, 960.0, 63.0)
                         } else if lower.contains("5070 ti") {
-                            // RTX 5070 Ti: 43.9 TF FP32, 87.9 TF FP16/BF16, 351.5 TF FP8/INT8, 703.0 TF FP4/INT4 dense (1406 sparse)
                             (87.9, 703.0, 896.0, 63.0)
                         } else if lower.contains("5070") {
-                            // NVIDIA GeForce RTX 5070 (Blackwell GB205, 6144 CUDA, 192 5th-Gen Tensor, 12GB GDDR7 @ 672 GB/s):
-                            // - Peak FP32 TFLOPS: 30.9 TFLOPS
-                            // - Peak FP16 / BF16 TFLOPS: 61.7 TFLOPS
-                            // - Peak FP8 Tensor TFLOPS: 246.9 TFLOPS (123.5 TFLOPS FP32 acc dense / 493.9 TFLOPS sparse)
-                            // - INT8 TOPS: 246.9 TOPS
-                            // - Peak FP4 / INT4 Tensor: 493.9 TFLOPS dense (987.8 TFLOPS sparse)
                             (61.7, 493.9, 672.0, 63.0)
                         } else if lower.contains("5060") {
                             (47.0, 376.0, 448.0, 31.5)
@@ -517,10 +659,16 @@ impl LiveHardwareProfiler {
                             (59.5, 238.0, 760.3, 31.5)
                         } else if lower.contains("3070") {
                             (40.6, 162.6, 448.0, 31.5)
-                        } else if lower.contains("h100") {
-                            (989.0, 1979.0, 3350.0, 63.0)
-                        } else if lower.contains("a100") {
-                            (312.0, 624.0, 2039.0, 31.5)
+                        } else if lower.contains("3060") {
+                            (25.4, 101.6, 360.0, 15.7)
+                        } else if lower.contains("2080") {
+                            (26.9, 107.6, 616.0, 15.7)
+                        } else if lower.contains("2070") || lower.contains("2060") {
+                            (18.5, 74.0, 448.0, 15.7)
+                        } else if lower.contains("v100") {
+                            (125.0, 250.0, 900.0, 15.7)
+                        } else if lower.contains("1080") || lower.contains("1070") || lower.contains("p100") || lower.contains("p40") {
+                            (18.0, 72.0, 480.0, 15.7)
                         } else if vram_gb >= 20.0 {
                             (140.0, 560.0, 800.0, 31.5)
                         } else if vram_gb >= 12.0 {
@@ -541,7 +689,7 @@ impl LiveHardwareProfiler {
             }
         }
 
-        // Linux AMD ROCm / amdgpu sysfs VRAM detection
+        // Linux DRM sysfs VRAM & vendor detection (AMD ROCm 0x1002 & Intel Arc Xe 0x8086)
         for card_idx in 0..4 {
             let sysfs_vram = format!("/sys/class/drm/card{card_idx}/device/mem_info_vram_total");
             if let Ok(raw) = std::fs::read_to_string(&sysfs_vram)
@@ -549,7 +697,30 @@ impl LiveHardwareProfiler {
                 && bytes >= 2 * 1024 * 1024 * 1024
             {
                 let vram_gb = ((bytes as f64) / (1024.0 * 1024.0 * 1024.0) * 10.0).round() / 10.0;
-                let tflops = if vram_gb >= 16.0 { 85.0 } else { 42.0 };
+                let vendor = std::fs::read_to_string(format!(
+                    "/sys/class/drm/card{card_idx}/device/vendor"
+                ))
+                .unwrap_or_default()
+                .to_lowercase();
+                if vendor.contains("8086") {
+                    let tflops = if vram_gb >= 12.0 { 52.0 } else { 32.0 };
+                    return (
+                        "Intel Arc Xe Discrete GPU".into(),
+                        vram_gb,
+                        if vram_gb >= 12.0 { 560.0 } else { 456.0 },
+                        31.5,
+                        ComputeBackend::VulkanWgpu,
+                        tflops,
+                        tflops * 4.0,
+                    );
+                }
+                let tflops = if vram_gb >= 20.0 {
+                    122.0
+                } else if vram_gb >= 16.0 {
+                    85.0
+                } else {
+                    42.0
+                };
                 return (
                     "AMD Radeon ROCm GPU".into(),
                     vram_gb,
@@ -562,9 +733,10 @@ impl LiveHardwareProfiler {
             }
         }
 
-        // Windows WMIC fallback for AMD Radeon / Intel Arc discrete GPUs
-        if cfg!(target_os = "windows")
-            && let Ok(out) = std::process::Command::new("wmic")
+        // Windows WMIC + PowerShell CIM fallback for AMD Radeon / Intel Arc / Ryzen AI UMA GPUs
+        if cfg!(target_os = "windows") {
+            let mut video_lines = String::new();
+            if let Ok(out) = std::process::Command::new("wmic")
                 .args([
                     "path",
                     "win32_VideoController",
@@ -573,17 +745,41 @@ impl LiveHardwareProfiler {
                     "/value",
                 ])
                 .output()
-            && out.status.success()
-        {
-            let text = String::from_utf8_lossy(&out.stdout);
+                && out.status.success()
+            {
+                video_lines = String::from_utf8_lossy(&out.stdout).into_owned();
+            } else if let Ok(out) = std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_VideoController | ForEach-Object { \"AdapterRAM=$($_.AdapterRAM)`nName=$($_.Name)\" }",
+                ])
+                .output()
+                && out.status.success()
+            {
+                video_lines = String::from_utf8_lossy(&out.stdout).into_owned();
+            }
+
             let mut adapter_ram_bytes = 0u64;
-            for line in text.lines() {
+            for line in video_lines.lines() {
                 let trimmed = line.trim();
                 if let Some(v) = trimmed.strip_prefix("AdapterRAM=") {
                     adapter_ram_bytes = v.trim().parse::<u64>().unwrap_or(0);
                 } else if let Some(n) = trimmed.strip_prefix("Name=") {
                     let adapter_name = n.trim().to_string();
                     let lower = adapter_name.to_lowercase();
+                    if lower.contains("8060s") || lower.contains("890m") || lower.contains("780m") {
+                        let tflops = if lower.contains("8060s") { 32.0 } else { 11.0 };
+                        return (
+                            adapter_name,
+                            0.0,
+                            0.0,
+                            0.0,
+                            ComputeBackend::Rocm,
+                            tflops,
+                            tflops * 2.0,
+                        );
+                    }
                     if (lower.contains("radeon") || lower.contains("arc") || lower.contains("rtx"))
                         && adapter_ram_bytes >= 2 * 1024 * 1024 * 1024
                     {
@@ -610,11 +806,20 @@ impl LiveHardwareProfiler {
             }
         }
 
-        if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos")
+            || cfg!(target_os = "ios")
+            || board_model
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("apple m")
+        {
             let chip = board_model
                 .clone()
                 .unwrap_or_else(|| "Apple Silicon Metal GPU".into());
-            let tflops = if total_ram_gb >= 64.0 {
+            let tflops = if total_ram_gb >= 96.0 {
+                54.0
+            } else if total_ram_gb >= 64.0 {
                 34.0
             } else if total_ram_gb >= 32.0 {
                 17.0
@@ -636,6 +841,19 @@ impl LiveHardwareProfiler {
             let label = board_model
                 .clone()
                 .unwrap_or_else(|| "ARM64/RISC-V SBC NEON+NPU".into());
+            let lower = label.to_lowercase();
+            if lower.contains("tegra") || lower.contains("jetson") || lower.contains("orin") {
+                let tflops = if lower.contains("orin") { 20.0 } else { 1.26 };
+                return (
+                    label,
+                    0.0,
+                    0.0,
+                    0.0,
+                    ComputeBackend::Cuda,
+                    tflops,
+                    tflops * 2.0,
+                );
+            }
             let sbc_tflops = ((cpu_threads as f64) * 0.45 * 10.0).round() / 10.0;
             return (
                 label,

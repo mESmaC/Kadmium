@@ -46,7 +46,16 @@ impl HardwareKernelTarget {
     }
 
     pub fn from_node(node: &HardwareNode) -> Self {
-        if node.id.0.contains("k230")
+        let profile = node.platform_profile();
+        if profile.cpu_isa == kadmium_core::CpuIsa::RiscV64
+            || matches!(
+                profile.silicon_family,
+                kadmium_core::SiliconFamily::CanaanKendryteRiscV
+                    | kadmium_core::SiliconFamily::SpacemiTRiscV
+                    | kadmium_core::SiliconFamily::THeadXuantieRiscV
+                    | kadmium_core::SiliconFamily::StarFiveRiscV
+            )
+            || node.id.0.contains("k230")
             || node.id.0.contains("riscv")
             || node.hostname.contains("k230")
         {

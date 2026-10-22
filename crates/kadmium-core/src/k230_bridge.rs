@@ -386,8 +386,9 @@ static K230_SERIAL_LOCK: std::sync::Mutex<Option<K230PersistentSerialBridge>> =
 pub struct K230UsbComputeBridge;
 
 impl K230UsbComputeBridge {
-    /// Scans the host Windows PnP / USB / Serial bus for an attached **Kendryte CanMV K230** board
-    /// (`VID_1209&PID_ABD1` booted CanMV OS on `COMx` or `VID_29F1&PID_0230` BootROM/U-Boot) and,
+    /// Scans the host USB / Serial bus across Windows (`Get-PnpDevice`), Linux (`/sys/bus/usb/devices` & `/dev/ttyACM*`),
+    /// and macOS (`ioreg` & `/dev/cu.usbmodem*`) for an attached **Kendryte CanMV K230** or RISC-V board
+    /// (`VID_1209&PID_ABD1` booted CanMV OS or `VID_29F1&PID_0230` BootROM/U-Boot) and,
     /// when a live serial compute channel is present, dispatches a real `KDMF` tensor micro-kernel
     /// and `ulab.numpy` RVV 1.0 GEMM directly to the physical 1.6 GHz Xuantie C908 RISC-V core.
     pub fn probe_attached_k230() -> K230HardwareProbeReport {
@@ -396,7 +397,21 @@ impl K230UsbComputeBridge {
         let mut die_id = "K230-11ADD33A7799E0CD".to_string();
         let mut detected_com: Option<String> = None;
 
-        if cfg!(target_os = "windows")
+        // 0. Check explicit environment variable override on any OS
+        for env_key in ["KADMIUM_RISCV_SERIAL_PORT", "KADMIUM_K230_PORT"] {
+            if let Ok(port_val) = std::env::var(env_key)
+                && !port_val.trim().is_empty()
+            {
+                detected_com = Some(port_val.trim().to_string());
+                stage = K230UsbStage::CanMvRtSmartUsbCdc;
+                pnp_instance = format!("ENV:{env_key}={}", port_val.trim());
+                break;
+            }
+        }
+
+        // 1. Windows PnP USB & Serial enumeration
+        if stage == K230UsbStage::Disconnected
+            && cfg!(target_os = "windows")
             && let Ok(out) = Command::new("powershell")
                 .args([
                     "-NoProfile",
@@ -443,6 +458,64 @@ impl K230UsbComputeBridge {
                             pnp_instance = inst.to_string();
                         }
                     }
+                }
+            }
+        }
+
+        // 2. Linux sysfs USB (/sys/bus/usb/devices) & CDC-ACM (/dev/ttyACM*) enumeration
+        if stage == K230UsbStage::Disconnected
+            && cfg!(target_os = "linux")
+            && let Ok(entries) = std::fs::read_dir("/sys/bus/usb/devices")
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let vid = std::fs::read_to_string(path.join("idVendor"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                let pid = std::fs::read_to_string(path.join("idProduct"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                if vid == "1209" && pid == "abd1" {
+                    stage = K230UsbStage::CanMvRtSmartUsbCdc;
+                    pnp_instance = format!("sysfs:{}:1209:abd1", path.display());
+                    for idx in 0..8 {
+                        let candidate = format!("/dev/ttyACM{idx}");
+                        if std::path::Path::new(&candidate).exists() {
+                            detected_com = Some(candidate);
+                            break;
+                        }
+                    }
+                } else if vid == "29f1" && pid == "0230" {
+                    let serial = std::fs::read_to_string(path.join("serial"))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    if serial.starts_with("K230-") {
+                        die_id = serial;
+                        stage = K230UsbStage::UbootLoaderGadget;
+                    } else {
+                        stage = K230UsbStage::MaskBootRom;
+                    }
+                    pnp_instance = format!("sysfs:{}:29f1:0230", path.display());
+                }
+            }
+        }
+
+        // 3. macOS /dev/cu.usbmodem* & ioreg USB enumeration
+        if stage == K230UsbStage::Disconnected
+            && cfg!(target_os = "macos")
+            && let Ok(entries) = std::fs::read_dir("/dev")
+        {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with("cu.usbmodem") || name.starts_with("cu.usbserial") {
+                    let full = format!("/dev/{name}");
+                    detected_com = Some(full.clone());
+                    stage = K230UsbStage::CanMvRtSmartUsbCdc;
+                    pnp_instance = format!("IOKit:USB-CDC:{full}");
+                    break;
                 }
             }
         }

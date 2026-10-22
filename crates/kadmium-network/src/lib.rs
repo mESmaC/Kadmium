@@ -13,10 +13,12 @@ pub mod lan_pairing;
 pub mod live_mesh;
 pub mod nat_traversal;
 pub mod raid_striper;
+pub mod usbc_interconnect;
 pub use lan_pairing::*;
 pub use live_mesh::*;
 pub use nat_traversal::*;
 pub use raid_striper::*;
+pub use usbc_interconnect::*;
 
 /// Transport path classification between two peers in the Kadmium mesh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

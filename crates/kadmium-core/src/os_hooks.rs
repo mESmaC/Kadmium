@@ -12,15 +12,23 @@
 use crate::{HardwareNode, PoliteState};
 use serde::{Deserialize, Serialize};
 
-/// Platform-native OS telemetry and swapchain hook driver.
+/// Platform-native OS telemetry and swapchain hook driver across all Kadmium OS families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OsHookBackend {
-    /// Windows 11/10: DXGI swapchain notifications + NVML (`nvmlDeviceGetUtilizationRates`) + `GetSystemPowerStatus`.
+    /// Windows 11/10/Server (`x86_64` & `ARM64`): DXGI swapchain notifications + NVML/MCDM + `GetSystemPowerStatus`.
     WindowsDxgiNvml,
-    /// macOS: `IOKit` power/thermal registry + `CGWindowListCopyWindowInfo` + Metal device counters.
+    /// macOS / Darwin: `IOKit` power/thermal registry + `CGWindowListCopyWindowInfo` + Metal device counters.
     MacOsIoKitMetal,
-    /// Linux: DRM/KMS lease & atomic page-flip watcher + `/sys/class/hwmon` + `upower`.
+    /// Linux (`x86_64` / `aarch64` / `riscv64`): DRM/KMS lease & atomic page-flip watcher + `/sys/class/hwmon` + `/sys/class/power_supply`.
     LinuxDrmSysfs,
+    /// Android / LineageOS / Termux / Phone Farm Box (`aarch64`): `dumpsys battery` + `kgsl-3d0` / Mali utilization + screen-state Pocket-Polite governor.
+    AndroidTermuxAdb,
+    /// iOS / iPadOS (`arm64e`): `NSProcessInfo.thermalState` + `UIDevice.batteryState` + Metal `recommendedMaxWorkingSetSize`.
+    IosIpadOsMetal,
+    /// FreeBSD / TrueNAS: `sysctl dev.cpu` thermal & `kstat.zfs.misc.arcstats` ZFS ARC pressure hook.
+    FreeBsdZfsSysctl,
+    /// Embedded RTOS / Co-Processor (`RT-Smart` / `Horizon OS deko3d`): hardware thermal sensor + foreground applet yield hook.
+    EmbeddedRtosWatchdog,
 }
 
 impl OsHookBackend {
@@ -29,9 +37,20 @@ impl OsHookBackend {
             Self::WindowsDxgiNvml
         } else if cfg!(target_os = "macos") {
             Self::MacOsIoKitMetal
+        } else if cfg!(target_os = "ios") {
+            Self::IosIpadOsMetal
+        } else if cfg!(target_os = "android") {
+            Self::AndroidTermuxAdb
+        } else if cfg!(target_os = "freebsd") {
+            Self::FreeBsdZfsSysctl
         } else {
             Self::LinuxDrmSysfs
         }
+    }
+
+    /// Selects the OS hook backend corresponding to a specific `HardwareNode`'s operating system family.
+    pub fn for_node(node: &HardwareNode) -> Self {
+        node.platform_profile().os_hook_backend
     }
 
     pub fn api_signature(&self) -> &'static str {
@@ -44,6 +63,18 @@ impl OsHookBackend {
             }
             Self::LinuxDrmSysfs => {
                 "drmModeGetPlaneResources + /sys/class/drm/card0/device/gpu_busy_percent + /sys/class/power_supply/AC/online"
+            }
+            Self::AndroidTermuxAdb => {
+                "dumpsys battery + /sys/class/kgsl/kgsl-3d0/gpubusy + PowerManager.isInteractive (Pocket-Polite)"
+            }
+            Self::IosIpadOsMetal => {
+                "NSProcessInfo.processInfo.thermalState + UIDevice.batteryState + MTLDevice.currentAllocatedSize"
+            }
+            Self::FreeBsdZfsSysctl => {
+                "sysctl dev.cpu.0.temperature + kstat.zfs.misc.arcstats.c_max + rctlSwapPressure"
+            }
+            Self::EmbeddedRtosWatchdog => {
+                "rt_SmartThermalPoll + appletGetFocusState (deko3d) + BQ24193ChargeLimitGuard"
             }
         }
     }
