@@ -1713,10 +1713,11 @@ async fn run_desktop(port: u16, live_only: bool, open_control_room: bool, check_
     println!("  KADMIUM (Cd-48) — NATIVE DESKTOP APPLICATION & MULTI-PLATFORM COORDINATOR");
     println!("====================================================================================");
     println!(
-        "  Local Workstation:     {} ({} [{:.1} TF FP16 / {:.0} TOPS INT4] + {} [{:.1} TF]{}, {:.1} GB VRAM + {:.1} GB RAM, q*={:.2})",
+        "  Local Workstation:     {} ({} [{:.1} TF FP16 / {:.1} TF FP8 / {:.1} TOPS FP4] + {} [{:.1} TF]{}, {:.1} GB VRAM + {:.1} GB RAM, q*={:.2})",
         local_node.hostname,
         local_node.gpu_name,
         local_node.fp16_tflops,
+        local_node.int4_tops * 0.5,
         local_node.int4_tops,
         local_node.cpu_name,
         local_node.cpu_tflops,

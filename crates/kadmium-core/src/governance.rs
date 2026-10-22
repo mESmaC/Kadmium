@@ -479,21 +479,28 @@ impl LiveHardwareProfiler {
                         (raw_gb * 10.0).round() / 10.0
                     };
                     let lower = name.to_lowercase();
-                    // Calibrated NVIDIA GPU architectural specifications:
-                    // (fp16_tensor_tflops, int4_tensor_tops, vram_bw_gbps, pcie_bw_gbps)
+                    // Calibrated NVIDIA GPU architectural specifications (NVIDIA Blackwell / Ada / Ampere Whitepapers):
+                    // (fp16_bf16_tflops, fp4_int4_dense_tops, vram_bw_gbps, pcie_bw_gbps)
                     let (fp16_tflops, int4_tops, vram_bw_gbps, pcie_bw_gbps) =
                         if lower.contains("5090") {
-                            (419.2, 1677.0, 1792.0, 63.0)
+                            // RTX 5090: 104.8 TF FP32, 209.5 TF FP16/BF16, 838.0 TF FP8/INT8, 1676.0 TF FP4/INT4 dense (3352 sparse)
+                            (209.5, 1676.0, 1792.0, 63.0)
                         } else if lower.contains("5080") {
-                            (225.1, 900.0, 960.0, 63.0)
+                            // RTX 5080: 56.3 TF FP32, 112.6 TF FP16/BF16, 450.2 TF FP8/INT8, 900.4 TF FP4/INT4 dense (1801 sparse)
+                            (112.6, 900.4, 960.0, 63.0)
                         } else if lower.contains("5070 ti") {
-                            (175.8, 703.0, 896.0, 63.0)
+                            // RTX 5070 Ti: 43.9 TF FP32, 87.9 TF FP16/BF16, 351.5 TF FP8/INT8, 703.0 TF FP4/INT4 dense (1406 sparse)
+                            (87.9, 703.0, 896.0, 63.0)
                         } else if lower.contains("5070") {
                             // NVIDIA GeForce RTX 5070 (Blackwell GB205, 6144 CUDA, 192 5th-Gen Tensor, 12GB GDDR7 @ 672 GB/s):
-                            // 123.5 TFLOPS dense FP16/BF16 Tensor (30.9 TFLOPS FP32 shader), 494 TOPS dense INT4/FP4 (988 TOPS sparse)
-                            (123.5, 494.0, 672.0, 63.0)
+                            // - Peak FP32 TFLOPS: 30.9 TFLOPS
+                            // - Peak FP16 / BF16 TFLOPS: 61.7 TFLOPS
+                            // - Peak FP8 Tensor TFLOPS: 246.9 TFLOPS (123.5 TFLOPS FP32 acc dense / 493.9 TFLOPS sparse)
+                            // - INT8 TOPS: 246.9 TOPS
+                            // - Peak FP4 / INT4 Tensor: 493.9 TFLOPS dense (987.8 TFLOPS sparse)
+                            (61.7, 493.9, 672.0, 63.0)
                         } else if lower.contains("5060") {
-                            (94.0, 376.0, 448.0, 31.5)
+                            (47.0, 376.0, 448.0, 31.5)
                         } else if lower.contains("4090") {
                             (165.2, 660.6, 1008.0, 31.5)
                         } else if lower.contains("4080") {
@@ -517,7 +524,7 @@ impl LiveHardwareProfiler {
                         } else if vram_gb >= 20.0 {
                             (140.0, 560.0, 800.0, 31.5)
                         } else if vram_gb >= 12.0 {
-                            (85.0, 340.0, 504.0, 31.5)
+                            (61.7, 246.9, 504.0, 31.5)
                         } else {
                             (42.0, 168.0, 320.0, 15.7)
                         };
