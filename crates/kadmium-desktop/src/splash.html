@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Kadmium</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0e1013;
+    color: #eceff3;
+    font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, "SF Pro Text", Ubuntu, sans-serif;
+    display: grid;
+    place-items: center;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+  }
+  .card { width: min(440px, 88vw); text-align: center; }
+  .mark { width: 72px; height: 72px; margin: 0 auto 20px; display: block; }
+  h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 6px; }
+  .kind {
+    font: 500 11px/1 ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
+    letter-spacing: 0.14em; text-transform: uppercase; color: #8b93a1; margin-bottom: 28px;
+  }
+  .status { font-size: 14px; line-height: 1.55; color: #b9c0cb; min-height: 44px; }
+  .track { height: 3px; margin: 22px auto 0; width: 220px; background: #1f242b; border-radius: 3px; overflow: hidden; }
+  .bar { height: 100%; width: 38%; background: #f3c020; border-radius: 3px; animation: slide 1.15s ease-in-out infinite; }
+  @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(290%); } }
+  .error .track { display: none; }
+  .error .status { color: #eceff3; }
+  .hint {
+    display: none; margin-top: 18px; text-align: left; font-size: 13px; line-height: 1.6;
+    color: #b9c0cb; background: #15181d; border: 1px solid #262c34; border-radius: 10px; padding: 14px 16px;
+  }
+  .error .hint { display: block; }
+  code { font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; color: #f3c020; }
+  .foot {
+    position: fixed; bottom: 18px; left: 0; right: 0; text-align: center;
+    font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: #5d6674; letter-spacing: 0.06em;
+  }
+  @media (prefers-reduced-motion: reduce) { .bar { animation: none; width: 100%; } }
+</style>
+</head>
+<body class="{{STATE}}">
+  <main class="card" role="status" aria-live="polite">
+    <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
+      <g fill="none" stroke-width="7" stroke-linecap="round">
+        <line x1="17" y1="10" x2="17" y2="40" stroke="#f3c020"/>
+        <line x1="27" y1="10" x2="27" y2="54" stroke="#f3c020"/>
+        <line x1="37" y1="10" x2="37" y2="30" stroke="#f3c020"/>
+        <line x1="47" y1="10" x2="47" y2="46" stroke="#f3c020"/>
+        <line x1="11" y1="19" x2="53" y2="19" stroke="#eceff3"/>
+      </g>
+    </svg>
+    <h1>Kadmium</h1>
+    <div class="kind">Desktop app</div>
+    <div class="status">{{MESSAGE}}</div>
+    <div class="track"><div class="bar"></div></div>
+    <div class="hint">{{HINT}}</div>
+  </main>
+  <div class="foot">kadmium-desktop {{VERSION}} · coordinator port {{PORT}}</div>
+</body>
+</html>

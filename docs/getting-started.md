@@ -10,8 +10,8 @@ Kadmium compiles into a single dependency-free native binary (`kadmium`) across 
 
 ### Option A: Download Prebuilt Binary or Desktop Companion App
 Grab the latest release for your OS from the GitHub Releases page or `https://kadmium.ai/download`:
-- **Windows (`x86_64-pc-windows-msvc`):** `kadmium-x86_64-pc-windows-msvc.exe` (or the Kadmium Desktop Companion installer)
-- **macOS Apple Silicon (`aarch64-apple-darwin`):** `kadmium-aarch64-apple-darwin.tar.gz`
+- **Windows (`x86_64-pc-windows-msvc`):** `kadmium-x86_64-pc-windows-msvc.exe`, with `kadmium-desktop.exe` (the desktop app) next to it
+- **macOS Apple Silicon (`aarch64-apple-darwin`):** `kadmium-aarch64-apple-darwin.tar.gz`, which includes `kadmium-desktop`
 - **Linux Workstation / NAS / Cloud (`x86_64-unknown-linux-gnu`):** `kadmium-x86_64-unknown-linux-gnu.tar.gz`
 - **ARM64 SBCs — Orange Pi 5 / RK3588 / Raspberry Pi 5 (`aarch64-unknown-linux-gnu`):** `kadmium-aarch64-unknown-linux-gnu.tar.gz`
 
@@ -59,6 +59,21 @@ Open **`http://127.0.0.1:7848`** in your browser. From the interactive dashboard
 - Inspect your **7-node heterogeneous cluster topology** (Gaming PC, Apple Silicon Mac Mini, Gaming Laptop, Home NAS Vault, Legacy Laptop, ARM SBC Bramble, and Friend's Remote PC).
 - Trigger live **Responsibility Shifts** (`Host Gaming Mode` auto-yield, `Cloud Burst Node Joined`, or `Coordinator Quorum Failover`) and watch CERN FTS3 P2P transfers rebalance layers without dropping active requests.
 - Inspect the **100-Node Sub-Cluster Pool Slicer**, **TPU/CIM Token vs. Weight Streaming** analyzer, **Dream-RSI Evolving Worlds** discovery tree, and **CloudShield** spot arbitrage planner.
+
+### Open the desktop app
+
+The Companion (this machine's sharing state, yield control, models, pairing and earnings) runs in its own window, apart from the browser Control Room:
+
+```bash
+cargo build -p kadmium-desktop        # once; add --release for a build without a console window
+cargo run -p kadmium-cli -- desktop
+```
+
+`kadmium desktop` opens the window and starts a local coordinator inside it, or attaches to one already running on the port, so closing the window stops it. The window only ever shows the Companion: the Control Room, the docs and every other link open in your default browser.
+
+- **Windows** draws the window with the Microsoft Edge WebView2 Runtime, which Windows 11 includes. If the app reports that WebView2 is missing, install the Evergreen runtime from Microsoft.
+- **macOS** uses the system WKWebView.
+- **Linux** needs the WebKitGTK 4.1 and GTK 3 development packages and `cargo build -p kadmium-desktop --features linux-native`. Without the feature, the app runs the coordinator and opens the Companion in your browser instead.
 
 ---
 

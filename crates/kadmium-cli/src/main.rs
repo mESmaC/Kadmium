@@ -1,30 +1,25 @@
 use clap::{Parser, Subcommand};
 use kadmium_core::{
-    HardwareNode, KadmiumWorkspaceConfig, LiveHardwareProfiler, ModdedSwitchController, ModelSpec,
+    HardwareNode, LiveHardwareProfiler, ModdedSwitchController, ModelSpec,
     PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmTopologyMode, PhoneFarmTransportMode,
     PoliteState, ReTerminalCm4LanBridge, SwitchRuntimeEnvironment, SwitchSiliconRevision,
     WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::{Fts3TransferScheduler, LocalModelDiskImporter};
-use kadmium_gateway::{GatewayState, build_router};
-use kadmium_network::{
-    DEFAULT_LAN_DISCOVERY_UDP_PORT, DEFAULT_WORKER_TCP_PORT, LanCoordinatorAnnouncement,
-    LanCoordinatorDiscovery,
-};
+use kadmium_gateway::{CoordinatorOptions, run_coordinator};
+use kadmium_network::DEFAULT_WORKER_TCP_PORT;
 use kadmium_rl::{
     DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, RlEnvironmentSuiteSpec,
     RlTopologyPlanner,
 };
 use kadmium_runtime::{
-    DistributedExl3ConversionEngine, DistributedLanExecutor, LiveNodeWorkerServer,
-    LocalFleetSpawner, TrainingJobTelemetry, sample_boinc_workunits,
+    DistributedExl3ConversionEngine, TrainingJobTelemetry, sample_boinc_workunits,
 };
 use kadmium_sharding::{
     ClusterShardPlan, DataflowStreamPlanner, DistributedPagedKvPlanner,
     MinMaxStageLatencyOptimizer, ResponsibilityShiftPlan, ShardPlanner, ShiftTriggerReason,
     SubClusterPartitioner,
 };
-use std::sync::{Arc, Mutex};
 
 mod grid_ops;
 mod ops;
@@ -247,7 +242,7 @@ enum Commands {
         #[arg(short, long)]
         ip: Option<String>,
     },
-    /// Launch the Native Kadmium Desktop Application Window + Local Coordinator & Live Silicon Auto-Discovery
+    /// Open the Kadmium desktop app (the Companion in its own window) with a local coordinator
     #[command(visible_alias = "app")]
     Desktop {
         /// Port to bind the local HTTP coordinator and API gateway
@@ -259,10 +254,10 @@ enum Commands {
         /// Include the 7-node simulated demo fleet alongside live hardware
         #[arg(long)]
         demo: bool,
-        /// Also open the Cluster Control Room window alongside the Desktop Companion App
+        /// Also open the Control Room in your browser
         #[arg(long)]
         control_room: bool,
-        /// Print the desktop app summary and verify live silicon bridges without blocking or opening a GUI window
+        /// Print the hardware summary and check for the desktop app without opening a window
         #[arg(long)]
         check_only: bool,
     },
@@ -865,401 +860,17 @@ async fn run_server(
     worker_port: u16,
     spawn_fleet: bool,
 ) {
-    let mut gw_state = GatewayState::new();
-    gw_state.coordinator_http_port = port;
-
-    if let Some(cfg_file) = config_path
-        && let Ok(raw_toml) = std::fs::read_to_string(cfg_file)
-        && let Ok(parsed_cfg) = KadmiumWorkspaceConfig::parse_kadmium_toml(&raw_toml)
-    {
-        if parsed_cfg.cloud_shield_enabled {
-            gw_state.companion_mode =
-                kadmium_gateway::CompanionConnectionMode::KadmiumCloudManaged {
-                    workspace_slug: parsed_cfg.cluster_name.clone(),
-                    cloud_endpoint: "https://api.kadmium.ai".into(),
-                    downtime_shield_enabled: true,
-                    spot_arbitrage_burst_enabled: true,
-                    max_hourly_spend_cap_usd: parsed_cfg.cloud_hourly_cap_usd,
-                };
-        }
-        println!(
-            "  [Config] Loaded workspace '{}' from {}",
-            parsed_cfg.cluster_name, cfg_file
-        );
-    }
-
-    let local_node = LiveHardwareProfiler::probe_local_host();
-    let lan_ip = gw_state.coordinator_lan_ip.clone();
-
-    // Spawn built-in TCP WireFrame worker server for the coordinator's own hardware:
-    let local_worker = LiveNodeWorkerServer::spawn_auto_port(
-        "0.0.0.0",
+    let options = CoordinatorOptions {
+        port,
+        config_path: config_path.map(str::to_string),
+        live_only,
         worker_port,
-        local_node.clone(),
-        true,
-    )
-    .await
-    .expect("failed to bind coordinator local worker TCP listener");
-    let bound_worker_port = local_worker.local_addr.port();
-    let worker_tcp_addr = format!("{lan_ip}:{bound_worker_port}");
-
-    gw_state.register_live_worker(local_node.clone(), worker_tcp_addr.clone(), 0.15, live_only);
-
-    // Automatically detect and attach a physical CanMV K230 RISC-V + 6 TOPS KPU board over USB-CDC if connected:
-    let k230_probe = kadmium_core::K230UsbComputeBridge::probe_attached_k230();
-    let mut attached_k230_banner: Option<String> = None;
-    let mut next_fleet_port = bound_worker_port.saturating_add(1);
-    if k230_probe.physical_board_detected {
-        if let Ok(k230_server) = LiveNodeWorkerServer::spawn_auto_port(
-            "127.0.0.1",
-            next_fleet_port,
-            k230_probe.hardware_node.clone(),
-            true,
-        )
-        .await
-        {
-            next_fleet_port = k230_server.local_addr.port().saturating_add(1);
-            let k230_tcp_addr = k230_server.local_addr.to_string();
-            let port_label = k230_probe
-                .detected_serial_port
-                .clone()
-                .unwrap_or_else(|| "USB-BootROM".to_string());
-            let (usb_rtt, os_label, live_silicon, k230_digest) =
-                if let Some(proof) = &k230_probe.live_execution_proof {
-                    (
-                        proof.usb_round_trip_latency_ms.max(0.85),
-                        proof.riscv_core_signature.clone(),
-                        proof.executed_on_physical_silicon,
-                        proof.k230_hardware_checksum_fnv1a,
-                    )
-                } else {
-                    (
-                        0.85,
-                        "rt-smart v1.8 (CanMV K230)".to_string(),
-                        false,
-                        0x627e_7e5b_5419_aca7,
-                    )
-                };
-            gw_state.register_live_worker_with_meta(
-                k230_probe.hardware_node.clone(),
-                k230_tcp_addr.clone(),
-                usb_rtt,
-                live_only,
-                os_label.clone(),
-                "riscv64-c908-rvv1.0 (6 TOPS KPU)".to_string(),
-                format!(
-                    "{} [{}]",
-                    k230_probe.board_model, k230_probe.chip_unique_die_id
-                ),
-                format!("USB-CDC ({port_label})"),
-            );
-            gw_state
-                .spawned_fleet_instances
-                .push(kadmium_runtime::SpawnedLocalWorkerInstance {
-                    server: k230_server,
-                    os_name: os_label,
-                    cpu_arch: "riscv64-c908-rvv1.0 (6 TOPS KPU)".to_string(),
-                    board_or_model: format!(
-                        "{} [{}]",
-                        k230_probe.board_model, k230_probe.chip_unique_die_id
-                    ),
-                    network_channel: format!("USB-CDC ({port_label})"),
-                });
-            attached_k230_banner = Some(format!(
-                "{} -> {} ({}, {}, RepOps={:#018x})",
-                port_label,
-                k230_tcp_addr,
-                k230_probe.board_model,
-                if live_silicon {
-                    "LIVE RISC-V SILICON"
-                } else {
-                    "USB-BRIDGE"
-                },
-                k230_digest
-            ));
-        }
-    }
-
-    // Automatically detect and attach a live Apple M4 platform node (192.168.40.237:7860) and Raspberry Pi CM4 node (192.168.40.75:7859) on the LAN:
-    let mut attached_m4_banner: Option<String> = None;
-    let m4_probe = kadmium_core::M4MacMiniLanBridge::probe_and_verify(None);
-    if m4_probe.physical_board_online
-        && let Ok(m4_server) = LiveNodeWorkerServer::spawn_auto_port(
-            "127.0.0.1",
-            next_fleet_port,
-            m4_probe.hardware_node.clone(),
-            true,
-        )
-        .await
-    {
-        next_fleet_port = m4_server.local_addr.port().saturating_add(1);
-        let m4_tcp_addr = m4_server.local_addr.to_string();
-        let os_label = "macOS 26 (Darwin 25.0.0)".to_string();
-        let arch_label = "arm64e (Apple M4 · Metal 4 + AMX)".to_string();
-        let board_label = m4_probe.board_model.clone();
-        gw_state.register_live_worker_with_meta(
-            m4_probe.hardware_node.clone(),
-            m4_tcp_addr.clone(),
-            m4_probe.execution_proof.lan_round_trip_ms.max(0.25),
-            live_only,
-            os_label.clone(),
-            arch_label.clone(),
-            board_label.clone(),
-            "LocalLAN".to_string(),
-        );
-        if let Some(w) = gw_state.live_workers.get_mut(&m4_probe.hardware_node.id.0) {
-            w.worker_lan_ip = kadmium_core::DEFAULT_M4_MAC_MINI_IP.to_string();
-            w.worker_tcp_port = kadmium_core::DEFAULT_M4_MAC_MINI_PORT;
-        }
-        gw_state
-            .spawned_fleet_instances
-            .push(kadmium_runtime::SpawnedLocalWorkerInstance {
-                server: m4_server,
-                os_name: os_label,
-                cpu_arch: arch_label,
-                board_or_model: board_label,
-                network_channel: "LocalLAN".to_string(),
-            });
-        attached_m4_banner = Some(format!(
-            "{} -> {} ({}, LIVE METAL 4 + AMX {:.1} GFLOP/s, RepOps={:#018x})",
-            m4_probe.lan_endpoint,
-            m4_tcp_addr,
-            m4_probe.board_model,
-            m4_probe.execution_proof.amx_sgemm_512_gflops,
-            m4_probe.execution_proof.metal_gpu_gemm_fnv1a64
-        ));
-    }
-
-    let mut attached_cm4_banner: Option<String> = None;
-    let cm4_probe = kadmium_core::ReTerminalCm4LanBridge::probe_and_verify(None);
-    if cm4_probe.physical_board_online
-        && let Ok(cm4_server) = LiveNodeWorkerServer::spawn_auto_port(
-            "127.0.0.1",
-            next_fleet_port,
-            cm4_probe.hardware_node.clone(),
-            true,
-        )
-        .await
-    {
-        next_fleet_port = cm4_server.local_addr.port().saturating_add(1);
-        let cm4_tcp_addr = cm4_server.local_addr.to_string();
-        let os_label = "Linux 6.12 (Debian Bookworm)".to_string();
-        let arch_label = "aarch64 (BCM2711 Cortex-A72 NEON)".to_string();
-        let board_label = cm4_probe.board_model.clone();
-        gw_state.register_live_worker_with_meta(
-            cm4_probe.hardware_node.clone(),
-            cm4_tcp_addr.clone(),
-            cm4_probe.execution_proof.lan_round_trip_ms.max(0.25),
-            live_only,
-            os_label.clone(),
-            arch_label.clone(),
-            board_label.clone(),
-            "LocalLAN".to_string(),
-        );
-        if let Some(w) = gw_state.live_workers.get_mut(&cm4_probe.hardware_node.id.0) {
-            w.worker_lan_ip = kadmium_core::DEFAULT_RETERMINAL_CM4_IP.to_string();
-            w.worker_tcp_port = kadmium_core::DEFAULT_RETERMINAL_CM4_PORT;
-        }
-        gw_state
-            .spawned_fleet_instances
-            .push(kadmium_runtime::SpawnedLocalWorkerInstance {
-                server: cm4_server,
-                os_name: os_label,
-                cpu_arch: arch_label,
-                board_or_model: board_label,
-                network_channel: "LocalLAN".to_string(),
-            });
-        attached_cm4_banner = Some(format!(
-            "{} -> {} ({}, LIVE ARMv8 NEON, RepOps={:#018x})",
-            cm4_probe.lan_endpoint,
-            cm4_tcp_addr,
-            cm4_probe.board_model,
-            cm4_probe.execution_proof.neon_gemm_fnv1a64
-        ));
-    }
-
-    if spawn_fleet
-        && let Ok(instances) =
-            LocalFleetSpawner::spawn_heterogeneous_local_fleet(next_fleet_port, true).await
-    {
-        for inst in instances {
-            let tcp_addr = inst.server.local_addr.to_string();
-            let node_clone = inst.server.node.lock().expect("node lock").clone();
-            let rtt = match DistributedLanExecutor::ping_worker_tcp(&tcp_addr, 1).await {
-                Ok((_, ms)) => ms,
-                Err(_) => 0.25,
-            };
-            gw_state.register_live_worker_with_meta(
-                node_clone,
-                tcp_addr,
-                rtt,
-                true,
-                inst.os_name.clone(),
-                inst.cpu_arch.clone(),
-                inst.board_or_model.clone(),
-                inst.network_channel.clone(),
-            );
-            gw_state.spawned_fleet_instances.push(inst);
-        }
-        gw_state.set_live_only_mode(true);
-    }
-
-    // Measure initial TCP WireFrame RTT for registered live workers without running synthetic warmup jobs
-    if !gw_state.live_workers.is_empty() {
-        let worker_addrs: Vec<(String, String)> = gw_state
-            .live_workers
-            .iter()
-            .map(|(id, w)| (id.clone(), w.worker_tcp_addr.clone()))
-            .collect();
-        for (node_id, w_addr) in worker_addrs {
-            if let Ok((_, rtt_ms)) = DistributedLanExecutor::ping_worker_tcp(&w_addr, 1).await
-                && let Some(w) = gw_state.live_workers.get_mut(&node_id)
-            {
-                w.last_measured_rtt_ms = rtt_ms;
-            }
-        }
-    }
-
-    let overview = gw_state.workers_overview();
-    let announcement = LanCoordinatorAnnouncement {
-        coordinator_id: gw_state.coordinator_quorum.active_leader.clone(),
-        coordinator_hostname: local_node.hostname.clone(),
-        coordinator_http_url: overview.coordinator_http_url.clone(),
-        join_ticket_token: overview.join_ticket_token.clone(),
-        active_model_id: gw_state.inference_plan.model_id.clone(),
-        cluster_epoch: gw_state.epoch,
+        spawn_fleet,
     };
-    let udp_disc_status = match LanCoordinatorDiscovery::spawn_responder(
-        DEFAULT_LAN_DISCOVERY_UDP_PORT,
-        announcement,
-    )
-    .await
-    {
-        Ok(addr) => format!("Active on UDP {addr} (KDMD auto-discovery)"),
-        Err(_) => "Port 7849 busy (use --coordinator URL on workers)".to_string(),
-    };
-
-    let state = Arc::new(Mutex::new(gw_state));
-    let health_state = Arc::clone(&state);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(12));
-        loop {
-            interval.tick().await;
-            let (epoch, targets) = {
-                let guard = health_state.lock().expect("gateway state lock");
-                let list: Vec<(String, String)> = guard
-                    .live_workers
-                    .values()
-                    .filter(|w| w.online)
-                    .map(|w| (w.node.id.0.clone(), w.worker_tcp_addr.clone()))
-                    .collect();
-                (guard.epoch, list)
-            };
-            for (nid, tcp_addr) in targets {
-                match DistributedLanExecutor::ping_worker_tcp(&tcp_addr, epoch).await {
-                    Ok((pong, rtt)) => {
-                        let mut guard = health_state.lock().expect("gateway state lock");
-                        if let Some(w) = guard.live_workers.get_mut(&nid) {
-                            w.last_measured_rtt_ms = rtt;
-                            w.installed_version = pong.installed_version;
-                            w.ktb_merkle_root_fnv64 = pong.ktb_merkle_root_fnv64;
-                        }
-                    }
-                    Err(_) => {
-                        let mut guard = health_state.lock().expect("gateway state lock");
-                        guard.set_worker_fault_or_polite_state(
-                            &nid,
-                            kadmium_core::PoliteState::IdleDedicated,
-                            false,
-                        );
-                    }
-                }
-            }
-        }
-    });
-
-    let app = build_router(state);
-    let addr = format!("0.0.0.0:{}", port);
-    println!(
-        "===================================================================================="
-    );
-    println!(
-        " Kadmium (Cd-48) Control Room & AI Gateway listening on http://127.0.0.1:{}",
-        port
-    );
-    println!("    - LAN Coordinator URL:    http://{}:{}/", lan_ip, port);
-    println!("    - Cluster Control Room:   http://127.0.0.1:{}/", port);
-    println!(
-        "    - kadmium.ai Website:     http://127.0.0.1:{}/site",
-        port
-    );
-    println!(
-        "    - Desktop Companion UI:   http://127.0.0.1:{}/companion",
-        port
-    );
-    println!(
-        "    - Application Docs:       http://127.0.0.1:{}/docs",
-        port
-    );
-    println!(
-        "    - Design System Showcase: http://127.0.0.1:{}/design-system",
-        port
-    );
-    println!(
-        "    - OpenAI Chat Endpoint:   http://127.0.0.1:{}/v1/chat/completions",
-        port
-    );
-    println!(
-        "    - Anthropic Endpoint:     http://127.0.0.1:{}/v1/messages",
-        port
-    );
-    println!(
-        "    - MCP JSON-RPC Endpoint:  http://127.0.0.1:{}/mcp",
-        port
-    );
-    println!(
-        "    - Prometheus Metrics:     http://127.0.0.1:{}/metrics",
-        port
-    );
-    println!(
-        "------------------------------------------------------------------------------------"
-    );
-    println!(
-        "    - Local WireFrame Worker: {} ({:?}, {:.1} GB fast mem)",
-        worker_tcp_addr,
-        local_node.device_kind,
-        local_node.available_fast_memory_gb()
-    );
-    if let Some(m4_line) = &attached_m4_banner {
-        println!("    - LAN Apple M4 Worker:    {}", m4_line);
+    if let Err(err) = run_coordinator(options).await {
+        eprintln!("kadmium: {err}");
+        std::process::exit(1);
     }
-    if let Some(cm4_line) = &attached_cm4_banner {
-        println!("    - LAN RPi CM4 Worker:     {}", cm4_line);
-    }
-    if let Some(k230_line) = &attached_k230_banner {
-        println!("    - USB RISC-V K230 Worker: {}", k230_line);
-    }
-    println!("    - LAN UDP Auto-Discovery: {}", udp_disc_status);
-    println!(
-        "    - Connect any PC/Mac/SBC: {}",
-        overview.join_command_cli
-    );
-    println!(
-        "    - Linux/macOS/SBC 1-Line: curl -sSL http://{}:{}/join.sh | sh",
-        lan_ip, port
-    );
-    println!(
-        "    - Windows 1-Line Join:    irm http://{}:{}/join.ps1 | iex",
-        lan_ip, port
-    );
-    println!(
-        "===================================================================================="
-    );
-
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("failed to bind TCP listener");
-    axum::serve(listener, app).await.expect("server error");
 }
 
 fn run_phone_farm(preset_slug: &str, disaggregated: bool) {
@@ -1670,37 +1281,44 @@ fn run_m4_mac_mini(custom_ip: Option<&str>) {
     println!("====================================================================================");
 }
 
-fn launch_native_desktop_window(url: &str) {
+/// Opens a page in the default browser. Used only when the desktop app is not built.
+fn open_in_browser(url: &str) {
     #[cfg(target_os = "windows")]
     {
-        let app_arg = format!("--app={url}");
-        let win_size = "--window-size=1360,900";
-        if std::process::Command::new("msedge")
-            .args([&app_arg, win_size])
-            .spawn()
-            .is_ok()
-        {
-            return;
-        }
-        if std::process::Command::new("chrome")
-            .args([&app_arg, win_size])
-            .spawn()
-            .is_ok()
-        {
-            return;
-        }
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
+        // rundll32 hands the URL to the shell without `cmd` re-parsing characters such as `&`.
+        let _ = std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", url])
             .spawn();
     }
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open").arg(url).spawn();
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
+}
+
+/// Finds the `kadmium-desktop` app: next to this executable first (cargo builds both into
+/// `target/<profile>/`), then on `PATH`.
+fn find_desktop_app() -> Option<std::path::PathBuf> {
+    let name = if cfg!(windows) {
+        "kadmium-desktop.exe"
+    } else {
+        "kadmium-desktop"
+    };
+    let beside = std::env::current_exe()
+        .ok()
+        .map(|exe| exe.with_file_name(name))
+        .filter(|path| path.is_file());
+    beside.or_else(|| {
+        std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|dir| dir.join(name))
+                .find(|path| path.is_file())
+        })
+    })
 }
 
 async fn run_desktop(port: u16, live_only: bool, open_control_room: bool, check_only: bool) {
@@ -1766,28 +1384,58 @@ async fn run_desktop(port: u16, live_only: bool, open_control_room: bool, check_
     println!(
         "  Silicon Catalog SKUs:  26 platform configurations (7 Apple M4 + 6 CM4 + 5 Tegra X1 + 5 K230 + 3 Phone Farm)"
     );
+    let desktop_app = find_desktop_app();
     println!(
-        "  Desktop App Window:    http://127.0.0.1:{}/companion",
-        port
+        "  Desktop app:           {}",
+        desktop_app
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "not built yet (cargo build -p kadmium-desktop)".to_string())
     );
-    println!(
-        "  Control Room UI:       http://127.0.0.1:{}/#/platforms",
-        port
-    );
+    println!("  Companion:             http://127.0.0.1:{port}/companion");
+    println!("  Control Room:          http://127.0.0.1:{port}/");
     println!("====================================================================================");
 
     if check_only {
         return;
     }
 
+    // The desktop app opens the Companion in its own window and runs the coordinator itself
+    // (or attaches to one already on the port), so closing the window ends this command too.
+    match desktop_app {
+        Some(app) => {
+            let mut command = tokio::process::Command::new(&app);
+            command.arg("--port").arg(port.to_string());
+            if !live_only {
+                command.arg("--demo");
+            }
+            if open_control_room {
+                command.arg("--control-room");
+            }
+            match command.status().await {
+                Ok(status) if status.success() => return,
+                Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                Err(err) => eprintln!(
+                    "kadmium: could not start {} ({err}); opening the Companion in your browser.",
+                    app.display()
+                ),
+            }
+        }
+        None => eprintln!(
+            "kadmium: the desktop app is not built yet, so the Companion opens in your browser.\n\
+             Build it once with `cargo build -p kadmium-desktop` (add `--release` for a build \
+             without a console window), then run `kadmium desktop` again."
+        ),
+    }
+
     let companion_url = format!("http://127.0.0.1:{port}/companion");
-    let control_room_url = format!("http://127.0.0.1:{port}/#/platforms");
+    let control_room_url = format!("http://127.0.0.1:{port}/");
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(550)).await;
-        launch_native_desktop_window(&companion_url);
+        open_in_browser(&companion_url);
         if open_control_room {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            launch_native_desktop_window(&control_room_url);
+            open_in_browser(&control_room_url);
         }
     });
 

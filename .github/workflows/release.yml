@@ -50,6 +50,12 @@ jobs:
       - name: Build optimized release binary
         run: cargo build --release --bin kadmium --target ${{ matrix.target }}
 
+      # The desktop app (its own window on WebView2 / WKWebView) ships next to the CLI on
+      # Windows and macOS, where `kadmium desktop` looks for it.
+      - name: Build the desktop app
+        if: runner.os != 'Linux'
+        run: cargo build --release --bin kadmium-desktop --target ${{ matrix.target }}
+
       - name: Upload release binary artifact
         uses: actions/upload-artifact@v4
         with:

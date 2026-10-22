@@ -14,6 +14,7 @@ Commands:
   cloud-shield  Evaluate Kadmium Cloud Business Model: Multi-Datacenter Spot Arbitrage + Bidirectional Downtime Protection
   plan          Compute and print the asymmetric sharding plan for a target workload
   serve         Launch the Unified Web Control Dashboard & OpenAI/Anthropic compatible AI Gateway
+  desktop       Open the Kadmium desktop app (the Companion in its own window) with a local coordinator
 ```
 
 ---
@@ -235,3 +236,23 @@ Inspects the **`v1.0 GA` Multi-Provider Spot Orderbook**, **Sub-Cluster RBAC & S
 ```bash
 kadmium registry
 ```
+
+---
+
+## 18. `kadmium desktop`
+
+Opens the **desktop app** (`kadmium-desktop`): the Companion in its own native window, with a local coordinator running inside the app. If a coordinator already answers on the port (for example `kadmium serve`), the window attaches to it instead. Closing the window ends the command.
+
+```bash
+cargo build -p kadmium-desktop   # once, so the app sits next to the kadmium binary
+kadmium desktop --control-room
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-p`, `--port <PORT>` | `7848` | Coordinator port to attach to or start on. |
+| `--demo` | off | Start the coordinator with the 7-node simulated demo fleet alongside live hardware. |
+| `--control-room` | off | Also open the Control Room in your default browser. |
+| `--check-only` | off | Print the hardware summary and where the desktop app was found, then exit. |
+
+The app is looked up next to the `kadmium` binary first, then on `PATH`. If it is not built, `kadmium desktop` says so and opens the Companion in your browser. You can also start the app directly: `kadmium-desktop --port 7848`.

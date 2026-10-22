@@ -9,6 +9,7 @@ members = [
     "crates/kadmium-network",
     "crates/kadmium-gateway",
     "crates/kadmium-cli",
+    "crates/kadmium-desktop",
 ]
 
 [workspace.package]

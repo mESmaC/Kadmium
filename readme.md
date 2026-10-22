@@ -155,7 +155,8 @@ kadmium/
     ├── kadmium-rl/             # First-class RL Environment fabric, WASM/code sandboxes & GRPO/PPO planner
     ├── kadmium-network/        # QUIC P2P mesh discovery, telemetry heartbeats, link matrix probing
     ├── kadmium-gateway/        # Axum Unified Dashboard UI + OpenAI/Anthropic compatible HTTP API
-    └── kadmium-cli/            # Single-binary `kadmium` CLI (node, coordinator, simulator)
+    ├── kadmium-cli/            # Single-binary `kadmium` CLI (node, coordinator, simulator)
+    └── kadmium-desktop/        # Desktop app: the Companion in its own native window (wry + tao)
 ```
 
 ---
@@ -189,7 +190,14 @@ cargo run --bin kadmium -- serve --port 7848
 ```
 Then open **`http://localhost:7848`** in your browser to explore the live cluster topology, shard allocation map, FTS3 transfer queue, and training/inference telemetry, or query `/v1/chat/completions` and `/v1/messages`.
 
-### 4. Run the Test Suite
+### 4. Open the Desktop App
+```bash
+cargo build -p kadmium-desktop
+cargo run --bin kadmium -- desktop
+```
+The Companion opens in its own Kadmium window (WebView2 on Windows, WKWebView on macOS) with a local coordinator running inside the app; closing the window stops it. The Control Room and docs keep opening in your browser. On Linux, add `--features linux-native` to the build (WebKitGTK 4.1 and GTK 3 development packages required).
+
+### 5. Run the Test Suite
 ```bash
 cargo test --workspace
 ```

@@ -1,0 +1,31 @@
+[package]
+name = "kadmium-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Kadmium desktop app: the Companion in its own native window, with an embedded local coordinator"
+
+[[bin]]
+name = "kadmium-desktop"
+path = "src/main.rs"
+
+[features]
+default = []
+# Windows and macOS always get the native window (WebView2 / WKWebView ship with the OS).
+# On Linux the native window needs the WebKitGTK 4.1 and GTK 3 development packages, so it
+# is opt-in: `cargo run -p kadmium-desktop --features linux-native`. Without it the app
+# still starts the coordinator and opens the Companion in the default browser.
+linux-native = ["dep:wry", "dep:tao"]
+
+[dependencies]
+kadmium-gateway.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+wry = "0.57"
+tao = "0.37"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wry = { version = "0.57", optional = true }
+tao = { version = "0.37", optional = true }

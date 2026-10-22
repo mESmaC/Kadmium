@@ -33,10 +33,12 @@ use kadmium_sharding::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub mod coordinator;
 pub mod docs;
 pub mod mcp;
 pub mod routes;
 
+pub use coordinator::{CoordinatorOptions, run_coordinator};
 pub(crate) use docs::DOC_OVERVIEW_MD;
 pub use docs::{DocumentationPage, build_documentation_catalog};
 pub use mcp::{KadmiumMcpManifest, KadmiumMcpServer, McpJsonRpcRequest, McpJsonRpcResponse};
