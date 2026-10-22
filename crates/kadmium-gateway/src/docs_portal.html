@@ -232,6 +232,57 @@
     .doc-content a:hover {
       text-decoration: underline;
     }
+    .doc-content h4 {
+      font-family: var(--font-sans);
+      font-size: 15px;
+      line-height: 22px;
+      font-weight: 600;
+      margin: var(--space-5) 0 var(--space-2);
+      color: var(--ink);
+    }
+    .doc-content blockquote {
+      margin: var(--space-4) 0;
+      padding: var(--space-2) var(--space-4);
+      border-left: 3px solid var(--cadmium);
+      background: var(--graphite-1);
+      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    }
+    .doc-content blockquote p { margin: var(--space-1) 0; color: var(--ink-muted); }
+    .doc-content ul ul, .doc-content ol ul, .doc-content ul ol, .doc-content ol ol { margin: 2px 0; }
+    .math { font-family: "Cambria Math", "STIX Two Math", "Latin Modern Math", "Times New Roman", serif; font-size: 1.06em; white-space: nowrap; }
+    .math .up { font-style: normal; }
+    .math sub, .math sup { font-size: 0.72em; line-height: 0; }
+    .math .frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; font-size: 0.92em; line-height: 1.15; margin: 0 2px; }
+    .math .frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 2px; }
+    .math .frac > span:last-child { padding: 0 2px; }
+    .math .ov { border-top: 1px solid currentColor; }
+    .math-block { margin: var(--space-4) 0; padding: var(--space-3) var(--space-4); overflow-x: auto; text-align: center; background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md); font-size: 17px; line-height: 30px; }
+    .math-block .math { white-space: normal; }
+    .diagram { margin: var(--space-4) 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--graphite-1); overflow: hidden; line-height: 1.4; }
+    .diagram-head { display: flex; align-items: center; gap: var(--space-2); padding: 8px 14px; border-bottom: 1px solid var(--line); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); }
+    .dg-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; padding: 14px; }
+    .dg-group { display: grid; gap: 8px; align-content: start; padding: 10px; border: 1px dashed var(--line-strong); border-radius: var(--radius-sm); }
+    .dg-group > .t { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--cadmium-text); }
+    .dg-node { padding: 8px 10px; background: var(--graphite-2); border: 1px solid var(--line); border-radius: 6px; font-size: 13px; line-height: 18px; color: var(--ink); }
+    .dg-node b { display: block; font-weight: 600; }
+    .dg-node span { display: block; color: var(--ink-muted); font-size: 12px; }
+    .dg-chain { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 14px; }
+    .dg-chain .dg-node { flex: 1 1 180px; max-width: 280px; }
+    .dg-arrow { color: var(--cadmium-text); font-family: var(--font-mono); font-size: 14px; }
+    .dg-edges { display: grid; gap: 6px; padding: 10px 14px 12px; border-top: 1px solid var(--line); font-size: 13px; }
+    .dg-edge { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+    .dg-edge.dotted .dg-arrow { color: var(--ink-muted); }
+    .dg-edge em { font-style: normal; color: var(--ink-muted); font-size: 12px; }
+    .dg-people { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+    .dg-person { padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-full); font-size: 12.5px; }
+    .dg-steps { margin: 0; padding: 10px 14px 12px 40px; display: grid; gap: 6px; font-size: 13.5px; }
+    .dg-steps li { padding-left: 4px; }
+    .dg-steps .who { font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); margin-right: 6px; }
+    .dg-steps .reply .dg-arrow { color: var(--ink-muted); }
+    .dg-steps .note { list-style: none; margin-left: -18px; color: var(--ink-muted); font-style: italic; }
+    .dg-steps .section { list-style: none; margin-left: -18px; font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--cadmium-text); }
+    details.dg-src summary { cursor: pointer; padding: 8px 14px; border-top: 1px solid var(--line); font-family: var(--font-mono); font-size: 11px; color: var(--ink-muted); }
+    details.dg-src pre { margin: 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
       aside { height: auto; max-height: 280px; position: static; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -246,7 +297,7 @@
     <span class="spacer"></span>
     <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/site">Site</a>
     <a class="kd-btn kd-btn-sm" href="/">Control room</a>
-    <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/companion">Companion</a>
+    <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/companion" title="The desktop app shows the Companion in its own window: run kadmium desktop">Companion (web)</a>
     <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/design-system">Design system</a>
     <a class="kd-btn kd-btn-ghost kd-btn-sm" href="/api/v1/docs" target="_blank">JSON API</a>
     <button class="kd-btn kd-btn-ghost kd-btn-sm" id="themeBtn" onclick="toggleTheme()">Light theme</button>
@@ -281,28 +332,197 @@
     }
 
     function escapeHtml(str) {
-      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    /* ---- TeX: the handful of commands the docs use, rendered as Unicode + HTML ---- */
+    const TEX = {
+      to: "→", rightarrow: "→", leftarrow: "←", leftrightarrow: "↔", Rightarrow: "⇒", Leftarrow: "⇐", mapsto: "↦",
+      times: "×", approx: "≈", le: "≤", leq: "≤", ge: "≥", geq: "≥", neq: "≠", ne: "≠", ll: "≪", gg: "≫",
+      dots: "…", ldots: "…", cdots: "⋯", cdot: "·", sum: "∑", prod: "∏", infty: "∞", pm: "±", mp: "∓",
+      in: "∈", notin: "∉", subset: "⊂", subseteq: "⊆", cup: "∪", cap: "∩", forall: "∀", exists: "∃",
+      nabla: "∇", partial: "∂", propto: "∝", sim: "∼", equiv: "≡", circ: "∘", star: "⋆", oplus: "⊕",
+      otimes: "⊗", odot: "⊙", langle: "⟨", rangle: "⟩", lfloor: "⌊", rfloor: "⌋", lceil: "⌈", rceil: "⌉",
+      mid: "∣", vert: "|", Vert: "‖", top: "⊤", quad: " ", qquad: "  ",
+      alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", varepsilon: "ε", zeta: "ζ", eta: "η",
+      theta: "θ", iota: "ι", kappa: "κ", lambda: "λ", mu: "μ", nu: "ν", xi: "ξ", pi: "π", rho: "ρ",
+      sigma: "σ", tau: "τ", upsilon: "υ", phi: "φ", varphi: "φ", chi: "χ", psi: "ψ", omega: "ω",
+      Gamma: "Γ", Delta: "Δ", Theta: "Θ", Lambda: "Λ", Xi: "Ξ", Pi: "Π", Sigma: "Σ", Phi: "Φ", Psi: "Ψ", Omega: "Ω",
+      log: "log", ln: "ln", exp: "exp", max: "max", min: "min", arg: "arg", lim: "lim", sin: "sin", cos: "cos",
+      left: "", right: "", big: "", Big: "", displaystyle: "", limits: ""
+    };
+    const TEX_PUNCT = { ",": " ", ";": " ", ":": " ", " ": " ", "!": "" };
+    function tex(src) {
+      let i = 0;
+      const group = () => {
+        while (src[i] === " ") i++;
+        if (i >= src.length) return "";
+        if (src[i] === "{") { i++; const out = seq("}"); i++; return out; }
+        return atom();
+      };
+      const atom = () => {
+        const c = src[i];
+        if (c === "\\") {
+          i++;
+          let name = "";
+          if (/[A-Za-z]/.test(src[i] || "")) { while (i < src.length && /[A-Za-z]/.test(src[i])) name += src[i++]; }
+          else name = src[i++] || "";
+          if (name === "frac") { const a = group(), b = group(); return '<span class="frac"><span>' + a + "</span><span>" + b + "</span></span>"; }
+          if (["text", "mathrm", "operatorname", "textrm"].includes(name)) return '<span class="up">' + group() + "</span>";
+          if (["mathbf", "textbf", "boldsymbol", "mathit", "mathcal", "mathbb", "mathsf", "mathtt"].includes(name)) return group();
+          if (["hat", "bar", "tilde", "vec", "dot", "overline"].includes(name)) {
+            const mark = { hat: "̂", bar: "̄", overline: "̄", tilde: "̃", vec: "⃗", dot: "̇" }[name];
+            return group() + mark;
+          }
+          if (name === "sqrt") return '√<span class="ov">' + group() + "</span>";
+          if (name in TEX_PUNCT) return TEX_PUNCT[name];
+          if (name in TEX) return escapeHtml(TEX[name]);
+          return escapeHtml(name);
+        }
+        i++;
+        if (c === "^") return "<sup>" + group() + "</sup>";
+        if (c === "_") return "<sub>" + group() + "</sub>";
+        if (c === "{") { i--; return group(); }
+        if (c === "*") return "&#42;";
+        return escapeHtml(c);
+      };
+      const seq = stop => { let out = ""; while (i < src.length && src[i] !== stop) out += atom(); return out; };
+      return '<span class="math">' + seq(undefined) + "</span>";
+    }
+    /* Prices such as "$0.90–$1.20" stay text; "$k$", "$q^*$" and "$800\times$" become math. */
+    function looksLikeMath(body) {
+      if (/^\s|\s$/.test(body)) return false;
+      if (/\\[A-Za-z,;:!]|[\^_{}]/.test(body)) return true;
+      if (/^\d+(\.\d+)?$/.test(body)) return body.length <= 6;
+      return /^[A-Za-z][A-Za-z0-9 +\-=*/.,()']*$/.test(body) && body.length <= 16;
+    }
+
+    /* ---- Mermaid: flowcharts and sequence diagrams drawn as cards, no external library ---- */
+    function nodeHtml(label) {
+      const lines = String(label).split(/\\n|<br\s*\/?>/i).map(l => l.trim()).filter(Boolean);
+      return '<div class="dg-node"><b>' + escapeHtml(lines[0] || "") + "</b>" + lines.slice(1).map(l => "<span>" + escapeHtml(l) + "</span>").join("") + "</div>";
+    }
+    const firstLine = label => String(label).split(/\\n|<br\s*\/?>/i)[0].trim();
+    function splitTop(text, sep) {
+      const out = []; let depth = 0, quote = false, cur = "";
+      for (const ch of text) {
+        if (ch === '"') quote = !quote;
+        if (!quote && "[({".includes(ch)) depth++;
+        if (!quote && "])}".includes(ch)) depth--;
+        if (!quote && depth === 0 && ch === sep) { out.push(cur); cur = ""; continue; }
+        cur += ch;
+      }
+      out.push(cur);
+      return out.map(x => x.trim()).filter(Boolean);
+    }
+    function renderFlow(lines, head) {
+      const nodes = new Map(), groups = [], stack = [], edges = [];
+      const nodeRe = /^([A-Za-z_][\w.-]*)\s*(\[\[|\[\(|\(\[|\(\(|\[\/|\[\\|\[|\(|\{\{|\{|>)\s*"?([\s\S]*?)"?\s*(\]\]|\)\]|\]\)|\)\)|\/\]|\\\]|\]|\)|\}\}|\})$/;
+      const define = token => {
+        const m = token.match(nodeRe);
+        const id = m ? m[1] : token.split(/\s+/)[0];
+        let n = nodes.get(id);
+        if (!n) { n = { id, label: id, group: stack[stack.length - 1] || null }; nodes.set(id, n); if (n.group) n.group.nodes.push(n); }
+        if (m && m[3]) n.label = m[3];
+        return id;
+      };
+      const ARROW = /\s*(?:(-\.|--|==)\s*"([^"]*)"\s*(\.->|-->|==>|---)|(<-->|-\.->|-->|==>|---|-\.-|--o|--x))\s*(?:\|([^|]*)\|)?\s*/g;
+      for (const raw of lines) {
+        const line = raw.replace(/%%.*$/, "").trim();
+        if (!line) continue;
+        let m = line.match(/^subgraph\s+([^\s\["]+)\s*(?:\[\s*"?(.*?)"?\s*\])?\s*$/) || line.match(/^subgraph\s+(.+)$/);
+        if (m) { const g = { id: m[1].trim(), title: (m[2] || m[1]).replace(/^"|"$/g, ""), nodes: [] }; groups.push(g); stack.push(g); continue; }
+        if (line === "end") { stack.pop(); continue; }
+        if (/^(style|classDef|class|linkStyle|click|direction)\b/.test(line)) continue;
+        const parts = [], arrows = [];
+        let last = 0, a;
+        ARROW.lastIndex = 0;
+        while ((a = ARROW.exec(line))) {
+          parts.push(line.slice(last, a.index));
+          arrows.push({ label: a[2] || a[5] || "", dotted: /\./.test(a[1] || a[3] || a[4] || "") });
+          last = a.index + a[0].length;
+        }
+        parts.push(line.slice(last));
+        const sides = parts.map(p => splitTop(p, "&").map(define));
+        for (let k = 0; k < arrows.length; k++) {
+          for (const from of sides[k] || []) for (const to of sides[k + 1] || []) edges.push({ from, to, label: arrows[k].label, dotted: arrows[k].dotted });
+        }
+      }
+      const groupIds = new Map(groups.map(g => [g.id, g]));
+      groupIds.forEach((g, id) => nodes.delete(id));
+      const name = id => groupIds.has(id) ? groupIds.get(id).title : firstLine((nodes.get(id) || { label: id }).label);
+      const loose = [...nodes.values()].filter(n => !n.group);
+      let body = "";
+      const order = [...nodes.keys()];
+      const chain = !groups.length && edges.length === order.length - 1 && edges.every((e, k) => e.from === order[k] && e.to === order[k + 1]);
+      if (chain) {
+        body = '<div class="dg-chain">' + order.map((id, k) => (k ? '<span class="dg-arrow">→</span>' : "") + nodeHtml(nodes.get(id).label)).join("") + "</div>";
+      } else {
+        body = '<div class="dg-groups">' + groups.filter(g => g.nodes.length).map(g => '<div class="dg-group"><div class="t">' + escapeHtml(g.title) + "</div>" + g.nodes.map(n => nodeHtml(n.label)).join("") + "</div>").join("")
+          + (loose.length ? '<div class="dg-group">' + loose.map(n => nodeHtml(n.label)).join("") + "</div>" : "") + "</div>";
+        if (edges.length) body += '<div class="dg-edges">' + edges.map(e => '<div class="dg-edge' + (e.dotted ? " dotted" : "") + '"><b>' + escapeHtml(name(e.from)) + '</b><span class="dg-arrow">' + (e.dotted ? "⇢" : "→") + "</span><b>" + escapeHtml(name(e.to)) + "</b>" + (e.label ? "<em>" + escapeHtml(e.label) + "</em>" : "") + "</div>").join("") + "</div>";
+      }
+      return { kind: "flowchart " + (head.split(/\s+/)[1] || ""), body };
+    }
+    function renderSequence(lines) {
+      const people = new Map(), steps = [];
+      const add = (id, label) => { id = id.trim(); if (!people.has(id)) people.set(id, label ? label.trim() : id); else if (label) people.set(id, label.trim()); return id; };
+      for (const raw of lines) {
+        const line = raw.replace(/%%.*$/, "").trim();
+        let m;
+        if (!line) continue;
+        if ((m = line.match(/^(participant|actor)\s+(\S+)(?:\s+as\s+(.+))?$/))) { add(m[2], m[3]); continue; }
+        if ((m = line.match(/^note\s+(?:over|left of|right of)\s+([^:]+):\s*(.*)$/i))) { steps.push({ kind: "note", text: m[2] }); continue; }
+        if ((m = line.match(/^(loop|alt|else|opt|par|and|critical|break)\b\s*(.*)$/))) { steps.push({ kind: "section", text: (m[1] + " " + m[2]).trim() }); continue; }
+        if (/^(end|rect|activate|deactivate|autonumber)\b/.test(line)) continue;
+        if ((m = line.match(/^(.+?)\s*(-->>|->>|-->|->|--x|-x|--\)|-\))\s*[+-]?\s*(.+?)\s*:\s*(.*)$/))) {
+          steps.push({ kind: "msg", from: add(m[1]), to: add(m[3]), reply: m[2].indexOf("--") === 0, text: m[4] });
+        }
+      }
+      const label = id => people.get(id) || id;
+      const body = '<div class="dg-people">' + [...people.keys()].map(id => '<span class="dg-person">' + escapeHtml(label(id)) + "</span>").join("") + "</div>"
+        + '<ol class="dg-steps">' + steps.map(st => st.kind === "note" ? '<li class="note">' + escapeHtml(st.text) + "</li>"
+          : st.kind === "section" ? '<li class="section">' + escapeHtml(st.text) + "</li>"
+          : '<li class="' + (st.reply ? "reply" : "") + '"><span class="who">' + escapeHtml(label(st.from)) + ' <span class="dg-arrow">' + (st.from === st.to ? "↻" : st.reply ? "⇢" : "→") + "</span> " + escapeHtml(st.from === st.to ? "" : label(st.to)) + "</span>" + escapeHtml(st.text) + "</li>").join("") + "</ol>";
+      return { kind: "sequence", body };
+    }
+    function renderMermaid(code) {
+      const lines = code.split("\n");
+      const head = (lines[0] || "").trim();
+      let out = null;
+      try {
+        if (/^sequenceDiagram\b/.test(head)) out = renderSequence(lines.slice(1));
+        else if (/^(flowchart|graph)\b/.test(head)) out = renderFlow(lines.slice(1), head);
+      } catch (e) { out = null; }
+      const src = '<details class="dg-src"><summary>Mermaid source</summary><pre><code>' + escapeHtml(code.trim()) + "</code></pre></details>";
+      if (!out) return "<pre><code class=\"lang-mermaid\">" + escapeHtml(code.trim()) + "</code></pre>";
+      return '<figure class="diagram"><div class="diagram-head">diagram · ' + escapeHtml(out.kind) + "</div>" + out.body + src + "</figure>";
     }
 
     function renderMarkdown(md) {
-      let blocks = [];
-      md = md.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      const blocks = [];
+      md = md.replace(/```([\w-]*)[^\n]*\n([\s\S]*?)```/g, (_, lang, code) => {
         const idx = blocks.length;
-        blocks.push(`<pre><code class="lang-${lang}">${escapeHtml(code.trim())}</code></pre>`);
-        return `@@CODEBLOCK_${idx}@@`;
+        blocks.push(lang === "mermaid" ? renderMermaid(code) : `<pre><code class="lang-${lang}">${escapeHtml(code.replace(/\s+$/, ""))}</code></pre>`);
+        return `\n@@CODEBLOCK_${idx}@@\n`;
       });
 
       const lines = md.split("\n");
       let html = "";
       let inTable = false;
-      let inList = false;
+      const lists = [];
+      let quote = [];
+      const closeLists = () => { while (lists.length) html += "</" + lists.pop().type + ">"; };
+      const closeQuote = () => { if (quote.length) { html += "<blockquote>" + quote.map(q => "<p>" + formatInline(q) + "</p>").join("") + "</blockquote>"; quote = []; } };
 
       for (let i = 0; i < lines.length; i++) {
-        let line = lines[i];
+        const line = lines[i];
+        const trimmed = line.trim();
 
-        if (line.trim().startsWith("|") && line.trim().endsWith("|")) {
-          if (line.includes("---")) continue;
-          const cells = line.trim().slice(1, -1).split("|").map(c => formatInline(c.trim()));
+        if (trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length > 1) {
+          closeLists(); closeQuote();
+          if (/^\|[\s:|-]+\|$/.test(trimmed)) continue;
+          const cells = trimmed.slice(1, -1).split("|").map(c => formatInline(c.trim()));
           if (!inTable) {
             html += '<div class="table-wrap"><table><thead><tr>' + cells.map(c => `<th>${c}</th>`).join("") + "</tr></thead><tbody>";
             inTable = true;
@@ -315,54 +535,74 @@
           inTable = false;
         }
 
-        if (/^(\s*[-*]|\s*\d+\.)\s+/.test(line)) {
-          if (!inList) { html += "<ul>"; inList = true; }
-          html += "<li>" + formatInline(line.replace(/^(\s*[-*]|\s*\d+\.)\s+/, "")) + "</li>";
+        const item = line.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
+        if (item) {
+          closeQuote();
+          const indent = item[1].replace(/\t/g, "    ").length;
+          const type = /\d/.test(item[2]) ? "ol" : "ul";
+          while (lists.length && indent < lists[lists.length - 1].indent) html += "</" + lists.pop().type + ">";
+          const top = lists[lists.length - 1];
+          if (top && indent === top.indent && type !== top.type) html += "</" + lists.pop().type + ">";
+          if (!lists.length || indent > lists[lists.length - 1].indent) {
+            lists.push({ indent, type });
+            html += type === "ol" ? `<ol start="${parseInt(item[2], 10)}">` : "<ul>";
+          }
+          html += "<li>" + formatInline(item[3]) + "</li>";
           continue;
-        } else if (inList) {
-          html += "</ul>";
-          inList = false;
         }
 
-        if (line.startsWith("### ")) html += `<h3>${formatInline(line.slice(4))}</h3>`;
+        if (trimmed.startsWith(">")) { closeLists(); quote.push(trimmed.replace(/^>\s?/, "")); continue; }
+        closeQuote();
+        if (!trimmed) { continue; }
+        closeLists();
+
+        const display = trimmed.match(/^\$\$([\s\S]+)\$\$$/);
+        if (display) html += '<div class="math-block">' + tex(display[1].trim()) + "</div>";
+        else if (line.startsWith("#### ")) html += `<h4>${formatInline(line.slice(5))}</h4>`;
+        else if (line.startsWith("### ")) html += `<h3>${formatInline(line.slice(4))}</h3>`;
         else if (line.startsWith("## ")) html += `<h2>${formatInline(line.slice(3))}</h2>`;
         else if (line.startsWith("# ")) html += `<h1>${formatInline(line.slice(2))}</h1>`;
-        else if (line.trim() === "---") html += "<hr />";
-        else if (line.trim().startsWith("@@CODEBLOCK_")) html += line.trim();
-        else if (line.trim().length > 0) html += `<p>${formatInline(line)}</p>`;
+        else if (trimmed === "---" || trimmed === "***") html += "<hr />";
+        else if (trimmed.startsWith("@@CODEBLOCK_")) html += trimmed;
+        else html += `<p>${formatInline(line)}</p>`;
       }
       if (inTable) html += "</tbody></table></div>";
-      if (inList) html += "</ul>";
+      closeLists(); closeQuote();
 
       blocks.forEach((b, idx) => {
-        html = html.replace(`@@CODEBLOCK_${idx}@@`, b);
+        html = html.replace(`@@CODEBLOCK_${idx}@@`, () => b);
       });
       return html;
     }
 
+    const DOC_LINKS = {
+      "./getting-started.md": "getting-started",
+      "./cli-reference.md": "cli-reference",
+      "./api-reference.md": "api-reference",
+      "./SPECSHEET_AND_ROADMAP.md": "specsheet-and-roadmap",
+      "./ARCHITECTURE.md": "architecture",
+      "./guides/hardware-and-sharding.md": "hardware-and-sharding",
+      "./guides/training-and-dream-rsi.md": "training-and-dream-rsi",
+      "./guides/subclusters-and-cloud-shield.md": "subclusters-and-cloud-shield",
+      "./guides/integrations-hf-github.md": "integrations-hf-github",
+      "./guides/mcp-server.md": "mcp-server"
+    };
     function formatInline(text) {
-      return text
-        .replace(/`([^`]+)`/g, "<code>$1</code>")
+      const held = [];
+      const hold = html => "\u0000" + (held.push(html) - 1) + "\u0000";
+      let out = String(text)
+        .replace(/`([^`]+)`/g, (_, code) => hold("<code>" + escapeHtml(code) + "</code>"))
+        .replace(/\$([^$\n]+?)\$/g, (m, body) => looksLikeMath(body) ? hold(tex(body)) : m);
+      out = escapeHtml(out)
         .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-        .replace(/\*([^*]+)\*/g, "<em>$1</em>")
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, label, href) => {
-          const slugMap = {
-            "./getting-started.md": "getting-started",
-            "./cli-reference.md": "cli-reference",
-            "./api-reference.md": "api-reference",
-            "./SPECSHEET_AND_ROADMAP.md": "specsheet-and-roadmap",
-            "./ARCHITECTURE.md": "architecture",
-            "./guides/hardware-and-sharding.md": "hardware-and-sharding",
-            "./guides/training-and-dream-rsi.md": "training-and-dream-rsi",
-            "./guides/subclusters-and-cloud-shield.md": "subclusters-and-cloud-shield",
-            "./guides/integrations-hf-github.md": "integrations-hf-github",
-            "./guides/mcp-server.md": "mcp-server"
-          };
-          if (slugMap[href]) {
-            return `<a href="#" onclick="selectDoc('${slugMap[href]}'); return false;">${label}</a>`;
-          }
-          return `<a href="${href}" target="_blank">${label}</a>`;
+        .replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?![\w*])/g, "$1<em>$2</em>")
+        .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
+          const raw = href.replace(/&amp;/g, "&");
+          if (DOC_LINKS[raw]) return `<a href="#${DOC_LINKS[raw]}" onclick="selectDoc('${DOC_LINKS[raw]}'); return false;">${label}</a>`;
+          if (/^(https?:|mailto:|\/)/i.test(raw)) return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+          return label;
         });
+      return out.replace(/\u0000(\d+)\u0000/g, (_, n) => held[Number(n)]);
     }
 
     function renderSidebar(filterText = "") {
