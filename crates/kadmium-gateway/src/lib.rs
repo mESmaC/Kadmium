@@ -855,8 +855,11 @@ impl GatewayState {
     pub fn supply_marketplace(&self) -> SupplyMarketplaceSnapshot {
         let mut snap =
             SupplySettlementEngine::evaluate_cluster_supply(&self.nodes, &self.supply_policy);
-        if self.live_only_mode && !self.supply_policy.enabled {
-            snap.recent_receipts.clear();
+        if self.live_only_mode {
+            // The settlement engine ships sample receipts for the demo fleet; with live hardware
+            // only, keep just the receipts earned by machines that are actually in the cluster.
+            snap.recent_receipts
+                .retain(|receipt| self.nodes.iter().any(|n| n.id == receipt.provider_node_id));
         }
         snap
     }
@@ -1210,9 +1213,10 @@ mod tests {
         assert!(dash_html.contains("Silicon platforms"));
 
         let comp_html = http_get("/companion");
-        assert!(comp_html.contains("Silicon Platforms & LAN Bridges"));
-        assert!(comp_html.contains("Local .ktb Studio & EXL3 Quantizer"));
+        assert!(comp_html.contains("Boards and bridges"));
+        assert!(comp_html.contains("Import local weights"));
         assert!(comp_html.contains("/api/v1/platforms/attach"));
+        assert!(comp_html.contains("__KADMIUM_DESKTOP__"));
 
         // 2. Verify GET /api/v1/platforms/overview
         let pf_json = http_get("/api/v1/platforms/overview");

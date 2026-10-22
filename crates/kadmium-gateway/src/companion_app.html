@@ -3,882 +3,1201 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kadmium Desktop Application — Cd‑48</title>
+  <title>Kadmium Companion</title>
   <link rel="icon" href="/assets/Logos/kadmium-favicon.svg">
   <link rel="stylesheet" href="/tokens.css">
   <link rel="stylesheet" href="/components/bundle.css">
   <style>
     *, *::before, *::after { box-sizing: border-box; }
-    html, body { margin: 0; overflow-x: hidden; }
+    html, body, #app { height: 100%; margin: 0; }
     body {
       background: var(--graphite-0);
       color: var(--ink);
       font-family: var(--font-sans);
-      min-height: 100vh;
+      font-size: 14px;
+      line-height: 20px;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
     }
-    .top {
-      display: flex;
-      align-items: center;
-      gap: var(--space-3);
-      min-height: 60px;
-      padding: var(--space-2) clamp(16px, 3vw, 40px);
-      border-bottom: 1px solid var(--line);
-      background: color-mix(in srgb, var(--graphite-1) 92%, transparent);
-      backdrop-filter: blur(12px);
-      position: sticky;
-      top: 0;
-      z-index: 20;
-      flex-wrap: wrap;
+    button { font: inherit; }
+    code { font-family: var(--font-mono); font-size: 12px; }
+    :focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+    /* ---------- shell: icon rail + main column ---------- */
+    .cp-app { display: grid; grid-template-columns: 76px minmax(0, 1fr); height: 100vh; height: 100dvh; }
+    .cp-rail {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 14px 0 12px; background: var(--graphite-1); border-right: 1px solid var(--line);
+      user-select: none; -webkit-user-select: none; min-height: 0;
     }
-    .top img { height: 24px; display: block; }
-    .top .cd {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      letter-spacing: 0.08em;
-      color: var(--ink-muted);
-      text-transform: uppercase;
+    .cp-rail .tile { width: 38px; height: 38px; display: block; margin: 0 0 14px; border-radius: 10px; }
+    .cp-rail .grow { flex: 1; }
+    .cp-nav { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 0 8px; }
+    .cp-nav button {
+      position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 9px 0 7px; border: 0; border-radius: var(--radius-sm); background: transparent;
+      color: var(--ink-muted); font-size: 10.5px; line-height: 12px; font-weight: 500; cursor: pointer;
     }
-    .top .spacer { flex: 1; }
-    .shell {
-      max-width: 1280px;
-      margin: 0 auto;
-      padding: var(--space-6) clamp(16px, 3.5vw, 40px) var(--space-16);
-      display: grid;
-      gap: var(--space-5);
+    .cp-nav button:hover { background: var(--graphite-2); color: var(--ink); }
+    .cp-nav button.active { background: var(--graphite-2); color: var(--ink); }
+    .cp-nav button.active svg { color: var(--cadmium-text); }
+    .cp-nav button.active::before {
+      content: ""; position: absolute; left: -8px; top: 10px; bottom: 10px; width: 3px;
+      border-radius: 0 3px 3px 0; background: var(--cadmium);
     }
-    .shell > *, .two > *, .three > * {
-      min-width: 0;
+    .cp-railstate {
+      display: flex; flex-direction: column; align-items: center; gap: 5px; margin-top: 10px; padding-top: 12px;
+      width: 52px; border-top: 1px solid var(--line); font: 500 9.5px/11px var(--font-mono);
+      letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted);
     }
-    .eyebrow {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--ink-muted);
-      margin: 0 0 var(--space-2);
+    .cp-railstate .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+    .cp-railstate.yield .dot { background: var(--warn); }
+    .cp-railstate.down .dot { background: var(--danger); animation: cp-pulse 1.2s ease-in-out infinite; }
+
+    .cp-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .cp-top {
+      display: flex; align-items: center; gap: 12px; min-height: 64px; padding: 12px 28px;
+      border-bottom: 1px solid var(--line); user-select: none; -webkit-user-select: none;
     }
-    .panel {
-      background: var(--graphite-1);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: var(--space-5);
-      box-shadow: var(--shadow-sm);
-      min-width: 0;
+    .cp-top .titles { min-width: 0; }
+    .cp-top h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 600; letter-spacing: -0.01em; }
+    .cp-top .sub { color: var(--ink-muted); font-size: 12.5px; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cp-top .spacer { flex: 1; }
+    .cp-conn {
+      display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 10px; border: 1px solid var(--line);
+      border-radius: var(--radius-full); color: var(--ink-muted); font: 500 11px/1 var(--font-mono); white-space: nowrap;
     }
-    .two {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: var(--space-5);
-      align-items: stretch;
+    .cp-conn .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+    .cp-conn.down { color: var(--ink); border-color: var(--danger); }
+    .cp-conn.down .dot { background: var(--danger); animation: cp-pulse 1.2s ease-in-out infinite; }
+    @keyframes cp-pulse { 50% { opacity: 0.35; } }
+
+    .cp-banner {
+      display: flex; align-items: center; gap: 12px; padding: 9px 28px; font-size: 13px; line-height: 18px;
+      background: var(--cherenkov-soft); border-bottom: 1px solid var(--line); color: var(--ink);
     }
-    .three {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: var(--space-4);
+    .cp-banner svg { flex: none; color: var(--cherenkov-text); }
+    .cp-banner code { color: var(--cherenkov-text); }
+    .cp-banner .x {
+      margin-left: auto; flex: none; display: grid; place-items: center; width: 26px; height: 26px; border: 0;
+      border-radius: var(--radius-sm); background: transparent; color: var(--ink-muted); cursor: pointer;
     }
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(195px, 1fr));
-      gap: var(--space-4);
+    .cp-banner .x:hover { background: var(--graphite-2); color: var(--ink); }
+    .cp-banner.down { background: var(--danger-soft); }
+    .cp-banner.down svg { color: var(--danger); }
+
+    .cp-scroll { flex: 1; min-height: 0; overflow: auto; }
+    .cp-page { display: grid; gap: 20px; max-width: 1160px; padding: 24px 28px 48px; }
+    .cp-page > * { min-width: 0; }
+
+    /* ---------- building blocks ---------- */
+    .cp-card { background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md); min-width: 0; }
+    .cp-card > header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 13px 18px; border-bottom: 1px solid var(--line); }
+    .cp-card > header h2 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
+    .cp-card > header .sub { color: var(--ink-muted); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cp-card > header .tools { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .cp-card > .body { padding: 16px 18px; display: grid; gap: 14px; }
+    .cp-card > .body.flush { padding: 0; gap: 0; }
+    .cp-card > footer { padding: 11px 18px; border-top: 1px solid var(--line); color: var(--ink-muted); font-size: 12px; display: flex; gap: 16px; flex-wrap: wrap; }
+    .cp-pad { padding: 16px 18px; }
+    .cp-subhead {
+      padding: 10px 18px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--graphite-2);
+      font: 500 10.5px/14px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);
     }
-    .stat-card {
-      background: var(--graphite-1);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: 14px 16px;
-      display: grid;
-      gap: 4px;
+    .cp-minihead { padding-top: 4px; font: 500 10.5px/14px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); }
+    .cp-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+    .cp-grid2.stretch { align-items: stretch; }
+    .cp-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .cp-tile { display: grid; gap: 3px; min-width: 0; padding: 13px 16px; background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md); }
+    .cp-tile .l { font: 500 10.5px/14px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted); }
+    .cp-tile .v { font-size: 19px; line-height: 26px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cp-tile .v.mono { font-family: var(--font-mono); font-size: 17px; font-weight: 500; letter-spacing: 0; }
+    .cp-tile .v.cadmium { color: var(--cadmium-text); }
+    .cp-tile .v.ok { color: var(--ok); }
+    .cp-tile .v.muted { color: var(--ink-muted); }
+    .cp-tile .m { color: var(--ink-muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .cp-kv { display: grid; grid-template-columns: minmax(96px, max-content) minmax(0, 1fr); gap: 8px 18px; margin: 0; font-size: 13px; line-height: 19px; }
+    .cp-kv dt { color: var(--ink-muted); }
+    .cp-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+    .cp-kv dd.mono { font-family: var(--font-mono); font-size: 12.5px; }
+    .cp-meters { display: grid; gap: 12px; }
+
+    .cp-tablewrap { width: 100%; overflow-x: auto; }
+    .cp-table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 18px; }
+    .cp-table th {
+      padding: 9px 18px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line);
+      font: 500 10.5px/14px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-muted);
     }
-    .stat-card .l {
-      font-family: var(--font-mono);
-      font-size: 10.5px;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--ink-muted);
+    .cp-table td { padding: 10px 18px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    .cp-table tbody tr:last-child td { border-bottom: 0; }
+    .cp-table th.num { font: 500 10.5px/14px var(--font-mono); }
+    .cp-table .num { text-align: right; font-family: var(--font-mono); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .cp-table .mono { font-family: var(--font-mono); font-size: 12px; }
+    .cp-table .nowrap { white-space: nowrap; }
+    .cp-table .name { font-weight: 600; }
+    .cp-table .sub { display: block; margin-top: 2px; color: var(--ink-muted); font: 11.5px/16px var(--font-mono); }
+    .cp-table .muted { color: var(--ink-muted); }
+    .cp-table .clip { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cp-table td.empty { padding: 26px 18px; text-align: center; color: var(--ink-muted); }
+
+    .cp-empty { display: grid; justify-items: center; gap: 12px; padding: 22px 12px; text-align: center; color: var(--ink-muted); font-size: 13px; }
+    .cp-empty p { margin: 0; max-width: 46ch; }
+    .cp-loading { display: flex; align-items: center; gap: 10px; padding: 40px 4px; color: var(--ink-muted); font-size: 13px; }
+    .cp-loading .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line-strong); border-top-color: var(--cadmium); animation: cp-spin 0.8s linear infinite; }
+    @keyframes cp-spin { to { transform: rotate(360deg); } }
+
+    .cp-note { display: flex; gap: 10px; align-items: flex-start; padding: 11px 14px; border-radius: var(--radius-sm); background: var(--graphite-2); color: var(--ink-muted); font-size: 12.5px; line-height: 18px; }
+    .cp-note svg { flex: none; margin-top: 1px; }
+    .cp-note.warn { background: var(--warn-soft); color: var(--ink); }
+    .cp-note.warn svg { color: var(--warn); }
+    .cp-note.ok svg { color: var(--ok); }
+    .cp-help { margin: 0; color: var(--ink-muted); font-size: 12.5px; line-height: 19px; }
+    .cp-help code, .cp-kv code, .cp-note code { color: var(--ink); overflow-wrap: anywhere; }
+
+    .cp-seg { display: inline-flex; gap: 2px; padding: 3px; background: var(--graphite-0); border: 1px solid var(--line); border-radius: var(--radius-sm); }
+    .cp-seg button { padding: 4px 11px; border: 0; border-radius: 4px; background: transparent; color: var(--ink-muted); font-size: 12.5px; line-height: 18px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+    .cp-seg button:hover { color: var(--ink); }
+    .cp-seg button.on { background: var(--graphite-3); color: var(--ink); }
+
+    .cp-switch {
+      position: relative; flex: none; width: 40px; height: 22px; padding: 0; border-radius: var(--radius-full);
+      border: 1px solid var(--line-strong); background: var(--graphite-3); cursor: pointer; transition: background 0.15s, border-color 0.15s;
     }
-    .stat-card .v {
-      font-family: var(--font-mono);
-      font-size: 23px;
-      font-weight: 600;
-      color: var(--ink);
+    .cp-switch::after {
+      content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+      background: var(--ink-muted); transition: transform 0.15s, background 0.15s;
     }
-    .stat-card .v.cadmium { color: var(--cadmium-text); }
-    .stat-card .v.ok { color: var(--ok); }
-    .stat-card .v.cloud { color: var(--cherenkov-text); }
-    .stat-card .m {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--ink-muted);
+    .cp-switch[aria-checked="true"] { background: var(--cadmium); border-color: var(--cadmium); }
+    .cp-switch[aria-checked="true"]::after { transform: translateX(18px); background: var(--on-cadmium); }
+    .cp-switch:disabled { opacity: 0.5; cursor: default; }
+
+    .cp-field { display: grid; gap: 6px; min-width: 0; }
+    .cp-field > .lbl { font-size: 13px; line-height: 18px; font-weight: 500; color: var(--ink); }
+    .cp-page .kd-field { min-width: 0; }
+    .cp-field .cp-seg, .cp-mode > .kd-badge, .cp-mode > .kd-btn { justify-self: start; }
+    .cp-field > .hint { font-size: 12px; color: var(--ink-muted); }
+    .cp-select, .cp-range { width: 100%; }
+    .cp-select {
+      height: var(--control-md); padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+      background: var(--graphite-0); color: var(--ink); font: 12.5px var(--font-mono);
     }
-    .mode-card {
-      background: var(--graphite-2);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: var(--space-5);
-      display: flex;
-      flex-direction: column;
-      gap: var(--space-3);
-      min-width: 0;
+    .cp-range { accent-color: var(--cadmium); }
+    .cp-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .cp-row.end { justify-content: flex-end; }
+    .cp-formgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
+    .cp-check { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 19px; cursor: pointer; }
+    .cp-check input { margin: 2px 0 0; accent-color: var(--cadmium); width: 15px; height: 15px; flex: none; }
+    .cp-check small { display: block; color: var(--ink-muted); font-size: 12px; }
+    .cp-textarea {
+      width: 100%; min-height: 64px; resize: vertical; padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+      background: var(--graphite-0); color: var(--ink); font: 13px/19px var(--font-sans);
     }
-    .mode-card .kd-btn {
-      margin-top: auto;
+    .cp-output {
+      margin: 0; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--graphite-0); border: 1px solid var(--line);
+      font: 12.5px/19px var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink);
     }
-    .mode-card.active-local {
-      border-color: var(--cadmium-edge);
+    .cp-ticket {
+      padding: 10px 12px; border-radius: var(--radius-sm); background: var(--graphite-0); border: 1px solid var(--line);
+      font: 11.5px/17px var(--font-mono); color: var(--ink-muted); overflow-wrap: anywhere; max-height: 74px; overflow: auto;
+      user-select: all; -webkit-user-select: all;
     }
-    .mode-card.active-cloud {
-      border-color: var(--cherenkov);
+    .cp-code { font: 600 15px/20px var(--font-mono); letter-spacing: 0.08em; }
+
+    /* ---------- home hero ---------- */
+    .cp-hero {
+      display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 20px; align-items: center;
+      padding: 22px 24px; background: var(--graphite-1); border: 1px solid var(--line); border-radius: var(--radius-md);
+      border-left: 4px solid var(--cadmium);
     }
-    .table-wrap {
-      width: 100%;
-      overflow-x: auto;
-      -webkit-overflow-scrolling: touch;
+    .cp-hero.yield { border-left-color: var(--warn); }
+    .cp-hero.off { border-left-color: var(--line-strong); }
+    .cp-orb { width: 64px; height: 64px; border-radius: 18px; display: grid; place-items: center; background: var(--cadmium-soft); color: var(--ink); }
+    .cp-hero.yield .cp-orb { background: var(--warn-soft); color: var(--warn); }
+    .cp-hero.off .cp-orb { background: var(--graphite-3); color: var(--ink-muted); }
+    .cp-hero .eyebrow { font: 500 11px/16px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--cadmium-text); margin-bottom: 4px; }
+    .cp-hero.yield .eyebrow { color: var(--warn); }
+    .cp-hero.off .eyebrow { color: var(--ink-muted); }
+    .cp-hero h2 { margin: 0 0 4px; font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -0.015em; }
+    .cp-hero p { margin: 0; max-width: 62ch; color: var(--ink-muted); font-size: 13.5px; line-height: 20px; }
+    .cp-hero .act { display: grid; gap: 8px; justify-items: end; }
+    .cp-hero .act small { color: var(--ink-muted); font-size: 11.5px; text-align: right; }
+
+    .cp-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    .cp-mode { display: grid; gap: 10px; align-content: start; padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--graphite-0); }
+    .cp-mode.on { border-color: var(--cadmium-edge); }
+    .cp-mode.on.cloud { border-color: var(--cherenkov); }
+    .cp-mode h3 { margin: 0; font-size: 15px; line-height: 20px; font-weight: 600; }
+    .cp-mode p { margin: 0; color: var(--ink-muted); font-size: 12.5px; line-height: 19px; }
+
+    .cp-toasts { position: fixed; right: 20px; bottom: 20px; z-index: 50; display: grid; gap: 8px; width: min(420px, calc(100vw - 40px)); pointer-events: none; }
+    .cp-toast {
+      display: flex; gap: 10px; align-items: stretch; padding: 10px 14px; border-radius: var(--radius-sm);
+      background: var(--graphite-2); border: 1px solid var(--line-strong); box-shadow: var(--shadow-lg); font-size: 13px; line-height: 18px;
+      pointer-events: auto;
     }
-    .mono-table {
-      width: 100%;
-      min-width: 560px;
-      border-collapse: collapse;
-      font-family: var(--font-mono);
-      font-size: 12px;
-      line-height: 18px;
-      font-variant-numeric: tabular-nums;
+    .cp-toast .bar { flex: none; width: 3px; border-radius: 2px; background: var(--ok); }
+    .cp-toast.danger .bar { background: var(--danger); }
+    .cp-toast.warn .bar { background: var(--warn); }
+
+    @media (max-width: 980px) {
+      .cp-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .cp-grid2, .cp-modes { grid-template-columns: minmax(0, 1fr); }
+      .cp-hero { grid-template-columns: auto minmax(0, 1fr); }
+      .cp-hero .act { grid-column: 1 / -1; justify-items: start; }
+      .cp-hero .act small { text-align: left; }
     }
-    .mono-table th {
-      text-align: left;
-      font-size: 11px;
-      font-weight: 500;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      color: var(--ink-muted);
-      background: var(--graphite-2);
-      padding: var(--space-2) var(--space-3);
-      border-bottom: 1px solid var(--line);
-      white-space: nowrap;
+    @media (max-width: 640px) {
+      .cp-app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+      .cp-rail { order: 2; flex-direction: row; padding: 4px 6px; border-right: 0; border-top: 1px solid var(--line); }
+      .cp-rail .tile, .cp-rail .grow, .cp-railstate { display: none; }
+      .cp-nav { display: contents; }
+      .cp-nav button { flex: 1 1 0; min-width: 0; }
+      .cp-nav button.active::before { left: 12px; right: 12px; top: -4px; bottom: auto; width: auto; height: 3px; border-radius: 0 0 3px 3px; }
+      .cp-top { padding: 10px 16px; flex-wrap: wrap; }
+      .cp-top .cp-conn, .cp-top .kd-badge { display: none; }
+      .cp-banner { padding: 9px 16px; }
+      .cp-page { padding: 16px 16px 32px; gap: 16px; }
+      .cp-tiles { gap: 10px; }
+      .cp-formgrid { grid-template-columns: minmax(0, 1fr); }
+      .cp-hero { padding: 18px; gap: 14px 16px; }
+      .cp-orb { width: 52px; height: 52px; border-radius: 14px; }
+      .cp-card > .body, .cp-pad { padding: 14px; }
+      .cp-table th, .cp-table td { padding-left: 14px; padding-right: 14px; }
+      .cp-table.wide { min-width: 640px; }
     }
-    .mono-table td {
-      padding: var(--space-2) var(--space-3);
-      border-bottom: 1px solid var(--line);
-      color: var(--ink);
-    }
-    .toast-bar {
-      position: fixed;
-      right: 20px;
-      bottom: 20px;
-      z-index: 50;
-      background: var(--graphite-1);
-      border: 1px solid var(--cadmium-edge);
-      border-radius: var(--radius-md);
-      padding: 10px 16px;
-      box-shadow: var(--shadow-lg);
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--ink);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .toast-bar .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 99px;
-      background: var(--cadmium);
-    }
-    .select-box {
-      height: var(--control-md);
-      border: 1px solid var(--line-strong);
-      border-radius: var(--radius-sm);
-      background: var(--graphite-0);
-      color: var(--ink);
-      font-family: var(--font-mono);
-      font-size: 12.5px;
-      padding: 0 10px;
-    }
-    @media (max-width: 900px) {
-      .two, .three { grid-template-columns: 1fr; }
+    @media (prefers-reduced-motion: reduce) {
+      .cp-loading .spin, .cp-conn.down .dot, .cp-railstate.down .dot { animation: none; }
     }
   </style>
 </head>
 <body>
 <div id="app"></div>
+<noscript><p style="padding:24px">The Kadmium Companion needs JavaScript.</p></noscript>
 
 <script src="/components/lib/react.production.min.js"></script>
 <script src="/components/lib/react-dom.production.min.js"></script>
 <script src="/components/bundle.js"></script>
 <script>
-(function () {
-  var K = window.Kadmium, h = React.createElement;
+(() => {
+  'use strict';
+  const K = window.Kadmium;
+  const h = React.createElement;
+  const F = React.Fragment;
+  const { useState, useEffect, useRef } = React;
+  /* Set by the desktop app (kadmium-desktop) before the page loads; absent in a browser tab. */
+  const desktop = window.__KADMIUM_DESKTOP__ || null;
 
-  function hex(n) {
-    try { return '0x' + BigInt(n || 0).toString(16).slice(0, 12); }
-    catch (e) { return '0x' + Number(n || 0).toString(16).slice(0, 12); }
+  /* ---------- formatting ---------- */
+  const isNum = v => typeof v === 'number' && isFinite(v);
+  const fixed = (v, d) => (isNum(v) ? v.toFixed(d == null ? 1 : d) : '—');
+  const gb = v => (isNum(v) ? (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + ' GB' : '—');
+  const bytes = v => !isNum(v) ? '—' : v >= 1073741824 ? (v / 1073741824).toFixed(2) + ' GiB' : v >= 1048576 ? (v / 1048576).toFixed(1) + ' MiB' : v >= 1024 ? Math.round(v / 1024) + ' KiB' : v + ' B';
+  const usd = (v, d) => (isNum(v) ? '$' + v.toFixed(d == null ? 2 : d) : '—');
+  const pct = (v, d) => (isNum(v) ? v.toFixed(d == null ? 0 : d) + '%' : '—');
+  const ms = v => (isNum(v) ? (v >= 100 ? v.toFixed(0) : v.toFixed(2)) + ' ms' : '—');
+  const plural = (n, word) => (isNum(n) ? n + ' ' + word + (n === 1 ? '' : 's') : '—');
+  const words = s => String(s || '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/_/g, ' ').toLowerCase();
+  const hex48 = n => { try { return '0x' + BigInt(Math.trunc(n)).toString(16).padStart(16, '0').slice(0, 12) + '…'; } catch (e) { return '—'; } };
+  const ago = t => {
+    if (!isNum(t)) return '—';
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    return s < 5 ? 'just now' : s < 60 ? s + ' s ago' : s < 3600 ? Math.round(s / 60) + ' min ago' : Math.round(s / 3600) + ' h ago';
+  };
+  /* Splits "FAST-YIELD (<200ms): Evict middle shards…" into a short tag and the sentence. */
+  const splitAction = s => { const i = String(s || '').indexOf(': '); return i > 0 && i < 48 ? [s.slice(0, i), s.slice(i + 2)] : ['', String(s || '')]; };
+
+  const DEVICE = {
+    DesktopWorkstation: 'Desktop workstation', GamingLaptop: 'Gaming laptop', AppleSiliconMac: 'Apple silicon Mac',
+    LegacyLaptop: 'Laptop or older desktop', LinuxSbc: 'Single-board computer', HomeNas: 'NAS',
+    RemotePeerWorkstation: 'Remote workstation', CloudBurstGpu: 'Cloud burst GPU', MobilePhone: 'Phone', PhoneFarmChassis: 'Phone farm'
+  };
+  const BACKEND = {
+    Cuda: 'CUDA', MetalUnified: 'Metal, unified memory', Rocm: 'ROCm', VulkanWgpu: 'Vulkan (wgpu)',
+    CpuAvx512OrAvx2: 'CPU vector (AVX2 / AVX-512)', CpuArmNeonNpu: 'CPU (Arm NEON) + NPU'
+  };
+  const TRUST = { TrustedCore: 'trusted core', VerifiedPeerMiddleLayersOnly: 'middle layers only', UntrustedAuditedMiddleLayersOnly: 'audited, middle only' };
+  const PAIRING = {
+    PendingTrayApproval: ['waiting for approval', 'warn'],
+    ApprovedTrustedCore: ['approved · trusted core', 'ok'],
+    ApprovedVerifiedMiddleOnly: ['approved · middle layers', 'ok']
+  };
+  const POLITE = {
+    IdleDedicated: { tone: 'share', eyebrow: 'Sharing · up to 100%', title: 'Sharing idle capacity', badge: 'resident',
+      body: 'This machine is in your cluster and lends its compute while you are away from it.' },
+    LightDesktopUse: { tone: 'share', eyebrow: 'Sharing · up to 75%', title: 'Sharing in the background', badge: 'resident',
+      body: 'You are using this machine lightly, so Kadmium keeps to three quarters of it.' },
+    GamingOrHeavyApp: { tone: 'yield', eyebrow: 'Yielded · up to 15%', title: 'Yielded to you', badge: 'yielded', yielded: true,
+      body: 'Kadmium stepped back so your game or heavy app gets this machine.', more: ' The rest of the cluster picked up its layers.' },
+    BatteryOrThermalThrottle: { tone: 'yield', eyebrow: 'Throttled · up to 25%', title: 'Throttled for battery or heat', badge: 'throttled', yielded: true,
+      body: 'This machine is on battery or running hot, so Kadmium keeps to a quarter of it.' },
+    Draining: { tone: 'off', eyebrow: 'Draining', title: 'Handing off its shards', badge: 'yielded', yielded: true,
+      body: 'Kadmium is moving this machine’s shards to the rest of the cluster.' }
+  };
+  const STATE_TONE = { resident: 'ok', training: 'ok', prefetching: 'cloud', joining: 'neutral', yielded: 'warn', throttled: 'warn', offline: 'danger', faulted: 'danger', idle: 'neutral', simulated: 'neutral' };
+  const StateBadge = word => h(K.Badge, { tone: STATE_TONE[word] || 'neutral', dot: word !== 'simulated' }, word);
+
+  /* ---------- connection + requests ---------- */
+  let connUp = true;
+  let failures = 0;
+  const connSubs = new Set();
+  function markConn(ok) {
+    failures = ok ? 0 : failures + 1;
+    const next = ok ? true : failures >= 2 ? false : connUp;
+    if (next !== connUp) { connUp = next; connSubs.forEach(fn => fn(connUp)); }
+  }
+  function useConn() {
+    const [up, setUp] = useState(connUp);
+    useEffect(() => { connSubs.add(setUp); return () => { connSubs.delete(setUp); }; }, []);
+    return up;
+  }
+  async function request(path, init, timeout) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeout || 15000);
+    let res;
+    try {
+      res = await fetch(path, Object.assign({ signal: ctrl.signal, headers: { Accept: 'application/json' } }, init || {}));
+    } catch (err) {
+      markConn(false);
+      throw new Error(err && err.name === 'AbortError' ? 'The coordinator did not answer in time.' : 'Cannot reach the coordinator at ' + location.host + '.');
+    } finally {
+      clearTimeout(timer);
+    }
+    markConn(true);
+    const text = await res.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch (e) { body = null; }
+    if (!res.ok) throw new Error((body && (body.error || body.message)) || 'The coordinator answered ' + res.status + ' for ' + path + '.');
+    return body;
+  }
+  const getJSON = path => request(path);
+  const postJSON = (path, body) => request(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body == null ? {} : body)
+  }, 120000);
+
+  /* Shared cache so the app-wide poll and every page see the same data. */
+  const cache = Object.create(null);
+  const subs = Object.create(null);
+  function publish(path, data) { cache[path] = data; (subs[path] || []).slice().forEach(fn => fn(data)); }
+  function load(path) { return getJSON(path).then(d => { publish(path, d); return d; }); }
+  function useData(path, every) {
+    const [data, setData] = useState(() => (path ? cache[path] : undefined));
+    const [error, setError] = useState(null);
+    useEffect(() => {
+      if (!path) return undefined;
+      let alive = true;
+      const fn = d => { if (alive) { setData(d); setError(null); } };
+      (subs[path] = subs[path] || []).push(fn);
+      if (cache[path] !== undefined) setData(cache[path]);
+      const tick = () => load(path).catch(e => { if (alive) setError(e); });
+      tick();
+      const id = every > 0 ? setInterval(() => { if (!document.hidden) tick(); }, every) : 0;
+      return () => { alive = false; subs[path] = (subs[path] || []).filter(x => x !== fn); if (id) clearInterval(id); };
+    }, [path, every]);
+    return [data, error];
+  }
+  const CORE = ['/api/v1/companion/status', '/api/v1/cluster/overview', '/api/v1/cluster/workers'];
+
+  /* ---------- toasts and actions ---------- */
+  let toastSeq = 0;
+  const toastSubs = new Set();
+  function toast(text, tone) { const t = { id: ++toastSeq, text: String(text), tone: tone || 'ok' }; toastSubs.forEach(fn => fn(t)); }
+  function Toasts() {
+    const [items, setItems] = useState([]);
+    useEffect(() => {
+      const fn = t => {
+        setItems(xs => xs.concat([t]).slice(-4));
+        setTimeout(() => setItems(xs => xs.filter(x => x.id !== t.id)), t.tone === 'danger' ? 7000 : 4500);
+      };
+      toastSubs.add(fn);
+      return () => { toastSubs.delete(fn); };
+    }, []);
+    return h('div', { className: 'cp-toasts', role: 'status', 'aria-live': 'polite' },
+      items.map(t => h('div', { key: t.id, className: 'cp-toast ' + t.tone }, h('span', { className: 'bar' }), h('span', null, t.text))));
+  }
+  function useBusy() {
+    const [busy, setBusy] = useState(null);
+    const run = (key, task, okText, refresh) => {
+      setBusy(key);
+      return Promise.resolve().then(task).then(r => {
+        if (okText) toast(typeof okText === 'function' ? okText(r) : okText, 'ok');
+        (refresh || []).forEach(p => { load(p).catch(() => {}); });
+        return r;
+      }).catch(err => { toast(err && err.message ? err.message : String(err), 'danger'); return undefined; })
+        .finally(() => setBusy(null));
+    };
+    return [busy, run];
+  }
+  function copyText(text, what) {
+    const done = () => toast('Copied ' + (what || 'to the clipboard'), 'ok');
+    const fallback = () => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      ta.remove();
+      if (ok) done(); else toast('Could not copy. Select the text and copy it yourself.', 'warn');
+    };
+    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, fallback); else fallback();
+  }
+  /* In the desktop app these open the default browser; in a browser they open a new tab. */
+  function openControlRoom(hash) {
+    if (desktop) desktop.openControlRoom(hash || '');
+    else window.open('/' + (hash || ''), '_blank', 'noopener');
+  }
+  function openExternal(path) {
+    const url = new URL(path, location.href).href;
+    if (desktop) desktop.openExternal(url);
+    else window.open(url, '_blank', 'noopener');
   }
 
-  function CompanionApp() {
-    var themeState = React.useState('dark'), theme = themeState[0], setTheme = themeState[1];
-    var tabState = React.useState('host'), tab = tabState[0], setTab = tabState[1];
-    var toastState = React.useState(null), toastMsg = toastState[0], setToastMsg = toastState[1];
+  /* ---------- icons (24px grid, 1.75 stroke, same rules as the design system set) ---------- */
+  const ICONS = {
+    home: 'M4 10.5L12 4l8 6.5V20H4zM9.5 20v-5.5h5V20',
+    cluster: 'M3 4h7v6H3zM14 4h7v6h-7zM8.5 14h7v6h-7zM6.5 10v2h11v-2M12 12v2',
+    models: 'M5 6h14M12 3v15M8 6v7M16 6v9',
+    earn: 'M12 3v18M16.5 7.5c0-1.66-2.01-3-4.5-3s-4.5 1.34-4.5 3 2.01 2.55 4.5 3 4.5 1.34 4.5 3-2.01 3-4.5 3-4.5-1.34-4.5-3',
+    tools: 'M14.5 6.5a4 4 0 0 0-5.3 5.3L4 17l3 3 5.2-5.2a4 4 0 0 0 5.3-5.3l-2.6 2.6-2.3-.7-.7-2.3z',
+    settings: 'M4 7h10M18 7h2M4 12h2M10 12h10M4 17h12M20 17h0M14 5v4M6 10v4M16 15v4',
+    external: 'M14 5h5v5M19 5l-8 8M9 7H6a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-3',
+    pause: 'M8.5 5v14M15.5 5v14',
+    play: 'M7 5l12 7-12 7z',
+    refresh: 'M4 12a8 8 0 0 1 14-5.3L20 9M20 4v5h-5M20 12a8 8 0 0 1-14 5.3L4 15M4 20v-5h5',
+    copy: 'M9 9h11v11H9zM5 15V6a2 2 0 0 1 2-2h9',
+    check: 'M5 12.5l4.5 4.5L19 7.5',
+    alert: 'M12 4l9 16H3zM12 10v4M12 17h.01',
+    info: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 11v5M12 8h.01',
+    window: 'M3 5h18v14H3zM3 9h18M6 7h.01M9 7h.01',
+    close: 'M6 6l12 12M18 6L6 18',
+    plug: 'M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4'
+  };
+  function Icon(name, size) {
+    return h('svg', { viewBox: '0 0 24 24', width: size || 20, height: size || 20, fill: 'none', stroke: 'currentColor', strokeWidth: 1.75, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true', focusable: 'false' },
+      h('path', { d: ICONS[name] || ICONS.info }));
+  }
 
-    var statusState = React.useState(null), status = statusState[0], setStatus = statusState[1];
-    var probeState = React.useState(null), probe = probeState[0], setProbe = probeState[1];
-    var platformsState = React.useState(null), platforms = platformsState[0], setPlatforms = platformsState[1];
-    var deepM4State = React.useState(null), deepM4 = deepM4State[0], setDeepM4 = deepM4State[1];
-    var execState = React.useState(null), execReport = execState[0], setExecReport = execState[1];
-    var supplyState = React.useState(null), supply = supplyState[0], setSupply = supplyState[1];
-    var pairingState = React.useState(null), pairing = pairingState[0], setPairing = pairingState[1];
-    var watcherState = React.useState(null), watcher = watcherState[0], setWatcher = watcherState[1];
+  /* ---------- building blocks ---------- */
+  function Card(p) {
+    return h('section', { className: 'cp-card' + (p.className ? ' ' + p.className : '') },
+      p.title ? h('header', null,
+        h('h2', null, p.title),
+        p.sub ? h('span', { className: 'sub', title: typeof p.sub === 'string' ? p.sub : undefined }, p.sub) : null,
+        p.tools ? h('div', { className: 'tools' }, p.tools) : null) : null,
+      h('div', { className: 'body' + (p.flush ? ' flush' : '') }, p.children),
+      p.foot ? h('footer', null, p.foot) : null);
+  }
+  function Tile(label, value, meta, tone) {
+    return h('div', { className: 'cp-tile' },
+      h('span', { className: 'l' }, label),
+      h('span', { className: 'v' + (tone ? ' ' + tone : ''), title: typeof value === 'string' ? value : undefined }, value),
+      meta ? h('span', { className: 'm', title: typeof meta === 'string' ? meta : undefined }, meta) : null);
+  }
+  function KV(rows) {
+    return h('dl', { className: 'cp-kv' }, rows.filter(Boolean).map((r, i) => h(F, { key: i }, h('dt', null, r[0]), h('dd', { className: r[2] ? 'mono' : undefined }, r[1]))));
+  }
+  function Table(p) {
+    return h('div', { className: 'cp-tablewrap' }, h('table', { className: 'cp-table' + (p.wide ? ' wide' : '') },
+      h('thead', null, h('tr', null, p.cols.map((c, i) => h('th', { key: i, className: c.num ? 'num' : undefined, scope: 'col' }, c.label)))),
+      h('tbody', null, (p.rows || []).length
+        ? p.rows.map((row, i) => h('tr', { key: p.rowKey ? p.rowKey(row, i) : i }, p.cols.map((c, j) => h('td', { key: j, className: [c.num ? 'num' : '', c.className || ''].join(' ').trim() || undefined }, c.render(row, i)))))
+        : h('tr', null, h('td', { className: 'empty', colSpan: p.cols.length }, p.empty || 'Nothing here yet.')))));
+  }
+  function Empty(text, action) { return h('div', { className: 'cp-empty' }, h('p', null, text), action || null); }
+  function Loading(text) { return h('div', { className: 'cp-loading', role: 'status' }, h('span', { className: 'spin' }), text || 'Loading…'); }
+  function Note(tone, children) { return h('div', { className: 'cp-note ' + (tone || '') }, Icon(tone === 'warn' ? 'alert' : tone === 'ok' ? 'check' : 'info', 16), h('div', null, children)); }
+  function Seg(p) {
+    return h('div', { className: 'cp-seg', role: 'radiogroup', 'aria-label': p.label },
+      p.items.map(it => h('button', { key: it.id, type: 'button', role: 'radio', 'aria-checked': p.value === it.id, className: p.value === it.id ? 'on' : undefined, onClick: () => p.onChange(it.id) }, it.label)));
+  }
+  function Switch(p) {
+    return h('button', { type: 'button', role: 'switch', className: 'cp-switch', 'aria-checked': !!p.checked, 'aria-label': p.label, disabled: p.disabled, onClick: () => p.onChange(!p.checked) });
+  }
+  function Field(p) {
+    return h('label', { className: 'cp-field' }, h('span', { className: 'lbl' }, p.label), p.children, p.hint ? h('span', { className: 'hint' }, p.hint) : null);
+  }
+  function Select(p) {
+    return h('select', { className: 'cp-select', value: p.value, disabled: p.disabled, onChange: e => p.onChange(e.target.value) },
+      p.options.map(o => h('option', { key: o.value, value: o.value }, o.label)));
+  }
+  function Check(p) {
+    return h('label', { className: 'cp-check' },
+      h('input', { type: 'checkbox', checked: !!p.checked, disabled: p.disabled, onChange: e => p.onChange(e.target.checked) }),
+      h('span', null, p.label, p.hint ? h('small', null, p.hint) : null));
+  }
 
-    var workspaceState = React.useState('cameron-lab'), workspace = workspaceState[0], setWorkspace = workspaceState[1];
-    var budgetState = React.useState('2.50'), budget = budgetState[0], setBudget = budgetState[1];
+  /* ---------- routing ---------- */
+  const PAGES = [
+    { id: 'home', label: 'Home', icon: 'home', title: 'This machine' },
+    { id: 'cluster', label: 'Cluster', icon: 'cluster', title: 'Cluster' },
+    { id: 'models', label: 'Models', icon: 'models', title: 'Models' },
+    { id: 'earn', label: 'Earn', icon: 'earn', title: 'Supply Grid' },
+    { id: 'tools', label: 'Tools', icon: 'tools', title: 'Tools' },
+    { id: 'settings', label: 'Settings', icon: 'settings', title: 'Settings' }
+  ];
+  const currentPage = () => { const id = (location.hash || '').replace(/^#\/?/, '').split(/[/?]/)[0]; return PAGES.some(p => p.id === id) ? id : 'home'; };
+  function useRoute() {
+    const [page, setPage] = useState(currentPage);
+    useEffect(() => { const fn = () => setPage(currentPage()); window.addEventListener('hashchange', fn); return () => window.removeEventListener('hashchange', fn); }, []);
+    return page;
+  }
+  function go(id) { if (currentPage() !== id) location.hash = id; }
 
-    // Studio state (.ktb import, EXL3 quantizer, KV migration, FTS3 stream)
-    var impModelState = React.useState('qwen2.5-coder-32b-instruct'), impModel = impModelState[0], setImpModel = impModelState[1];
-    var impFormatState = React.useState('gguf'), impFormat = impFormatState[0], setImpFormat = impFormatState[1];
-    var impResultState = React.useState(null), impResult = impResultState[0], setImpResult = impResultState[1];
-    var exlModelState = React.useState('deepseek-v3-671b-exl3-2.5bpw'), exlModel = exlModelState[0], setExlModel = exlModelState[1];
-    var exlBpwState = React.useState('2.55'), exlBpw = exlBpwState[0], setExlBpw = exlBpwState[1];
-    var exlResultState = React.useState(null), exlResult = exlResultState[0], setExlResult = exlResultState[1];
-    var kvMigState = React.useState(null), kvMig = kvMigState[0], setKvMig = kvMigState[1];
-    var ftsStreamState = React.useState(null), ftsStream = ftsStreamState[0], setFtsStream = ftsStreamState[1];
-    var bucketState = React.useState(null), bucket = bucketState[0], setBucket = bucketState[1];
-    var busyState = React.useState(false), busy = busyState[0], setBusy = busyState[1];
+  /* ---------- theme ---------- */
+  const THEME_KEY = 'kadmium.companion.theme';
+  const readTheme = () => { try { return localStorage.getItem(THEME_KEY) || 'dark'; } catch (e) { return 'dark'; } };
+  function applyTheme(pref) {
+    const light = pref === 'light' || (pref === 'system' && !!window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+    document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+  }
+  applyTheme(readTheme());
 
-    function notify(msg) {
-      setToastMsg(msg);
-      setTimeout(function () { setToastMsg(null); }, 4200);
-    }
+  /* ---------- shell ---------- */
+  function Rail(props) {
+    const s = props.core.status;
+    const st = s ? POLITE[s.local_host_polite_state] || POLITE.IdleDedicated : null;
+    const state = !props.up ? ['down', 'offline'] : !st ? ['ok', '…'] : st.yielded ? ['yield', st.badge] : ['ok', 'sharing'];
+    const nav = list => h('div', { className: 'cp-nav' }, list.map(p => h('button', {
+      key: p.id, type: 'button', className: props.page === p.id ? 'active' : undefined,
+      'aria-current': props.page === p.id ? 'page' : undefined, title: p.title, onClick: () => go(p.id)
+    }, Icon(p.icon, 20), h('span', null, p.label))));
+    return h('nav', { className: 'cp-rail', 'aria-label': 'Companion' },
+      h('img', { className: 'tile', src: '/assets/Logos/kadmium-tile-graphite.svg', alt: 'Kadmium', width: 38, height: 38, draggable: false }),
+      nav(PAGES.slice(0, 5)),
+      h('div', { className: 'grow' }),
+      nav(PAGES.slice(5)),
+      h('div', { className: 'cp-railstate ' + state[0], title: 'This machine: ' + state[1] }, h('span', { className: 'dot' }), state[1]));
+  }
+  function subtitle(page, core) {
+    const { status, overview, workers, probe } = core;
+    if (page === 'home') return probe ? probe.local_node.hostname + ' · ' + (DEVICE[probe.local_node.device_kind] || words(probe.local_node.device_kind)) : 'Probing this machine…';
+    if (page === 'cluster') return workers ? plural(workers.total_cluster_nodes, 'machine') + ' · ' + workers.live_worker_count + ' connected · leader ' + (status ? status.active_coordinator_leader : '…') : '…';
+    if (page === 'models') return overview ? (overview.active_model_loaded ? overview.inference_plan.model_id + ' is loaded' : 'No model loaded') : '…';
+    if (page === 'earn') return 'Lease this machine’s idle time and get paid for it';
+    if (page === 'tools') return 'Exercise the fabric end to end from this machine';
+    return 'Connection, appearance and versions';
+  }
+  function TopBar(props) {
+    const s = props.core.status;
+    const cloud = s && s.mode && s.mode.KadmiumCloudManaged;
+    return h('header', { className: 'cp-top' },
+      h('div', { className: 'titles' }, h('h1', null, props.meta.title), h('div', { className: 'sub' }, subtitle(props.meta.id, props.core))),
+      h('div', { className: 'spacer' }),
+      s ? h(K.Badge, { tone: cloud ? 'cloud' : 'local', dot: true }, cloud ? 'Kadmium Cloud' : 'Self-hosted') : null,
+      h('span', { className: 'cp-conn' + (props.up ? '' : ' down'), title: props.up ? 'Connected to the coordinator' : 'Trying to reach the coordinator' },
+        h('span', { className: 'dot' }), props.up ? location.host : 'reconnecting'),
+      h(K.Button, { variant: 'ghost', size: 'sm', icon: Icon('external', 16), onClick: () => openControlRoom(''), title: 'Open the Control Room in your browser' }, 'Control Room'));
+  }
+  function BrowserBanner() {
+    const [hidden, setHidden] = useState(() => { try { return sessionStorage.getItem('kadmium.companion.banner') === 'hidden'; } catch (e) { return false; } });
+    if (hidden) return null;
+    const hide = () => { setHidden(true); try { sessionStorage.setItem('kadmium.companion.banner', 'hidden'); } catch (e) { /* private mode */ } };
+    return h('div', { className: 'cp-banner', role: 'note' },
+      Icon('window', 18),
+      h('span', null, 'This is the Companion in a browser tab. The desktop app shows it in its own Kadmium window: run ', h('code', null, 'kadmium desktop'), '.'),
+      h('button', { type: 'button', className: 'x', 'aria-label': 'Dismiss', onClick: hide }, Icon('close', 16)));
+  }
 
-    function refreshAll() {
-      fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
-      fetch('/api/v1/host/probe').then(function (r) { return r.json(); }).then(setProbe);
-      fetch('/api/v1/platforms/overview').then(function (r) { return r.json(); }).then(function (d) {
-        setPlatforms(d);
-        if (d && d.apple_m4_deep_metal4) setDeepM4(d.apple_m4_deep_metal4);
-      });
-      fetch('/api/v1/supply/marketplace').then(function (r) { return r.json(); }).then(setSupply);
-      fetch('/api/v1/companion/pairing').then(function (r) { return r.json(); }).then(setPairing);
-      fetch('/api/v1/cloud-shield/watcher').then(function (r) { return r.json(); }).then(setWatcher);
-      fetch('/api/v1/storage/pool-bucket?bucket=live').then(function (r) { return r.json(); }).then(setBucket);
-    }
+  /* ---------- Home ---------- */
+  function HomePage({ core }) {
+    const { status, overview, workers, probe } = core;
+    const [pairing] = useData('/api/v1/companion/pairing');
+    const [busy, run] = useBusy();
+    if (!status || !probe) return Loading('Probing this machine…');
+    const node = probe.local_node;
+    const st = POLITE[status.local_host_polite_state] || POLITE.IdleDedicated;
+    const loaded = !!(overview && overview.active_model_loaded);
+    const inf = overview && overview.inference_plan;
+    const mine = inf && (inf.assignments || []).find(a => a.node_id === node.id);
+    const hook = pairing && pairing.os_hysteresis;
+    const cloud = status.mode && status.mode.KadmiumCloudManaged;
+    const tps = overview && overview.last_measured_tokens_per_sec;
+    const shift = (scenario, ok) => run('shift', () => postJSON('/api/v1/cluster/shift', { scenario }), ok, CORE);
+    return h(F, null,
+      h('section', { className: 'cp-hero ' + st.tone, 'aria-label': 'Sharing status' },
+        h('div', { className: 'cp-orb' }, st.yielded ? Icon('pause', 30) : h(K.Mark, { size: 36 })),
+        h('div', null,
+          h('div', { className: 'eyebrow' }, st.eyebrow),
+          h('h2', null, st.title),
+          h('p', null, st.body, st.more && workers && workers.total_cluster_nodes > 1 ? st.more : null)),
+        h('div', { className: 'act' },
+          st.yielded
+            ? h(K.Button, { variant: 'primary', size: 'lg', icon: Icon('play', 16), disabled: busy === 'shift', onClick: () => shift('reset', 'Sharing again: this machine is back in the plan') }, 'Resume sharing')
+            : h(K.Button, { size: 'lg', icon: Icon('pause', 16), disabled: busy === 'shift', onClick: () => shift('gaming_mode', 'Yielded: Kadmium now uses at most 15% of this machine') }, 'Yield now'),
+          h('small', null, status.gaming_auto_yield_active
+            ? 'Auto-yield is on' + (hook ? ' · steps back within ' + Math.round(hook.fast_yield_sla_ms) + ' ms' : '')
+            : 'Auto-yield is off'))),
+      h('div', { className: 'cp-tiles' },
+        Tile('Cluster', plural(workers ? workers.total_cluster_nodes : status.active_cluster_nodes, 'machine'), workers ? workers.live_worker_count + ' connected live' : 'leader ' + status.active_coordinator_leader),
+        Tile('Model', loaded ? inf.model_id : 'None loaded', loaded ? inf.total_layers + ' layers · ' + gb(inf.total_model_weight_gb) : 'Pick one on the Models page', loaded ? 'mono' : 'muted'),
+        Tile('Throughput', isNum(tps) ? fixed(tps, 1) + ' tok/s' : '—', isNum(tps) ? plural(overview.executed_inference_requests, 'request') + ' served' : 'No requests served yet', 'mono'),
+        Tile('Cloud spend', usd(status.current_hourly_cloud_burn_usd) + ' / hr', cloud ? 'cap ' + usd(cloud.max_hourly_spend_cap_usd) + ' / hr' : 'Self-hosted, no cloud costs', 'mono')),
+      h('div', { className: 'cp-grid2' },
+        h(MachineCard, { node }),
+        h(WorkCard, { node, mine, inf, loaded })),
+      hook ? h(YieldCard, { hook, on: status.gaming_auto_yield_active }) : null);
+  }
+  function MachineCard({ node }) {
+    const m = node.memory || {};
+    const memory = [m.vram_gb ? gb(m.vram_gb) + ' VRAM' : null, m.unified_mem_gb ? gb(m.unified_mem_gb) + ' unified' : null,
+      m.system_ram_gb ? gb(m.system_ram_gb) + ' RAM' : null, m.nvme_cache_gb ? gb(m.nvme_cache_gb) + ' NVMe cache' : null].filter(Boolean).join(' · ');
+    return h(Card, { title: 'Hardware', sub: node.hostname, tools: h(K.Badge, { tone: 'local' }, TRUST[node.trust_tier] || words(node.trust_tier)) },
+      KV([
+        ['Type', DEVICE[node.device_kind] || words(node.device_kind)],
+        ['Processor', node.cpu_name + (node.cpu_threads ? ' · ' + node.cpu_threads + ' threads' : '')],
+        ['Graphics', node.gpu_name],
+        node.npu_name ? ['NPU', node.npu_name + ' · ' + fixed(node.npu_tops, 0) + ' TOPS'] : null,
+        ['Memory', memory || '—'],
+        ['Compute', fixed(node.fp16_tflops, 1) + ' TFLOPS FP16 · ' + fixed(node.int4_tops, 1) + ' TOPS INT4', true],
+        ['Runtime', BACKEND[node.backend] || words(node.backend)],
+        ['Network', fixed(node.network_uplink_gbps, 1) + ' Gbps · ' + fixed(node.network_latency_ms, 2) + ' ms to the coordinator', true]
+      ]));
+  }
+  function WorkCard({ node, mine, inf, loaded }) {
+    const m = node.memory || {};
+    const fast = (m.vram_gb || 0) + (m.unified_mem_gb || 0);
+    const holds = loaded && mine && mine.layer_count > 0;
+    const tiers = (mine && mine.tiered_memory) || {};
+    const aux = ((mine && mine.auxiliary_tasks) || []).map(words);
+    return h(Card, { title: 'Its share of the work', sub: loaded ? inf.model_id : undefined, tools: StateBadge(holds ? 'resident' : 'idle') },
+      holds ? h(F, null,
+        KV([
+          ['Layers', 'L' + mine.start_layer + '–L' + mine.end_layer + ' · ' + mine.layer_count + ' of ' + inf.total_layers, true],
+          ['Compute share', pct(mine.compute_share_pct, 1), true],
+          mine.pipeline_stage_index != null ? ['Pipeline stage', String(mine.pipeline_stage_index), true] : null,
+          aux.length ? ['Also runs', aux.join(' · ')] : null
+        ]),
+        h('div', { className: 'cp-meters' },
+          fast > 0 ? h(K.Meter, { label: m.unified_mem_gb ? 'UMA' : 'VRAM', value: tiers.hot_vram_or_unified_gb || 0, max: fast, unit: 'GB', criticalAt: 0.95 }) : null,
+          m.system_ram_gb ? h(K.Meter, { label: 'RAM', value: tiers.warm_system_ram_gb || 0, max: m.system_ram_gb, unit: 'GB' }) : null,
+          m.nvme_cache_gb ? h(K.Meter, { label: 'NVMe', value: tiers.cold_nvme_stream_gb || 0, max: m.nvme_cache_gb, unit: 'GB' }) : null))
+        : Empty(!takesLayers(node)
+          ? 'This machine runs as ' + roleWords(node) + ', so it coordinates, drafts and verifies for the cluster instead of holding model layers.' + (aux.length ? ' Right now it runs: ' + aux.join(', ') + '.' : '')
+          : !loaded ? 'No model is loaded, so this machine holds no layers yet. Load one and the planner gives it a slice sized to its memory.'
+            : (inf.assignments || []).some(a => a.layer_count > 0)
+              ? 'The planner placed the layers of ' + inf.model_id + ' on faster machines.' + (aux.length ? ' This one still runs: ' + aux.join(', ') + '.' : '')
+              : 'No machine holds layers of ' + inf.model_id + ' yet.',
+        loaded || !takesLayers(node) ? null : h(K.Button, { size: 'sm', onClick: () => go('models') }, 'Choose a model')));
+  }
+  function YieldCard({ hook, on }) {
+    return h(Card, { title: 'Auto-yield', sub: words(hook.hook_backend), flush: true, tools: h(K.Badge, { tone: on ? 'ok' : 'neutral', dot: true }, on ? 'on' : 'off') },
+      h('div', { className: 'cp-pad' }, KV([
+        ['Watches', h('code', null, hook.api_signature)],
+        ['Steps back', 'within ' + Math.round(hook.fast_yield_sla_ms) + ' ms of a game or heavy app taking the GPU'],
+        ['Takes back', 'after ' + Math.round(hook.slow_reclaim_cooldown_ms / 1000) + ' s with the GPU idle, so a loading screen or Alt-Tab does not bounce shards']
+      ])),
+      h('div', { className: 'cp-subhead' }, 'Example: what happens when you start a game'),
+      Table({
+        wide: true,
+        rows: hook.timeline || [],
+        cols: [
+          { label: 'Time', num: true, render: r => (r.timestamp_ms / 1000).toFixed(0) + ' s' },
+          { label: 'What happens', render: r => { const a = splitAction(r.transition_action); return h(F, null, r.event_label, h('span', { className: 'sub' }, (a[0] ? a[0].toLowerCase() + ' · ' : '') + a[1])); } },
+          { label: 'State', className: 'nowrap', render: r => StateBadge((POLITE[r.new_state] || POLITE.IdleDedicated).badge) },
+          { label: 'Cluster gets', num: true, render: r => gb(r.allocated_vram_gb) + ' VRAM' }
+        ]
+      }));
+  }
 
-    function runLivePipelinePass() {
-      setBusy(true);
-      fetch('/api/v1/pipeline/execute-live').then(function (r) { return r.json(); }).then(function (d) {
-        if (d && d.execution) setExecReport(d.execution);
-        notify('Executed live TCP pipeline across ' + ((d && d.live_hops && d.live_hops.length) || 1) + ' stage(s) · ' + (d && d.execution ? d.execution.effective_tokens_per_sec.toFixed(1) + ' tok/s' : 'done'));
-      }).finally(function () { setBusy(false); });
-    }
+  /* ---------- Cluster ---------- */
+  function nodeState(node, online, holders) {
+    if (online === false) return 'offline';
+    const st = POLITE[node.polite_state];
+    if (st && st.yielded) return st.badge;
+    return holders.has(node.id) ? 'resident' : 'idle';
+  }
+  const shortHost = name => { const n = String(name || ''); if (n.length <= 8) return n; const first = n.split(/[-_.]/)[0]; return (first.length >= 2 ? first : n).slice(0, 8); };
+  const takesLayers = node => (node.roles || []).some(r => r === 'ComputeWorker' || r === 'BurstAccelerator');
+  const roleWords = node => (node.roles || []).map(words).join(' and ') || 'utility worker';
+  function fastMem(node) { const m = node.memory || {}; return Math.max((m.vram_gb || 0) + (m.unified_mem_gb || 0), m.system_ram_gb || 0); }
+  function ClusterPage({ core }) {
+    const { overview, workers } = core;
+    const [pairing] = useData('/api/v1/companion/pairing');
+    const [os, setOs] = useState(() => (/Windows/i.test(navigator.userAgent) ? 'windows' : 'unix'));
+    if (!overview || !workers) return Loading('Reading the cluster…');
+    const registered = workers.workers || [];
+    const liveIds = new Set(registered.map(w => w.node.id));
+    const simulated = (overview.nodes || []).filter(n => !liveIds.has(n.id));
+    const rows = registered.map(w => ({ w, node: w.node })).concat(simulated.map(n => ({ w: null, node: n })));
+    const url = workers.coordinator_http_url;
+    const commands = {
+      windows: ['PowerShell', 'PS> irm ' + url + '/join.ps1 | iex'],
+      unix: ['terminal', '$ curl -sSL ' + url + '/join.sh | sh'],
+      cli: ['terminal', '$ ' + workers.join_command_cli + ' --ticket ' + workers.join_ticket_token]
+    };
+    const holders = new Set(overview.active_model_loaded ? ((overview.inference_plan && overview.inference_plan.assignments) || []).filter(a => a.layer_count > 0).map(a => a.node_id) : []);
+    const quorum = overview.coordinator_quorum || {};
+    const candidates = (pairing && pairing.lan_candidates) || [];
+    return h(F, null,
+      h(Card, { title: 'Machines', sub: rows.length + ' in this cluster' + (simulated.length ? ' · ' + simulated.length + ' simulated' : ''), flush: true,
+        tools: h(K.Button, { size: 'sm', variant: 'ghost', icon: Icon('external', 16), onClick: () => openControlRoom('#/nodes') }, 'Details in Control Room') },
+      Table({
+        wide: true,
+        rows,
+        rowKey: r => r.node.id,
+        empty: 'No machines have joined yet.',
+        cols: [
+          { label: 'Machine', render: r => h(F, null, h('span', { className: 'name' }, r.node.hostname), h('span', { className: 'sub' }, r.w ? r.w.worker_tcp_addr : r.node.id)) },
+          { label: 'Hardware', className: 'clip', render: r => h('span', { title: r.w ? r.w.board_or_model : r.node.gpu_name }, r.node.gpu_name, h('span', { className: 'sub' }, DEVICE[r.node.device_kind] || words(r.node.device_kind))) },
+          { label: 'Memory', num: true, render: r => gb(fastMem(r.node)) },
+          { label: 'Link', num: true, render: r => r.w ? ms(r.w.last_measured_rtt_ms) : '—' },
+          { label: 'Version', className: 'mono nowrap', render: r => r.w ? r.w.installed_version : '—' },
+          { label: 'Seen', className: 'nowrap muted', render: r => r.w ? ago(r.w.last_heartbeat_unix_ms) : '—' },
+          { label: 'State', className: 'nowrap', render: r => r.w ? StateBadge(nodeState(r.node, r.w.online, holders)) : StateBadge('simulated') }
+        ]
+      })),
+      h('div', { className: 'cp-grid2' },
+        h(Card, { title: 'Add a machine', tools: h(Seg, { label: 'Platform', value: os, onChange: setOs, items: [{ id: 'windows', label: 'Windows' }, { id: 'unix', label: 'macOS · Linux' }, { id: 'cli', label: 'CLI' }] }) },
+          h(K.CodeBlock, { code: commands[os][1], language: 'shell', title: commands[os][0] }),
+          h('p', { className: 'cp-help' }, 'Run it on the other machine, inside a Kadmium checkout or with ', h('code', null, 'kadmium'), ' on its PATH. It joins this coordinator at ',
+            h('code', null, url), ' and the machine appears in the list above within a few seconds.')),
+        h(Card, { title: 'Join ticket', sub: 'kdm1 token',
+          tools: h(K.Button, { size: 'sm', variant: 'ghost', icon: Icon('copy', 16), onClick: () => copyText(workers.join_ticket_token, 'the join ticket') }, 'Copy') },
+          h('div', { className: 'cp-ticket' }, workers.join_ticket_token),
+          h('p', { className: 'cp-help' }, 'The ticket carries this coordinator’s address and the trust tier the new machine gets. Pass it with ', h('code', null, '--ticket'), ' when a machine cannot discover this one on the LAN.'))),
+      h('div', { className: 'cp-grid2' },
+        h(Card, { title: 'Pairing', sub: workers.live_only_mode ? 'Codes to compare on both machines' : 'Simulated candidates from the demo fleet', flush: true },
+          Table({
+            rows: candidates,
+            rowKey: c => c.candidate_id,
+            empty: 'No machines have announced themselves on this network.',
+            cols: [
+              { label: 'Machine', render: c => h(F, null, h('span', { className: 'name' }, c.hostname), h('span', { className: 'sub' }, c.lan_socket_addr)) },
+              { label: 'Code', className: 'nowrap', render: c => h('span', { className: 'cp-code' }, c.short_auth_code) },
+              { label: 'Status', className: 'nowrap', render: c => { const p = PAIRING[c.status] || [words(c.status), 'neutral']; return h(K.Badge, { tone: p[1], dot: true }, p[0]); } }
+            ]
+          })),
+        h(Card, { title: 'Coordinator', sub: workers.active_cluster_version },
+          KV([
+            ['Leader', quorum.active_leader || '—', true],
+            ['Term', String(quorum.term == null ? '—' : quorum.term), true],
+            ['Standbys', (quorum.standby_candidates || []).length ? quorum.standby_candidates.join(', ') : 'none yet', true],
+            ['Address', url, true],
+            ['Fleet', workers.live_only_mode ? 'Live hardware only' : 'Live hardware plus the simulated demo fleet']
+          ]))));
+  }
 
-    React.useEffect(function () {
-      document.documentElement.setAttribute('data-theme', theme);
-    }, [theme]);
-
-    React.useEffect(function () {
-      refreshAll();
-    }, []);
-
-    function approveLanPeer(candidateId, newStatus) {
-      if (!pairing) return;
-      var nextCandidates = pairing.lan_candidates.map(function (c) {
-        if (c.candidate_id !== candidateId) return c;
-        return Object.assign({}, c, { status: newStatus });
-      });
-      setPairing(Object.assign({}, pairing, { lan_candidates: nextCandidates }));
-      notify('LAN peer ' + candidateId + ' approved as ' + newStatus);
-    }
-
-    function updateSupplyPolicy(nextEnabled, nextHours, nextPayoutCredits) {
-      if (!supply) return;
-      var updated = Object.assign({}, supply.policy, {
-        enabled: nextEnabled,
-        daily_lease_hours: nextHours,
-        payout_mode: nextPayoutCredits
-          ? { KadmiumCloudCredits: { bonus_multiplier: 1.25 } }
-          : 'UsdDirectPayout'
-      });
-      fetch('/api/v1/supply/configure', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updated)
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        setSupply(d);
-        notify('Reactor Supply Grid policy updated (' + (nextEnabled ? nextHours + 'h/day active' : 'paused') + ')');
-      });
-    }
-
-    function switchMode(useCloud) {
-      var payload = useCloud
-        ? {
-            KadmiumCloudManaged: {
-              workspace_slug: workspace || 'cameron-lab',
-              cloud_endpoint: 'https://api.kadmium.ai',
-              downtime_shield_enabled: true,
-              spot_arbitrage_burst_enabled: true,
-              max_hourly_spend_cap_usd: parseFloat(budget) || 2.50
-            }
-          }
-        : {
-            SelfHostedOpenSource: {
-              local_coordinator_url: 'http://127.0.0.1:7848'
-            }
-          };
-      fetch('/api/v1/companion/mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        setStatus(d);
-        notify(useCloud ? 'Linked to Kadmium Cloud (' + workspace + ')' : 'Switched to 100% Self-Hosted Open-Source mode ($0.00/hr)');
-      });
-    }
-
-    function setHostPoliteMode(scenario) {
-      fetch('/api/v1/cluster/shift', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scenario: scenario })
-      }).then(function () {
-        fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
-        fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
-        notify(scenario === 'gaming_mode' ? 'Polite Governor: Host yielded to 15% (<200ms swapchain hook) — shards shifted to Mac mini' : 'Polite Governor: Restored 100% Dedicated Idle capacity');
-      });
-    }
-
-    function triggerKvMigrate() {
-      setBusy(true);
-      fetch('/api/v1/kv-cache/migrate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: 'companion-polite-yield-01', start_layer: 0, end_layer: 15 })
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        setKvMig(d);
-        notify('Migrated ' + d.pages_migrated + ' KV-cache pages (' + d.tokens_preserved + ' tokens) over TCP in ' + d.total_migration_wall_ms.toFixed(2) + ' ms');
-      }).finally(function () { setBusy(false); });
-    }
-
-    function attachPlatform(family, skuSlug, label) {
-      setBusy(true);
-      fetch('/api/v1/platforms/attach', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ family: family, sku_slug: skuSlug || undefined, run_deep_bench: family === 'apple-m4' && !skuSlug })
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        if (d.apple_m4_deep_metal4) setDeepM4(d.apple_m4_deep_metal4);
-        fetch('/api/v1/companion/status').then(function (r) { return r.json(); }).then(setStatus);
-        fetch('/api/v1/pipeline/execute').then(function (r) { return r.json(); }).then(setExecReport);
-        fetch('/api/v1/supply/marketplace').then(function (r) { return r.json(); }).then(setSupply);
-        notify('Attached ' + (label || (d.attached_hostnames && d.attached_hostnames.join(', ')) || family) + (d.live_silicon_verified ? ' (LIVE SILICON VERIFIED)' : ''));
-      }).finally(function () { setBusy(false); });
-    }
-
-    function runM4DeepSuite() {
-      setBusy(true);
-      fetch('/api/v1/m4-mac-mini/deep-suite', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ iterations: 8, seq_len: 256 })
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        if (d.deep_metal4_suite) {
-          setDeepM4(d.deep_metal4_suite);
-          notify('Apple M4 Deep Metal 4 Suite: 1024×1024 GEMM ' + d.deep_metal4_suite.tiled_gemm1024_gflops.toFixed(1) + ' GFLOP/s · 10-Core GCD ' + d.deep_metal4_suite.gcd_10core_speedup.toFixed(2) + '×');
-        } else {
-          notify('Apple M4 probed (' + d.probe.lan_endpoint + ')');
-        }
-      }).finally(function () { setBusy(false); });
-    }
-
-    function runImportKtb() {
-      setBusy(true);
-      fetch('/api/v1/models/import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model_id: impModel, format_hint: impFormat, start_layer: 0, end_layer: 3 })
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        setImpResult(d);
-        fetch('/api/v1/storage/pool-bucket?bucket=live').then(function (r) { return r.json(); }).then(setBucket);
-        notify('Compiled 64 KiB page-aligned .ktb bank: ' + d.compiled_ktb_path + ' (Merkle ' + hex(d.merkle_root_fnv64) + ')');
-      }).finally(function () { setBusy(false); });
-    }
-
-    function stageToPoolBucket(preset) {
-      setBusy(true);
-      fetch('/api/v1/storage/pool-bucket/object', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ preset: preset })
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        setBucket(d);
-        notify('Staged object into ' + d.bucket_uri + ' (' + (d.bucket_objects || []).length + ' total objects across ' + d.total_participating_nodes + ' nodes)');
-      }).finally(function () { setBusy(false); });
-    }
-
-    function runExl3Quantize() {
-      setBusy(true);
-      fetch('/api/v1/models/exl3-convert', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model_id: exlModel, target_bpw: parseFloat(exlBpw) || 2.55 })
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        setExlResult(d);
-        notify('EXL3 / QTIP Trellis Quantization complete: +' + d.snr_gain_over_scalar_db.toFixed(2) + ' dB SNR gain · -' + d.vram_savings_vs_q4k_gb.toFixed(1) + ' GB vs Q4_K');
-      }).finally(function () { setBusy(false); });
-    }
-
-    function runFts3Stream() {
-      setBusy(true);
-      fetch('/api/v1/fts3/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        setFtsStream(d);
-        notify('Streamed ' + d.shard_name + ' (' + (d.ktb_total_bytes / 1024).toFixed(0) + ' KiB) at ' + d.aggregate_goodput_mbps.toFixed(0) + ' Mbps');
-      }).finally(function () { setBusy(false); });
-    }
-
-    var wordmark = theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg';
-    var isCloud = status && status.mode && status.mode.KadmiumCloudManaged;
-    var m4 = platforms && platforms.apple_m4_probe;
-    var cm4 = platforms && platforms.rpi_cm4_probe;
-    var k230 = platforms && platforms.kendryte_k230_probe;
-
-    return h(React.Fragment, null,
-      h('header', { className: 'top' },
-        h('img', { src: wordmark, alt: 'Kadmium' }),
-        h('span', { className: 'cd' }, 'Cd‑48 · Desktop App v' + (status ? status.app_version : '0.1.0')),
-        status ? h(K.Badge, { tone: isCloud ? 'cloud' : 'local', dot: true }, isCloud ? 'kadmium cloud' : 'self-hosted oss') : null,
-        m4 && m4.physical_board_online ? h(K.Badge, { tone: 'ok', dot: true }, 'Apple M4 Live (' + m4.lan_endpoint + ')') : null,
-        h('span', { className: 'spacer' }),
-        h(K.Button, { variant: 'primary', size: 'sm', onClick: function () { attachPlatform('all-live', null, 'All Live LAN/USB Silicon'); } }, 'Auto-Attach Live Silicon'),
-        h(K.Button, { variant: 'quiet', size: 'sm', disabled: busy, onClick: runLivePipelinePass }, 'Run Live TCP Pass'),
-        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/'; } }, 'Control room'),
-        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/#/platforms'; } }, 'Platforms'),
-        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { window.location.href = '/docs'; } }, 'Docs'),
-        h(K.Button, { variant: 'ghost', size: 'sm', onClick: function () { setTheme(theme === 'dark' ? 'light' : 'dark'); } }, theme === 'dark' ? 'Light theme' : 'Dark theme')),
-
-      toastMsg ? h('div', { className: 'toast-bar', role: 'status' }, h('span', { className: 'dot' }), h('span', null, toastMsg)) : null,
-
-      h('main', { className: 'shell' },
-        h('div', { className: 'stats' },
-          h('div', { className: 'stat-card' },
-            h('span', { className: 'l' }, 'Local Host Governor'),
-            h('span', { className: 'v cadmium' }, status ? (status.local_host_polite_state === 'GamingOrHeavyApp' ? 'Yielded (15%)' : 'Idle Dedicated (100%)') : 'Probing…'),
-            h('span', { className: 'm' }, probe ? probe.local_node.hostname + ' · q* ' + probe.q_star_ratio : 'DXGI / IOKit < 200 ms hook')),
-          h('div', { className: 'stat-card' },
-            h('span', { className: 'l' }, 'Active Cluster Nodes'),
-            h('span', { className: 'v' }, status ? status.active_cluster_nodes + ' nodes' : '—'),
-            h('span', { className: 'm' }, 'Leader: ' + (status ? status.active_coordinator_leader : 'local'))),
-          h('div', { className: 'stat-card' },
-            h('span', { className: 'l' }, 'Apple M4 Metal 4 Bridge'),
-            h('span', { className: 'v ' + (m4 && m4.physical_board_online ? 'ok' : '') }, m4 ? (m4.physical_board_online ? 'ONLINE · ' + m4.execution_proof.amx_sgemm_512_gflops.toFixed(0) + ' GF/s' : 'Standby') : 'Probing…'),
-            h('span', { className: 'm' }, m4 ? m4.lan_endpoint + ' · ' + m4.board_model : '192.168.40.237:7860')),
-          h('div', { className: 'stat-card' },
-            h('span', { className: 'l' }, 'Pipeline Throughput'),
-            h('span', { className: 'v ' + (execReport ? 'cadmium' : '') }, execReport ? execReport.effective_tokens_per_sec + ' tok/s' : 'Idle'),
-            h('span', { className: 'm' }, execReport ? execReport.model_id + ' · ' + execReport.total_pipeline_latency_ms + ' ms total' : 'No model loaded · click Run Live TCP Pass')),
-          h('div', { className: 'stat-card' },
-            h('span', { className: 'l' }, 'Reactor Supply Net'),
-            h('span', { className: 'v ' + (supply && supply.policy.enabled ? 'ok' : '') }, supply ? (supply.policy.enabled ? '+$' + (supply.total_net_monthly_profit_after_power_usd || 0).toFixed(0) + '/mo' : 'Paused') : '—'),
-            h('span', { className: 'm' }, '75% Host · $0.14/kWh power deducted'))),
-
-        h(K.Tabs, {
-          label: 'Desktop application views',
-          value: tab,
-          onChange: setTab,
-          items: [
-            { id: 'host', label: 'Host & Polite Governor' },
-            { id: 'platforms', label: 'Silicon Platforms & LAN Bridges', count: platforms ? platforms.total_catalog_skus : 26 },
-            { id: 'studio', label: 'Local .ktb Studio & EXL3 Quantizer' },
-            { id: 'reactor', label: 'Reactor Supply Grid' },
-            { id: 'shield', label: 'CloudShield Watcher' }
+  /* ---------- Models ---------- */
+  function ModelsPage({ core }) {
+    const { overview } = core;
+    const [catalog] = useData('/v1/models');
+    const [busy, run] = useBusy();
+    const [imp, setImp] = useState({ model_id: 'llama-3.2-3b-instruct', source_path: '', format_hint: 'gguf', start_layer: '0', end_layer: '3' });
+    const [imported, setImported] = useState(null);
+    if (!overview) return Loading('Reading the shard plan…');
+    const inf = overview.inference_plan;
+    const loaded = overview.active_model_loaded;
+    const nodes = overview.nodes || [];
+    const workers = nodes.filter(takesLayers);
+    const capacity = workers.reduce((sum, n) => sum + fastMem(n), 0);
+    const nvme = workers.reduce((sum, n) => sum + ((n.memory && n.memory.nvme_cache_gb) || 0), 0);
+    const all = (catalog && catalog.data) || [];
+    const models = all.filter(m => m.kadmium_fabric && isNum(m.kadmium_fabric.total_layers));
+    const services = all.filter(m => !(m.kadmium_fabric && isNum(m.kadmium_fabric.total_layers)));
+    const fit = w => w <= capacity ? h(K.Badge, { tone: 'ok' }, 'fits in memory') : w <= capacity + nvme ? h(K.Badge, { tone: 'warn' }, 'streams from NVMe') : h(K.Badge, { tone: 'danger' }, 'needs more machines');
+    const refresh = CORE.concat(['/v1/models']);
+    const loadModel = id => run('load:' + id, () => postJSON('/api/v1/cluster/model', { inference_model_id: id }).then(d => { publish('/api/v1/cluster/overview', d); return d; }),
+      d => { const n = (d.inference_plan.assignments || []).filter(a => a.layer_count > 0).length; return n ? 'Loaded ' + id + ' across ' + plural(n, 'machine') : 'Loaded ' + id + ', but no machine has the fast memory to hold its layers yet'; }, refresh);
+    const unload = () => run('unload', () => postJSON('/api/v1/cluster/model', { unload: true }).then(d => { publish('/api/v1/cluster/overview', d); return d; }), 'Unloaded ' + inf.model_id, refresh);
+    const holders = (inf.assignments || []).filter(a => a.layer_count > 0);
+    const importModel = () => run('import', () => postJSON('/api/v1/models/import', {
+      model_id: imp.model_id.trim(),
+      source_path: imp.source_path.trim() || undefined,
+      format_hint: imp.format_hint,
+      start_layer: Number(imp.start_layer) || 0,
+      end_layer: Number(imp.end_layer) || 0
+    }).then(d => { setImported(d); return d; }), d => 'Compiled ' + d.compiled_ktb_path, CORE);
+    const banks = overview.imported_models || [];
+    return h(F, null,
+      h(Card, { title: loaded ? 'Running now' : 'No model loaded', sub: loaded ? inf.model_display_name : undefined,
+        tools: loaded ? h(K.Button, { size: 'sm', variant: 'ghost', disabled: busy === 'unload', onClick: unload }, 'Unload') : null },
+      loaded && !holders.length ? h(F, null,
+        Note('warn', 'No machine in this cluster has the fast memory to hold layers of ' + inf.model_id + ', so requests cannot run yet. Add a machine with a GPU or unified memory, or load a smaller model.'),
+        (inf.assignments || []).some(a => (a.auxiliary_tasks || []).length) ? KV((inf.assignments || []).filter(a => (a.auxiliary_tasks || []).length).map(a => [a.hostname, a.auxiliary_tasks.map(words).join(', ')])) : null)
+      : loaded ? h(F, null,
+        h(K.ShardRail, { pitch: 72, nodes: (inf.assignments || []).map(a => ({ id: a.node_id, name: shortHost(a.hostname), share: Math.max(0, (a.compute_share_pct || 0) / 100), placement: a.device_kind === 'CloudBurstGpu' ? 'cloud' : 'local' })), label: 'Shard plan for ' + inf.model_id }),
+        Table({
+        wide: true,
+          rows: holders,
+          rowKey: a => a.node_id,
+          empty: 'The plan has no layer assignments yet.',
+          cols: [
+            { label: 'Machine', render: a => h(F, null, h('span', { className: 'name' }, a.hostname), h('span', { className: 'sub' }, TRUST[a.trust_tier] || words(a.trust_tier))) },
+            { label: 'Layers', className: 'mono nowrap', render: a => 'L' + a.start_layer + '–L' + a.end_layer },
+            { label: 'Share', num: true, render: a => pct(a.compute_share_pct, 1) },
+            { label: 'Hot', num: true, render: a => gb(a.tiered_memory.hot_vram_or_unified_gb) },
+            { label: 'Warm', num: true, render: a => gb(a.tiered_memory.warm_system_ram_gb) },
+            { label: 'Cold', num: true, render: a => gb(a.tiered_memory.cold_nvme_stream_gb) }
           ]
         }),
-
-        tab === 'host' ? h(React.Fragment, null,
-          h('section', { className: 'panel' },
-            h('p', { className: 'eyebrow' }, 'Operating mode · one binary for open-source and Kadmium Cloud'),
-            h('h1', { className: 'headline', style: { margin: '0 0 var(--space-4)' } }, 'Desktop Companion Node Agent'),
-            h('div', { className: 'two' },
-              h('div', { className: 'mode-card ' + (!isCloud ? 'active-local' : '') },
-                h('div', { className: 'kd-row' },
-                  h(K.Badge, { tone: 'local', dot: !isCloud }, 'self-hosted'),
-                  h('span', { className: 'code-sm', style: { marginLeft: 'auto' } }, '$0.00 / hr')),
-                h('div', { className: 'title' }, 'Open-source local mesh'),
-                h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                  'Connects strictly to your LAN coordinator (127.0.0.1:7848) via UDP KDMD beacons. Zero cloud account required.'),
-                h(K.Button, {
-                  variant: !isCloud ? 'primary' : 'quiet',
-                  onClick: function () { switchMode(false); }
-                }, !isCloud ? 'Active: Self-hosted mode' : 'Switch to self-hosted')),
-
-              h('div', { className: 'mode-card ' + (isCloud ? 'active-cloud' : '') },
-                h('div', { className: 'kd-row' },
-                  h(K.Badge, { tone: 'cloud', dot: Boolean(isCloud) }, 'kadmium cloud'),
-                  h('span', { className: 'code-sm', style: { marginLeft: 'auto' } }, status ? '$' + status.current_hourly_cloud_burn_usd.toFixed(2) + ' / hr active' : '$0.89 / GPU-hr')),
-                h('div', { className: 'title' }, 'Kadmium Cloud + Failover Shield'),
-                h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } },
-                  'Links this node to kadmium.ai for WAN hole-punching, multi-provider spot arbitrage, and < 400 ms bidirectional failover.'),
-                h('div', { className: 'two' },
-                  h(K.Input, { label: 'Workspace', mono: true, value: workspace, onChange: function (e) { setWorkspace(e.target.value); } }),
-                  h(K.Input, { label: 'Max spend cap', mono: true, prefix: '$', value: budget, onChange: function (e) { setBudget(e.target.value); } })),
-                h(K.Button, {
-                  variant: 'cloud',
-                  icon: 'cloud',
-                  onClick: function () { switchMode(true); }
-                }, isCloud ? 'Active: Linked to ' + workspace : 'Link to Kadmium Cloud')))),
-
-          probe ? h('section', { className: 'two' },
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'This machine · live hardware profiler'),
-              h(K.NodeCard, {
-                name: probe.local_node.hostname,
-                hardware: (probe.local_node.gpu_name || String(probe.local_node.backend || 'cpu')) + ' (' + probe.local_node.fp16_tflops + ' TF · ' + probe.local_node.memory.vram_gb + ' GB VRAM)' + (probe.local_node.npu_name ? ' + ' + probe.local_node.npu_name + ' (' + probe.local_node.npu_tops + ' TOPS)' : '') + ' + ' + (probe.local_node.cpu_name || '') + ' (' + probe.local_node.memory.system_ram_gb + ' GB RAM)',
-                kind: 'desktop',
-                placement: 'local',
-                status: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 'yielded' : (execReport ? 'resident' : 'idle'),
-                shards: execReport ? ('active: ' + execReport.model_id) : ('idle · leader: ' + (status ? status.active_coordinator_leader : probe.local_node.hostname)),
-                meters: [
-                  { label: 'VRAM', value: !execReport ? 0 : (status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 0.5 : Math.max(1.2, probe.local_node.memory.vram_gb * 0.6)), max: Math.max(4, probe.local_node.memory.vram_gb), unit: 'GB' },
-                  { label: 'RAM', value: !execReport ? 0 : Math.round(probe.local_node.memory.system_ram_gb * 0.25), max: probe.local_node.memory.system_ram_gb, unit: 'GB' },
-                  { label: 'NVMe', value: probe.local_node.memory.nvme_read_bw_gbps, max: 14, unit: 'GB/s' }
-                ]
-              })),
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'Polite host governor · < 200 ms gaming & battery auto-yield'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 var(--space-3)' } },
-                'When you launch a game or unplug a laptop, Kadmium yields local VRAM/compute within 200 ms and hands active shards & KV-cache pages to your Apple M4 Mac mini.'),
-              h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)', flexWrap: 'wrap', gap: '8px' } },
-                h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { setHostPoliteMode('gaming_mode'); } }, 'Simulate gaming yield (15 %)'),
-                h(K.Button, { variant: 'quiet', size: 'sm', onClick: function () { setHostPoliteMode('reset'); } }, 'Restore dedicated idle (100 %)'),
-                h(K.Button, { variant: 'primary', size: 'sm', disabled: busy, onClick: triggerKvMigrate }, 'Migrate KV-Cache to LAN peer')),
-              kvMig ? h('div', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ok)', marginBottom: 'var(--space-3)' } },
-                '✓ Migrated ' + kvMig.pages_migrated + ' KV pages (' + kvMig.tokens_preserved + ' tokens) ' + kvMig.source_hostname + ' → ' + kvMig.target_hostname + ' in ' + kvMig.total_migration_wall_ms.toFixed(2) + ' ms (bit_exact=' + String(kvMig.ack.bit_exact_verified) + ')') : null,
-              h(K.Input, {
-                label: 'LAN / WAN Join Ticket (kdm1)',
-                mono: true,
-                defaultValue: probe.join_ticket_token,
-                hint: 'UDP LAN beacon active on port 7849 (KDMD magic).'
-              }))) : null,
-
-          pairing ? h('section', { className: 'two' },
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'Zero-click LAN pairing · UDP KDMD beacon queue'),
-              h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Approve discovered local peers via 6-digit SAS code'),
-              h('div', { className: 'table-wrap' },
-                h('table', { className: 'mono-table' },
-                  h('thead', null, h('tr', null,
-                    h('th', null, 'DISCOVERED PEER'),
-                    h('th', null, 'SAS CODE'),
-                    h('th', null, 'STATUS'),
-                    h('th', null, 'ACTION'))),
-                  h('tbody', null, pairing.lan_candidates.map(function (c) {
-                    var approved = c.status !== 'PendingTrayApproval';
-                    return h('tr', { key: c.candidate_id },
-                      h('td', null,
-                        h('div', { style: { color: 'var(--ink)' } }, c.hostname),
-                        h('div', { style: { color: 'var(--ink-muted)', fontSize: '11px' } }, c.hardware_summary)),
-                      h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, c.short_auth_code),
-                      h('td', null,
-                        h(K.Badge, { tone: approved ? 'ok' : 'warn', dot: true },
-                          c.status === 'ApprovedTrustedCore' ? 'trusted core' : c.status === 'ApprovedVerifiedMiddleOnly' ? 'middle only' : 'pending tray')),
-                      h('td', null,
-                        h('div', { className: 'kd-row' },
-                          h(K.Button, {
-                            variant: c.status === 'ApprovedTrustedCore' ? 'primary' : 'quiet',
-                            size: 'sm',
-                            onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedTrustedCore'); }
-                          }, 'TrustedCore'),
-                          h(K.Button, {
-                            variant: c.status === 'ApprovedVerifiedMiddleOnly' ? 'primary' : 'quiet',
-                            size: 'sm',
-                            onClick: function () { approveLanPeer(c.candidate_id, 'ApprovedVerifiedMiddleOnly'); }
-                          }, 'Middle-only'))));
-                  }))))),
-
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'OS swapchain & thermal hooks · ' + pairing.os_hysteresis.hook_backend),
-              h('div', { className: 'title', style: { marginBottom: 'var(--space-3)' } }, 'Fast-yield (' + pairing.os_hysteresis.fast_yield_sla_ms + ' ms) & 15 s anti-thrash hysteresis'),
-              h('div', { className: 'table-wrap' },
-                h('table', { className: 'mono-table' },
-                  h('thead', null, h('tr', null,
-                    h('th', null, 'T (MS)'),
-                    h('th', null, 'OS HOOK EVENT'),
-                    h('th', null, 'STATE'),
-                    h('th', null, 'VRAM CAP'))),
-                  h('tbody', null, pairing.os_hysteresis.timeline.map(function (step) {
-                    return h('tr', { key: step.timestamp_ms },
-                      h('td', null, step.timestamp_ms + ' ms'),
-                      h('td', null, step.event_label),
-                      h('td', null, h(K.Badge, { tone: step.new_state === 'GamingOrHeavyApp' ? 'warn' : 'local' }, step.new_state)),
-                      h('td', { style: { color: 'var(--cadmium-text)' } }, step.allocated_vram_gb.toFixed(1) + ' GB'));
-                  })))))) : null) : null,
-
-        tab === 'platforms' ? (platforms ? h(React.Fragment, null,
-          h('section', { className: 'two' },
-            h('div', { className: 'panel' },
-              h('div', { className: 'kd-row', style: { justifyContent: 'space-between', marginBottom: 'var(--space-2)' } },
-                h('p', { className: 'eyebrow', style: { margin: 0 } }, 'Apple M4 Silicon Platform Bridge · ' + m4.lan_endpoint),
-                h(K.Badge, { tone: m4.physical_board_online ? 'ok' : 'warn', dot: true }, m4.physical_board_online ? 'LIVE METAL 4 + AMX' : 'Standby')),
-              h('div', { className: 'title', style: { marginBottom: '8px' } }, m4.board_model + ' (' + m4.telemetry.cpu_brand + ')'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 12px', fontSize: '13px' } },
-                m4.telemetry.cpu_cores_total + ' CPU cores (' + m4.telemetry.cpu_cores_perf + 'P+' + m4.telemetry.cpu_cores_eff + 'E) · ' + m4.telemetry.gpu_cores + ' Metal 4 GPU cores · ' + m4.telemetry.ane_cores + ' ANE cores · ' + m4.telemetry.unified_memory_gib + ' GiB LPDDR5X @ ' + m4.telemetry.unified_mem_bw_gbps + ' GB/s · NVMe ' + m4.telemetry.ssd_free_gib.toFixed(1) + ' GiB free'),
-              h('div', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ink)', marginBottom: '12px', display: 'grid', gap: '4px' } },
-                h('div', null, '• Metal 4 64×64 GEMM: ' + m4.execution_proof.metal_gpu_gemm_64x64_ms.toFixed(3) + ' ms (FNV-1a ' + hex(m4.execution_proof.metal_gpu_gemm_fnv1a64) + ')'),
-                h('div', null, '• Apple M4 AMX SGEMM (512×512): ' + m4.execution_proof.amx_sgemm_512_gflops.toFixed(1) + ' GFLOP/s (' + m4.execution_proof.amx_sgemm_512_ms.toFixed(3) + ' ms)'),
-                h('div', null, '• HW ARMv9.2-A CRC32C (.ktb verify): ' + m4.execution_proof.hw_crc32c_gbps.toFixed(2) + ' GB/s · RTT ' + m4.execution_proof.lan_round_trip_ms.toFixed(2) + ' ms')),
-              h('div', { className: 'kd-row', style: { gap: '8px', flexWrap: 'wrap' } },
-                h(K.Button, { variant: 'primary', size: 'sm', disabled: busy, onClick: function () { attachPlatform('apple-m4', null, m4.board_model); } }, 'Attach Live M4 to Cluster'),
-                h(K.Button, { variant: 'quiet', size: 'sm', disabled: busy, onClick: runM4DeepSuite }, busy ? 'Running Metal 4…' : 'Run 5-Kernel Deep Metal 4 Suite'))),
-
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'Deep Metal 4 + 10-Core GCD + Zero-Copy mmap .ktb Telemetry'),
-              deepM4 ? h('div', { style: { fontFamily: 'var(--font-mono)', fontSize: '12px', display: 'grid', gap: '8px' } },
-                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '1. Metal 4 Tiled 1024×1024 GEMM: '), deepM4.tiled_gemm1024_gflops.toFixed(2) + ' GFLOP/s (' + deepM4.tiled_gemm1024_ms.toFixed(3) + ' ms · ' + hex(deepM4.tiled_gemm1024_fnv1a64) + ')'),
-                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '2. Metal 4 Fused RMSNorm + RoPE: '), deepM4.rmsnorm_rope_ms.toFixed(4) + ' ms · Bit-Exact RepOps ' + hex(deepM4.rmsnorm_rope_repops_digest)),
-                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '3. Metal 4 Flash-GQA Paged (256 KV): '), deepM4.flash_gqa_seq256_ms.toFixed(4) + ' ms · RepOps ' + hex(deepM4.flash_gqa_repops_digest)),
-                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '4. 10-Core GCD (4P+6E) Scaling: '), deepM4.gcd_1core_256_ms.toFixed(3) + ' ms → ' + deepM4.gcd_10core_256_ms.toFixed(3) + ' ms (' + deepM4.gcd_10core_speedup.toFixed(2) + '× speedup)'),
-                h('div', null, h('strong', { style: { color: 'var(--cadmium-text)' } }, '5. ARMv9.2 INT8 DotProd & FP16: '), 'vdotq_s32 ' + deepM4.armv9_int8_dotprod_gops.toFixed(1) + ' GOPS · vfmaq_f16 ' + deepM4.armv9_fp16_neon_gflops.toFixed(1) + ' GFLOP/s'),
-                h('div', null, h('strong', { style: { color: 'var(--ok)' } }, '6. Zero-Copy mmap .ktb -> Metal 4: '), deepM4.zerocopy_mmap_ktb_ms.toFixed(4) + ' ms · NoCopy verified=' + String(deepM4.zerocopy_mmap_verified) + ' (' + hex(deepM4.zerocopy_mmap_repops_digest) + ')'))
-              : h('p', { className: 'body', style: { color: 'var(--ink-muted)' } }, 'Click "Run 5-Kernel Deep Metal 4 Suite" to benchmark tiled 1024×1024 GEMM, Fused RMSNorm+RoPE, Flash-GQA, 10-Core GCD, and Zero-Copy mmap .ktb on Apple M4 silicon.'))),
-
-          h('section', { className: 'three' },
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'Raspberry Pi CM4 (BCM2711)'),
-              h('div', { className: 'title', style: { marginBottom: '6px' } }, cm4.board_model),
-              h('p', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ink-muted)', margin: '0 0 12px' } },
-                cm4.lan_endpoint + ' · ' + cm4.telemetry.temp_c.toFixed(1) + '°C · NEON 64² GEMM ' + cm4.execution_proof.neon_gemm_64x64_ms.toFixed(3) + ' ms · 6 CM4 carrier SKUs'),
-              h(K.Button, { size: 'sm', variant: 'quiet', onClick: function () { attachPlatform('rpi-cm4', null, cm4.board_model); } }, 'Attach CM4 Node')),
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'NVIDIA Tegra X1 / X1+ (T210/T214)'),
-              h('div', { className: 'title', style: { marginBottom: '6px' } }, platforms.tegra_x1_active_spec.display_name),
-              h('p', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ink-muted)', margin: '0 0 12px' } },
-                '256 Maxwell CUDA cores (sm_53 FP16) · BQ24193 80% battery bypass · 5 Switch / Jetson / Shield SKUs'),
-              h(K.Button, { size: 'sm', variant: 'quiet', onClick: function () { attachPlatform('tegra-x1', null, platforms.tegra_x1_active_spec.display_name); } }, 'Attach Tegra X1 Node')),
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'Kendryte K230 RISC-V + Phone Farm'),
-              h('div', { className: 'title', style: { marginBottom: '6px' } }, k230.board_model + ' & 20-Slot Box'),
-              h('p', { style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--ink-muted)', margin: '0 0 12px' } },
-                'Xuantie C908 RVV 1.0 + 6 TOPS KPU (' + k230.chip_unique_die_id + ') · 20× Snapdragon 865 160 GB UMA'),
-              h('div', { className: 'kd-row', style: { gap: '8px' } },
-                h(K.Button, { size: 'sm', variant: 'quiet', onClick: function () { attachPlatform('kendryte-k230', null, k230.board_model); } }, 'Attach K230'),
-                h(K.Button, { size: 'sm', variant: 'quiet', onClick: function () { attachPlatform('phone-farm', 'sd865', '20-Slot Phone Farm'); } }, 'Attach Phone Farm')))),
-
-          h('section', { className: 'panel' },
-            h('p', { className: 'eyebrow' }, 'Unified Silicon Platform Catalog · 26 SKUs across 5 platform families'),
-            h('div', { className: 'table-wrap' },
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'FAMILY'),
-                  h('th', null, 'PRODUCT / CARRIER FORM FACTOR'),
-                  h('th', null, 'SILICON TIER'),
-                  h('th', null, 'HOSTNAME'),
-                  h('th', null, 'COMPUTE'),
-                  h('th', null, 'FAST MEMORY'),
-                  h('th', null, 'q*'),
-                  h('th', null, 'ACTION'))),
-                h('tbody', null, [].concat(
-                  platforms.apple_m4_catalog,
-                  platforms.rpi_cm4_catalog,
-                  platforms.tegra_x1_catalog,
-                  platforms.kendryte_k230_catalog,
-                  platforms.phone_farm_catalog
-                ).map(function (s) {
-                  return h('tr', { key: s.family + '-' + s.sku_slug },
-                    h('td', null, h(K.Badge, { tone: s.family === 'apple-m4' ? 'local' : 'neutral' }, s.family)),
-                    h('td', { style: { fontWeight: 600 } }, s.form_factor),
-                    h('td', null, s.silicon_tier),
-                    h('td', null, s.node.hostname),
-                    h('td', null, s.node.fp16_tflops.toFixed(2) + ' TF · ' + s.node.int4_tops.toFixed(1) + ' TOPS'),
-                    h('td', null, (s.node.memory.unified_mem_gb || s.node.memory.system_ram_gb).toFixed(1) + ' GB @ ' + (s.node.memory.unified_mem_bw_gbps || s.node.memory.system_ram_bw_gbps).toFixed(1) + ' GB/s'),
-                    h('td', null, s.q_star_ratio.toFixed(2)),
-                    h('td', null, h(K.Button, {
-                      size: 'sm',
-                      variant: 'quiet',
-                      onClick: function () { attachPlatform(s.family, s.sku_slug, s.form_factor + ' (' + s.silicon_tier + ')'); }
-                    }, 'Attach')));
-                })))))
-        ) : h('div', { className: 'panel' }, 'Probing silicon platforms…')) : null,
-
-        tab === 'studio' ? h(React.Fragment, null,
-          h('section', { className: 'two' },
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'Local GGUF / SafeTensors → 64 KiB .ktb Disk Importer'),
-              h('div', { className: 'title', style: { marginBottom: '8px' } }, 'Zero-Copy mmap / io_uring / Metal NoCopy Tensor Bank Compiler'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 12px', fontSize: '13px' } },
-                'Transcodes local .gguf v3 or .safetensors weights into a 64 KiB page-aligned .ktb archive verified by an FNV-1a64 Merkle tree.'),
-              h('div', { className: 'two', style: { marginBottom: '12px' } },
-                h(K.Input, { label: 'Model ID', mono: true, value: impModel, onChange: function (e) { setImpModel(e.target.value); } }),
-                h('div', null,
-                  h('div', { style: { fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--ink-muted)', marginBottom: '6px' } }, 'SOURCE FORMAT'),
-                  h('select', { className: 'select-box', style: { width: '100%' }, value: impFormat, onChange: function (e) { setImpFormat(e.target.value); } },
-                    h('option', { value: 'gguf' }, 'GGUF v3 (.gguf)'),
-                    h('option', { value: 'safetensors' }, 'HuggingFace SafeTensors (.safetensors)')))),
-              h('div', { className: 'kd-row', style: { gap: '8px' } },
-                h(K.Button, { variant: 'primary', size: 'sm', disabled: busy, onClick: runImportKtb }, busy ? 'Compiling .ktb…' : 'Import & Compile .ktb Bank'),
-                h(K.Button, { variant: 'quiet', size: 'sm', disabled: busy, onClick: runFts3Stream }, 'Stream .ktb Across LAN Swarm')),
-              impResult ? h('div', { style: { marginTop: '14px', fontFamily: 'var(--font-mono)', fontSize: '11.5px', display: 'grid', gap: '4px', color: 'var(--ok)' } },
-                h('div', null, '✓ Compiled .ktb: ' + impResult.compiled_ktb_path + ' (' + (impResult.ktb_size_bytes / 1024).toFixed(0) + ' KiB · ' + impResult.ktb_page_count + ' × 64 KiB pages)'),
-                h('div', null, '✓ Merkle Root (FNV64): ' + hex(impResult.merkle_root_fnv64) + ' · 64 KiB Alignment Verified=' + String(impResult.zero_copy_alignment_verified))) : null,
-              ftsStream ? h('div', { style: { marginTop: '10px', fontFamily: 'var(--font-mono)', fontSize: '11.5px', color: 'var(--cadmium-text)' } },
-                '✓ FTS3 Swarm Stream: ' + ftsStream.shard_name + ' → ' + ftsStream.target_receipts.length + ' workers at ' + ftsStream.aggregate_goodput_mbps.toFixed(0) + ' Mbps') : null),
-
-            h('div', { className: 'panel' },
-              h('p', { className: 'eyebrow' }, 'Distributed EXL3 / QTIP Trellis Quantizer'),
-              h('div', { className: 'title', style: { marginBottom: '8px' } }, 'FWHT Incoherence + On-the-Fly Hessian + Fused Viterbi'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '0 0 12px', fontSize: '13px' } },
-                'Partitions extreme-compression trellis quantization across your desktop GPU, Apple M4 Mac mini, and LAN workers in a single pass.'),
-              h('div', { className: 'two', style: { marginBottom: '12px' } },
-                h(K.Input, { label: 'Target Model', mono: true, value: exlModel, onChange: function (e) { setExlModel(e.target.value); } }),
-                h(K.Input, { label: 'Target Bitrate (bpw)', mono: true, value: exlBpw, onChange: function (e) { setExlBpw(e.target.value); } })),
-              h(K.Button, { variant: 'primary', size: 'sm', disabled: busy, onClick: runExl3Quantize }, busy ? 'Quantizing…' : 'Run Distributed EXL3 Conversion'),
-              exlResult ? h('div', { style: { marginTop: '14px', fontFamily: 'var(--font-mono)', fontSize: '11.5px', display: 'grid', gap: '4px' } },
-                h('div', { style: { color: 'var(--ok)' } }, '✓ Footprint: ' + exlResult.original_fp16_size_gb.toFixed(1) + ' GB (FP16) → ' + exlResult.exl3_ktb_size_gb.toFixed(1) + ' GB (EXL3 .ktb) [-' + exlResult.vram_savings_vs_q4k_gb.toFixed(1) + ' GB vs Q4_K]'),
-                h('div', null, '• Fused Viterbi SNR: ' + exlResult.exl3_viterbi_snr_db.toFixed(2) + ' dB (+' + exlResult.snr_gain_over_scalar_db.toFixed(2) + ' dB over scalar) · FWHT Peak/RMS ' + exlResult.pre_fwht_peak_to_rms.toFixed(2) + '× → ' + exlResult.post_fwht_peak_to_rms.toFixed(2) + '×'),
-                h('div', null, '• Cluster Schedule: ' + exlResult.node_conversion_shards.length + ' nodes (~' + exlResult.estimated_cluster_conversion_minutes.toFixed(1) + ' min total)')) : null)),
-
-          bucket ? h('section', { className: 'panel' },
-            h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
-              h('div', null,
-                h('p', { className: 'eyebrow' }, 'Decentralized Pool Storage Bucket · ' + bucket.bucket_uri + ' (' + bucket.total_participating_nodes + ' nodes)'),
-                h('div', { className: 'title' }, bucket.total_pooled_disk_capacity_gb.toFixed(1) + ' GB Pooled NVMe/UFS · ' + bucket.total_wire_ram_carousel_gb.toFixed(1) + ' GB Wire RAM Carousel · RS(' + bucket.erasure_coding_verification.data_shards_k + ',' + bucket.erasure_coding_verification.parity_shards_m + ')')),
-              h('div', { className: 'kd-row', style: { gap: '8px', flexWrap: 'wrap' } },
-                h(K.Button, { size: 'sm', variant: 'primary', disabled: busy, onClick: function () { stageToPoolBucket('active-model'); } }, 'Stage Active Model .ktb'),
-                h(K.Button, { size: 'sm', variant: 'quiet', disabled: busy, onClick: function () { stageToPoolBucket('dataset-stream'); } }, '+ Token Carousel Dataset'),
-                h(K.Button, { size: 'sm', variant: 'quiet', disabled: busy, onClick: function () { stageToPoolBucket('shared-workspace'); } }, '+ Shared Workspace Bundle'))),
-            (bucket.bucket_objects && bucket.bucket_objects.length) ? h('div', { className: 'table-wrap' },
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'OBJECT URI'),
-                  h('th', null, 'KIND'),
-                  h('th', null, 'LOGICAL → EC PHYSICAL'),
-                  h('th', null, 'PARALLEL READ'),
-                  h('th', null, 'MERKLE (FNV64)'),
-                  h('th', null, 'HRW STRIPE HOLDERS'))),
-                h('tbody', null, bucket.bucket_objects.map(function (o) {
-                  return h('tr', { key: o.object_uri },
-                    h('td', { style: { fontWeight: 600, color: 'var(--cadmium-text)' } }, o.object_uri),
-                    h('td', null, o.object_kind),
-                    h('td', null, o.logical_size_gb.toFixed(2) + ' GB → ' + o.physical_erasure_coded_gb.toFixed(2) + ' GB'),
-                    h('td', null, o.parallel_read_bandwidth_gbps.toFixed(1) + ' Gbps'),
-                    h('td', null, hex(o.merkle_root_fnv64)),
-                    h('td', null, (o.sample_stripe_holder_nodes || []).join(', ')));
-                })))) : h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: 0 } }, '0 objects currently staged in kdm://pool-bucket/. Compile a local .ktb bank above or click "Stage Active Model .ktb" to populate your live cluster storage bucket.')) : null,
-
-          execReport ? h('section', { className: 'panel' },
-            h('p', { className: 'eyebrow' }, 'Live pipeline execution trace · Top-4 MoE router + Speculative draft verification'),
-            h('div', { className: 'kd-row', style: { marginBottom: 'var(--space-3)' } },
-              h(K.Badge, { tone: 'local' }, execReport.effective_tokens_per_sec + ' tok/s effective'),
-              h(K.Badge, { tone: 'ok', dot: true }, execReport.speculative_verification.accepted_draft_tokens + ' / ' + execReport.speculative_verification.proposed_draft_tokens + ' draft tokens accepted (' + execReport.speculative_verification.effective_speedup_multiplier + '× speedup)'),
-              h(K.Badge, { tone: 'neutral' }, execReport.total_pipeline_latency_ms + ' ms forward pass')),
-            h('div', { className: 'table-wrap' },
-              h('table', { className: 'mono-table' },
-                h('thead', null, h('tr', null,
-                  h('th', null, 'STAGE NODE'),
-                  h('th', null, 'LAYERS'),
-                  h('th', null, 'TOP-4 ROUTED EXPERTS (SOFTMAX)'),
-                  h('th', null, 'COLD NVMe'),
-                  h('th', null, 'INT8 BOUNDARY'),
-                  h('th', null, 'LATENCY'))),
-                h('tbody', null, execReport.stages.map(function (st) {
-                  var expText = st.routed_experts_sample.map(function (e) {
-                    return 'E' + e.expert_id + '(' + e.gating_weight.toFixed(2) + ')';
-                  }).join(' ');
-                  return h('tr', { key: st.node_id },
-                    h('td', null, st.hostname),
-                    h('td', null, st.start_layer + '–' + st.end_layer),
-                    h('td', null, expText),
-                    h('td', null, st.cold_nvme_expert_fetches + ' .ktb pages'),
-                    h('td', null, st.boundary_int8_payload_bytes + ' B'),
-                    h('td', null, st.stage_latency_ms + ' ms'));
-                }))))) : null) : null,
-
-        tab === 'reactor' ? (supply ? h('section', { className: 'panel' },
-          h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
-            h('div', null,
-              h('p', { className: 'eyebrow' }, 'Kadmium Reactor Supply Grid · open-book 5-factor valuation & $0.14/kWh power deduction'),
-              h('div', { className: 'title' }, '75% to Host · 20% Fair Living-Wage Ops · 5% Local STEM & Small-Biz Grants'),
-              h('p', { className: 'body', style: { color: 'var(--ink-muted)', margin: '4px 0 0' } },
-                supply.datacenter_avoidance && supply.datacenter_avoidance.people_powered_compute_thesis
-                  ? '\u201C' + supply.datacenter_avoidance.people_powered_compute_thesis + '\u201D'
-                  : 'No-Demand = No-Compute-Payout solvency.')),
-            h('div', { className: 'kd-row', style: { flexWrap: 'wrap', gap: '8px' } },
-              h(K.Badge, { tone: supply.policy.enabled ? 'local' : 'neutral', dot: true },
-                supply.policy.enabled
-                  ? 'Leasing active · +$' + (supply.total_net_monthly_profit_after_power_usd || 0).toFixed(2) + '/mo net after power'
-                  : 'Leasing paused'),
-              h(K.Button, {
-                variant: supply.policy.enabled ? 'primary' : 'default',
-                size: 'sm',
-                onClick: function () { updateSupplyPolicy(!supply.policy.enabled, supply.policy.daily_lease_hours, true); }
-              }, supply.policy.enabled ? 'Pause leasing' : 'Enable leasing'),
-              h(K.Button, {
-                variant: supply.policy.payout_mode && supply.policy.payout_mode.KadmiumCloudCredits ? 'primary' : 'quiet',
-                size: 'sm',
-                onClick: function () { updateSupplyPolicy(true, supply.policy.daily_lease_hours, true); }
-              }, '1.25× Reactor credits ($' + supply.total_projected_monthly_cloud_credits_usd.toFixed(0) + '/mo)'),
-              h(K.Button, {
-                variant: supply.policy.payout_mode === 'UsdDirectPayout' ? 'primary' : 'quiet',
-                size: 'sm',
-                onClick: function () { updateSupplyPolicy(true, supply.policy.daily_lease_hours, false); }
-              }, 'Direct USD (+$' + (supply.total_net_monthly_profit_after_power_usd || supply.total_projected_monthly_usd).toFixed(0) + '/mo net)'))),
-          h('div', { className: 'table-wrap' },
-            h('table', { className: 'mono-table' },
-              h('thead', null, h('tr', null,
-                h('th', null, 'LOCAL NODE'),
-                h('th', null, 'HARDWARE'),
-                h('th', null, 'BUYER \u2192 HOST (75%)'),
-                h('th', null, 'DUTY %'),
-                h('th', null, 'GROSS / MO'),
-                h('th', null, 'POWER (@ $0.14/kWh)'),
-                h('th', null, 'NET PROFIT / MO'),
-                h('th', null, '1.25× CREDITS / MO'))),
-              h('tbody', null, supply.node_quotes.map(function (q) {
-                var vb = q.valuation_breakdown || {};
-                return h('tr', { key: q.node_id },
-                  h('td', null, q.hostname),
-                  h('td', null, q.hardware_summary),
-                  h('td', null, '$' + (vb.gross_buyer_clearing_rate_usd_hr || 0).toFixed(3) + ' \u2192 $' + (vb.host_active_job_usd_per_hr || 0).toFixed(3)),
-                  h('td', null, (vb.expected_active_utilization_pct || 0).toFixed(0) + '%'),
-                  h('td', null, '$' + q.projected_monthly_usd.toFixed(2)),
-                  h('td', { style: { color: 'var(--ink-muted)' } }, '-$' + (vb.estimated_monthly_electricity_cost_usd || 0).toFixed(2)),
-                  h('td', { style: { color: 'var(--ok)', fontWeight: 600 } }, '+$' + (vb.net_monthly_profit_after_power_usd || q.projected_monthly_usd).toFixed(2)),
-                  h('td', { style: { color: 'var(--cadmium-text)', fontWeight: 600 } }, '$' + q.projected_monthly_cloud_credits_usd.toFixed(2)));
-              })))),
-          h('div', { className: 'well', style: { marginTop: 'var(--space-3)', borderColor: 'var(--cadmium-edge)' } },
-            h('p', { className: 'eyebrow', style: { margin: '0 0 4px', color: 'var(--cadmium-text)' } }, '⚠️ Battery & Power Safety Advisory'),
-            h('p', { className: 'body', style: { margin: 0, color: 'var(--ink-muted)' } },
-              supply.battery_and_power_safety_advisory || 'If your device has a removable battery, we recommend removing the battery and plugging into an alternative stable power source to avoid additional battery wear and potential risks of swelling. Most battery-powered devices operate normally without a battery when plugged into wall power.'))) : null) : null,
-
-        tab === 'shield' ? (watcher ? h('section', { className: 'panel' },
-          h('div', { className: 'kd-row', style: { justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' } },
-            h('div', null,
-              h('p', { className: 'eyebrow' }, 'Automated CloudShield heartbeat watcher · < 400 ms cutover & failback'),
-              h('div', { className: 'title' }, 'Guarding ' + watcher.protected_local_node + ' (layers ' + watcher.guarded_layers[0] + '–' + watcher.guarded_layers[1] + ') via ' + watcher.standby_vault_node)),
-            h('div', { className: 'kd-row' },
-              h(K.Badge, { tone: 'cloud', dot: true }, watcher.measured_cutover_rto_ms + ' ms cutover · 0 dropped requests'),
-              h(K.Badge, { tone: 'local' }, '18-min outage prorated cost: $' + watcher.total_prorated_incident_cost_usd.toFixed(2)))),
-          h('div', { className: 'table-wrap' },
-            h('table', { className: 'mono-table' },
-              h('thead', null, h('tr', null,
-                h('th', null, 'T (SEC)'),
-                h('th', null, 'HEARTBEAT / INCIDENT EVENT'),
-                h('th', null, 'SHIELD STATE'),
-                h('th', null, 'ACTIVE HOST'),
-                h('th', null, 'BURN RATE'),
-                h('th', null, 'PRORATED TOTAL'))),
-              h('tbody', null, watcher.steps.map(function (st) {
-                var isCloudStep = st.state === 'CloudFailoverActive' || st.state === 'DrainingBackToLocal';
-                return h('tr', { key: st.timestamp_sec },
-                  h('td', null, st.timestamp_sec + ' s'),
-                  h('td', null, st.event_description),
-                  h('td', null, h(K.Badge, { tone: isCloudStep ? 'cloud' : 'local', dot: true }, st.state)),
-                  h('td', null, st.active_middle_shard_host),
-                  h('td', { style: { color: isCloudStep ? 'var(--cherenkov)' : 'var(--cadmium-text)' } }, '$' + st.instantaneous_hourly_burn_usd.toFixed(2) + ' / hr'),
-                  h('td', null, '$' + st.cumulative_incident_cost_usd.toFixed(2)));
-              }))))) : null) : null));
+        h('p', { className: 'cp-help' }, inf.total_layers + ' layers · ' + gb(inf.total_model_weight_gb) + ' of weights · planner estimate ' + fixed(inf.estimated_throughput, 1) + ' ' + inf.throughput_unit + ' · epoch ' + inf.epoch))
+        : workers.length ? Empty('Nothing is resident on your machines. The planner suggests ' + inf.model_id + ' (' + gb(inf.total_model_weight_gb) + ') for the ' + gb(capacity) + ' of memory on machines that take layers.',
+          h(K.Button, { variant: 'primary', disabled: busy === 'load:' + inf.model_id, onClick: () => loadModel(inf.model_id) }, 'Load ' + inf.model_id))
+        : Empty('None of your machines takes model layers yet. Machines with a GPU or unified memory join as compute workers; ' + (nodes.length === 1 ? 'this one runs as ' + roleWords(nodes[0]) + '.' : 'these run as utility workers.'),
+          h(K.Button, { variant: 'primary', onClick: () => go('cluster') }, 'Add a machine'))),
+      h(Card, { title: 'Model library', sub: 'Weights the planner can shard across your machines', flush: true,
+        foot: services.length ? h('span', null, 'Embedding and vision models served through the API: ', services.map((m, i) => h(F, { key: m.id }, i ? ', ' : '', h('code', null, m.id)))) : null },
+        catalog ? Table({
+        wide: true,
+          rows: models,
+          rowKey: m => m.id,
+          empty: 'The coordinator lists no models.',
+          cols: [
+            { label: 'Model', render: m => h(F, null, h('span', { className: 'name mono' }, m.id), h('span', { className: 'sub' }, m.kadmium_fabric ? m.kadmium_fabric.display_name : m.owned_by)) },
+            { label: 'Layers', num: true, render: m => (m.kadmium_fabric ? m.kadmium_fabric.total_layers : '—') },
+            { label: 'Weights', num: true, render: m => (m.kadmium_fabric ? gb(m.kadmium_fabric.weight_gb) : '—') },
+            { label: 'Fit', className: 'nowrap', render: m => fit(m.kadmium_fabric.weight_gb || 0) },
+            { label: '', num: true, render: m => (m.kadmium_fabric && m.kadmium_fabric.active_loaded && loaded)
+              ? (holders.length ? StateBadge('resident') : h(K.Badge, { tone: 'neutral' }, 'loaded'))
+              : h(K.Button, { size: 'sm', disabled: busy === 'load:' + m.id, onClick: () => loadModel(m.id) }, 'Load') }
+          ]
+        }) : Loading('Reading the model library…')),
+      h('div', { className: 'cp-grid2' },
+        h(Card, { title: 'Import local weights', sub: '.gguf or .safetensors → .ktb' },
+          h('div', { className: 'cp-formgrid' },
+            h(K.Input, { label: 'Model id', mono: true, value: imp.model_id, onChange: e => setImp(Object.assign({}, imp, { model_id: e.target.value })) }),
+            h(Field, { label: 'Source format' }, h(Select, { value: imp.format_hint, onChange: v => setImp(Object.assign({}, imp, { format_hint: v })), options: [{ value: 'gguf', label: 'GGUF v3 (.gguf)' }, { value: 'safetensors', label: 'SafeTensors (.safetensors)' }] })),
+            h(K.Input, { label: 'First layer', mono: true, inputMode: 'numeric', value: imp.start_layer, onChange: e => setImp(Object.assign({}, imp, { start_layer: e.target.value.replace(/[^0-9]/g, '') })) }),
+            h(K.Input, { label: 'Last layer', mono: true, inputMode: 'numeric', value: imp.end_layer, onChange: e => setImp(Object.assign({}, imp, { end_layer: e.target.value.replace(/[^0-9]/g, '') })) })),
+          h(K.Input, { label: 'Source file on this machine', mono: true, placeholder: 'leave empty to compile a small test bank', hint: 'A path the coordinator can read. Relative paths start in the folder Kadmium was started from.', value: imp.source_path, onChange: e => setImp(Object.assign({}, imp, { source_path: e.target.value })) }),
+          h('div', { className: 'cp-row end' }, h(K.Button, { disabled: busy === 'import' || !imp.model_id.trim(), onClick: importModel }, busy === 'import' ? 'Compiling…' : 'Compile .ktb bank')),
+          imported ? KV([
+            ['Bank', h('code', null, imported.compiled_ktb_path)],
+            ['Size', bytes(imported.ktb_size_bytes) + ' · ' + plural(imported.ktb_page_count, 'page') + ' of 64 KiB', true],
+            ['Tensors', String(imported.parsed_tensor_count) + ' from ' + words(imported.source_format), true],
+            ['Merkle root', hex48(imported.merkle_root_fnv64), true],
+            ['Zero-copy', imported.zero_copy_alignment_verified ? 'page-aligned, ready to mmap' : 'not aligned']
+          ]) : null),
+        h(Card, { title: 'Compiled banks', sub: plural(banks.length, 'bank'), flush: true },
+          Table({
+            rows: banks,
+            rowKey: (b, i) => b.compiled_ktb_path + i,
+            empty: 'No .ktb banks compiled on this coordinator yet.',
+            cols: [
+              { label: 'Bank', render: b => h(F, null, h('span', { className: 'name mono' }, b.model_id), h('span', { className: 'sub' }, 'L' + b.start_layer + '–L' + b.end_layer + ' · ' + words(b.source_format))) },
+              { label: 'Size', num: true, render: b => bytes(b.ktb_size_bytes) },
+              { label: 'Pages', num: true, render: b => String(b.ktb_page_count) }
+            ]
+          }))));
   }
 
-  ReactDOM.createRoot(document.getElementById('app')).render(h(CompanionApp));
+  /* ---------- Supply Grid ---------- */
+  const clone = v => JSON.parse(JSON.stringify(v));
+  function EarnPage({ core }) {
+    const [supply] = useData('/api/v1/supply/marketplace');
+    const [draft, setDraft] = useState(null);
+    const [busy, run] = useBusy();
+    useEffect(() => { if (supply && !draft) setDraft(clone(supply.policy)); }, [supply, draft]);
+    if (!supply || !draft) return Loading('Pricing this machine…');
+    const p = draft;
+    const saved = supply.policy;
+    const dirty = JSON.stringify(p) !== JSON.stringify(saved);
+    const credits = !!(p.payout_mode && p.payout_mode.KadmiumCloudCredits);
+    const set = patch => setDraft(Object.assign({}, p, patch));
+    const setMask = (key, value) => set({ workload_mask: Object.assign({}, p.workload_mask, { [key]: value }) });
+    const save = next => run('save', () => postJSON('/api/v1/supply/configure', next).then(d => { publish('/api/v1/supply/marketplace', d); setDraft(clone(d.policy)); return d; }),
+      next.enabled ? 'Leasing policy saved: up to ' + next.daily_lease_hours + ' h a day' : 'Leasing is paused');
+    const localId = core.probe && core.probe.local_node.id;
+    const quotes = supply.node_quotes || [];
+    const quote = quotes.find(q => q.node_id === localId) || quotes[0];
+    const vb = quote ? quote.valuation_breakdown : null;
+    const rate = quote ? (credits ? quote.cloud_credit_rate_per_hour_usd : quote.usd_rate_per_hour) : null;
+    const monthly = quote ? (credits ? quote.projected_monthly_cloud_credits_usd : quote.projected_monthly_usd) : null;
+    const receipts = supply.recent_receipts || [];
+    const mask = p.workload_mask || {};
+    return h(F, null,
+      h('section', { className: 'cp-hero ' + (saved.enabled ? 'share' : 'off'), 'aria-label': 'Leasing status' },
+        h('div', { className: 'cp-orb' }, Icon('earn', 30)),
+        h('div', null,
+          h('div', { className: 'eyebrow' }, saved.enabled ? 'Leasing · up to ' + saved.daily_lease_hours + ' h a day' : 'Leasing paused'),
+          h('h2', null, saved.enabled ? 'Renting out idle time' : 'Lease idle capacity'),
+          h('p', null, saved.enabled
+            ? 'Kadmium rents this machine to verified jobs ' + (saved.only_when_polite_idle ? 'only while it is idle' : 'whenever it is in the cluster') + ', using at most ' + pct(saved.max_vram_lease_fraction * 100) + ' of its fast memory.'
+            : 'Turn this on to rent this machine’s idle time to verified jobs. You choose the hours, the memory share and which workloads may run.')),
+        h('div', { className: 'act' },
+          h(K.Button, { variant: saved.enabled ? 'quiet' : 'primary', size: 'lg', disabled: busy === 'save', onClick: () => save(Object.assign({}, p, { enabled: !saved.enabled })) }, saved.enabled ? 'Pause leasing' : 'Start leasing'),
+          h('small', null, credits ? 'Paid in Kadmium Cloud credits' : 'Paid in USD'))),
+      quote ? h('div', { className: 'cp-tiles' },
+        Tile('Rate when active', usd(rate, 3) + ' / hr', credits ? 'in Kadmium Cloud credits' : 'USD, before electricity', 'mono'),
+        Tile('Projected / month', saved.enabled ? usd(monthly) : '—', saved.enabled ? 'at ' + pct(vb.expected_active_utilization_pct) + ' expected utilization' : 'Start leasing to project earnings', 'mono'),
+        Tile('Electricity / month', saved.enabled ? usd(vb.estimated_monthly_electricity_cost_usd) : '—', 'about ' + fixed(vb.estimated_active_power_watts, 0) + ' W while active', 'mono'),
+        Tile('Net after power', saved.enabled ? usd(vb.net_monthly_profit_after_power_usd) : '—', 'what you keep each month', saved.enabled && vb.net_monthly_profit_after_power_usd > 0 ? 'mono ok' : 'mono')) : null,
+      h('div', { className: 'cp-grid2' },
+        h(Card, { title: 'Policy', sub: dirty ? 'unsaved changes' : 'saved',
+          foot: h('div', { className: 'cp-row', style: { width: '100%', justifyContent: 'flex-end' } },
+            h(K.Button, { variant: 'ghost', size: 'sm', disabled: !dirty || busy === 'save', onClick: () => setDraft(clone(saved)) }, 'Discard'),
+            h(K.Button, { size: 'sm', disabled: !dirty || busy === 'save', onClick: () => save(p) }, 'Save policy')) },
+          h(Field, { label: 'Hours a day: ' + p.daily_lease_hours + ' h', hint: 'The most time per day renters can use this machine.' },
+            h('input', { className: 'cp-range', type: 'range', min: 1, max: 24, step: 1, value: p.daily_lease_hours, onChange: e => set({ daily_lease_hours: Number(e.target.value) }) })),
+          h(Field, { label: 'Fast memory share: ' + pct(p.max_vram_lease_fraction * 100), hint: 'VRAM or unified memory renters can hold. The rest stays free for you and your own cluster.' },
+            h('input', { className: 'cp-range', type: 'range', min: 10, max: 90, step: 5, value: Math.round(p.max_vram_lease_fraction * 100), onChange: e => set({ max_vram_lease_fraction: Number(e.target.value) / 100 }) })),
+          h(Check, { label: 'Only while this machine is idle', hint: 'Leases pause the moment auto-yield steps back for you.', checked: p.only_when_polite_idle, onChange: v => set({ only_when_polite_idle: v }) }),
+          h(Field, { label: 'Payout' }, h(Seg, { label: 'Payout', value: credits ? 'credits' : 'usd', onChange: v => set({ payout_mode: v === 'credits' ? { KadmiumCloudCredits: { bonus_multiplier: 1.25 } } : 'UsdDirectPayout' }),
+            items: [{ id: 'usd', label: 'USD' }, { id: 'credits', label: 'Cloud credits · +25%' }] })),
+          h('div', { className: 'cp-minihead' }, 'Workloads renters may run'),
+          h(Check, { label: 'Middle-layer inference', hint: 'Blind middle shards; the first and last layers stay with the renter.', checked: mask.allow_middle_layer_inference, onChange: v => setMask('allow_middle_layer_inference', v) }),
+          h(Check, { label: 'DiLoCo training', hint: 'Low-bandwidth data-parallel training steps.', checked: mask.allow_diloco_demo_training, onChange: v => setMask('allow_diloco_demo_training', v) }),
+          h(Check, { label: 'RL sandboxes (WASI)', hint: 'Sandboxed reward and rollout workers.', checked: mask.allow_wasi_rl_sandboxes, onChange: v => setMask('allow_wasi_rl_sandboxes', v) }),
+          h(Check, { label: '.ktb seed caching', hint: 'Stores and serves weight pages from NVMe to other nodes.', checked: mask.allow_ktb_seed_caching, onChange: v => setMask('allow_ktb_seed_caching', v) })),
+        h('div', { style: { display: 'grid', gap: '20px', minWidth: 0 } },
+          quote ? h(Card, { title: 'How the rate is set', sub: quote.hostname, flush: true },
+            Table({
+              rows: [
+                ['Fast memory capacity', usd(vb.fast_memory_capacity_usd_hr, 3) + ' / hr'],
+                ['Memory bandwidth', usd(vb.memory_bandwidth_usd_hr, 3) + ' / hr'],
+                ['Compute', usd(vb.compute_tflops_usd_hr, 3) + ' / hr'],
+                ['Storage and seeding', usd(vb.storage_and_seed_usd_hr, 3) + ' / hr'],
+                ['Reliability factor', '× ' + fixed(vb.network_reliability_factor, 2)],
+                ['Renter pays', usd(vb.gross_buyer_clearing_rate_usd_hr, 3) + ' / hr'],
+                ['Kadmium keeps', pct(vb.kadmium_platform_take_rate_pct) + ' · ' + usd(vb.kadmium_platform_margin_usd_hr, 3) + ' / hr'],
+                ['You get while active', usd(vb.host_active_job_usd_per_hr, 3) + ' / hr'],
+                ['Standby retainer', usd(vb.host_standby_storage_retainer_usd_hr, 3) + ' / hr']
+              ],
+              cols: [{ label: 'Part', render: r => r[0] }, { label: 'Value', num: true, render: r => r[1] }]
+            })) : null,
+          h(Card, { title: 'Before you turn it on' },
+            quote ? Note('', h(F, null, h('strong', null, 'Privacy. '), quote.privacy_isolation)) : null,
+            quote ? Note('', h(F, null, h('strong', null, 'Verification. '), quote.verification_protocol)) : null,
+            Note('warn', 'Leasing keeps this machine busy for hours at a time. Run it on wall power with good airflow. Laptops and phones left plugged in for long stretches age their batteries faster, so turn on a charge limit if the machine has one.')))),
+      h(Card, { title: 'Receipts', sub: core.workers && !core.workers.live_only_mode ? 'Includes sample receipts from the simulated demo fleet' : 'Verified work your machines were paid for', flush: true },
+        Table({
+        wide: true,
+          rows: receipts,
+          rowKey: r => r.receipt_id,
+          empty: saved.enabled ? 'No leases have run yet. Receipts appear here as verified jobs finish.' : 'No receipts. Start leasing to take jobs.',
+          cols: [
+            { label: 'Receipt', render: r => h(F, null, h('span', { className: 'mono' }, r.receipt_id), h('span', { className: 'sub' }, r.provider_node_id)) },
+            { label: 'Work', render: r => r.workload_summary },
+            { label: 'Processed', num: true, render: r => Number(r.tokens_or_rollouts_processed).toLocaleString() },
+            { label: 'Earned', num: true, render: r => usd(credits ? r.earned_cloud_credits_usd : r.earned_usd, 4) }
+          ]
+        })));
+  }
+
+  /* ---------- Tools ---------- */
+  function ToolsPage({ core }) {
+    const { workers, overview } = core;
+    const [busy, run] = useBusy();
+    const [prompt, setPrompt] = useState('Say hello from every machine in the cluster.');
+    const [pass, setPass] = useState(null);
+    const [kv, setKv] = useState(null);
+    const [stream, setStream] = useState(null);
+    const [exl, setExl] = useState(null);
+    const [exlModel, setExlModel] = useState('deepseek-v3-671b-exl3-2.5bpw');
+    const [bpw, setBpw] = useState('2.55');
+    const [catalog] = useData('/v1/models');
+    const liveIds = new Set(((workers && workers.workers) || []).map(w => w.node.id));
+    const loaded = overview && overview.active_model_loaded;
+    const models = ((catalog && catalog.data) || []).map(m => ({ value: m.id, label: m.id }));
+    if (!models.some(m => m.value === exlModel)) models.unshift({ value: exlModel, label: exlModel });
+    return h(F, null,
+      h('div', { className: 'cp-grid2 stretch' },
+        h(Card, { title: 'Test pass', sub: 'Live TCP pipeline across your machines' },
+          h('textarea', { className: 'cp-textarea', value: prompt, onChange: e => setPrompt(e.target.value), 'aria-label': 'Prompt', rows: 2 }),
+          h('div', { className: 'cp-row' },
+            h(K.Button, { variant: 'primary', icon: Icon('play', 16), disabled: busy === 'pass' || !prompt.trim(), onClick: () => run('pass', () => postJSON('/api/v1/pipeline/live', { prompt: prompt.trim(), max_tokens: 32 }).then(d => { setPass(d); return d; }),
+              d => (d.live_hops || []).length ? 'Pass finished across ' + plural(d.live_hops.length, 'stage') : 'No stages ran', CORE) }, busy === 'pass' ? 'Running…' : 'Run test pass'),
+            loaded ? null : h('span', { className: 'cp-help' }, 'Load a model first so the pass has layers to run.')),
+          pass ? h(F, null,
+            (pass.live_hops || []).length ? h('pre', { className: 'cp-output' }, pass.generated_response)
+              : Note('warn', loaded
+                ? 'No pipeline stages ran: no machine holds layers of ' + overview.inference_plan.model_id + '. Add a machine with a GPU or unified memory, or load a smaller model.'
+                : 'No pipeline stages ran because no model is loaded. Load one on the Models page, then run the pass again.'),
+            KV([
+              ['Stages', String((pass.live_hops || []).length), true],
+              ['Latency', (pass.live_hops || []).length ? ms(pass.total_pipeline_latency_ms) : '—', true],
+              ['Throughput', (pass.live_hops || []).length ? fixed(pass.effective_tokens_per_sec, 1) + ' tok/s' : '—', true],
+              ['Bit-identical', (pass.live_hops || []).length ? (pass.all_stages_bit_identical ? 'yes, every stage matched its RepOps digest' : 'no, a stage diverged') : '—']
+            ]),
+            (pass.live_hops || []).length ? Table({
+        wide: true,
+              rows: pass.live_hops,
+              rowKey: hop => hop.stage_index,
+              cols: [
+                { label: 'Stage', num: true, render: hop => String(hop.stage_index) },
+                { label: 'Machine', render: hop => h(F, null, hop.hostname, h('span', { className: 'sub' }, hop.worker_tcp_addr || hop.transport_mode)) },
+                { label: 'Layers', className: 'mono nowrap', render: hop => 'L' + hop.start_layer + '–L' + hop.end_layer },
+                { label: 'Wire + compute', num: true, render: hop => ms(hop.wire_plus_compute_ms) }
+              ]
+            }) : null) : null),
+        h(Card, { title: 'KV-cache hand-off', sub: 'What happens to a chat session when this machine yields' },
+          h('p', { className: 'cp-help' }, 'Moves a session’s attention cache for layers 0–13 to another live worker over TCP and checks that every page arrives bit-exact.'),
+          h('div', { className: 'cp-row' }, h(K.Button, { disabled: busy === 'kv', onClick: () => run('kv', () => postJSON('/api/v1/runtime/kv-migrate', { session_id: 'companion-handoff-test', start_layer: 0, end_layer: 13 }).then(d => { setKv(d); return d; }),
+            d => 'Moved ' + d.pages_migrated + ' pages to ' + d.target_hostname + ' in ' + ms(d.migration_rtt_ms)) }, busy === 'kv' ? 'Moving…' : 'Run hand-off')),
+          kv ? h(F, null,
+            !liveIds.has(kv.ack && kv.ack.target_node_id) ? Note('warn', 'No live worker answered, so this result comes from the built-in simulation, not from another machine.')
+              : liveIds.size < 2 ? Note('', 'This machine is the only live worker, so the cache made a round trip to its own worker. Add a second machine to test a real hand-off.') : null,
+            KV([
+              ['Target', kv.target_hostname, true],
+              ['Pages', kv.pages_migrated + ' · ' + kv.tokens_preserved + ' tokens kept', true],
+              ['On the wire', bytes(kv.compressed_wire_bytes) + ' (' + fixed(kv.compression_ratio, 2) + '× smaller than FP16)', true],
+              ['Round trip', ms(kv.migration_rtt_ms), true],
+              ['Bit-exact', kv.ack && kv.ack.bit_exact_verified ? 'yes' : 'no']
+            ])) : null)),
+      h('div', { className: 'cp-grid2 stretch' },
+        h(Card, { title: 'Shard stream', sub: 'Push a .ktb shard to every live worker' },
+          h('p', { className: 'cp-help' }, 'Streams the current model’s first shard page by page and has each worker verify its Merkle proof.'),
+          h('div', { className: 'cp-row' }, h(K.Button, { disabled: busy === 'fts', onClick: () => run('fts', () => postJSON('/api/v1/fts3/stream', {}).then(d => { setStream(d); return d; }),
+            d => 'Streamed ' + bytes(d.ktb_total_bytes) + ' to ' + plural(new Set((d.target_receipts || []).map(r => r.target_node_id)).size, 'worker'), CORE) }, busy === 'fts' ? 'Streaming…' : 'Stream shard')),
+          stream ? h(F, null,
+            liveIds.has(stream.source_node_id) ? null : Note('', 'The source is the coordinator’s built-in seed copy, so this measures delivery to your workers rather than a machine-to-machine copy.'),
+            KV([
+              ['Shard', h('code', null, stream.shard_name)],
+              ['Size', bytes(stream.ktb_total_bytes) + ' · ' + plural(stream.page_count, 'page'), true],
+              ['Goodput', fixed(stream.aggregate_goodput_mbps, 1) + ' Mbps', true],
+              ['Wall time', ms(stream.total_stream_wall_ms), true],
+              ['Verified', (stream.target_receipts || []).filter(r => r.verified_merkle_proof).length + ' of ' + (stream.target_receipts || []).length + ' page receipts', true]
+            ])) : null),
+        h(Card, { title: 'EXL3 size estimate', sub: 'Trellis quantization, planned across the cluster' },
+          h('div', { className: 'cp-formgrid' },
+            h(Field, { label: 'Model' }, h(Select, { value: exlModel, onChange: setExlModel, options: models })),
+            h(K.Input, { label: 'Bits per weight', mono: true, inputMode: 'decimal', value: bpw, onChange: e => setBpw(e.target.value.replace(/[^0-9.]/g, '')) })),
+          h('div', { className: 'cp-row' }, h(K.Button, { disabled: busy === 'exl' || !(Number(bpw) >= 1.5 && Number(bpw) <= 8), onClick: () => run('exl', () => postJSON('/api/v1/runtime/exl3', { model_id: exlModel, target_bpw: Number(bpw) }).then(d => { setExl(d); return d; }),
+            d => d.model_id + ' at ' + fixed(d.achieved_effective_bpw, 2) + ' bpw: ' + gb(d.exl3_ktb_size_gb)) }, busy === 'exl' ? 'Estimating…' : 'Estimate'),
+            Number(bpw) >= 1.5 && Number(bpw) <= 8 ? null : h('span', { className: 'cp-help' }, 'Use 1.5 to 8 bits per weight.')),
+          exl ? KV([
+            ['Sizes', 'FP16 ' + gb(exl.original_fp16_size_gb) + ' · Q4_K ' + gb(exl.legacy_q4k_size_gb) + ' · EXL3 ' + gb(exl.exl3_ktb_size_gb), true],
+            ['Saves', gb(exl.vram_savings_vs_q4k_gb) + ' against Q4_K', true],
+            ['Quality', 'SNR ' + fixed(exl.exl3_viterbi_snr_db, 2) + ' dB, ' + fixed(exl.snr_gain_over_scalar_db, 2) + ' dB above scalar rounding', true],
+            ['Cluster time', exl.estimated_cluster_conversion_minutes > 0 ? fixed(exl.estimated_cluster_conversion_minutes, 1) + ' min across ' + plural((exl.node_conversion_shards || []).length, 'machine') : 'no machine can take a conversion shard right now']
+          ]) : null)),
+      h(BoardsCard, { liveIds }));
+  }
+  function BoardsCard({ liveIds }) {
+    const [scan, setScan] = useState(null);
+    const [scanning, setScanning] = useState(false);
+    const [busy, run] = useBusy();
+    const [ips, setIps] = useState({ m4: '', cm4: '' });
+    const rescan = () => { setScanning(true); load('/api/v1/platforms/overview').then(setScan).catch(e => toast(e.message, 'danger')).finally(() => setScanning(false)); };
+    useEffect(rescan, []);
+    const host = endpoint => String(endpoint || '').split(':')[0];
+    const boards = scan ? [
+      { key: 'm4', family: 'apple-m4', name: 'Apple M4 Mac mini', online: scan.apple_m4_probe.physical_board_online, where: scan.apple_m4_probe.lan_endpoint, model: scan.apple_m4_probe.board_model, ip: true },
+      { key: 'cm4', family: 'rpi-cm4', name: 'Raspberry Pi CM4', online: scan.rpi_cm4_probe.physical_board_online, where: scan.rpi_cm4_probe.lan_endpoint, model: scan.rpi_cm4_probe.board_model, ip: true },
+      { key: 'k230', family: 'kendryte-k230', name: 'Kendryte K230 (USB)', online: scan.kendryte_k230_probe.physical_board_detected, where: scan.kendryte_k230_probe.detected_serial_port || 'USB', model: scan.kendryte_k230_probe.board_model },
+      { key: 'tegra', family: 'tegra-x1', name: 'NVIDIA Tegra X1', online: null, where: '—', model: scan.tegra_x1_active_spec ? scan.tegra_x1_active_spec.display_name : 'Tegra X1 profile' }
+    ] : [];
+    const attach = b => run('attach:' + b.key, () => postJSON('/api/v1/platforms/attach', { family: b.family, custom_ip: b.ip && ips[b.key].trim() ? ips[b.key].trim() : undefined, run_deep_bench: b.family === 'apple-m4' }),
+      d => (d.live_silicon_verified ? 'Attached ' : 'Added an emulated node for ') + ((d.attached_hostnames || []).join(', ') || b.name), CORE);
+    return h(Card, { title: 'Boards and bridges', sub: scan ? scan.total_catalog_skus + ' supported boards across ' + scan.total_platform_families + ' families' : 'Looking for boards…', flush: true,
+      tools: h(K.Button, { size: 'sm', variant: 'ghost', icon: Icon('refresh', 16), disabled: scanning, onClick: rescan }, scanning ? 'Scanning…' : 'Scan again') },
+      scan ? Table({
+        wide: true,
+        rows: boards,
+        rowKey: b => b.key,
+        cols: [
+          { label: 'Board', render: b => h(F, null, h('span', { className: 'name' }, b.name), h('span', { className: 'sub', title: b.model }, b.model.length > 64 ? b.model.slice(0, 63) + '…' : b.model)) },
+          { label: 'Found', className: 'nowrap', render: b => b.online == null ? h(K.Badge, { tone: 'neutral' }, 'no probe') : b.online ? h(K.Badge, { tone: 'ok', dot: true }, 'online') : h(K.Badge, { tone: 'neutral', dot: true }, 'not found') },
+          { label: 'Address', className: 'nowrap', render: b => b.ip
+            ? h('input', { className: 'cp-select', style: { width: '150px' }, 'aria-label': b.name + ' address', placeholder: host(b.where), value: ips[b.key], onChange: e => setIps(Object.assign({}, ips, { [b.key]: e.target.value })) })
+            : h('span', { className: 'mono muted' }, b.where) },
+          { label: '', num: true, render: b => h(K.Button, { size: 'sm', disabled: busy === 'attach:' + b.key, onClick: () => attach(b) }, b.online ? 'Attach' : b.ip && ips[b.key].trim() ? 'Probe and attach' : 'Add emulated') }
+        ]
+      }) : h('div', { className: 'cp-pad' }, Loading('Probing the LAN and USB for boards…')),
+      scan ? h('div', { className: 'cp-pad' }, h('p', { className: 'cp-help' }, 'Kadmium looks for each board at its usual address. Type another address to probe a different one. ',
+        '“Add emulated” adds a node with that board’s published profile when no board answers, so you can plan around hardware you have not plugged in yet.')) : null);
+  }
+
+  /* ---------- Settings ---------- */
+  function SettingsPage({ core, theme, setTheme }) {
+    const { status, workers } = core;
+    const [busy, run] = useBusy();
+    const cloud = status && status.mode && status.mode.KadmiumCloudManaged;
+    const [slug, setSlug] = useState(cloud ? cloud.workspace_slug : '');
+    const [cap, setCap] = useState(cloud ? String(cloud.max_hourly_spend_cap_usd) : '2.50');
+    const linkedSlug = cloud ? cloud.workspace_slug : null;
+    const linkedCap = cloud ? cloud.max_hourly_spend_cap_usd : null;
+    useEffect(() => { if (linkedSlug) { setSlug(linkedSlug); setCap(String(linkedCap)); } }, [linkedSlug, linkedCap]);
+    if (!status) return Loading('Reading settings…');
+    const slugOk = /^[a-z0-9][a-z0-9-]{1,38}$/.test(slug.trim());
+    const capOk = Number(cap) > 0 && Number(cap) <= 1000;
+    const selfUrl = (workers && workers.coordinator_http_url) || location.origin;
+    const setMode = payload => run('mode', () => postJSON('/api/v1/companion/mode', payload).then(d => { publish('/api/v1/companion/status', d); return d; }),
+      payload.KadmiumCloudManaged ? 'Linked to the Kadmium Cloud workspace ' + payload.KadmiumCloudManaged.workspace_slug : 'Self-hosted: no Kadmium Cloud connection');
+    const link = () => setMode({ KadmiumCloudManaged: { workspace_slug: slug.trim(), cloud_endpoint: 'https://api.kadmium.ai', downtime_shield_enabled: true, spot_arbitrage_burst_enabled: true, max_hourly_spend_cap_usd: Number(cap) } });
+    return h(F, null,
+      h(Card, { title: 'Connection', sub: cloud ? 'Kadmium Cloud · ' + cloud.workspace_slug : 'Self-hosted' },
+        h('div', { className: 'cp-modes' },
+          h('div', { className: 'cp-mode' + (cloud ? '' : ' on') },
+            h('div', { className: 'cp-row' }, h(K.Badge, { tone: 'local', dot: !cloud }, 'Self-hosted'), h('span', { className: 'mono muted', style: { marginLeft: 'auto', fontSize: '12px' } }, '$0 / hr')),
+            h('h3', null, 'Your machines only'),
+            h('p', null, 'This machine works with the coordinator on your network at ', h('code', null, selfUrl), '. No account and no Kadmium Cloud traffic. Free to self-host, MIT or Apache-2.0.'),
+            cloud ? h(K.Button, { disabled: busy === 'mode', onClick: () => setMode({ SelfHostedOpenSource: { local_coordinator_url: selfUrl } }) }, 'Use self-hosted') : h(K.Badge, { tone: 'ok' }, 'in use')),
+          h('div', { className: 'cp-mode cloud' + (cloud ? ' on' : '') },
+            h('div', { className: 'cp-row' }, h(K.Badge, { tone: 'cloud', dot: !!cloud }, 'Kadmium Cloud')),
+            h('h3', null, 'Add the managed plane'),
+            h('p', null, 'Adds WAN relay between sites, a failover vault that takes your shards if a machine drops, and burst GPUs up to your spend cap.'),
+            h('div', { className: 'cp-formgrid' },
+              h(K.Input, { label: 'Workspace', mono: true, placeholder: 'your-workspace', value: slug, error: slug && !slugOk ? 'Lowercase letters, digits and dashes' : undefined, onChange: e => setSlug(e.target.value.toLowerCase()) }),
+              h(K.Input, { label: 'Spend cap per hour', mono: true, prefix: '$', inputMode: 'decimal', value: cap, error: capOk ? undefined : 'Enter an amount above $0', onChange: e => setCap(e.target.value.replace(/[^0-9.]/g, '')) })),
+            h(K.Button, { variant: 'cloud', icon: 'cloud', disabled: busy === 'mode' || !slugOk || !capOk, onClick: link }, cloud ? 'Update workspace' : 'Link workspace')))),
+      h('div', { className: 'cp-grid2' },
+        h(Card, { title: 'Appearance' },
+          h(Field, { label: 'Theme' }, h(Seg, { label: 'Theme', value: theme, onChange: setTheme, items: [{ id: 'dark', label: 'Dark' }, { id: 'light', label: 'Light' }, { id: 'system', label: 'Match system' }] })),
+          h('p', { className: 'cp-help' }, 'Press ', h('code', null, (desktop && desktop.platform === 'macos') || /Mac/.test(navigator.platform) ? '⌘1–⌘6' : 'Ctrl+1–6'), ' to switch pages.')),
+        h(Card, { title: 'About' },
+          KV([
+            ['Kadmium', status.app_version, true],
+            ['Desktop app', desktop ? 'kadmium-desktop ' + desktop.version + ' · ' + desktop.platform : 'not in use: this is a browser tab'],
+            ['Coordinator', location.origin, true],
+            ['Leader', status.active_coordinator_leader, true]
+          ]),
+          h('div', { className: 'cp-row' },
+            h(K.Button, { size: 'sm', icon: Icon('external', 16), onClick: () => openControlRoom('') }, 'Control Room'),
+            h(K.Button, { size: 'sm', variant: 'ghost', icon: Icon('external', 16), onClick: () => openExternal('/docs') }, 'Documentation'),
+            h(K.Button, { size: 'sm', variant: 'ghost', icon: Icon('external', 16), onClick: () => openExternal('/metrics') }, 'Metrics')))));
+  }
+
+  /* ---------- app ---------- */
+  function App() {
+    const page = useRoute();
+    const up = useConn();
+    const [status] = useData('/api/v1/companion/status', 4000);
+    const [overview] = useData('/api/v1/cluster/overview', 4000);
+    const [workers] = useData('/api/v1/cluster/workers', 5000);
+    const [probe] = useData('/api/v1/host/probe', 20000);
+    const [theme, setThemeState] = useState(readTheme);
+    const scrollRef = useRef(null);
+    const setTheme = t => { setThemeState(t); try { localStorage.setItem(THEME_KEY, t); } catch (e) { /* private mode */ } };
+    useEffect(() => {
+      applyTheme(theme);
+      if (theme !== 'system' || !window.matchMedia) return undefined;
+      const mq = window.matchMedia('(prefers-color-scheme: light)');
+      const fn = () => applyTheme('system');
+      if (mq.addEventListener) mq.addEventListener('change', fn); else mq.addListener(fn);
+      return () => { if (mq.removeEventListener) mq.removeEventListener('change', fn); else mq.removeListener(fn); };
+    }, [theme]);
+    useEffect(() => {
+      const onKey = e => {
+        if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && /^[1-6]$/.test(e.key)) { e.preventDefault(); go(PAGES[Number(e.key) - 1].id); }
+      };
+      window.addEventListener('keydown', onKey);
+      return () => window.removeEventListener('keydown', onKey);
+    }, []);
+    useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [page]);
+    const core = { status, overview, workers, probe };
+    const meta = PAGES.find(p => p.id === page) || PAGES[0];
+    const body = {
+      home: () => h(HomePage, { core }),
+      cluster: () => h(ClusterPage, { core }),
+      models: () => h(ModelsPage, { core }),
+      earn: () => h(EarnPage, { core }),
+      tools: () => h(ToolsPage, { core }),
+      settings: () => h(SettingsPage, { core, theme, setTheme })
+    }[page];
+    return h('div', { className: 'cp-app' },
+      h(Rail, { page, core, up }),
+      h('div', { className: 'cp-main' },
+        desktop ? null : h(BrowserBanner),
+        up ? null : h('div', { className: 'cp-banner down', role: 'alert' }, Icon('alert', 18), h('span', null, 'Lost the connection to the coordinator at ', h('code', null, location.host), '. Retrying every few seconds.')),
+        h(TopBar, { meta, core, up }),
+        h('main', { className: 'cp-scroll', ref: scrollRef }, h('div', { className: 'cp-page', key: page }, body()))),
+      h(Toasts));
+  }
+
+  ReactDOM.createRoot(document.getElementById('app')).render(h(App));
 })();
 </script>
 </body>
