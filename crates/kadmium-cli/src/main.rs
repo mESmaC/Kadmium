@@ -235,6 +235,12 @@ enum Commands {
         #[arg(short, long)]
         ip: Option<String>,
     },
+    /// Probe and benchmark the live Apple M4 Mac mini (Mac16,10 · 10-Core Metal 4 GPU + AMX Accelerate) over LAN TCP
+    M4 {
+        /// Optional LAN IP of the Apple M4 Mac mini (defaults to 192.168.40.237)
+        #[arg(short, long)]
+        ip: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -317,6 +323,7 @@ async fn main() {
         Commands::Exl3 { model, bpw } => run_exl3(&model, bpw),
         Commands::Switch { revision } => run_switch(&revision),
         Commands::Reterminal { ip } => run_reterminal(ip.as_deref()),
+        Commands::M4 { ip } => run_m4_mac_mini(ip.as_deref()),
     }
 }
 
@@ -1415,6 +1422,80 @@ fn run_reterminal(custom_ip: Option<&str>) {
             println!(
                 "  Thermal & Clock Delta: {:.1}°C -> {:.1}°C | {} -> {} MHz (FNV-1a64: {:#018x})",
                 stress.temp_before_c, stress.temp_after_c, stress.freq_before_mhz, stress.freq_after_mhz, stress.last_fnv1a64
+            );
+        }
+    }
+    println!("====================================================================================");
+}
+
+fn run_m4_mac_mini(custom_ip: Option<&str>) {
+    let report = kadmium_core::M4MacMiniLanBridge::probe_and_verify(custom_ip);
+    println!("====================================================================================");
+    println!("  KADMIUM (Cd-48) — APPLE M4 MAC MINI (METAL 4 GPU + AMX ACCELERATE) LIVE PROBE");
+    println!("====================================================================================");
+    println!(
+        "  Physical Board Online: {} ({})",
+        report.physical_board_online, report.lan_endpoint
+    );
+    println!("  Machine Model:         {}", report.board_model);
+    println!("  MAC Address / OUI:     {}", report.mac_address_oui);
+    println!("  SoC Architecture:      {}", report.soc_architecture);
+    println!("  Kernel Uname:          {}", report.execution_proof.kernel_uname);
+    println!(
+        "  Metal 4 GPU & UMA:     {} (pipeline_ready={}) | {:.2}/{:.1} GiB Metal working set",
+        report.telemetry.metal_gpu_name,
+        report.telemetry.metal_pipeline_ready,
+        report.telemetry.metal_recommended_working_set_gib,
+        report.telemetry.unified_memory_gib
+    );
+    println!(
+        "  Apple Silicon Cores:   {} CPU ({}P + {}E) | {} GPU | {} Neural Engine | NVMe {:.2}/{:.2} GiB free",
+        report.telemetry.cpu_cores_total,
+        report.telemetry.cpu_cores_perf,
+        report.telemetry.cpu_cores_eff,
+        report.telemetry.gpu_cores,
+        report.telemetry.ane_cores,
+        report.telemetry.ssd_free_gib,
+        report.telemetry.ssd_total_gib
+    );
+    println!("------------------------------------------------------------------------------------");
+    println!(
+        "  LAN TCP Round-Trip:    {:.2} ms (persistent TCP_NODELAY socket)",
+        report.execution_proof.lan_round_trip_ms
+    );
+    println!(
+        "  Metal 4 64x64 GEMM:    {:.3} ms (10-Core GPU Shader | FNV-1a64: {:#018x} | sample: {:?})",
+        report.execution_proof.metal_gpu_gemm_64x64_ms,
+        report.execution_proof.metal_gpu_gemm_fnv1a64,
+        report.execution_proof.metal_sample4
+    );
+    println!(
+        "  Apple M4 AMX SGEMM:    {:.3} ms (512x512 cblas_sgemm -> {:.2} GFLOP/s | FNV-1a64: {:#018x})",
+        report.execution_proof.amx_sgemm_512_ms,
+        report.execution_proof.amx_sgemm_512_gflops,
+        report.execution_proof.amx_sgemm_fnv1a64
+    );
+    println!(
+        "  HW ARMv9.2-A CRC32C:   {:.2} GB/s (__crc32cd 64 KiB .ktb page verification)",
+        report.execution_proof.hw_crc32c_gbps
+    );
+    println!(
+        "  Apple NVMe 64 KiB I/O: write {:.3} ms | read {:.3} ms | witness_verified={}",
+        report.execution_proof.nvme_64k_write_ms,
+        report.execution_proof.nvme_64k_read_ms,
+        report.execution_proof.nvme_witness_verified
+    );
+    if report.physical_board_online {
+        let ip = custom_ip.unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+        if let Some(stress) = kadmium_core::M4MacMiniLanBridge::run_stress_benchmark_on_m4(ip, 25) {
+            println!("------------------------------------------------------------------------------------");
+            println!(
+                "  25-Iter Metal 4 GPU:   min {:.3} ms | p50 {:.3} ms | p95 {:.3} ms",
+                stress.metal_min_ms, stress.metal_p50_ms, stress.metal_p95_ms
+            );
+            println!(
+                "  Sustained AMX + CRC:   512x512 AMX={:.2} GFLOP/s ({:.3} ms) | HW CRC32C={:.2} GB/s",
+                stress.amx_sgemm_512_gflops, stress.amx_sgemm_512_ms, stress.hw_crc32c_gbps
             );
         }
     }

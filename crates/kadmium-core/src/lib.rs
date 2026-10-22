@@ -760,6 +760,7 @@ pub fn sample_node_pool(total_nodes: usize) -> Vec<HardwareNode> {
 
 pub mod governance;
 pub mod k230_bridge;
+pub mod m4_mac_mini;
 pub mod os_hooks;
 pub mod phone_farm;
 pub mod rbac;
@@ -770,6 +771,7 @@ pub mod tegra_switch;
 
 pub use governance::*;
 pub use k230_bridge::*;
+pub use m4_mac_mini::*;
 pub use os_hooks::*;
 pub use phone_farm::*;
 pub use rbac::*;

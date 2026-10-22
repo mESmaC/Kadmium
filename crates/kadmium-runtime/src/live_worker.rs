@@ -586,6 +586,24 @@ pub fn execute_stage_kernels_with_ktb(
             hidden = hw_hidden;
             k230_hw_exec_ms = Some(hw_ms);
         }
+    } else if hostname.starts_with("apple-m4-mac-mini") {
+        let ip = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.contains('.'))
+            .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+        if let Some((hw_hidden, hw_ms)) =
+            kadmium_core::M4MacMiniLanBridge::execute_live_stage_forward_on_m4(
+                ip,
+                req.start_layer,
+                req.end_layer,
+                gate_scale,
+                &hidden,
+            )
+        {
+            hidden = hw_hidden;
+            k230_hw_exec_ms = Some(hw_ms);
+        }
     }
     if k230_hw_exec_ms.is_none() {
         for l in req.start_layer..=req.end_layer {
@@ -667,6 +685,39 @@ pub fn execute_stage_training_local(
                 .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
             if let Some((lb, la, hw_grads, _hw_dig, hw_ms)) =
                 kadmium_core::ReTerminalCm4LanBridge::execute_qlora_demo_step_on_cm4(
+                    ip,
+                    req.start_layer,
+                    req.end_layer,
+                    req.learning_rate,
+                    &x,
+                    &target,
+                )
+            {
+                cm4_hw_ms = Some(hw_ms);
+                (lb, la, hw_grads)
+            } else {
+                let base_w: Vec<f32> = (0..(d_out * d_in))
+                    .map(|i| (((i + req.start_layer as usize * 7) as f32) * 0.04).sin() * 0.3)
+                    .collect();
+                let mut qlora = DistributedQLoRAAdapter::new(&base_w, d_out, d_in, 4, 8.0);
+                let (lb, _) = qlora.backward_and_step(&x, &target, req.learning_rate);
+                let mut la = lb;
+                let mut lg = Vec::new();
+                for _ in 0..4 {
+                    let (l, grads) = qlora.backward_and_step(&x, &target, req.learning_rate);
+                    la = l;
+                    lg = grads;
+                }
+                (lb, la, lg)
+            }
+        } else if hostname.starts_with("apple-m4-mac-mini") {
+            let ip = hostname
+                .rsplit('-')
+                .next()
+                .filter(|s| s.contains('.'))
+                .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+            if let Some((lb, la, hw_grads, _hw_dig, hw_ms)) =
+                kadmium_core::M4MacMiniLanBridge::execute_qlora_demo_step_on_m4(
                     ip,
                     req.start_layer,
                     req.end_layer,
@@ -814,6 +865,27 @@ pub fn apply_ota_update_manifest_local(
                 k230_sd_note = format!(" + ~/kadmium-cm4/kadmium_ota_release.bin on {ip}");
             }
         }
+    } else if hostname.starts_with("apple-m4-mac-mini") {
+        let ip = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.contains('.'))
+            .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+        if let Some((hw_digest, nvme_ok, hw_ms)) =
+            kadmium_core::M4MacMiniLanBridge::stage_ota_update_on_m4(
+                ip,
+                &manifest.update_id,
+                &manifest.target_version,
+                manifest.expected_ktb_merkle_root_fnv64,
+                manifest.artifact_size_bytes as usize,
+            )
+        {
+            repops_digest = hw_digest;
+            k230_exec_override = Some(hw_ms);
+            if nvme_ok {
+                k230_sd_note = format!(" + ~/kadmium-m4/kadmium_ota_release.bin on {ip}");
+            }
+        }
     }
 
     let elapsed_ms = k230_exec_override
@@ -923,6 +995,32 @@ pub fn execute_verde_layer_challenge_local(
                 compute_exec_ms: hw_ms.max(0.05),
             };
         }
+    } else if hostname.starts_with("apple-m4-mac-mini") {
+        let ip = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.contains('.'))
+            .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+        if let Some((sample, sum, digest, hw_ms)) =
+            kadmium_core::M4MacMiniLanBridge::execute_live_verde_challenge_on_m4(
+                ip,
+                req.start_layer,
+                req.target_layer,
+                &state,
+                req.inject_fault_at_layer,
+            )
+        {
+            return LiveVerdeBisectionResponse {
+                audit_id: req.audit_id.clone(),
+                node_id: node_id.to_string(),
+                hostname: hostname.to_string(),
+                queried_layer: req.target_layer,
+                layer_state_sample: sample,
+                repops_tree_sum: sum,
+                repops_digest_fnv1a: digest,
+                compute_exec_ms: hw_ms.max(0.05),
+            };
+        }
     }
 
     for l in req.start_layer..=req.target_layer {
@@ -991,6 +1089,24 @@ pub fn execute_dream_rsi_replay_local(
             .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
         if let Some((hw_passed, hw_speedup, hw_ms)) =
             kadmium_core::ReTerminalCm4LanBridge::execute_live_dream_rsi_on_cm4(
+                ip,
+                req.epoch,
+                sims,
+                req.puct_exploration_c,
+            )
+        {
+            passed_wasi = hw_passed;
+            best_speedup = hw_speedup;
+            k230_hw_ms = Some(hw_ms);
+        }
+    } else if hostname.starts_with("apple-m4-mac-mini") {
+        let ip = hostname
+            .rsplit('-')
+            .next()
+            .filter(|s| s.contains('.'))
+            .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+        if let Some((hw_passed, hw_speedup, hw_ms)) =
+            kadmium_core::M4MacMiniLanBridge::execute_live_dream_rsi_on_m4(
                 ip,
                 req.epoch,
                 sims,
@@ -1298,6 +1414,25 @@ impl LiveNodeWorkerServer {
                                                             emmc_ok, emmc_ms
                                                         );
                                                     }
+                                                } else if hostname_str.starts_with("apple-m4-mac-mini")
+                                                    && req.page_index == 0
+                                                {
+                                                    let ip = hostname_str
+                                                        .rsplit('-')
+                                                        .next()
+                                                        .filter(|s| s.contains('.'))
+                                                        .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+                                                    if let Some((nvme_ok, nvme_ms)) = kadmium_core::M4MacMiniLanBridge::stage_fts3_ktb_page_on_m4(
+                                                        ip,
+                                                        req.page_index,
+                                                        req.expected_merkle_root,
+                                                        &req.page_bytes,
+                                                    ) {
+                                                        sd_suffix = format!(
+                                                            " | ~/kadmium-m4/kadmium_fts3_page_0.ktb verified={} ({:.2} ms)",
+                                                            nvme_ok, nvme_ms
+                                                        );
+                                                    }
                                                 }
                                                 format!(
                                                     "Patched 64 KiB page #{}/{} from {} ({}) [Merkle root {:#018x} verified{}]",
@@ -1487,6 +1622,23 @@ impl LiveNodeWorkerServer {
                                             .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
                                         if let Some((_ok, hw_ms)) =
                                             kadmium_core::ReTerminalCm4LanBridge::stage_kv_cache_migration_on_cm4(
+                                                ip,
+                                                &req.session_id,
+                                                req.quantized_k_pages.len(),
+                                                req.tokens_stored,
+                                                wire_bytes,
+                                            )
+                                        {
+                                            exec_ms = hw_ms;
+                                        }
+                                    } else if hostname_str.starts_with("apple-m4-mac-mini") {
+                                        let ip = hostname_str
+                                            .rsplit('-')
+                                            .next()
+                                            .filter(|s| s.contains('.'))
+                                            .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+                                        if let Some((_ok, hw_ms)) =
+                                            kadmium_core::M4MacMiniLanBridge::stage_kv_cache_migration_on_m4(
                                                 ip,
                                                 &req.session_id,
                                                 req.quantized_k_pages.len(),

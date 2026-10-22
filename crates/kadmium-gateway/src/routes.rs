@@ -15,13 +15,14 @@ use axum::{
 };
 use kadmium_core::{
     ClosetSiliconLongevityGovernor, K230HardwareProbeReport, K230UsbComputeBridge,
-    KadmiumReactorInfrastructureReport, LiveHardwareProfiler, ModdedSwitchController,
-    ModdedSwitchNodeSpec, ModelSpec, NodeTrustTier, OsHookHysteresisReport,
-    OsSwapchainHysteresisEngine, PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmChassisSpec,
-    PhoneFarmTopologyMode, PhoneFarmTransportMode, PoliteState, ReTerminalCm4LanBridge,
-    ReTerminalCm4ProbeReport, ScopedApiKey, SubClusterQuotaPolicy, SubClusterRbacEngine,
-    SupplyLeasePolicy, SupplyMarketplaceSnapshot, SwitchRuntimeEnvironment, SwitchSiliconRevision,
-    WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
+    KadmiumReactorInfrastructureReport, LiveHardwareProfiler, M4MacMiniLanBridge,
+    M4MacMiniProbeReport, ModdedSwitchController, ModdedSwitchNodeSpec, ModelSpec,
+    NodeTrustTier, OsHookHysteresisReport, OsSwapchainHysteresisEngine, PhoneFarmBoxController,
+    PhoneFarmBoxPreset, PhoneFarmChassisSpec, PhoneFarmTopologyMode, PhoneFarmTransportMode,
+    PoliteState, ReTerminalCm4LanBridge, ReTerminalCm4ProbeReport, ScopedApiKey,
+    SubClusterQuotaPolicy, SubClusterRbacEngine, SupplyLeasePolicy, SupplyMarketplaceSnapshot,
+    SwitchRuntimeEnvironment, SwitchSiliconRevision, WorkloadKind, sample_cloud_burst_gpu_node,
+    sample_node_pool,
 };
 use kadmium_data::{
     DecentralizedStoragePoolEngine, DecentralizedStoragePoolReport, EcosystemIntegrationsOverview,
@@ -412,6 +413,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/reterminal/probe",
             get(get_reterminal_cm4_probe_report).post(get_reterminal_cm4_probe_report),
+        )
+        .route(
+            "/api/v1/m4-mac-mini/probe",
+            get(get_m4_mac_mini_probe_report).post(get_m4_mac_mini_probe_report),
         )
         .route(
             "/api/v1/cluster/switch-tegra",
@@ -2232,6 +2237,24 @@ async fn get_reterminal_cm4_probe_report(
     State(state): State<Arc<Mutex<GatewayState>>>,
 ) -> Json<ReTerminalCm4ProbeReport> {
     let report = ReTerminalCm4LanBridge::probe_and_verify(None);
+    if report.physical_board_online {
+        let mut guard = state.lock().expect("gateway state lock");
+        let hw_node = report.hardware_node.clone();
+        if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == hw_node.id) {
+            *existing = hw_node;
+        } else {
+            guard.nodes.push(hw_node);
+            guard.epoch += 1;
+            guard.recompute_plans();
+        }
+    }
+    Json(report)
+}
+
+async fn get_m4_mac_mini_probe_report(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<M4MacMiniProbeReport> {
+    let report = M4MacMiniLanBridge::probe_and_verify(None);
     if report.physical_board_online {
         let mut guard = state.lock().expect("gateway state lock");
         let hw_node = report.hardware_node.clone();
