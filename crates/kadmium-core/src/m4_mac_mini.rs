@@ -323,9 +323,12 @@ impl M4MacMiniLanBridge {
         } else {
             tier.default_memory_bandwidth_gbps(telemetry.gpu_cores)
         };
-        let fp16_tflops = (telemetry.gpu_cores as f64) * 1.42;
-        let int4_tops = (telemetry.ane_cores as f64) * 2.375;
-        let cpu_tflops = (telemetry.cpu_cores_perf as f64) * 0.65
+        // Apple M4 Metal 4 GPU: 128 ALUs/core @ ~1.67 GHz = 0.426 TF FP32 / 0.852 TF FP16 / 1.70 TOPS INT4 per GPU core.
+        // Apple Neural Engine (ANE): 2.375 TOPS per ANE core (16-core ANE = 38.0 TOPS; 32-core ANE = 76.0 TOPS).
+        let fp16_tflops = (telemetry.gpu_cores as f64) * 0.85;
+        let int4_tops = (telemetry.gpu_cores as f64) * 1.70;
+        let npu_tops = (telemetry.ane_cores as f64) * 2.375;
+        let cpu_tflops = (telemetry.cpu_cores_perf as f64) * 0.40
             + (telemetry.cpu_cores_eff as f64) * 0.10;
         let polite_state = match form_factor {
             AppleM4ProductFormFactor::MacBookAir | AppleM4ProductFormFactor::IPadPro => {
@@ -350,6 +353,19 @@ impl M4MacMiniLanBridge {
                 NodeRole::StorageVault,
             ],
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: format!(
+                "{} {}-Core Metal 4 GPU",
+                telemetry.cpu_brand, telemetry.gpu_cores
+            ),
+            cpu_name: format!(
+                "{} ({}P+{}E + AMX)",
+                telemetry.cpu_brand, telemetry.cpu_cores_perf, telemetry.cpu_cores_eff
+            ),
+            npu_name: Some(format!(
+                "{} {}-Core Neural Engine",
+                telemetry.cpu_brand, telemetry.ane_cores
+            )),
+            npu_tops: (npu_tops * 100.0).round() / 100.0,
             fp16_tflops: (fp16_tflops * 100.0).round() / 100.0,
             int4_tops: (int4_tops * 100.0).round() / 100.0,
             cpu_threads: telemetry.cpu_cores_total.max(1),

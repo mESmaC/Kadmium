@@ -517,7 +517,7 @@
               h('p', { className: 'eyebrow' }, 'This machine · live hardware profiler'),
               h(K.NodeCard, {
                 name: probe.local_node.hostname,
-                hardware: String(probe.local_node.backend || probe.local_node.compute_backend || 'cpu').toLowerCase() + ' · ' + probe.local_node.memory.vram_gb + ' gb vram · ' + probe.local_node.memory.system_ram_gb + ' gb ram · q* ' + probe.q_star_ratio,
+                hardware: (probe.local_node.gpu_name || String(probe.local_node.backend || 'cpu')) + ' (' + probe.local_node.fp16_tflops + ' TF · ' + probe.local_node.memory.vram_gb + ' GB VRAM)' + (probe.local_node.npu_name ? ' + ' + probe.local_node.npu_name + ' (' + probe.local_node.npu_tops + ' TOPS)' : '') + ' + ' + (probe.local_node.cpu_name || '') + ' (' + probe.local_node.memory.system_ram_gb + ' GB RAM)',
                 kind: 'desktop',
                 placement: 'local',
                 status: status && status.local_host_polite_state === 'GamingOrHeavyApp' ? 'yielded' : (execReport ? 'resident' : 'idle'),

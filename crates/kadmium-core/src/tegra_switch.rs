@@ -252,6 +252,16 @@ impl ModdedSwitchController {
             roles: vec![NodeRole::DraftAndUtilityWorker, NodeRole::ComputeWorker],
             polite_state: PoliteState::IdleDedicated,
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: format!(
+                "NVIDIA Tegra X1 Maxwell 256-CUDA (sm_53 @ {} MHz)",
+                spec.gpu_clock_mhz
+            ),
+            cpu_name: format!(
+                "{}x ARM Cortex-A57 @ {} MHz",
+                spec.cpu_cores_a57, spec.cpu_clock_mhz
+            ),
+            npu_name: None,
+            npu_tops: 0.0,
             cpu_threads: spec.cpu_cores_a57 as u32,
             cpu_tflops: 0.12,
             fp16_tflops: spec.fp16_tflops,

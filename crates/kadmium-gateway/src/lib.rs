@@ -365,8 +365,17 @@ impl GatewayState {
         measured_rtt_ms: f64,
         switch_to_live_only: bool,
     ) -> WorkerRegistrationAck {
-        let board = LiveHardwareProfiler::probe_sbc_or_board_model()
-            .unwrap_or_else(|| format!("{:?} ({:?})", node.device_kind, node.backend));
+        let board = if !node.gpu_name.is_empty() {
+            let npu_str = node
+                .npu_name
+                .as_ref()
+                .map(|n| format!(" + {n} ({:.0} TOPS)", node.npu_tops))
+                .unwrap_or_default();
+            format!("{} + {}{}", node.gpu_name, node.cpu_name, npu_str)
+        } else {
+            LiveHardwareProfiler::probe_sbc_or_board_model()
+                .unwrap_or_else(|| format!("{:?} ({:?})", node.device_kind, node.backend))
+        };
         let net_chan = if node.id.0.contains("remote") || node.id.0.contains("wan") {
             "OnlineWAN".to_string()
         } else {

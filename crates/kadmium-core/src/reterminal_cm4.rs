@@ -247,6 +247,13 @@ impl ReTerminalCm4LanBridge {
                 NodeRole::StorageVault,
             ],
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: "Broadcom VideoCore VI (V3D 4.2)".into(),
+            cpu_name: format!(
+                "Broadcom BCM2711 4x Cortex-A72 ({} MHz NEON)",
+                telemetry.cpu_freq_mhz.max(1500)
+            ),
+            npu_name: None,
+            npu_tops: 0.0,
             fp16_tflops,
             int4_tops,
             cpu_threads: 4,

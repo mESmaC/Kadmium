@@ -872,6 +872,10 @@ for line in text.splitlines():
             backend: ComputeBackend::CpuArmNeonNpu, // Edge RISC-V RVV 1.0 + 6 TOPS KPU NPU
             roles: vec![NodeRole::DraftAndUtilityWorker, NodeRole::ComputeWorker],
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: "Kendryte K230 2.5D Vector Engine".into(),
+            cpu_name: "Dual-Core T-Head Xuantie C908 (1.6 GHz RVV 1.0)".into(),
+            npu_name: Some("Kendryte K230 3rd-Gen KPU (nncase v2.11)".into()),
+            npu_tops: 6.0,
             fp16_tflops: 1.5, // 3rd-Gen KPU FP16 + C908 RVV 1.0 Vector engine
             int4_tops: 6.0,   // 6 TOPS 3rd-Gen KPU INT8/INT4 neural accelerator
             cpu_threads: 2,   // Dual-core 64-bit Xuantie C908 (1.6 GHz + 800 MHz)

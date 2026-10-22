@@ -183,13 +183,25 @@ pub struct HardwareNode {
     pub roles: Vec<NodeRole>,
     #[serde(default = "default_trust_tier")]
     pub trust_tier: NodeTrustTier,
-    /// Peak FP16 / BF16 TFLOPs on primary accelerator.
+    /// Detected GPU or primary accelerator model name (e.g., `"NVIDIA GeForce RTX 5070"` or `"Apple M4 10-Core Metal 4 GPU"`).
+    #[serde(default)]
+    pub gpu_name: String,
+    /// Detected host CPU model name (e.g., `"Intel Core Ultra 7 265F"` or `"Apple M4 (4P+6E + AMX)"`).
+    #[serde(default)]
+    pub cpu_name: String,
+    /// Optional dedicated Neural Processing Unit model name (e.g., `"Intel AI Boost NPU"` or `"Apple M4 16-Core Neural Engine"`).
+    #[serde(default)]
+    pub npu_name: Option<String>,
+    /// Dedicated NPU INT8/FP16 TOPS (e.g., `13.0` for Intel AI Boost Arrow Lake, `38.0` for Apple M4 16-Core ANE, `6.0` for K230 KPU).
+    #[serde(default)]
+    pub npu_tops: f64,
+    /// Peak FP16 / BF16 TFLOPs on primary GPU/accelerator.
     pub fp16_tflops: f64,
-    /// Peak INT4 / Q4 quantized TOPS.
+    /// Peak GPU INT4 / FP4 quantized TOPS.
     pub int4_tops: f64,
     /// Host CPU threads available for parallel host-bank execution ($q^*$ CPU split).
     pub cpu_threads: u32,
-    /// Host CPU FP16/INT4 effective TFLOPs for hybrid execution.
+    /// Host CPU FP16/FP32 vector TFLOPs for hybrid execution.
     pub cpu_tflops: f64,
     pub memory: MemoryTierProfile,
     pub polite_state: PoliteState,
@@ -203,7 +215,7 @@ impl HardwareNode {
     /// Effective TFLOPs currently available after applying the BOINC-style PoliteState multiplier.
     pub fn effective_fp16_tflops(&self) -> f64 {
         let rho = self.polite_state.availability_multiplier();
-        (self.fp16_tflops + self.cpu_tflops * 0.35) * rho
+        (self.fp16_tflops + self.cpu_tflops * 0.35 + self.npu_tops * 0.25) * rho
     }
 
     /// Effective fast memory (VRAM + Unified Memory) available under the current PoliteState.
@@ -611,6 +623,10 @@ pub fn sample_personal_cluster() -> Vec<HardwareNode> {
             backend: ComputeBackend::Cuda,
             roles: vec![NodeRole::Coordinator, NodeRole::ComputeWorker],
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: "NVIDIA GeForce RTX 4090 (24 GB)".into(),
+            cpu_name: "Intel Core i9-14900K (24C/32T)".into(),
+            npu_name: None,
+            npu_tops: 0.0,
             fp16_tflops: 165.0,
             int4_tops: 660.0,
             cpu_threads: 32,
@@ -637,10 +653,14 @@ pub fn sample_personal_cluster() -> Vec<HardwareNode> {
             backend: ComputeBackend::MetalUnified,
             roles: vec![NodeRole::Coordinator, NodeRole::ComputeWorker],
             trust_tier: NodeTrustTier::TrustedCore,
-            fp16_tflops: 42.0,
-            int4_tops: 152.0,
+            gpu_name: "Apple M4 Pro 20-Core Metal 4 GPU".into(),
+            cpu_name: "Apple M4 Pro (10P+4E + AMX)".into(),
+            npu_name: Some("Apple M4 16-Core Neural Engine".into()),
+            npu_tops: 38.0,
+            fp16_tflops: 17.0,
+            int4_tops: 34.0,
             cpu_threads: 14,
-            cpu_tflops: 6.5,
+            cpu_tflops: 4.4,
             memory: MemoryTierProfile {
                 vram_gb: 0.0,
                 vram_bw_gbps: 0.0,
@@ -663,6 +683,10 @@ pub fn sample_personal_cluster() -> Vec<HardwareNode> {
             backend: ComputeBackend::Cuda,
             roles: vec![NodeRole::ComputeWorker],
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: "NVIDIA GeForce RTX 4070 Laptop GPU".into(),
+            cpu_name: "Intel Core Ultra 9 185H (16C/22T)".into(),
+            npu_name: Some("Intel AI Boost NPU".into()),
+            npu_tops: 11.5,
             fp16_tflops: 46.0,
             int4_tops: 184.0,
             cpu_threads: 20,
@@ -689,6 +713,10 @@ pub fn sample_personal_cluster() -> Vec<HardwareNode> {
             backend: ComputeBackend::Cuda,
             roles: vec![NodeRole::ComputeWorker],
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: "NVIDIA GeForce RTX 3070 Laptop GPU".into(),
+            cpu_name: "AMD Ryzen 7 5800H (8C/16T)".into(),
+            npu_name: None,
+            npu_tops: 0.0,
             fp16_tflops: 36.0,
             int4_tops: 144.0,
             cpu_threads: 16,
@@ -715,6 +743,10 @@ pub fn sample_personal_cluster() -> Vec<HardwareNode> {
             backend: ComputeBackend::CpuAvx512OrAvx2,
             roles: vec![NodeRole::ComputeWorker, NodeRole::DraftAndUtilityWorker],
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: "Intel UHD Graphics 620".into(),
+            cpu_name: "Intel Core i7-8550U (4C/8T)".into(),
+            npu_name: None,
+            npu_tops: 0.0,
             fp16_tflops: 1.8,
             int4_tops: 7.2,
             cpu_threads: 8,
@@ -741,6 +773,10 @@ pub fn sample_personal_cluster() -> Vec<HardwareNode> {
             backend: ComputeBackend::CpuArmNeonNpu,
             roles: vec![NodeRole::DraftAndUtilityWorker],
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: "ARM Mali-G610 MP4".into(),
+            cpu_name: "3x Rockchip RK3588 (24x Cortex-A76/A55)".into(),
+            npu_name: Some("3x Rockchip RK3588 6-TOPS NPU".into()),
+            npu_tops: 18.0,
             fp16_tflops: 6.0,
             int4_tops: 18.0,
             cpu_threads: 24,
@@ -767,6 +803,10 @@ pub fn sample_personal_cluster() -> Vec<HardwareNode> {
             backend: ComputeBackend::CpuAvx512OrAvx2,
             roles: vec![NodeRole::StorageVault, NodeRole::DraftAndUtilityWorker],
             trust_tier: NodeTrustTier::TrustedCore,
+            gpu_name: "Headless Server CPU".into(),
+            cpu_name: "AMD EPYC 4344P (8C/16T AVX-512)".into(),
+            npu_name: None,
+            npu_tops: 0.0,
             fp16_tflops: 3.2,
             int4_tops: 12.8,
             cpu_threads: 16,
@@ -800,6 +840,10 @@ pub fn sample_cloud_burst_gpu_node() -> HardwareNode {
         backend: ComputeBackend::Cuda,
         roles: vec![NodeRole::BurstAccelerator, NodeRole::ComputeWorker],
         trust_tier: NodeTrustTier::VerifiedPeerMiddleLayersOnly,
+        gpu_name: "NVIDIA H100 SXM5 80GB".into(),
+        cpu_name: "Intel Xeon Platinum 8480+".into(),
+        npu_name: None,
+        npu_tops: 0.0,
         fp16_tflops: 989.0,
         int4_tops: 1979.0,
         cpu_threads: 32,

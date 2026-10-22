@@ -1713,15 +1713,24 @@ async fn run_desktop(port: u16, live_only: bool, open_control_room: bool, check_
     println!("  KADMIUM (Cd-48) — NATIVE DESKTOP APPLICATION & MULTI-PLATFORM COORDINATOR");
     println!("====================================================================================");
     println!(
-        "  Local Workstation:     {} ({:?}, {:.1} GB VRAM/UMA + {:.1} GB RAM, q*={:.2})",
+        "  Local Workstation:     {} ({} [{:.1} TF FP16 / {:.0} TOPS INT4] + {} [{:.1} TF]{}, {:.1} GB VRAM + {:.1} GB RAM, q*={:.2})",
         local_node.hostname,
-        local_node.backend,
-        local_node.available_fast_memory_gb(),
+        local_node.gpu_name,
+        local_node.fp16_tflops,
+        local_node.int4_tops,
+        local_node.cpu_name,
+        local_node.cpu_tflops,
+        local_node
+            .npu_name
+            .as_ref()
+            .map(|n| format!(" + {} [{:.0} TOPS NPU]", n, local_node.npu_tops))
+            .unwrap_or_default(),
+        local_node.memory.vram_gb,
         local_node.memory.system_ram_gb,
         local_node.compute_q_star_ratio()
     );
     println!(
-        "  Apple M4 LAN Bridge:   {} ({} @ {} | Metal 4 + AMX {:.1} GFLOP/s)",
+        "  Apple M4 LAN Bridge:   {} ({} @ {} | {:.1} TF Metal 4 GPU + {:.0} TOPS 16-Core ANE + AMX {:.1} GFLOP/s)",
         if m4_probe.physical_board_online {
             "ONLINE"
         } else {
@@ -1729,6 +1738,8 @@ async fn run_desktop(port: u16, live_only: bool, open_control_room: bool, check_
         },
         m4_probe.board_model,
         m4_probe.lan_endpoint,
+        m4_probe.hardware_node.fp16_tflops,
+        m4_probe.hardware_node.npu_tops,
         m4_probe.execution_proof.amx_sgemm_512_gflops
     );
     println!(
