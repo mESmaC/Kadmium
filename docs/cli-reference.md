@@ -50,6 +50,7 @@ kadmium serve --port 7848
 | :--- | :--- | :--- |
 | `-p`, `--port <PORT>` | `7848` | TCP port for the web dashboard, REST control plane, and `/v1/chat/completions` + `/v1/messages` endpoints. |
 | `-c`, `--config <PATH>` | none | Read a workspace file using the existing tolerant parser. |
+| `--live` | on unless `--demo` | Start with only the real probed hardware nodes. |
 | `--demo` | off | Include the simulated seven-node fleet alongside live hardware. |
 | `--spawn-fleet` | off | Start the existing worker test fleet. |
 | `--worker-port <PORT>` | `7850` | Preferred built-in worker TCP port; `0` asks the OS for a free port. |

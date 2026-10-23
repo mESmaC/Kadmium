@@ -35,7 +35,7 @@ kadmium slice --pool-size 100 --slices 5
 The **Kadmium Desktop Companion App** (and underlying [`kadmium-gateway`](../../crates/kadmium-gateway/src/lib.rs) daemon) is designed so the exact same binary serves both **100% free open-source self-hosters** and **`kadmium.ai` paid cloud users**.
 
 ### Mode A: `SelfHostedOpenSource` (Default — `$0.00/hr`)
-- Connects strictly to your local coordinator (`http://127.0.0.1:7848` or LAN mDNS).
+- Connects strictly to your local coordinator (`http://127.0.0.1:7848`, or the LAN address found by UDP discovery on port `7849`).
 - Zero telemetry or cloud account required.
 - Full access to asymmetric sharding, `.ktb` transcoding, CERN FTS3 LAN staging, `<200ms` Polite Gaming Auto-Yield, Dream-RSI, and sub-cluster slicing.
 

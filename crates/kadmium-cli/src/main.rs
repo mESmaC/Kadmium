@@ -75,7 +75,7 @@ enum Commands {
         #[arg(short, long, default_value = "inference")]
         workload: String,
     },
-    /// Launch the Unified Web Dashboard & OpenAI/Anthropic compatible API Gateway
+    /// Launch the Control Room and reference API diagnostics
     Serve {
         /// Port to bind the HTTP dashboard and API gateway
         #[arg(short, long, default_value_t = 7848)]
