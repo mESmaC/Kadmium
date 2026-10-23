@@ -13,7 +13,7 @@
 //! (`WireFrameKind::FleetUpdatePush`) over real sockets.
 
 use crate::{
-    BlockwiseInt8Tensor, DeMoDctCompressor, DiLoCoOuterOptimizer, DistributedMoEPipelineExecutor,
+    BlockwiseInt8Tensor, DeMoDctCompressor, DistributedMoEPipelineExecutor,
     DistributedPipelineExecutionReport, DistributedQLoRAAdapter, ExecutorContext,
     ExecutorRegistry, ExpertResidencyTier, LAYER_BOUNDARY_BLOCK, LayerReference,
     MoERoutedExpertSelection, SparseDctPacket, SpeculativeDraftVerificationReport,
@@ -454,7 +454,8 @@ pub struct LiveTrainingStageTrace {
     pub repops_digest_fnv1a: u64,
 }
 
-/// Complete report from executing a live distributed QLoRA + `DeMo` DCT + `DiLoCo` training step.
+/// Legacy stateless QLoRA/DeMo per-stage gradient preview. It does not persist optimizer state or
+/// synchronize replica islands. Use a DiLoCo training session for stateful, shard-aligned rounds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDistributedTrainingStepReport {
     pub model_id: String,
@@ -465,7 +466,14 @@ pub struct LiveDistributedTrainingStepReport {
     pub mean_loss_before: f32,
     pub mean_loss_after: f32,
     pub mean_wire_compression_ratio: f64,
+    /// Legacy JSON key: norm of concatenated independent stage previews, not island consensus.
     pub diloco_outer_consensus_norm: f32,
+    #[serde(default)]
+    pub execution_mode: String,
+    #[serde(default)]
+    pub stage_preview_digest_fnv1a: u64,
+    #[serde(default)]
+    pub preview_error: Option<String>,
     pub total_step_wall_ms: f64,
     pub all_stages_repops_verified: bool,
 }
@@ -2385,8 +2393,9 @@ impl DistributedLanExecutor {
         (report, hop_telemetry)
     }
 
-    /// Executes a live distributed training step (`DistributedQLoRAAdapter` + `DeMoDctCompressor` +
-    /// `DiLoCoOuterOptimizer`) across all active stages in `plan` over TCP `WireFrame` sockets.
+    /// Executes a stateless per-stage QLoRA/DeMo gradient preview over TCP `WireFrame` sockets.
+    /// Each distinct layer range has its own synthetic reference baseline. The summary does not
+    /// average unrelated shards, save trained parameters, or perform a DiLoCo replica sync.
     pub async fn execute_live_training_step(
         plan: &ClusterShardPlan,
         step_index: u64,
@@ -2408,7 +2417,7 @@ impl DistributedLanExecutor {
         let q_target = BlockwiseInt8Tensor::quantize(&target_signal, 16);
 
         let mut stage_traces = Vec::new();
-        let mut island_updates: Vec<Vec<f32>> = Vec::new();
+        let mut stage_gradients: Vec<Vec<f32>> = Vec::new();
         let mut sum_loss_before = 0.0f32;
         let mut sum_loss_after = 0.0f32;
         let mut sum_compression = 0.0f64;
@@ -2465,7 +2474,7 @@ impl DistributedLanExecutor {
             sum_compression += resp.wire_compression_ratio;
 
             let decompressed = DeMoDctCompressor::decompress_packet(&resp.demo_dct_packet);
-            island_updates.push(decompressed);
+            stage_gradients.push(decompressed);
 
             stage_traces.push(LiveTrainingStageTrace {
                 stage_index: stage_idx,
@@ -2485,11 +2494,11 @@ impl DistributedLanExecutor {
         }
 
         let count = stage_traces.len().max(1) as f32;
-        let param_len = island_updates.first().map(|v| v.len()).unwrap_or(16);
-        let mut master_weights = vec![0.5f32; param_len];
-        let mut diloco = DiLoCoOuterOptimizer::new(param_len, 0.7, 0.9);
-        diloco.step_outer_nesterov(&mut master_weights, &island_updates);
-        let consensus_norm = master_weights.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let (preview_norm, stage_preview_digest_fnv1a, preview_error) =
+            match crate::scheduler::stateless_stage_gradient_preview(&stage_gradients, 0.7, 0.9) {
+                Ok((norm, digest)) => (norm, digest, None),
+                Err(error) => (0.0, 0, Some(error)),
+            };
 
         LiveDistributedTrainingStepReport {
             model_id: plan.model_id.clone(),
@@ -2500,9 +2509,12 @@ impl DistributedLanExecutor {
             mean_loss_before: ((sum_loss_before / count) * 10000.0).round() / 10000.0,
             mean_loss_after: ((sum_loss_after / count) * 10000.0).round() / 10000.0,
             mean_wire_compression_ratio: ((sum_compression / (count as f64)) * 10.0).round() / 10.0,
-            diloco_outer_consensus_norm: (consensus_norm * 1000.0).round() / 1000.0,
+            diloco_outer_consensus_norm: (preview_norm * 1000.0).round() / 1000.0,
+            execution_mode: crate::scheduler::STATELESS_STAGE_PREVIEW_MODE.to_string(),
+            stage_preview_digest_fnv1a,
+            all_stages_repops_verified: preview_error.is_none(),
+            preview_error,
             total_step_wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
-            all_stages_repops_verified: true,
         }
     }
 

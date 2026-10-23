@@ -2090,8 +2090,12 @@ pub struct DeMoReduceReport {
     pub mean_loss_before: f32,
     pub mean_loss_after: f32,
     pub mean_wire_compression_ratio: f64,
+    /// Legacy JSON key: norm of concatenated independent stage previews, not replica consensus.
     pub diloco_outer_consensus_norm: f32,
+    /// Legacy JSON key: digest of independent synthetic stage previews, not a saved master model.
     pub master_weight_digest_fnv1a: u64,
+    #[serde(default)]
+    pub execution_mode: String,
 }
 
 /// Runs a [`AppKind::TrainForwardBackward`] unit through the same stage training kernel the
@@ -2148,8 +2152,9 @@ impl WorkExecutor for TrainForwardBackwardExecutor {
     }
 }
 
-/// Runs a [`AppKind::DeMoReduce`] unit: decompresses every island's DeMo packet and applies the
-/// DiLoCo outer Nesterov step to the master weights.
+/// Legacy stateless gradient preview: decompresses each stage's DeMo packet and applies its
+/// update to an independent synthetic baseline. Distinct layer ranges are never averaged as
+/// replicas. Stateful DiLoCo training sessions use shard-aligned parameter deltas separately.
 pub struct DeMoReduceExecutor;
 
 impl WorkExecutor for DeMoReduceExecutor {
@@ -2177,23 +2182,18 @@ impl WorkExecutor for DeMoReduceExecutor {
             responses.push(serde_json::from_slice(bytes).map_err(|e| e.to_string())?);
         }
         if responses.is_empty() {
-            return Err("reduce received no island packets".to_string());
+            return Err("preview received no stage packets".to_string());
         }
-        let island_updates: Vec<Vec<f32>> = responses
+        let stage_gradients: Vec<Vec<f32>> = responses
             .iter()
             .map(|r| crate::DeMoDctCompressor::decompress_packet(&r.demo_dct_packet))
             .collect();
-        let param_len = island_updates.first().map_or(16, Vec::len);
-        let mut master_weights = vec![0.5f32; param_len];
-        let mut diloco =
-            crate::DiLoCoOuterOptimizer::new(param_len, params.outer_lr, params.outer_momentum);
-        diloco.step_outer_nesterov(&mut master_weights, &island_updates);
-        let consensus_norm = master_weights.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let (preview_norm, preview_digest) = crate::scheduler::stateless_stage_gradient_preview(
+            &stage_gradients,
+            params.outer_lr,
+            params.outer_momentum,
+        )?;
         let count = responses.len() as f32;
-        let mut weight_bytes = Vec::with_capacity(param_len * 4);
-        for w in &master_weights {
-            weight_bytes.extend_from_slice(&w.to_le_bytes());
-        }
         let report = DeMoReduceReport {
             step_index: params.step_index,
             contributors: responses.len(),
@@ -2213,8 +2213,9 @@ impl WorkExecutor for DeMoReduceExecutor {
                 * 10.0)
                 .round()
                 / 10.0,
-            diloco_outer_consensus_norm: (consensus_norm * 1000.0).round() / 1000.0,
-            master_weight_digest_fnv1a: fnv1a_64(&weight_bytes),
+            diloco_outer_consensus_norm: (preview_norm * 1000.0).round() / 1000.0,
+            master_weight_digest_fnv1a: preview_digest,
+            execution_mode: crate::scheduler::STATELESS_STAGE_PREVIEW_MODE.to_string(),
         };
         let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
         Ok(WorkOutput {
@@ -2224,7 +2225,7 @@ impl WorkExecutor for DeMoReduceExecutor {
             )],
             payload: serde_json::to_vec(&report).unwrap_or_default(),
             digest_fnv1a: report.master_weight_digest_fnv1a,
-            check_value: consensus_norm as f64,
+            check_value: preview_norm as f64,
             units_processed: responses.len() as u64,
             accessed: Vec::new(),
         })
@@ -2386,7 +2387,7 @@ mod phase5_tests {
     }
 
     #[tokio::test]
-    async fn training_step_graph_matches_the_legacy_islands_and_reduces() {
+    async fn training_step_graph_matches_the_stateless_stage_previews() {
         let cluster = sample_personal_cluster();
         let nodes = vec![cluster[0].clone(), cluster[1].clone()];
         let (_w0, _w1, live_workers) = two_workers(&nodes).await;
@@ -2446,13 +2447,23 @@ mod phase5_tests {
             assert_eq!(trace.node_id.0, stage.node_id);
             assert_eq!(
                 trace.digest_fnv1a, stage.repops_digest_fnv1a,
-                "island {i} digest"
+                "stage {i} digest"
             );
         }
         let reduce_ref = StepGraphBuilder::output_ref(&graph.id, &WorkUnitId::new("demo-reduce"));
         let reduce: DeMoReduceReport =
             serde_json::from_slice(report.output(&reduce_ref.content_id).unwrap()).unwrap();
         assert_eq!(reduce.contributors, 2);
+        assert_eq!(
+            reduce.execution_mode,
+            crate::scheduler::STATELESS_STAGE_PREVIEW_MODE
+        );
+        assert_eq!(reduce.execution_mode, legacy.execution_mode);
+        assert_eq!(
+            reduce.master_weight_digest_fnv1a,
+            legacy.stage_preview_digest_fnv1a
+        );
+        assert!(legacy.preview_error.is_none());
         assert_eq!(reduce.mean_loss_after, legacy.mean_loss_after);
         assert_eq!(
             reduce.diloco_outer_consensus_norm,
