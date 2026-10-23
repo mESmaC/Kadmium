@@ -146,6 +146,9 @@ pub struct GatewayState {
     /// Credit entries and supply-grid receipts from every grid run, cumulative.
     pub grid_credit_entries: Vec<kadmium_grid::CreditEntry>,
     pub grid_receipts: Vec<kadmium_core::VerifiedComputeReceipt>,
+    /// Measured worker telemetry (compute cost per kind of work) kept across grid runs and
+    /// restored at start-up from `target/kadmium-state/grid_telemetry.json`.
+    pub grid_telemetry: kadmium_grid::TelemetryStore,
     pub coordinator_lan_ip: String,
     pub coordinator_http_port: u16,
     pub training_step_counter: u64,
@@ -271,7 +274,24 @@ impl GatewayState {
             grid_last_run: None,
             grid_credit_entries: Vec::new(),
             grid_receipts: Vec::new(),
+            grid_telemetry: kadmium_grid::TelemetryStore::new(),
         }
+    }
+
+    /// Where the coordinator keeps the grid's measured worker telemetry between restarts.
+    pub fn grid_telemetry_path() -> std::path::PathBuf {
+        std::path::Path::new("target/kadmium-state").join("grid_telemetry.json")
+    }
+
+    /// Restores the measured worker telemetry saved by an earlier coordinator, returning how many
+    /// workers it covers. A missing file is an empty store.
+    pub fn load_grid_telemetry(&mut self) -> Result<usize, String> {
+        self.grid_telemetry = kadmium_grid::TelemetryStore::load(&Self::grid_telemetry_path())?;
+        Ok(self.grid_telemetry.workers.len())
+    }
+
+    pub fn save_grid_telemetry(&self) -> Result<(), String> {
+        self.grid_telemetry.save(&Self::grid_telemetry_path())
     }
 
     /// Writes a crash-safe JSON state journal to `target/kadmium-state/cluster_state.json`.

@@ -9,7 +9,12 @@
 //!
 //! The matchmaker never looks inside a unit's parameters. It checks constraints (trust tier,
 //! boundary-layer access, backend, fast memory, politeness, hop latency) and scores preferences
-//! (locality of inputs, hop latency, capacity, availability).
+//! (locality of inputs, hop latency, capacity, availability). Once a worker has returned enough
+//! validated results of a kind of work, its measured cost replaces the modelled latency and
+//! capacity terms with an expected completion time: the hop, plus the measured cost of the unit
+//! behind everything already queued on the worker. Residency stays the first criterion, so a
+//! measured speed never pulls a unit away from the node that holds its weights, and a failed,
+//! invalid or cancelled instance is never a sample.
 
 use kadmium_core::{HardwareNode, NodeId, WorkloadKind};
 use serde::{Deserialize, Serialize};
@@ -17,8 +22,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    AppKind, GridError, InstanceId, ReplicaCatalog, ValidationRule, WorkGraph, WorkInstance,
-    WorkResultRecord, WorkState, WorkUnit, WorkUnitId, trust_satisfies,
+    AppKind, ComputeEwma, ComputeSample, GridError, InstanceId, ReplicaCatalog, ValidationRule,
+    WorkGraph, WorkInstance, WorkResultRecord, WorkState, WorkUnit, WorkUnitId, trust_satisfies,
 };
 
 /// A worker as the scheduler sees it: the capability vector plus live load and measurements.
@@ -35,6 +40,12 @@ pub struct WorkerProfile {
     pub measured_stream_gbps: Option<f64>,
     pub free_fast_memory_gb: f64,
     pub last_seen_unix_ms: u64,
+    /// System RAM the worker last reported free, in GiB, if it reports one.
+    #[serde(default)]
+    pub free_system_ram_gb: Option<f64>,
+    /// Measured compute cost per kind of work, folded from validated results.
+    #[serde(default)]
+    pub compute: BTreeMap<String, ComputeEwma>,
 }
 
 impl WorkerProfile {
@@ -49,6 +60,8 @@ impl WorkerProfile {
             measured_stream_gbps: None,
             free_fast_memory_gb,
             last_seen_unix_ms: 0,
+            free_system_ram_gb: None,
+            compute: BTreeMap::new(),
         }
     }
 
@@ -82,6 +95,59 @@ impl WorkerProfile {
     pub fn has_capacity(&self) -> bool {
         self.online && self.in_flight < self.max_concurrent
     }
+
+    /// Folds a validated result's measured cost into the worker's estimate for that kind of work.
+    pub fn record_compute(
+        &mut self,
+        app: &str,
+        ms_per_unit: f64,
+        policy: &SchedulerPolicy,
+        now: u64,
+    ) {
+        match self.compute.get_mut(app) {
+            Some(ewma) => ewma.observe(ms_per_unit, policy.compute_ewma_alpha, now),
+            None => {
+                self.compute
+                    .insert(app.to_string(), ComputeEwma::first(ms_per_unit, now));
+            }
+        }
+    }
+
+    /// The worker's measured estimate for a kind of work, once it has enough fresh samples to
+    /// steer routing.
+    pub fn compute_estimate(
+        &self,
+        app: &str,
+        policy: &SchedulerPolicy,
+        now: u64,
+    ) -> Option<&ComputeEwma> {
+        self.compute.get(app).filter(|e| {
+            e.samples >= policy.min_compute_samples
+                && e.is_fresh(now, policy.compute_sample_ttl_ms)
+        })
+    }
+
+    /// Wall time the unit should take on this worker: measured when the worker is measured for
+    /// the unit's kind of work, else the unit's own modelled estimate.
+    pub fn expected_wall_ms(&self, unit: &WorkUnit, policy: &SchedulerPolicy, now: u64) -> f64 {
+        self.compute_estimate(&unit.app.label(), policy, now)
+            .map(|e| e.predict_ms(unit.cost.work()))
+            .unwrap_or(unit.cost.est_wall_ms)
+    }
+
+    /// Expected time to completion if the unit were queued on this worker now: the hop latency,
+    /// plus the measured cost of the unit behind every instance already in flight. `None` until
+    /// the worker is measured for the unit's kind of work.
+    pub fn completion_estimate_ms(
+        &self,
+        unit: &WorkUnit,
+        policy: &SchedulerPolicy,
+        now: u64,
+    ) -> Option<f64> {
+        let ewma = self.compute_estimate(&unit.app.label(), policy, now)?;
+        let queued = self.in_flight as f64 + 1.0;
+        Some(self.hop_latency_ms() + ewma.predict_ms(unit.cost.work()) * queued)
+    }
 }
 
 /// Weights and limits of the scheduler.
@@ -103,6 +169,43 @@ pub struct SchedulerPolicy {
     pub max_pull_batch: usize,
     /// Capacity score that counts as 1.0 when scoring.
     pub capacity_score_scale: f64,
+    /// Rank eligible workers by the share of a unit's inputs they already hold before anything
+    /// else, so a measured speed never pulls a unit away from the node that holds its weights.
+    #[serde(default = "default_residency_first")]
+    pub residency_first: bool,
+    /// Validated results a worker needs for one kind of work before its measured cost steers
+    /// routing and straggler timeouts.
+    #[serde(default = "default_min_compute_samples")]
+    pub min_compute_samples: u32,
+    /// Weight of a new sample in a worker's compute average.
+    #[serde(default = "default_compute_ewma_alpha")]
+    pub compute_ewma_alpha: f64,
+    /// An estimate without a sample this recent falls back to the modelled terms; 0 never expires.
+    #[serde(default = "default_compute_sample_ttl_ms")]
+    pub compute_sample_ttl_ms: u64,
+    /// Completion estimate, in ms, that scores half marks on the measured term.
+    #[serde(default = "default_completion_scale_ms")]
+    pub completion_scale_ms: f64,
+}
+
+fn default_residency_first() -> bool {
+    true
+}
+
+fn default_min_compute_samples() -> u32 {
+    8
+}
+
+fn default_compute_ewma_alpha() -> f64 {
+    0.2
+}
+
+fn default_compute_sample_ttl_ms() -> u64 {
+    15 * 60 * 1000
+}
+
+fn default_completion_scale_ms() -> f64 {
+    50.0
 }
 
 impl Default for SchedulerPolicy {
@@ -119,6 +222,11 @@ impl Default for SchedulerPolicy {
             max_attempts: 3,
             max_pull_batch: 4,
             capacity_score_scale: 120.0,
+            residency_first: default_residency_first(),
+            min_compute_samples: default_min_compute_samples(),
+            compute_ewma_alpha: default_compute_ewma_alpha(),
+            compute_sample_ttl_ms: default_compute_sample_ttl_ms(),
+            completion_scale_ms: default_completion_scale_ms(),
         }
     }
 }
@@ -131,6 +239,10 @@ pub struct MatchScore {
     pub score: f64,
     /// Fraction of the unit's resident inputs the worker already holds.
     pub locality: f64,
+    /// Measured expected completion in ms, once the worker is measured for the unit's kind of
+    /// work; `None` means the modelled latency and capacity terms scored it.
+    #[serde(default)]
+    pub completion_estimate_ms: Option<f64>,
     pub reason: String,
 }
 
@@ -157,6 +269,7 @@ impl Matchmaker {
         worker: &WorkerProfile,
         catalog: &ReplicaCatalog,
         policy: &SchedulerPolicy,
+        now: u64,
     ) -> MatchScore {
         let node_id = worker.node.id.clone();
         let locality = catalog.locality_score(&node_id, &unit.placement.requires_resident);
@@ -165,6 +278,7 @@ impl Matchmaker {
             eligible: false,
             score: 0.0,
             locality,
+            completion_estimate_ms: None,
             reason: reason.to_string(),
         };
 
@@ -213,9 +327,19 @@ impl Matchmaker {
         let slot_term = 1.0 - (worker.in_flight as f64 / worker.max_concurrent.max(1) as f64);
         let availability_term = availability * (0.5 + 0.5 * slot_term);
 
+        // Measured when the worker has enough fresh samples of this kind of work: the latency
+        // and capacity weights go to one term that falls with the expected completion time.
+        let completion_estimate_ms = worker.completion_estimate_ms(unit, policy, now);
+        let speed_terms = match completion_estimate_ms {
+            Some(est) => {
+                (policy.latency_weight + policy.capacity_weight)
+                    / (1.0 + est / policy.completion_scale_ms.max(0.01))
+            }
+            None => policy.latency_weight * latency_term + policy.capacity_weight * capacity_term,
+        };
+
         let mut score = policy.locality_weight * locality
-            + policy.latency_weight * latency_term
-            + policy.capacity_weight * capacity_term
+            + speed_terms
             + policy.availability_weight * availability_term;
         if unit.placement.preferred_nodes.contains(&node_id) {
             score += policy.preferred_node_bonus;
@@ -226,24 +350,36 @@ impl Matchmaker {
             eligible: true,
             score,
             locality,
+            completion_estimate_ms,
             reason: "ok".to_string(),
         }
     }
 
-    /// All workers scored for a unit, eligible first, best score first, node id as the tie-break.
+    /// All workers scored for a unit: eligible first, then (under `residency_first`) the share of
+    /// the unit's inputs already held, then the best score, with the node id as the tie-break.
     pub fn rank(
         unit: &WorkUnit,
         workers: &[WorkerProfile],
         catalog: &ReplicaCatalog,
         policy: &SchedulerPolicy,
+        now: u64,
     ) -> Vec<MatchScore> {
         let mut scores: Vec<MatchScore> = workers
             .iter()
-            .map(|w| Self::score(unit, w, catalog, policy))
+            .map(|w| Self::score(unit, w, catalog, policy, now))
             .collect();
         scores.sort_by(|a, b| {
             b.eligible
                 .cmp(&a.eligible)
+                .then_with(|| {
+                    if policy.residency_first {
+                        b.locality
+                            .partial_cmp(&a.locality)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
                 .then_with(|| {
                     b.score
                         .partial_cmp(&a.score)
@@ -375,6 +511,9 @@ pub struct WorkQueue {
     straggler_flagged: BTreeSet<InstanceId>,
     next_instance_seq: u64,
     events: Vec<SchedulerEventRecord>,
+    /// Measured costs of results validated since the last drain.
+    #[serde(default)]
+    compute_samples: Vec<ComputeSample>,
 }
 
 impl WorkQueue {
@@ -387,11 +526,44 @@ impl WorkQueue {
             straggler_flagged: BTreeSet::new(),
             next_instance_seq: 0,
             events: Vec::new(),
+            compute_samples: Vec::new(),
         }
     }
 
     pub fn policy(&self) -> &SchedulerPolicy {
         &self.policy
+    }
+
+    /// Keeps a validated result as a sample of its worker's compute cost per unit of work. Only
+    /// validated results get here: a failed, invalid or cancelled instance is never a sample.
+    fn sample_compute(&mut self, app: &AppKind, record: &WorkResultRecord, now: u64) {
+        if record.exec_ms <= 0.0 || !record.exec_ms.is_finite() {
+            return;
+        }
+        self.compute_samples.push(ComputeSample {
+            node: record.node_id.clone(),
+            app: app.label(),
+            ms_per_unit: record.exec_ms / record.units_processed.max(1) as f64,
+            at_unix_ms: now,
+        });
+    }
+
+    /// Compute samples of the results validated since the last drain.
+    pub fn drain_compute_samples(&mut self) -> Vec<ComputeSample> {
+        std::mem::take(&mut self.compute_samples)
+    }
+
+    /// Folds the samples validated since the last call into the matching worker profiles and
+    /// returns how many there were.
+    pub fn feed_workers(&mut self, workers: &mut [WorkerProfile], now: u64) -> usize {
+        let samples = self.drain_compute_samples();
+        let count = samples.len();
+        for sample in samples {
+            if let Some(worker) = workers.iter_mut().find(|w| w.id() == &sample.node) {
+                worker.record_compute(&sample.app, sample.ms_per_unit, &self.policy, now);
+            }
+        }
+        count
     }
 
     fn emit(&mut self, now: u64, event: SchedulerEvent) {
@@ -572,7 +744,7 @@ impl WorkQueue {
             if self.has_live_instance_on(status, worker.id()) {
                 continue;
             }
-            let score = Matchmaker::score(&status.unit, worker, catalog, &self.policy);
+            let score = Matchmaker::score(&status.unit, worker, catalog, &self.policy, now);
             if !score.eligible {
                 continue;
             }
@@ -602,7 +774,7 @@ impl WorkQueue {
                 if !self.needs_instances(status) {
                     break;
                 }
-                let ranked = Matchmaker::rank(&status.unit, workers, catalog, &self.policy);
+                let ranked = Matchmaker::rank(&status.unit, workers, catalog, &self.policy, now);
                 let chosen = ranked
                     .iter()
                     .filter(|m| m.eligible)
@@ -760,6 +932,7 @@ impl WorkQueue {
 
     fn validate(&mut self, unit_id: &WorkUnitId, now: u64) -> ValidationOutcome {
         let status = self.units.get(unit_id).expect("unit exists");
+        let app = status.unit.app.clone();
         let rule = status.unit.redundancy.validation.clone();
         let min_quorum = status.unit.redundancy.min_quorum.max(1) as usize;
         let max_replicas = status.unit.redundancy.max_replicas as usize;
@@ -782,11 +955,14 @@ impl WorkQueue {
                         }
                         _ => r.digest_fnv1a == winner.digest_fnv1a,
                     };
-                    invalid.push((r.instance_id.clone(), r.node_id.clone(), agrees));
+                    invalid.push((r.clone(), agrees));
                 }
             }
-            for (instance_id, node, agrees) in invalid {
-                self.settle_instance(&instance_id, &node, agrees, now);
+            for (record, agrees) in invalid {
+                self.settle_instance(&record.instance_id, &record.node_id, agrees, now);
+                if agrees {
+                    self.sample_compute(&app, &record, now);
+                }
             }
             return ValidationOutcome::Validated {
                 node: winner.node_id,
@@ -847,6 +1023,7 @@ impl WorkQueue {
                 .expect("non-empty");
             for w in &winners {
                 self.settle_instance(&w.instance_id, &w.node_id, true, now);
+                self.sample_compute(&app, w, now);
             }
             for l in &losers {
                 self.settle_instance(&l.instance_id, &l.node_id, false, now);
@@ -1002,7 +1179,9 @@ impl WorkQueue {
             .filter(|r| r.instance_id != winner.instance_id)
             .cloned()
             .collect();
+        let app = status.unit.app.clone();
         self.settle_instance(&winner.instance_id, &winner.node_id, true, now);
+        self.sample_compute(&app, &winner, now);
         for l in &losers {
             self.settle_instance(&l.instance_id, &l.node_id, false, now);
         }
@@ -1076,8 +1255,6 @@ impl WorkQueue {
             if status.instances.len() >= status.unit.redundancy.max_replicas as usize {
                 continue;
             }
-            let timeout_ms = (status.unit.cost.est_wall_ms * self.policy.straggler_factor)
-                .max(self.policy.straggler_min_ms);
             for instance_id in &status.instances {
                 let Some(inst) = self.instances.get(instance_id) else {
                     continue;
@@ -1087,6 +1264,15 @@ impl WorkQueue {
                 {
                     continue;
                 }
+                // A measured worker is judged against its own measured speed for this kind of
+                // work, an unmeasured one against the unit's modelled estimate.
+                let expected_ms = workers
+                    .iter()
+                    .find(|w| w.id() == &inst.node_id)
+                    .map(|w| w.expected_wall_ms(&status.unit, &self.policy, now))
+                    .unwrap_or(status.unit.cost.est_wall_ms);
+                let timeout_ms = (expected_ms * self.policy.straggler_factor)
+                    .max(self.policy.straggler_min_ms);
                 let since = inst.started_unix_ms.unwrap_or(inst.assigned_unix_ms);
                 if now.saturating_sub(since) as f64 > timeout_ms {
                     to_flag.push((status.unit.id.clone(), instance_id.clone()));
@@ -1239,10 +1425,18 @@ pub struct PoolInventory {
     pub min_hop_latency_ms: f64,
     pub max_hop_latency_ms: f64,
     pub backends: Vec<String>,
+    /// Online workers with enough validated samples of some kind of work for their measured cost
+    /// to steer routing.
+    #[serde(default)]
+    pub measured_workers: usize,
+    /// Validated compute samples folded into the workers' estimates.
+    #[serde(default)]
+    pub compute_samples: u64,
 }
 
 impl PoolInventory {
     pub fn from_workers(workers: &[WorkerProfile]) -> Self {
+        let min_samples = SchedulerPolicy::default().min_compute_samples;
         let online: Vec<&WorkerProfile> = workers.iter().filter(|w| w.online).collect();
         let mut backends: Vec<String> = online
             .iter()
@@ -1279,6 +1473,15 @@ impl PoolInventory {
             min_hop_latency_ms: hops.iter().copied().fold(f64::INFINITY, f64::min),
             max_hop_latency_ms: hops.iter().copied().fold(0.0, f64::max),
             backends,
+            measured_workers: online
+                .iter()
+                .filter(|w| w.compute.values().any(|e| e.samples >= min_samples))
+                .count(),
+            compute_samples: workers
+                .iter()
+                .flat_map(|w| w.compute.values())
+                .map(|e| e.samples as u64)
+                .sum(),
         }
         .finite()
     }
@@ -1363,7 +1566,7 @@ mod tests {
             worker("b", NodeTrustTier::TrustedCore),
         ];
         let unit = WorkUnit::new("slice", AppKind::ExpertSlice).with_inputs(vec![e45]);
-        let ranked = Matchmaker::rank(&unit, &workers, &catalog, &SchedulerPolicy::default());
+        let ranked = Matchmaker::rank(&unit, &workers, &catalog, &SchedulerPolicy::default(), 0);
         assert_eq!(ranked[0].node_id, NodeId("b".into()));
         assert_eq!(ranked[0].locality, 1.0);
         assert_eq!(ranked[1].locality, 0.0);
@@ -1387,7 +1590,7 @@ mod tests {
         ];
         let unit = WorkUnit::new("ingress", AppKind::TrunkForward)
             .with_placement(PlacementConstraints::trusted_only());
-        let ranked = Matchmaker::rank(&unit, &workers, &catalog, &SchedulerPolicy::default());
+        let ranked = Matchmaker::rank(&unit, &workers, &catalog, &SchedulerPolicy::default(), 0);
         assert_eq!(ranked[0].node_id, NodeId("mine".into()));
         assert!(ranked[1..].iter().all(|m| !m.eligible));
         assert!(ranked[1].reason.contains("trust") || ranked[1].reason.contains("boundary"));
@@ -1820,5 +2023,219 @@ mod tests {
         );
         assert!(inventory.summary_line().contains("nodes online"));
         assert_eq!(PoolInventory::from_workers(&[]).min_hop_latency_ms, 0.0);
+    }
+
+    fn resident_catalog(nodes: &[&str], content: &[ContentRef]) -> ReplicaCatalog {
+        let mut catalog = ReplicaCatalog::new();
+        for n in nodes {
+            for c in content {
+                catalog.record(Replica::new(
+                    c.clone(),
+                    NodeId(n.to_string()),
+                    ResidencyTier::Vram,
+                    0,
+                ));
+            }
+        }
+        catalog
+    }
+
+    fn feed(worker: &mut WorkerProfile, app: &str, ms: f64, samples: u32, policy: &SchedulerPolicy) {
+        for i in 0..samples {
+            worker.record_compute(app, ms, policy, 1_000 + i as u64);
+        }
+    }
+
+    #[test]
+    fn measured_compute_cost_ranks_equal_latency_residents_once_sampled() {
+        let policy = SchedulerPolicy::default();
+        let bank = expert("L010/E001");
+        let catalog = resident_catalog(&["a", "b"], std::slice::from_ref(&bank));
+        let mut a = worker("a", NodeTrustTier::TrustedCore);
+        let mut b = worker("b", NodeTrustTier::TrustedCore);
+        a.measured_rtt_ms = 1.0;
+        b.measured_rtt_ms = 1.0;
+        let unit = WorkUnit::new("slice", AppKind::ExpertSlice)
+            .with_inputs(vec![bank])
+            .with_cost(CostEstimate::new(1e9, 0, 0, 20.0).with_work_units(1));
+        let now = 2_000;
+
+        // Same capability vector, same modelled score: the node id breaks the tie towards `a`.
+        let ranked = Matchmaker::rank(&unit, &[a.clone(), b.clone()], &catalog, &policy, now);
+        assert_eq!(ranked[0].node_id.0, "a");
+        assert!(ranked[0].completion_estimate_ms.is_none());
+
+        // `a` is slow and `b` fast, but seven samples change nothing.
+        feed(&mut a, "ExpertSlice", 5.0, 7, &policy);
+        feed(&mut b, "ExpertSlice", 2.0, 7, &policy);
+        let ranked = Matchmaker::rank(&unit, &[a.clone(), b.clone()], &catalog, &policy, now);
+        assert_eq!(ranked[0].node_id.0, "a", "seven samples keep the modelled ranking");
+        assert!(ranked.iter().all(|m| m.completion_estimate_ms.is_none()));
+
+        // The eighth sample lets the measured cost decide.
+        feed(&mut a, "ExpertSlice", 5.0, 1, &policy);
+        feed(&mut b, "ExpertSlice", 2.0, 1, &policy);
+        let ranked = Matchmaker::rank(&unit, &[a.clone(), b.clone()], &catalog, &policy, now);
+        assert_eq!(ranked[0].node_id.0, "b");
+        let est_b = ranked[0].completion_estimate_ms.expect("measured");
+        let est_a = ranked[1].completion_estimate_ms.expect("measured");
+        assert!((est_b - 3.0).abs() < 1e-9, "hop plus one unit of work: {est_b}");
+        assert!((est_a - 6.0).abs() < 1e-9, "{est_a}");
+
+        // Queue pressure counts: three instances already on `b` put it behind `a`.
+        b.in_flight = 3;
+        let ranked = Matchmaker::rank(&unit, &[a.clone(), b.clone()], &catalog, &policy, now);
+        assert_eq!(ranked[0].node_id.0, "a");
+        assert!((ranked[1].completion_estimate_ms.unwrap() - 9.0).abs() < 1e-9);
+
+        // A unit of a kind nobody has measured is still ranked on the modelled terms.
+        let other = WorkUnit::new("audit", AppKind::VerdeAudit);
+        let ranked = Matchmaker::rank(&other, &[a.clone(), b.clone()], &catalog, &policy, now);
+        assert!(ranked.iter().all(|m| m.completion_estimate_ms.is_none()));
+    }
+
+    #[test]
+    fn residency_outranks_measured_speed_and_stale_samples_expire() {
+        let policy = SchedulerPolicy::default();
+        let banks = [expert("L011/E002"), expert("L011/E003")];
+        // The resident node holds half of the unit's input bytes; the remote node holds none.
+        let catalog = resident_catalog(&["slow-resident"], &banks[..1]);
+        let mut slow = worker("slow-resident", NodeTrustTier::TrustedCore);
+        let mut fast = worker("fast-remote", NodeTrustTier::TrustedCore);
+        feed(&mut slow, "ExpertSlice", 500.0, 8, &policy);
+        feed(&mut fast, "ExpertSlice", 1.0, 8, &policy);
+        let unit = WorkUnit::new("slice", AppKind::ExpertSlice)
+            .with_inputs(banks.to_vec())
+            .with_cost(CostEstimate::new(1e9, 0, 0, 20.0));
+        let workers = [fast.clone(), slow.clone()];
+
+        let ranked = Matchmaker::rank(&unit, &workers, &catalog, &policy, 2_000);
+        assert_eq!(ranked[0].node_id.0, "slow-resident");
+        assert!(ranked[0].score < ranked[1].score, "the remote node scores higher, yet loses");
+        assert!(ranked[0].completion_estimate_ms > ranked[1].completion_estimate_ms);
+
+        let mut lenient = policy.clone();
+        lenient.residency_first = false;
+        let ranked = Matchmaker::rank(&unit, &workers, &catalog, &lenient, 2_000);
+        assert_eq!(ranked[0].node_id.0, "fast-remote");
+
+        // Stale samples fall back to the modelled terms.
+        let later = 2_000 + policy.compute_sample_ttl_ms + 1;
+        assert!(fast.completion_estimate_ms(&unit, &policy, 2_000).is_some());
+        assert!(fast.completion_estimate_ms(&unit, &policy, later).is_none());
+        let ranked = Matchmaker::rank(&unit, &workers, &catalog, &lenient, later);
+        assert!(ranked.iter().all(|m| m.completion_estimate_ms.is_none()));
+    }
+
+    #[test]
+    fn only_validated_results_become_compute_samples() {
+        let catalog = ReplicaCatalog::new();
+        let mut workers = vec![
+            worker("a", NodeTrustTier::TrustedCore),
+            worker("b", NodeTrustTier::TrustedCore),
+            worker("c", NodeTrustTier::TrustedCore),
+        ];
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+
+        // A failed attempt is not a sample; the validated retry is, per unit of work.
+        let flaky = WorkUnit::new("flaky", AppKind::DreamReplay)
+            .with_cost(CostEstimate::new(1e9, 0, 0, 10.0).with_work_units(4))
+            .with_placement(PlacementConstraints {
+                excluded_nodes: vec![NodeId("c".into())],
+                ..PlacementConstraints::default()
+            });
+        queue.submit(flaky, 0).unwrap();
+        let first = queue.dispatch_push(&mut workers, &catalog, 0);
+        assert_eq!(first.len(), 1);
+        queue
+            .report_failure(&first[0].instance_id, "crash", 1)
+            .unwrap();
+        assert_eq!(queue.feed_workers(&mut workers, 1), 0);
+        let retry = queue.dispatch_push(&mut workers, &catalog, 2);
+        assert_eq!(retry.len(), 1);
+        let record = result(&retry[0], 7, 0.0, 3).with_units_processed(4);
+        queue
+            .report_result(&retry[0].instance_id, record, 3)
+            .unwrap();
+        assert_eq!(queue.feed_workers(&mut workers, 3), 1);
+        let measured = workers
+            .iter()
+            .find(|w| w.id() == &retry[0].node_id)
+            .unwrap();
+        let ewma = &measured.compute["DreamReplay"];
+        assert_eq!(ewma.samples, 1);
+        assert!((ewma.ms_per_unit - 1.25).abs() < 1e-9, "5 ms over 4 units");
+        assert!(
+            workers
+                .iter()
+                .filter(|w| w.id() != &retry[0].node_id)
+                .all(|w| w.compute.is_empty())
+        );
+
+        // Under a bit-exact quorum the minority result is invalidated and never sampled.
+        for w in workers.iter_mut() {
+            w.compute.clear();
+        }
+        let audited = WorkUnit::new("audited", AppKind::VerdeAudit).with_redundancy(
+            RedundancyPolicy {
+                min_quorum: 2,
+                target_replicas: 3,
+                max_replicas: 3,
+                validation: ValidationRule::BitExactDigest,
+            },
+        );
+        queue.submit(audited, 10).unwrap();
+        let trio = queue.dispatch_push(&mut workers, &catalog, 10);
+        assert_eq!(trio.len(), 3);
+        queue
+            .report_result(&trio[0].instance_id, result(&trio[0], 1, 0.0, 11), 11)
+            .unwrap();
+        queue
+            .report_result(&trio[1].instance_id, result(&trio[1], 2, 0.0, 12), 12)
+            .unwrap();
+        let outcome = queue
+            .report_result(&trio[2].instance_id, result(&trio[2], 1, 0.0, 13), 13)
+            .unwrap();
+        assert!(matches!(outcome, ValidationOutcome::Validated { .. }));
+        assert_eq!(queue.feed_workers(&mut workers, 13), 2);
+        let sampled: Vec<&NodeId> = workers
+            .iter()
+            .filter(|w| !w.compute.is_empty())
+            .map(|w| w.id())
+            .collect();
+        assert_eq!(sampled.len(), 2);
+        assert!(!sampled.contains(&&trio[1].node_id), "the disagreeing node is not sampled");
+    }
+
+    #[test]
+    fn straggler_timeout_follows_the_measured_speed_of_the_worker() {
+        let catalog = ReplicaCatalog::new();
+        let policy = SchedulerPolicy::default();
+        let mut workers = vec![
+            worker("a", NodeTrustTier::TrustedCore),
+            worker("b", NodeTrustTier::TrustedCore),
+        ];
+        // `a` is measured at 400 ms per unit of replay work, far above the unit's 100 ms estimate.
+        feed(&mut workers[0], "DreamReplay", 400.0, 8, &policy);
+        let unit = WorkUnit::new("slow", AppKind::DreamReplay)
+            .with_cost(CostEstimate::new(1e9, 0, 0, 100.0))
+            .with_placement(PlacementConstraints {
+                excluded_nodes: vec![NodeId("b".into())],
+                ..PlacementConstraints::default()
+            });
+        let mut queue = WorkQueue::new(policy);
+        queue.submit(unit, 0).unwrap();
+        let first = queue.dispatch_push(&mut workers, &catalog, 0);
+        assert_eq!(first[0].node_id.0, "a");
+        queue.report_started(&first[0].instance_id, 0).unwrap();
+
+        // Modelled, the timeout would be max(100 x 2.5, 500) = 500 ms; measured it is 1000 ms.
+        assert!(queue.tick(600, &workers).is_empty());
+        assert!(
+            queue
+                .tick(1_100, &workers)
+                .iter()
+                .any(|e| matches!(e.event, SchedulerEvent::Duplicated { .. }))
+        );
     }
 }

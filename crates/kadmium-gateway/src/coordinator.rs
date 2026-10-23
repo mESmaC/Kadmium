@@ -55,6 +55,14 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
     let config_path = config_path.as_deref();
     let mut gw_state = GatewayState::new();
     gw_state.coordinator_http_port = port;
+    match gw_state.load_grid_telemetry() {
+        Ok(n) if n > 0 => println!(
+            "  [Grid] Restored measured telemetry for {n} workers from {}",
+            GatewayState::grid_telemetry_path().display()
+        ),
+        Ok(_) => {}
+        Err(e) => println!("  [Grid] Saved worker telemetry could not be read: {e}"),
+    }
     // GatewayState::new() assumes the default port; point the self-hosted URL at the real one.
     if let crate::CompanionConnectionMode::SelfHostedOpenSource {
         local_coordinator_url,

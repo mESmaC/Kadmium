@@ -15,6 +15,7 @@
 //! | The process scheduler | [`WorkQueue`] with its [`Matchmaker`]: capability, locality, politeness, trust and deadline matching, pull or push dispatch, straggler duplication, retries | BOINC scheduler, pilot-job late binding, ClassAd matchmaking |
 //! | The audit trail | Quorum validation per trust tier and the [`CreditLedger`] that credits only validated work | BOINC redundancy and credit |
 //! | The spec sheet | [`PoolInventory`], the mesh summed up as one machine | Grid information systems |
+//! | The speedometer | [`TelemetryStore`]: measured compute cost per worker and kind of work, folded from validated results and kept between runs, so the matchmaker ranks by expected completion once a worker has enough samples | lumabri segment telemetry, colibri measured profiles |
 //!
 //! AI workloads sit on top as work graphs: a pipeline decode step is a chain, expert
 //! parallelism is a fan-out and fan-in, a Dream-RSI replay batch is a bag with no edges, and a
@@ -27,12 +28,14 @@ pub mod catalog;
 pub mod credit;
 pub mod graph;
 pub mod scheduler;
+pub mod telemetry;
 pub mod work;
 
 pub use catalog::*;
 pub use credit::*;
 pub use graph::*;
 pub use scheduler::*;
+pub use telemetry::*;
 pub use work::*;
 
 /// Errors raised by the grid substrate.

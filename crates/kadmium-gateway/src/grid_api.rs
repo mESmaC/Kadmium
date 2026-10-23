@@ -12,7 +12,8 @@ use axum::{
 };
 use kadmium_core::{HardwareNode, ModelSpec, NodeId, VerifiedComputeReceipt, WorkloadKind};
 use kadmium_grid::{
-    AppKind, CreditEntry, PoolInventory, ReplicaCatalog, WorkGraph, WorkUnit, WorkerProfile,
+    AppKind, CreditEntry, PoolInventory, ReplicaCatalog, TelemetryStore, WorkGraph, WorkUnit,
+    WorkerProfile,
 };
 use kadmium_network::LiveWorkerRegistration;
 use kadmium_runtime::{
@@ -46,6 +47,9 @@ pub struct GridLastRun {
     pub credits_granted: f64,
     pub nodes_used: Vec<String>,
     pub epoch: u64,
+    /// Validated results that became measured compute samples on their workers.
+    #[serde(default)]
+    pub compute_samples: usize,
 }
 
 struct MeshSnapshot {
@@ -55,6 +59,7 @@ struct MeshSnapshot {
     local_node: HardwareNode,
     inference_model: ModelSpec,
     training_model: ModelSpec,
+    telemetry: TelemetryStore,
 }
 
 fn snapshot(state: &Arc<Mutex<GatewayState>>) -> MeshSnapshot {
@@ -73,14 +78,17 @@ fn snapshot(state: &Arc<Mutex<GatewayState>>) -> MeshSnapshot {
         local_node,
         inference_model: guard.inference_model.clone(),
         training_model: guard.training_model.clone(),
+        telemetry: guard.grid_telemetry.clone(),
     }
 }
 
-/// Worker profiles for every node of the mesh: live registrations where they exist, and
-/// in-process profiles for simulated nodes so the scheduler can still place work on them.
+/// Worker profiles for every node of the mesh: live registrations where they exist, in-process
+/// profiles for simulated nodes so the scheduler can still place work on them, and on each the
+/// measured telemetry the coordinator has kept from earlier runs.
 pub fn mesh_workers(
     nodes: &[HardwareNode],
     live_workers: &BTreeMap<String, LiveWorkerRegistration>,
+    telemetry: &TelemetryStore,
 ) -> Vec<WorkerProfile> {
     let mut workers = GridDispatcher::workers_from_registrations(live_workers);
     for node in nodes {
@@ -88,6 +96,7 @@ pub fn mesh_workers(
             workers.push(WorkerProfile::from_node(node.clone()));
         }
     }
+    telemetry.apply_to_all(&mut workers);
     workers
 }
 
@@ -208,6 +217,9 @@ pub struct GridStepOutcome {
     pub final_digest_fnv1a: u64,
 }
 
+/// Books a finished run: credits and receipts, the last-run record, and the measured telemetry
+/// the workers accumulated, absorbed into the store and saved for the next coordinator.
+#[allow(clippy::too_many_arguments)]
 fn record_run(
     state: &Arc<Mutex<GatewayState>>,
     kind: &str,
@@ -216,6 +228,7 @@ fn record_run(
     report: &GridRunReport,
     modelled_ms_per_token: Option<f64>,
     epoch: u64,
+    workers: &[WorkerProfile],
 ) {
     let mut nodes_used: Vec<String> = report
         .traces
@@ -231,6 +244,8 @@ fn record_run(
         .grid_credit_entries
         .extend(report.credits.iter().cloned());
     guard.grid_receipts.extend(report.receipts.iter().cloned());
+    guard.grid_telemetry.absorb_all(workers, now_unix_ms());
+    let _ = guard.save_grid_telemetry();
     guard.grid_last_run = Some(GridLastRun {
         graph_id: graph_id.to_string(),
         kind: kind.to_string(),
@@ -243,6 +258,7 @@ fn record_run(
         credits_granted: report.credits.iter().map(|c| c.credits).sum(),
         nodes_used,
         epoch,
+        compute_samples: report.compute_samples,
     });
 }
 
@@ -281,7 +297,7 @@ pub async fn run_grid_decode_step(
     let graph =
         StepGraphBuilder::decode_step(&model, &placement, &snap.nodes, snap.epoch, &session, rows);
     let catalog = ReplicaCatalog::assume_placed(&placement.rules, now_unix_ms());
-    let mut workers = mesh_workers(&snap.nodes, &snap.live_workers);
+    let mut workers = mesh_workers(&snap.nodes, &snap.live_workers, &snap.telemetry);
     let seed_row = prompt_seed_hidden(prompt, 64);
     let seed_values: Vec<f32> = (0..rows).flat_map(|_| seed_row.iter().copied()).collect();
     let seed = TokenBatchInt8::quantize(&seed_values, rows, 64, 16)?;
@@ -316,6 +332,7 @@ pub async fn run_grid_decode_step(
         &report,
         Some(modelled_ms_per_token),
         snap.epoch,
+        &workers,
     );
     if !report.success {
         return Err(format!(
@@ -371,21 +388,25 @@ pub struct GridInventoryResponse {
     pub simulated_nodes: usize,
     pub runs: u64,
     pub last_run: Option<GridLastRun>,
+    /// Measured compute cost per worker and kind of work, kept across runs; every figure in it
+    /// was measured on the kernels the workers run, which today are the synthetic references.
+    pub telemetry: TelemetryStore,
 }
 
 pub async fn get_grid_inventory(
     State(state): State<Arc<Mutex<GatewayState>>>,
 ) -> Json<GridInventoryResponse> {
-    let (nodes, live_workers, runs, last_run) = {
+    let (nodes, live_workers, runs, last_run, telemetry) = {
         let guard = state.lock().expect("gateway state lock");
         (
             guard.nodes.clone(),
             guard.live_workers.clone(),
             guard.grid_runs,
             guard.grid_last_run.clone(),
+            guard.grid_telemetry.clone(),
         )
     };
-    let workers = mesh_workers(&nodes, &live_workers);
+    let workers = mesh_workers(&nodes, &live_workers, &telemetry);
     let inventory = PoolInventory::from_workers(&workers);
     Json(GridInventoryResponse {
         summary: inventory.summary_line(),
@@ -397,6 +418,7 @@ pub async fn get_grid_inventory(
             .count(),
         runs,
         last_run,
+        telemetry,
     })
 }
 
@@ -628,7 +650,7 @@ pub async fn post_grid_train(
         }
     };
     let catalog = ReplicaCatalog::assume_placed(&placement.rules, now_unix_ms());
-    let mut workers = mesh_workers(&snap.nodes, &snap.live_workers);
+    let mut workers = mesh_workers(&snap.nodes, &snap.live_workers, &snap.telemetry);
     let config = GridRunConfig {
         epoch: snap.epoch,
         ..GridRunConfig::default()
@@ -656,7 +678,16 @@ pub async fn post_grid_train(
     let reduce = report
         .output(&reduce_ref.content_id)
         .and_then(|bytes| serde_json::from_slice::<DeMoReduceReport>(bytes).ok());
-    record_run(&state, "train", &graph.id, None, &report, None, snap.epoch);
+    record_run(
+        &state,
+        "train",
+        &graph.id,
+        None,
+        &report,
+        None,
+        snap.epoch,
+        &workers,
+    );
     Json(GridTrainApiResponse {
         graph_id: graph.id.clone(),
         islands,
@@ -715,7 +746,7 @@ pub async fn post_grid_replay(
         &snap.nodes,
     );
     let catalog = ReplicaCatalog::new();
-    let mut workers = mesh_workers(&snap.nodes, &snap.live_workers);
+    let mut workers = mesh_workers(&snap.nodes, &snap.live_workers, &snap.telemetry);
     let config = GridRunConfig {
         epoch: snap.epoch,
         ..GridRunConfig::default()
@@ -738,7 +769,16 @@ pub async fn post_grid_replay(
         .collect();
     nodes_used.sort();
     nodes_used.dedup();
-    record_run(&state, "replay", &graph.id, None, &report, None, snap.epoch);
+    record_run(
+        &state,
+        "replay",
+        &graph.id,
+        None,
+        &report,
+        None,
+        snap.epoch,
+        &workers,
+    );
     Json(GridReplayApiResponse {
         graph_id: graph.id.clone(),
         rollouts,
@@ -844,10 +884,35 @@ mod tests {
         assert_eq!(last.kind, "decode");
         assert!(last.credits_granted > 0.0);
 
+        // Every validated unit left a measured compute sample on its worker, and the samples
+        // survive into the next run's worker profiles.
+        assert_eq!(last.compute_samples, outcome.report.units_total);
+        assert_eq!(
+            inventory.inventory.compute_samples,
+            outcome.report.units_total as u64
+        );
+        assert_eq!(inventory.telemetry.total_samples(), outcome.report.units_total as u64);
+
         let credits = get_grid_credits(State(state.clone())).await.0;
         assert_eq!(credits.entries.len(), outcome.report.units_total);
         assert!(credits.total_credits > 0.0);
         assert!(!credits.totals_by_node.is_empty());
+
+        // The same prompt again: the same bytes come out, and the samples double.
+        let second = run_grid_decode_step(
+            &state,
+            "grid decode on the demo fleet",
+            1,
+            Some(ExecutionStrategy::PipelineChain),
+        )
+        .await
+        .expect("second chain step runs");
+        assert_eq!(second.final_digest_fnv1a, outcome.final_digest_fnv1a);
+        let after = get_grid_inventory(State(state.clone())).await.0;
+        assert_eq!(
+            after.telemetry.total_samples(),
+            2 * outcome.report.units_total as u64
+        );
     }
 
     #[tokio::test]

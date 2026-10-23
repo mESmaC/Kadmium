@@ -1031,6 +1031,7 @@ impl StepGraphBuilder {
             (8 * 1024 * rows) as u64,
             (ms * 100.0).round() / 100.0,
         )
+        .with_work_units(rows.max(1) as u64)
     }
 
     /// The work graph of one decode step for the placement's shape.
@@ -1256,12 +1257,15 @@ impl StepGraphBuilder {
                             })
                             .expect("params serialize")
                             .with_placement(Self::placement_for(&range.owner, Vec::new(), boundary))
-                            .with_cost(CostEstimate::new(
-                                1e6 * rows as f64,
-                                0,
-                                (8 * 1024 * rows * holders.len() as u32) as u64,
-                                0.05,
-                            ))
+                            .with_cost(
+                                CostEstimate::new(
+                                    1e6 * rows as f64,
+                                    0,
+                                    (8 * 1024 * rows * holders.len() as u32) as u64,
+                                    0.05,
+                                )
+                                .with_work_units(rows as u64),
+                            )
                             .with_redundancy(RedundancyPolicy::trusted());
                         combine.inputs = leaf_ids
                             .iter()
@@ -1708,7 +1712,10 @@ impl StepGraphBuilder {
             })
             .expect("params serialize")
             .with_placement(Self::placement_for(&reduce_owner, Vec::new(), true))
-            .with_cost(CostEstimate::new(1e6, 0, 64 * 1024, 0.5))
+            .with_cost(
+                CostEstimate::new(1e6, 0, 64 * 1024, 0.5)
+                    .with_work_units(stage_ids.len().max(1) as u64),
+            )
             .with_redundancy(RedundancyPolicy::trusted());
         reduce.inputs = stage_ids
             .iter()
@@ -1759,12 +1766,15 @@ impl StepGraphBuilder {
                 })
                 .expect("params serialize")
                 .with_placement(placement)
-                .with_cost(CostEstimate::new(
-                    1e9 * mcts_simulations as f64,
-                    0,
-                    4096,
-                    0.2 * mcts_simulations as f64,
-                ))
+                .with_cost(
+                    CostEstimate::new(
+                        1e9 * mcts_simulations as f64,
+                        0,
+                        4096,
+                        0.2 * mcts_simulations as f64,
+                    )
+                    .with_work_units(mcts_simulations.max(1) as u64),
+                )
                 .with_priority(1)
                 .with_redundancy(RedundancyPolicy::trusted());
             graph.add_unit(unit);
@@ -1792,12 +1802,15 @@ impl StepGraphBuilder {
                 inject_fault_at_layer,
             })
             .expect("params serialize")
-            .with_cost(CostEstimate::new(
-                1e8 * (target_layer.saturating_sub(start_layer) + 1) as f64,
-                0,
-                2048,
-                2.0,
-            ))
+            .with_cost(
+                CostEstimate::new(
+                    1e8 * (target_layer.saturating_sub(start_layer) + 1) as f64,
+                    0,
+                    2048,
+                    2.0,
+                )
+                .with_work_units((target_layer.saturating_sub(start_layer) + 1) as u64),
+            )
             .with_redundancy(RedundancyPolicy::untrusted())
     }
 }

@@ -860,6 +860,9 @@ pub struct GridRunReport {
     pub wall_ms: f64,
     pub traces: Vec<GridDispatchTrace>,
     pub events: Vec<SchedulerEventRecord>,
+    /// Validated results folded into the workers' measured compute estimates during the run.
+    #[serde(default)]
+    pub compute_samples: usize,
     /// Outputs of the graph's sink units, by content id.
     pub outputs: Vec<(String, Vec<u8>)>,
     /// Credit granted for validated units, one entry per unit.
@@ -933,6 +936,7 @@ impl GridDispatcher {
         let t_start = Instant::now();
         let mut queue = WorkQueue::new(config.policy.clone());
         let mut traces = Vec::new();
+        let mut compute_samples = 0usize;
         let mut blobs: BTreeMap<String, Vec<u8>> = config
             .seed_blobs
             .iter()
@@ -949,6 +953,7 @@ impl GridDispatcher {
                 wall_ms: 0.0,
                 traces,
                 events: vec![],
+                compute_samples: 0,
                 outputs: vec![],
                 credits: vec![],
                 receipts: vec![],
@@ -1175,6 +1180,9 @@ impl GridDispatcher {
                     let _ = queue.report_failure(&outcome.instance_id, &error, now_unix_ms());
                 }
             }
+            // Validated results become compute samples on their workers, so the next dispatch
+            // in this run and every later run rank by measured completion.
+            compute_samples += queue.feed_workers(workers, now_unix_ms());
             queue.tick(now_unix_ms(), workers);
         }
 
@@ -1222,6 +1230,7 @@ impl GridDispatcher {
             wall_ms: (t_start.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
             traces,
             events: queue.drain_events(),
+            compute_samples,
             outputs,
             credits: ledger.entries().to_vec(),
             receipts: ledger.receipts(),
@@ -2264,6 +2273,21 @@ mod phase5_tests {
         let nodes_used: std::collections::BTreeSet<_> =
             report.traces.iter().map(|t| t.node_id.clone()).collect();
         assert_eq!(nodes_used.len(), 2, "both workers took replay units");
+        // Every validated result is a measured compute sample on the worker that ran it.
+        assert_eq!(report.compute_samples, 6);
+        let sampled: u32 = workers
+            .iter()
+            .filter_map(|w| w.compute.get("DreamReplay"))
+            .map(|e| e.samples)
+            .sum();
+        assert_eq!(sampled, 6);
+        assert!(
+            workers
+                .iter()
+                .filter_map(|w| w.compute.get("DreamReplay"))
+                .all(|e| e.ms_per_unit > 0.0 && e.ms_per_unit < 1_000.0),
+            "cost is per simulation, not per unit"
+        );
         assert_eq!(report.credits.len(), 6);
         assert_eq!(report.receipts.len(), 6);
         assert!(report.receipts.iter().all(|r| r.earned_usd > 0.0));

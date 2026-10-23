@@ -252,14 +252,20 @@ impl PlacementConstraints {
     }
 }
 
-/// What a unit is expected to cost. The scheduler uses `est_wall_ms` for deadlines and
-/// straggler detection, and the ledger uses `flops` and bytes for credit.
+/// What a unit is expected to cost. The scheduler uses `est_wall_ms` for deadlines and, until
+/// the worker has been measured for the unit's kind of work, straggler detection; the ledger
+/// uses `flops` and bytes for credit.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CostEstimate {
     pub flops: f64,
     pub bytes_read: u64,
     pub bytes_moved: u64,
     pub est_wall_ms: f64,
+    /// How much work the unit covers, in the units its result reports as `units_processed`
+    /// (rows, rollouts, simulations, layers), so a measured cost per unit of work predicts it.
+    /// 0 counts as 1.
+    #[serde(default)]
+    pub work_units: u64,
 }
 
 impl CostEstimate {
@@ -269,7 +275,18 @@ impl CostEstimate {
             bytes_read,
             bytes_moved,
             est_wall_ms,
+            work_units: 1,
         }
+    }
+
+    pub fn with_work_units(mut self, work_units: u64) -> Self {
+        self.work_units = work_units.max(1);
+        self
+    }
+
+    /// Units of work, never zero.
+    pub fn work(&self) -> f64 {
+        self.work_units.max(1) as f64
     }
 }
 
