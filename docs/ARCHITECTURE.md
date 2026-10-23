@@ -1,8 +1,13 @@
 # Kadmium (`Cd`) — Technical Architecture Specification
 
 **Status:** Draft v0.1.0  
-**Language Stack:** 100% Pure Rust (`tokio`, `axum`, `quinn`/QUIC, `serde`)  
+**Language Stack:** Rust (`tokio`, `axum`, `serde`); live worker transport is TCP, with QUIC described as a target architecture
+
 **Target Environments:** Windows, macOS (Apple Silicon Metal / AMX), Linux (x86_64, ARM64 SBCs, RISC-V), NAS appliances, and ephemeral Cloud GPU instances.
+
+**Current execution boundary:** This specification includes target designs as well as implemented mechanisms. Current model-related workloads run on small reference tensors. `/v1/chat/completions` and `/v1/messages` return fixed diagnostic messages and telemetry; `/v1/embeddings` returns reference vectors. The API shapes do not establish general SDK compatibility or language-model generation. The additive `launch` setup workflow starts this existing coordinator and preserves its configuration/listener behavior; it does not add an inference engine or relay.
+
+**Dependency decision:** Keep the existing dependency set, with no Cargo manifest/lockfile changes or new direct/transitive Rust dependencies for setup. An external relay is deferred pending a future owner decision and downstream access/authentication design. See the [launch guide](guides/cli.md) and [API contract](api-reference.md).
 
 ---
 
@@ -266,7 +271,7 @@ Frames carry a request id (`KDM2` header, 21 bytes; the legacy 13-byte `KDMF` he
 
 ### 9.4 Endpoints
 
-`GET /api/v1/grid/inventory` reports the mesh as one machine, with the measured telemetry per worker. `GET /api/v1/grid/plan` reports the shape choice, the placement in force, how it fits every node's offer, the staging it needs and the usage it learned from. `POST /api/v1/grid/plan/approve` records an owner's approval of that placement. `POST /api/v1/grid/run`, `/train` and `/replay` run a decode step, a training step and a replay batch as graphs on the live mesh. `POST /api/v1/grid/repin` applies one re-pin boundary and `POST /api/v1/grid/calibrate` measures the placement in force. `GET /api/v1/grid/credits` returns the cumulative ledger and receipts. The OpenAI, Anthropic and pipeline endpoints run their decode step through the same dispatcher.
+`GET /api/v1/grid/inventory` reports the mesh as one machine, with the measured telemetry per worker. `GET /api/v1/grid/plan` reports the shape choice, the placement in force, how it fits every node's offer, the staging it needs and the usage it learned from. `POST /api/v1/grid/plan/approve` records an owner's approval of that placement. `POST /api/v1/grid/run`, `/train` and `/replay` run a decode step, a training step and a replay batch as graphs on the live mesh. `POST /api/v1/grid/repin` applies one re-pin boundary and `POST /api/v1/grid/calibrate` measures the placement in force. `GET /api/v1/grid/credits` returns the cumulative ledger and receipts. The OpenAI-shaped, Anthropic-shaped and pipeline endpoints run a reference step through the same dispatcher; message text remains diagnostic rather than model-generated.
 
 ### 9.5 Allocation: Measured, Learned and Approved
 

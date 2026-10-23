@@ -1,65 +1,83 @@
-name: Kadmium Multi-Arch Release (CLI, NAS Container & Desktop Companion)
+name: Kadmium CLI and Desktop Release
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    tags: ["v*.*.*"]
   workflow_dispatch:
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
-  build-cli-matrix:
-    name: Build Single-Binary CLI (${{ matrix.target }})
+  build:
+    name: Package ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Windows Desktop & Gaming Laptops
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact_name: kadmium-windows-x86_64.exe
-          # Apple Silicon M1-M4 Mac Mini / MacBook
+            platform: windows-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact_name: kadmium-macos-arm64
-          # Linux Workstations, Legacy Laptops, NAS & Cloud Burst GPUs
-          - os: ubuntu-latest
+            platform: macos-arm64
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            artifact_name: kadmium-linux-x86_64
-          # Linux ARM64 Single-Board Computers (Raspberry Pi 5, RK3588, Jetson)
+            platform: linux-x86_64
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            artifact_name: kadmium-linux-arm64-sbc
-
+            platform: linux-arm64
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain for target
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Cache Cargo build
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build optimized release binary
-        run: cargo build --release --bin kadmium --target ${{ matrix.target }}
-
-      # The desktop app (its own window on WebView2 / WKWebView) ships next to the CLI on
-      # Windows and macOS, where `kadmium desktop` looks for it.
-      - name: Build the desktop app
-        if: runner.os != 'Linux'
-        run: cargo build --release --bin kadmium-desktop --target ${{ matrix.target }}
-
-      - name: Upload release binary artifact
-        uses: actions/upload-artifact@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
         with:
-          name: ${{ matrix.artifact_name }}
-          path: |
-            target/${{ matrix.target }}/release/kadmium*
+          python-version: "3.12"
+      - name: Build CLI
+        run: cargo build --locked --release --bin kadmium --target ${{ matrix.target }}
+      - name: Build desktop companion
+        if: runner.os != 'Linux'
+        run: cargo build --locked --release --bin kadmium-desktop --target ${{ matrix.target }}
+      - name: Package exact executables and SHA-256 manifest
+        run: python scripts/package_release.py --target ${{ matrix.target }} --platform ${{ matrix.platform }} --output dist
+      - name: Check Windows installer with offline release fixtures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test_installers.ps1 -Executable target/${{ matrix.target }}/release/kadmium.exe
+      - name: Check Unix installer with offline release fixtures
+        if: runner.os != 'Windows'
+        run: sh scripts/test_install.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
           if-no-files-found: error
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify archives and publish the tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          cat *.sha256 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            *.zip *.tar.gz SHA256SUMS ../scripts/install.sh ../scripts/install.ps1

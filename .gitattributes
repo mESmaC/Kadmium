@@ -1,0 +1,2 @@
+# Shell installers must also work in Windows checkouts with core.autocrlf enabled.
+*.sh text eol=lf
