@@ -661,6 +661,46 @@ pub fn run_probe() {
     );
 }
 
+/// What the owner typed about their offer on `kadmium join`; `None` fields keep the default.
+#[derive(Debug, Clone, Default)]
+pub struct JoinOfferArgs {
+    pub fast_gb: Option<f64>,
+    pub ram_gb: Option<f64>,
+    pub nvme_gb: Option<f64>,
+    pub slots: Option<u32>,
+    pub require_approval: bool,
+}
+
+impl JoinOfferArgs {
+    /// The owner's offer for the probed node, or `None` when nothing was overridden so the
+    /// coordinator uses the node's default offer.
+    pub fn into_offer(self, node: &kadmium_core::HardwareNode) -> Option<kadmium_core::ResourceOffer> {
+        if self.fast_gb.is_none()
+            && self.ram_gb.is_none()
+            && self.nvme_gb.is_none()
+            && self.slots.is_none()
+            && !self.require_approval
+        {
+            return None;
+        }
+        let mut offer = node.default_offer();
+        if let Some(v) = self.fast_gb {
+            offer.fast_memory_gb = v;
+        }
+        if let Some(v) = self.ram_gb {
+            offer.system_ram_gb = v;
+        }
+        if let Some(v) = self.nvme_gb {
+            offer.nvme_gb = v;
+        }
+        if let Some(v) = self.slots {
+            offer.slots = v;
+        }
+        offer.requires_approval = offer.requires_approval || self.require_approval;
+        Some(offer.clamped_to(node))
+    }
+}
+
 pub async fn run_join(
     coordinator_arg: Option<String>,
     ticket_arg: Option<String>,
@@ -668,6 +708,7 @@ pub async fn run_join(
     hostname_override: Option<String>,
     live_only: bool,
     once: bool,
+    offer_args: JoinOfferArgs,
 ) {
     let mut local_node = LiveHardwareProfiler::probe_local_host();
     if let Some(custom_host) = hostname_override {
@@ -755,6 +796,15 @@ pub async fn run_join(
         "  * WireFrame TCP Worker:   Listening on {} (0.0.0.0:{})",
         worker_tcp_addr, bound_port
     );
+    let offer = offer_args.into_offer(&local_node);
+    println!(
+        "  * Resource Offer:         {}{}",
+        offer
+            .clone()
+            .unwrap_or_else(|| local_node.default_offer())
+            .summary(),
+        if offer.is_some() { "" } else { " (default)" }
+    );
 
     let verified_ticket = JoinTicket::decode_and_verify(&token)
         .expect("Failed to verify kdm1_ Join Ticket MAC signature");
@@ -792,6 +842,9 @@ pub async fn run_join(
         worker_tcp_addr: worker_tcp_addr.clone(),
         join_ticket: Some(token),
         switch_to_live_only: live_only,
+        offer: offer.clone(),
+        free_system_ram_gb: None,
+        measured_stream_gbps: None,
     };
 
     match MeshHttpClient::post_json::<WorkerRegisterRequest, WorkerRegistrationAck>(
@@ -860,6 +913,8 @@ pub async fn run_join(
                             external_vram_used_gb: sample.external_vram_used_gb,
                             package_temp_celsius: sample.package_temp_celsius,
                             applied_ota_ack: pending_ack.take(),
+                            offer: offer.clone(),
+                            free_system_ram_gb: None,
                         };
 
                         if let Ok(hb_ack) = MeshHttpClient::post_json::<WorkerHeartbeatRequest, WorkerHeartbeatAck>(

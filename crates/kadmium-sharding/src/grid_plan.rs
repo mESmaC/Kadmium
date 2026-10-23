@@ -19,11 +19,12 @@
 //!    units that expert parallelism schedules differently.
 
 use kadmium_core::{
-    ComputeBackend, HardwareNode, ModelSpec, NodeId, NodeRole, NodeTrustTier, WorkloadKind,
+    ComputeBackend, HardwareNode, ModelSpec, NodeId, NodeRole, NodeTrustTier, ResourceOffer,
+    WorkloadKind,
 };
 use kadmium_grid::{
     AppKind, ContentKind, ContentRef, CostEstimate, PlacementConstraints, PlacementRule,
-    RedundancyPolicy, ResidencyTier, WorkGraph, WorkUnit, WorkUnitId,
+    RedundancyPolicy, ResidencyTier, WorkGraph, WorkUnit, WorkUnitId, fnv1a_64,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -154,6 +155,60 @@ impl ExpertPopularity {
     }
 }
 
+/// What a plan asks of one node against what the node offers, in GiB.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NodeFit {
+    pub node: NodeId,
+    pub fast_offered_gb: f64,
+    pub fast_used_gb: f64,
+    pub warm_offered_gb: f64,
+    pub warm_used_gb: f64,
+    pub cold_offered_gb: f64,
+    pub cold_used_gb: f64,
+    /// The owner reviews the plan before anything is staged here.
+    pub requires_approval: bool,
+}
+
+/// Whether the plan fits the offers, and what is missing where. colibri refuses to start when
+/// the always-resident part plus a minimum expert cache does not fit; lumabri shows each donor
+/// the RAM and disk a plan asks of it before anything loads. This is that review for the mesh.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlacementFit {
+    /// Every trunk range and its KV reservation sits in fast or warm memory on its owner, and no
+    /// content was left unplaced.
+    pub fits: bool,
+    /// Some experts fit in no offer and stream from the vault on every step they are routed to.
+    pub streams_from_vault: bool,
+    /// Bytes that fit nowhere, with no vault to fall back on.
+    pub unplaced_gb: f64,
+    /// Bytes placed on the vault because no offer had room.
+    pub vault_streamed_gb: f64,
+    pub per_node: Vec<NodeFit>,
+    /// One line per shortfall, for the owner reviewing the plan.
+    pub shortfalls: Vec<String>,
+}
+
+impl PlacementFit {
+    pub fn summary(&self) -> String {
+        if self.fits && !self.streams_from_vault {
+            "fits the offers".to_string()
+        } else if self.fits {
+            format!(
+                "fits the offers; {:.1} GB of experts stream from the vault",
+                self.vault_streamed_gb
+            )
+        } else {
+            format!(
+                "does not fit: {} shortfall{}, {:.1} GB unplaced, {:.1} GB streaming from the vault",
+                self.shortfalls.len(),
+                if self.shortfalls.len() == 1 { "" } else { "s" },
+                self.unplaced_gb,
+                self.vault_streamed_gb
+            )
+        }
+    }
+}
+
 /// The complete placement of a model on the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExpertPlacementPlan {
@@ -168,9 +223,32 @@ pub struct ExpertPlacementPlan {
     /// Expert bytes that fit neither fast nor warm memory anywhere and stream from NVMe or NAS.
     pub cold_gb: f64,
     pub replicated_experts: usize,
+    /// How the plan fits the offers it was placed against.
+    #[serde(default)]
+    pub fit: PlacementFit,
 }
 
 impl ExpertPlacementPlan {
+    /// Content-addressed identity of the placement: the shape, every trunk range with its owner,
+    /// every expert with its holders and tier. Approvals and calibration records bind to it, so
+    /// a changed placement asks again and measures again.
+    pub fn digest(&self) -> u64 {
+        let mut text = format!("{}|{:?}", self.model_id, self.strategy);
+        for r in &self.trunk_ranges {
+            text.push_str(&format!(
+                "|T{}-{}@{}:{}",
+                r.start_layer, r.end_layer, r.owner, r.bytes
+            ));
+        }
+        for h in &self.experts {
+            text.push_str(&format!(
+                "|E{}/{}@{:?}:{:?}",
+                h.layer, h.expert, h.holders, h.tier
+            ));
+        }
+        fnv1a_64(text.as_bytes())
+    }
+
     pub fn trunk_owner(&self, layer: u32) -> Option<&NodeId> {
         self.trunk_ranges
             .iter()
@@ -230,7 +308,8 @@ impl ExpertPlacementPlan {
     }
 }
 
-/// Per-node budget the planner spends while placing content.
+/// Per-node budget the planner spends while placing content: the node's offer under its polite
+/// state, by tier.
 #[derive(Debug, Clone)]
 struct NodeBudget {
     node_id: NodeId,
@@ -239,19 +318,30 @@ struct NodeBudget {
     fast_bw_gbps: f64,
     fast_left: f64,
     fast_used: f64,
+    fast_offered: f64,
     warm_bw_gbps: f64,
     warm_left: f64,
     warm_used: f64,
+    warm_offered: f64,
     cold_tier: ResidencyTier,
     cold_bw_gbps: f64,
     cold_left: f64,
     cold_used: f64,
+    cold_offered: f64,
+    requires_approval: bool,
     hop_ms: f64,
 }
 
 impl NodeBudget {
     fn from_node(node: &HardwareNode) -> Self {
-        let availability = node.polite_state.availability_multiplier();
+        Self::from_node_and_offer(node, &node.default_offer())
+    }
+
+    /// The budget an offer gives the planner on a node: the offered fast memory and RAM under the
+    /// host's polite state, the offered NVMe for cold banks.
+    fn from_node_and_offer(node: &HardwareNode, offer: &ResourceOffer) -> Self {
+        let offer = offer.clone().clamped_to(node);
+        let live = offer.under_polite_state(node, node.polite_state);
         let (fast_tier, fast_bw_gbps) = if node.memory.unified_mem_gb > 0.0 {
             (
                 Some(ResidencyTier::UnifiedMemory),
@@ -262,7 +352,7 @@ impl NodeBudget {
         } else {
             (None, 0.0)
         };
-        let (cold_tier, cold_bw_gbps) = if node.memory.nvme_cache_gb > 0.0 {
+        let (cold_tier, cold_bw_gbps) = if offer.nvme_gb > 0.0 {
             (
                 ResidencyTier::LocalNvme,
                 node.memory.nvme_read_bw_gbps.max(0.5),
@@ -275,15 +365,19 @@ impl NodeBudget {
             trust_tier: node.trust_tier,
             fast_tier,
             fast_bw_gbps,
-            fast_left: node.available_fast_memory_gb() * GIB,
+            fast_left: live.fast_memory_gb * GIB,
             fast_used: 0.0,
+            fast_offered: live.fast_memory_gb * GIB,
             warm_bw_gbps: node.memory.system_ram_bw_gbps.max(1.0),
-            warm_left: node.memory.system_ram_gb * 0.65 * availability * GIB,
+            warm_left: live.system_ram_gb * GIB,
             warm_used: 0.0,
+            warm_offered: live.system_ram_gb * GIB,
             cold_tier,
             cold_bw_gbps,
-            cold_left: node.memory.nvme_cache_gb * GIB,
+            cold_left: offer.nvme_gb * GIB,
             cold_used: 0.0,
+            cold_offered: offer.nvme_gb * GIB,
+            requires_approval: offer.requires_approval,
             hop_ms: node.network_latency_ms,
         }
     }
@@ -354,6 +448,19 @@ impl ExpertPlacementPlanner {
         popularity: Option<&ExpertPopularity>,
         workload: WorkloadKind,
     ) -> ExpertPlacementPlan {
+        Self::plan_with_offers(model, nodes, strategy, popularity, workload, &BTreeMap::new())
+    }
+
+    /// The planner proper: places the model against each node's offer (the node's default offer
+    /// where `offers` has none) and reports how the plan fits them.
+    pub fn plan_with_offers(
+        model: &ModelSpec,
+        nodes: &[HardwareNode],
+        strategy: ExecutionStrategy,
+        popularity: Option<&ExpertPopularity>,
+        workload: WorkloadKind,
+        offers: &BTreeMap<NodeId, ResourceOffer>,
+    ) -> ExpertPlacementPlan {
         let shard_plan = ShardPlanner::compute_plan(0, model, workload, nodes);
         let mut trunk_ranges: Vec<TrunkRange> = shard_plan
             .assignments
@@ -379,7 +486,10 @@ impl ExpertPlacementPlanner {
                     || n.roles.contains(&NodeRole::BurstAccelerator))
                     && n.capacity_score(WorkloadKind::Inference) > 0.0
             })
-            .map(NodeBudget::from_node)
+            .map(|n| match offers.get(&n.id) {
+                Some(offer) => NodeBudget::from_node_and_offer(n, offer),
+                None => NodeBudget::from_node(n),
+            })
             .collect();
         let seed_node = nodes
             .iter()
@@ -388,6 +498,12 @@ impl ExpertPlacementPlanner {
 
         let mut rules = Vec::new();
         let mut cold_bytes = 0.0f64;
+        let mut shortfalls: Vec<String> = Vec::new();
+        let mut trunk_shortfalls = 0usize;
+        let mut vault_bytes = 0.0f64;
+        let mut unplaced_bytes = 0.0f64;
+        let mut unplaced_experts = 0usize;
+        let mut vault_experts: BTreeMap<String, (usize, f64)> = BTreeMap::new();
 
         // 1. Trunks and KV reservations on their owners.
         for range in &trunk_ranges {
@@ -402,13 +518,37 @@ impl ExpertPlacementPlanner {
                     } else if b.take_warm(trunk_bytes) {
                         (ResidencyTier::SystemRam, false)
                     } else {
+                        shortfalls.push(format!(
+                            "{} cannot hold trunk L{:03}-L{:03} ({:.1} GB) in its offered {:.1} GB fast memory and {:.1} GB RAM; it streams from {:?}",
+                            b.node_id,
+                            range.start_layer,
+                            range.end_layer,
+                            trunk_bytes / GIB,
+                            b.fast_offered / GIB,
+                            b.warm_offered / GIB,
+                            b.cold_tier
+                        ));
+                        trunk_shortfalls += 1;
                         (b.cold_tier, true)
                     }
                 }
-                None => (ResidencyTier::NasVault, true),
+                None => {
+                    shortfalls.push(format!(
+                        "trunk L{:03}-L{:03} ({:.1} GB) is owned by {}, which offers no compute budget; it streams from the vault",
+                        range.start_layer,
+                        range.end_layer,
+                        range.bytes as f64 / GIB,
+                        range.owner
+                    ));
+                    trunk_shortfalls += 1;
+                    (ResidencyTier::NasVault, true)
+                }
             };
             if cold {
                 cold_bytes += range.bytes as f64;
+            }
+            if tier == ResidencyTier::NasVault {
+                vault_bytes += range.bytes as f64;
             }
             rules.push(PlacementRule {
                 content: ModelContentNames::trunk(
@@ -447,9 +587,35 @@ impl ExpertPlacementPlanner {
                             Self::place_spread(&mut budgets, boundary, owner.as_ref(), expert_bytes)
                         }
                     };
-                    let holder = holder
-                        .or_else(|| seed_node.clone())
-                        .unwrap_or_else(|| NodeId("unplaced".into()));
+                    let owner_label = owner
+                        .as_ref()
+                        .map(|o| o.0.clone())
+                        .unwrap_or_else(|| "no owner".to_string());
+                    let holder = match holder {
+                        Some(h) => {
+                            if tier == ResidencyTier::NasVault {
+                                vault_bytes += expert_bytes;
+                                let entry = vault_experts.entry(owner_label).or_default();
+                                entry.0 += 1;
+                                entry.1 += expert_bytes;
+                            }
+                            h
+                        }
+                        None => match &seed_node {
+                            Some(seed) => {
+                                vault_bytes += expert_bytes;
+                                let entry = vault_experts.entry(owner_label).or_default();
+                                entry.0 += 1;
+                                entry.1 += expert_bytes;
+                                seed.clone()
+                            }
+                            None => {
+                                unplaced_bytes += expert_bytes;
+                                unplaced_experts += 1;
+                                NodeId("unplaced".into())
+                            }
+                        },
+                    };
                     if cold {
                         cold_bytes += expert_bytes;
                     }
@@ -461,6 +627,18 @@ impl ExpertPlacementPlanner {
                     });
                 }
             }
+        }
+        if unplaced_experts > 0 {
+            shortfalls.push(format!(
+                "{unplaced_experts} experts ({:.1} GB) fit in no offer and the mesh has no vault to stream them from",
+                unplaced_bytes / GIB
+            ));
+        }
+        for (owner, (count, bytes)) in &vault_experts {
+            shortfalls.push(format!(
+                "{count} experts of layers owned by {owner} ({:.1} GB) exceed the offers and stream from the vault on every step they are routed to",
+                bytes / GIB
+            ));
         }
 
         // 3. Hot-expert replication into leftover fast memory.
@@ -522,6 +700,26 @@ impl ExpertPlacementPlanner {
         }
 
         let round = |v: f64| (v * 100.0).round() / 100.0;
+        let fit = PlacementFit {
+            fits: unplaced_bytes <= 0.0 && trunk_shortfalls == 0,
+            streams_from_vault: vault_bytes > 0.0,
+            unplaced_gb: round(unplaced_bytes / GIB),
+            vault_streamed_gb: round(vault_bytes / GIB),
+            per_node: budgets
+                .iter()
+                .map(|b| NodeFit {
+                    node: b.node_id.clone(),
+                    fast_offered_gb: round(b.fast_offered / GIB),
+                    fast_used_gb: round(b.fast_used / GIB),
+                    warm_offered_gb: round(b.warm_offered / GIB),
+                    warm_used_gb: round(b.warm_used / GIB),
+                    cold_offered_gb: round(b.cold_offered / GIB),
+                    cold_used_gb: round(b.cold_used / GIB),
+                    requires_approval: b.requires_approval,
+                })
+                .collect(),
+            shortfalls,
+        };
         ExpertPlacementPlan {
             model_id: model.id.clone(),
             strategy,
@@ -538,6 +736,7 @@ impl ExpertPlacementPlanner {
                 .collect(),
             cold_gb: round(cold_bytes / GIB),
             replicated_experts: replicated,
+            fit,
         }
     }
 
@@ -870,17 +1069,32 @@ impl StrategyCostModel {
         nodes: &[HardwareNode],
         popularity: Option<&ExpertPopularity>,
     ) -> (StrategyChoice, ExpertPlacementPlan) {
-        let chain_plan = ExpertPlacementPlanner::plan(
+        self.choose_with_offers(model, nodes, popularity, &BTreeMap::new())
+    }
+
+    /// [`StrategyCostModel::choose`] against each node's offer.
+    pub fn choose_with_offers(
+        &self,
+        model: &ModelSpec,
+        nodes: &[HardwareNode],
+        popularity: Option<&ExpertPopularity>,
+        offers: &BTreeMap<NodeId, ResourceOffer>,
+    ) -> (StrategyChoice, ExpertPlacementPlan) {
+        let chain_plan = ExpertPlacementPlanner::plan_with_offers(
             model,
             nodes,
             ExecutionStrategy::PipelineChain,
             popularity,
+            WorkloadKind::Inference,
+            offers,
         );
-        let ep_plan = ExpertPlacementPlanner::plan(
+        let ep_plan = ExpertPlacementPlanner::plan_with_offers(
             model,
             nodes,
             ExecutionStrategy::ExpertParallel,
             popularity,
+            WorkloadKind::Inference,
+            offers,
         );
         let chain = self.estimate(model, &chain_plan, nodes, popularity);
         let ep = self.estimate(model, &ep_plan, nodes, popularity);
@@ -1399,6 +1613,80 @@ mod tests {
         }
         assert_eq!(plan.holders_of(0, 0).len(), 1);
         assert!(plan.holders_of(99, 0).is_empty());
+    }
+
+    #[test]
+    fn offers_bound_the_plan_and_the_fit_report_names_what_is_missing() {
+        let nodes = cluster();
+        let model = toy_moe();
+        let plan = ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
+        assert!(plan.fit.fits, "{:?}", plan.fit.shortfalls);
+        assert_eq!(plan.fit.per_node.len(), plan.fast_memory_used_gb.len());
+        assert!(
+            plan.fit
+                .per_node
+                .iter()
+                .all(|n| n.fast_used_gb <= n.fast_offered_gb + 1e-6
+                    && n.warm_used_gb <= n.warm_offered_gb + 1e-6)
+        );
+        let digest = plan.digest();
+        assert_ne!(digest, 0);
+        assert_eq!(
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None)
+                .digest(),
+            digest,
+            "the same placement has the same digest"
+        );
+        assert_ne!(
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::ExpertParallel, None)
+                .digest(),
+            digest
+        );
+
+        // Owners who offer almost nothing: trunks no longer fit, and the fit report says where.
+        let offers: BTreeMap<NodeId, ResourceOffer> = nodes
+            .iter()
+            .map(|n| {
+                let mut offer = n.default_offer();
+                offer.fast_memory_gb = 0.0;
+                offer.system_ram_gb = 0.01;
+                offer.nvme_gb = 0.0;
+                offer.requires_approval = true;
+                (n.id.clone(), offer)
+            })
+            .collect();
+        let starved = ExpertPlacementPlanner::plan_with_offers(
+            &model,
+            &nodes,
+            ExecutionStrategy::PipelineChain,
+            None,
+            WorkloadKind::Inference,
+            &offers,
+        );
+        assert!(!starved.fit.fits);
+        assert!(!starved.fit.shortfalls.is_empty());
+        assert!(starved.fit.shortfalls[0].contains("cannot hold trunk"));
+        assert!(starved.fit.per_node.iter().all(|n| n.requires_approval));
+        assert!(starved.fit.per_node.iter().all(|n| n.fast_offered_gb == 0.0));
+        assert!(starved.fit.summary().starts_with("does not fit"));
+        assert_ne!(starved.digest(), digest, "a different placement, a different digest");
+
+        // A generous explicit offer is clamped to the machine.
+        let node = &nodes[0];
+        let huge = ResourceOffer {
+            fast_memory_gb: 1e6,
+            system_ram_gb: 1e6,
+            nvme_gb: 1e6,
+            reserved_ram_gb: 0.0,
+            slots: 0,
+            max_allocations: 0,
+            requires_approval: false,
+        }
+        .clamped_to(node);
+        assert!(huge.fast_memory_gb <= node.memory.fast_accelerator_memory_gb());
+        assert!(huge.system_ram_gb + huge.reserved_ram_gb <= node.memory.system_ram_gb + 1e-9);
+        assert!(huge.reserved_ram_gb >= ResourceOffer::ram_reserve_gb(node.memory.system_ram_gb));
+        assert_eq!(huge.slots, 1);
     }
 
     #[test]

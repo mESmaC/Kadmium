@@ -141,3 +141,28 @@ pub const RK3588_32GB_NAS_NODE_BOM_USD_2026: f64 = 275.0;
 pub const RK3588_32GB_NAS_NODE_RETAIL_USD_2026: f64 = 379.0;
 /// Crowdfunding + payment processing fee assumption (`9.0%`, R4 §6.6).
 pub const CROWDFUNDING_AND_PAYMENT_FEE_PCT: f64 = 9.0;
+
+// ================================================================================================
+// 6. Resource Offer Defaults (engineering constants, not market data)
+// ================================================================================================
+//
+// What a node offers the grid by default, before its owner edits the offer. One set of figures
+// for the planner, the scheduler and the capability vector; the reserve rule is lumabri's donor
+// default (one quarter of RAM, bounded to 1-4 GiB, never offered), the RAM fraction is the
+// resident-weight budget the planner has always used, and the fast-memory fraction is the share
+// of VRAM an idle host lends.
+
+/// Share of VRAM or unified memory an idle host offers (`90%`).
+pub const OFFER_FAST_MEMORY_FRAC: f64 = 0.90;
+/// Share of system RAM offered for resident weights (`70%`), capped by the reserve rule below.
+pub const OFFER_SYSTEM_RAM_FRAC: f64 = 0.70;
+/// Share of system RAM kept for the owner (`25%`), bounded by the min and max below.
+pub const OFFER_RAM_RESERVE_FRAC: f64 = 0.25;
+/// Smallest RAM reserve in GiB (`1 GiB`).
+pub const OFFER_RAM_RESERVE_MIN_GB: f64 = 1.0;
+/// Largest RAM reserve in GiB (`4 GiB`; a 16 GiB host keeps 4, an 8 GiB host keeps 2).
+pub const OFFER_RAM_RESERVE_MAX_GB: f64 = 4.0;
+/// Work instances a node runs at once by default (`4`).
+pub const OFFER_DEFAULT_SLOTS: u32 = 4;
+/// Distinct model allocations a node accepts at once by default (`4`).
+pub const OFFER_MAX_ALLOCATIONS: u32 = 4;

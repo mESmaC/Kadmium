@@ -115,6 +115,21 @@ enum Commands {
         /// Register and run a single verification pass, then exit instead of staying in the daemon heartbeat loop
         #[arg(long)]
         once: bool,
+        /// GiB of VRAM or unified memory this machine offers the grid (default: 90% of VRAM plus all unified memory)
+        #[arg(long)]
+        offer_fast_gb: Option<f64>,
+        /// GiB of system RAM this machine offers the grid (default: 70%, never within the reserve of a quarter of RAM bounded to 1-4 GiB)
+        #[arg(long)]
+        offer_ram_gb: Option<f64>,
+        /// GiB of NVMe this machine offers for cold weight banks (default: the whole Kadmium cache)
+        #[arg(long)]
+        offer_nvme_gb: Option<f64>,
+        /// Work instances this machine runs at once (default 4)
+        #[arg(long)]
+        slots: Option<u32>,
+        /// Review placement plans before anything is staged on this machine
+        #[arg(long)]
+        require_approval: bool,
     },
     /// Pull and stage a Hugging Face model/dataset (hf://...) or GitHub RL/Dream-RSI world (gh://...)
     Pull {
@@ -299,6 +314,11 @@ async fn main() {
             hostname,
             live_only,
             once,
+            offer_fast_gb,
+            offer_ram_gb,
+            offer_nvme_gb,
+            slots,
+            require_approval,
         } => {
             run_join(
                 coordinator,
@@ -307,6 +327,13 @@ async fn main() {
                 hostname,
                 live_only,
                 once,
+                JoinOfferArgs {
+                    fast_gb: offer_fast_gb,
+                    ram_gb: offer_ram_gb,
+                    nvme_gb: offer_nvme_gb,
+                    slots,
+                    require_approval,
+                },
             )
             .await
         }
@@ -723,6 +750,34 @@ fn run_plan(model_name: &str, workload_name: &str) {
     );
     println!("  * Placement: {}", placement.summary());
     println!("  * Why: {}", choice.rationale);
+    println!(
+        "\n--- Offers and Fit (default offers: {}% of VRAM plus unified memory, {}% of RAM outside a {}-{} GiB reserve) ---",
+        (kadmium_core::OFFER_FAST_MEMORY_FRAC * 100.0).round(),
+        (kadmium_core::OFFER_SYSTEM_RAM_FRAC * 100.0).round(),
+        kadmium_core::OFFER_RAM_RESERVE_MIN_GB,
+        kadmium_core::OFFER_RAM_RESERVE_MAX_GB
+    );
+    println!("  * Fit: {}", placement.fit.summary());
+    for node in &placement.fit.per_node {
+        println!(
+            "  * {:<22} fast {:>6.1} / {:<6.1} GB | RAM {:>6.1} / {:<6.1} GB | NVMe {:>7.1} / {:<7.1} GB{}",
+            node.node.0,
+            node.fast_used_gb,
+            node.fast_offered_gb,
+            node.warm_used_gb,
+            node.warm_offered_gb,
+            node.cold_used_gb,
+            node.cold_offered_gb,
+            if node.requires_approval {
+                " | approval required"
+            } else {
+                ""
+            }
+        );
+    }
+    for line in &placement.fit.shortfalls {
+        println!("  * Shortfall: {line}");
+    }
 
     let transfers = Fts3TransferScheduler::plan_initial_staging(&plan, &nodes);
     println!(

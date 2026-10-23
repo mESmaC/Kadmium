@@ -10,10 +10,13 @@ use axum::{
     Json,
     extract::{Query, State},
 };
-use kadmium_core::{HardwareNode, ModelSpec, NodeId, VerifiedComputeReceipt, WorkloadKind};
+use kadmium_core::{
+    HardwareNode, ModelSpec, NodeId, NodeRole, ResourceOffer, VerifiedComputeReceipt,
+    WorkloadKind,
+};
 use kadmium_grid::{
-    AppKind, CreditEntry, PoolInventory, ReplicaCatalog, TelemetryStore, WorkGraph, WorkUnit,
-    WorkerProfile,
+    AppKind, CreditEntry, PlanApproval, PoolInventory, Replica, ReplicaCatalog, ResidencyTier,
+    TelemetryStore, WorkGraph, WorkUnit, WorkerProfile,
 };
 use kadmium_network::LiveWorkerRegistration;
 use kadmium_runtime::{
@@ -24,11 +27,12 @@ use kadmium_runtime::{
 };
 use kadmium_sharding::{
     ClusterShardPlan, CombineParams, ExecutionStrategy, ExpertPlacementPlan,
-    ExpertPlacementPlanner, ExpertSliceParams, StageForwardParams, StepGraphBuilder,
-    StrategyChoice, StrategyCostModel, TrainStageParams, TrunkForwardParams, TrunkRange,
+    ExpertPlacementPlanner, ExpertSliceParams, PlacementFit, StageForwardParams,
+    StepGraphBuilder, StrategyChoice, StrategyCostModel, TrainStageParams, TrunkForwardParams,
+    TrunkRange,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 /// Summary of the last grid run, kept in the gateway state and shown on the inventory.
@@ -60,6 +64,26 @@ struct MeshSnapshot {
     inference_model: ModelSpec,
     training_model: ModelSpec,
     telemetry: TelemetryStore,
+    /// The offer in force on every node: the owner's where one was sent, else the default.
+    offers: BTreeMap<NodeId, ResourceOffer>,
+    approvals: BTreeMap<String, PlanApproval>,
+}
+
+/// The offer in force on every node of the mesh.
+pub fn effective_offers(
+    nodes: &[HardwareNode],
+    explicit: &BTreeMap<String, ResourceOffer>,
+) -> BTreeMap<NodeId, ResourceOffer> {
+    nodes
+        .iter()
+        .map(|n| {
+            let offer = match explicit.get(&n.id.0) {
+                Some(offer) => offer.clone().clamped_to(n),
+                None => n.default_offer(),
+            };
+            (n.id.clone(), offer)
+        })
+        .collect()
 }
 
 fn snapshot(state: &Arc<Mutex<GatewayState>>) -> MeshSnapshot {
@@ -79,6 +103,8 @@ fn snapshot(state: &Arc<Mutex<GatewayState>>) -> MeshSnapshot {
         inference_model: guard.inference_model.clone(),
         training_model: guard.training_model.clone(),
         telemetry: guard.grid_telemetry.clone(),
+        offers: effective_offers(&guard.nodes, &guard.grid_offers),
+        approvals: guard.grid_plan_approvals.clone(),
     }
 }
 
@@ -89,6 +115,7 @@ pub fn mesh_workers(
     nodes: &[HardwareNode],
     live_workers: &BTreeMap<String, LiveWorkerRegistration>,
     telemetry: &TelemetryStore,
+    offers: &BTreeMap<NodeId, ResourceOffer>,
 ) -> Vec<WorkerProfile> {
     let mut workers = GridDispatcher::workers_from_registrations(live_workers);
     for node in nodes {
@@ -96,6 +123,13 @@ pub fn mesh_workers(
             workers.push(WorkerProfile::from_node(node.clone()));
         }
     }
+    workers = workers
+        .into_iter()
+        .map(|w| match offers.get(w.id()) {
+            Some(offer) => w.with_offer(offer.clone()),
+            None => w,
+        })
+        .collect();
     telemetry.apply_to_all(&mut workers);
     workers
 }
@@ -275,12 +309,19 @@ pub async fn run_grid_decode_step(
     let rows = rows.clamp(1, 64);
     let model = snap.inference_model.clone();
     let cost = cost_model(&snap.live_workers);
-    let (mut choice, placement) = cost.choose(&model, &snap.nodes, None);
+    let (mut choice, placement) = cost.choose_with_offers(&model, &snap.nodes, None, &snap.offers);
     let placement = match forced {
         Some(strategy) if strategy != choice.chosen => {
             choice.chosen = strategy;
             choice.rationale = format!("shape forced to {strategy:?}; {}", choice.rationale);
-            ExpertPlacementPlanner::plan(&model, &snap.nodes, strategy, None)
+            ExpertPlacementPlanner::plan_with_offers(
+                &model,
+                &snap.nodes,
+                strategy,
+                None,
+                WorkloadKind::Inference,
+                &snap.offers,
+            )
         }
         _ => placement,
     };
@@ -297,7 +338,12 @@ pub async fn run_grid_decode_step(
     let graph =
         StepGraphBuilder::decode_step(&model, &placement, &snap.nodes, snap.epoch, &session, rows);
     let catalog = ReplicaCatalog::assume_placed(&placement.rules, now_unix_ms());
-    let mut workers = mesh_workers(&snap.nodes, &snap.live_workers, &snap.telemetry);
+    let mut workers = mesh_workers(
+        &snap.nodes,
+        &snap.live_workers,
+        &snap.telemetry,
+        &snap.offers,
+    );
     let seed_row = prompt_seed_hidden(prompt, 64);
     let seed_values: Vec<f32> = (0..rows).flat_map(|_| seed_row.iter().copied()).collect();
     let seed = TokenBatchInt8::quantize(&seed_values, rows, 64, 16)?;
@@ -396,7 +442,7 @@ pub struct GridInventoryResponse {
 pub async fn get_grid_inventory(
     State(state): State<Arc<Mutex<GatewayState>>>,
 ) -> Json<GridInventoryResponse> {
-    let (nodes, live_workers, runs, last_run, telemetry) = {
+    let (nodes, live_workers, runs, last_run, telemetry, offers) = {
         let guard = state.lock().expect("gateway state lock");
         (
             guard.nodes.clone(),
@@ -404,9 +450,10 @@ pub async fn get_grid_inventory(
             guard.grid_runs,
             guard.grid_last_run.clone(),
             guard.grid_telemetry.clone(),
+            effective_offers(&guard.nodes, &guard.grid_offers),
         )
     };
-    let workers = mesh_workers(&nodes, &live_workers, &telemetry);
+    let workers = mesh_workers(&nodes, &live_workers, &telemetry, &offers);
     let inventory = PoolInventory::from_workers(&workers);
     Json(GridInventoryResponse {
         summary: inventory.summary_line(),
@@ -461,13 +508,160 @@ impl GridPlacementSummary {
     }
 }
 
+/// The initial staging a placement needs, as the owners reviewing it see it: what can start now
+/// and what waits for an owner's approval.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GridStagingPreview {
+    /// The vault the preview stages from.
+    pub source: String,
+    pub ready_jobs: usize,
+    pub ready_gb: f64,
+    /// Transfers held until the owner of their destination approves this exact placement.
+    pub awaiting_jobs: usize,
+    pub awaiting_gb: f64,
+    pub nodes_awaiting_approval: Vec<String>,
+    /// Nodes whose offers require approval at all.
+    pub approval_required: Vec<String>,
+    /// Nodes whose owners approved this exact placement.
+    pub approved_nodes: Vec<String>,
+    pub ready_to_stage: bool,
+}
+
+fn staging_preview(
+    placement: &ExpertPlacementPlan,
+    nodes: &[HardwareNode],
+    offers: &BTreeMap<NodeId, ResourceOffer>,
+    approvals: &BTreeMap<String, PlanApproval>,
+    now: u64,
+) -> GridStagingPreview {
+    let digest = placement.digest();
+    let Some(source) = nodes
+        .iter()
+        .find(|n| n.roles.contains(&NodeRole::StorageVault))
+        .or_else(|| nodes.first())
+        .map(|n| n.id.clone())
+    else {
+        return GridStagingPreview::default();
+    };
+    let mut catalog = ReplicaCatalog::new();
+    for rule in &placement.rules {
+        catalog.record(Replica::new(
+            rule.content.clone(),
+            source.clone(),
+            ResidencyTier::NasVault,
+            now,
+        ));
+    }
+    let approval_required: Vec<NodeId> = offers
+        .iter()
+        .filter(|(_, o)| o.requires_approval)
+        .map(|(n, _)| n.clone())
+        .collect();
+    let approved: Vec<NodeId> = approval_required
+        .iter()
+        .filter(|n| {
+            approvals
+                .get(&n.0)
+                .is_some_and(|a| a.covers(&placement.model_id, digest))
+        })
+        .cloned()
+        .collect();
+    let needs: BTreeSet<NodeId> = approval_required
+        .iter()
+        .filter(|n| !approved.contains(n))
+        .cloned()
+        .collect();
+    // The vault's copy is a replica too, so each rule asks for one copy per candidate on top.
+    let rules: Vec<_> = placement
+        .rules
+        .iter()
+        .map(|rule| {
+            let mut rule = rule.clone();
+            let extra = u32::from(!rule.candidate_nodes.contains(&source));
+            rule.min_replicas = rule.candidate_nodes.len() as u32 + extra;
+            rule
+        })
+        .collect();
+    let plan = catalog.plan_staging_gated(&rules, &BTreeMap::new(), &needs);
+    let gib = |bytes: u64| (bytes as f64 / 1_073_741_824.0 * 100.0).round() / 100.0;
+    GridStagingPreview {
+        source: source.0,
+        ready_jobs: plan.ready.len(),
+        ready_gb: gib(plan.bytes_ready()),
+        awaiting_jobs: plan.awaiting_approval.len(),
+        awaiting_gb: gib(plan.bytes_awaiting()),
+        nodes_awaiting_approval: plan.nodes_awaiting().into_iter().map(|n| n.0).collect(),
+        approval_required: approval_required.into_iter().map(|n| n.0).collect(),
+        approved_nodes: approved.into_iter().map(|n| n.0).collect(),
+        ready_to_stage: plan.is_clear(),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GridPlanResponse {
     pub model_id: String,
     pub choice: StrategyChoice,
     pub placement: GridPlacementSummary,
+    /// Identity of the placement; approvals and calibration records bind to it.
+    pub placement_digest: u64,
+    /// How the placement fits the offers in force, and what is missing where.
+    pub fit: PlacementFit,
+    /// The offer in force on every node.
+    pub offers: BTreeMap<String, ResourceOffer>,
+    pub staging: GridStagingPreview,
     /// Always true: the cost model's figures are projections until a run is measured.
     pub modelled: bool,
+}
+
+fn plan_response(
+    snap: &MeshSnapshot,
+    model: ModelSpec,
+    forced: Option<ExecutionStrategy>,
+) -> GridPlanResponse {
+    let (mut choice, mut placement) =
+        cost_model(&snap.live_workers).choose_with_offers(&model, &snap.nodes, None, &snap.offers);
+    if let Some(strategy) = forced
+        && strategy != choice.chosen
+    {
+        choice.chosen = strategy;
+        choice.rationale = format!("shape forced to {strategy:?}; {}", choice.rationale);
+        placement = ExpertPlacementPlanner::plan_with_offers(
+            &model,
+            &snap.nodes,
+            strategy,
+            None,
+            WorkloadKind::Inference,
+            &snap.offers,
+        );
+    }
+    let staging = staging_preview(
+        &placement,
+        &snap.nodes,
+        &snap.offers,
+        &snap.approvals,
+        now_unix_ms(),
+    );
+    GridPlanResponse {
+        model_id: model.id.clone(),
+        choice,
+        placement_digest: placement.digest(),
+        fit: placement.fit.clone(),
+        offers: snap
+            .offers
+            .iter()
+            .map(|(n, o)| (n.0.clone(), o.clone()))
+            .collect(),
+        staging,
+        placement: GridPlacementSummary::from_placement(&placement),
+        modelled: true,
+    }
+}
+
+fn resolve_model(snap: &MeshSnapshot, requested: Option<&str>) -> ModelSpec {
+    requested
+        .filter(|m| !m.trim().is_empty())
+        .map(ModelSpec::from_id)
+        .unwrap_or_else(|| snap.inference_model.clone())
 }
 
 pub async fn get_grid_plan(
@@ -475,27 +669,48 @@ pub async fn get_grid_plan(
     Query(query): Query<GridPlanQuery>,
 ) -> Json<GridPlanResponse> {
     let snap = snapshot(&state);
-    let model = query
-        .model
-        .as_deref()
-        .filter(|m| !m.trim().is_empty())
-        .map(ModelSpec::from_id)
-        .unwrap_or(snap.inference_model);
-    let (mut choice, mut placement) =
-        cost_model(&snap.live_workers).choose(&model, &snap.nodes, None);
-    if let Some(strategy) = parse_strategy(query.strategy.as_deref())
-        && strategy != choice.chosen
+    let model = resolve_model(&snap, query.model.as_deref());
+    let forced = parse_strategy(query.strategy.as_deref());
+    Json(plan_response(&snap, model, forced))
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GridApproveRequest {
+    pub model: Option<String>,
+    /// The node whose owner approves (or, with `approve: false`, withdraws approval of) the plan.
+    pub node: String,
+    pub approve: Option<bool>,
+}
+
+/// An owner's approval of the current placement plan for their node. The approval binds to the
+/// plan's digest, so a plan that changes afterwards asks again.
+pub async fn post_grid_plan_approve(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    Json(req): Json<GridApproveRequest>,
+) -> Json<GridPlanResponse> {
+    let snap = snapshot(&state);
+    let model = resolve_model(&snap, req.model.as_deref());
+    let (_, placement) =
+        cost_model(&snap.live_workers).choose_with_offers(&model, &snap.nodes, None, &snap.offers);
+    let digest = placement.digest();
     {
-        choice.chosen = strategy;
-        choice.rationale = format!("shape forced to {strategy:?}; {}", choice.rationale);
-        placement = ExpertPlacementPlanner::plan(&model, &snap.nodes, strategy, None);
+        let mut guard = state.lock().expect("gateway state lock");
+        if req.approve.unwrap_or(true) {
+            guard.grid_plan_approvals.insert(
+                req.node.clone(),
+                PlanApproval {
+                    node: NodeId(req.node.clone()),
+                    model_id: model.id.clone(),
+                    placement_digest: digest,
+                    approved_unix_ms: now_unix_ms(),
+                },
+            );
+        } else {
+            guard.grid_plan_approvals.remove(&req.node);
+        }
     }
-    Json(GridPlanResponse {
-        model_id: model.id.clone(),
-        choice,
-        placement: GridPlacementSummary::from_placement(&placement),
-        modelled: true,
-    })
+    let snap = snapshot(&state);
+    Json(plan_response(&snap, model, None))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -606,12 +821,13 @@ pub async fn post_grid_train(
         .filter(|lr| lr.is_finite() && *lr > 0.0)
         .map_or(0.05, |lr| lr.min(1.0));
     let model = snap.training_model.clone();
-    let placement = ExpertPlacementPlanner::plan_for_workload(
+    let placement = ExpertPlacementPlanner::plan_with_offers(
         &model,
         &snap.nodes,
         ExecutionStrategy::PipelineChain,
         None,
         WorkloadKind::DistributedTraining,
+        &snap.offers,
     );
     let session = format!("gateway-e{}", snap.epoch);
     let graph = StepGraphBuilder::training_step(
@@ -650,7 +866,12 @@ pub async fn post_grid_train(
         }
     };
     let catalog = ReplicaCatalog::assume_placed(&placement.rules, now_unix_ms());
-    let mut workers = mesh_workers(&snap.nodes, &snap.live_workers, &snap.telemetry);
+    let mut workers = mesh_workers(
+        &snap.nodes,
+        &snap.live_workers,
+        &snap.telemetry,
+        &snap.offers,
+    );
     let config = GridRunConfig {
         epoch: snap.epoch,
         ..GridRunConfig::default()
@@ -746,7 +967,12 @@ pub async fn post_grid_replay(
         &snap.nodes,
     );
     let catalog = ReplicaCatalog::new();
-    let mut workers = mesh_workers(&snap.nodes, &snap.live_workers, &snap.telemetry);
+    let mut workers = mesh_workers(
+        &snap.nodes,
+        &snap.live_workers,
+        &snap.telemetry,
+        &snap.offers,
+    );
     let config = GridRunConfig {
         epoch: snap.epoch,
         ..GridRunConfig::default()
@@ -943,6 +1169,96 @@ mod tests {
             Some(ExecutionStrategy::PipelineChain)
         );
         assert_eq!(parse_strategy(Some("nonsense")), None);
+
+        // The plan is reviewed against every node's offer: the fit report, the offers, and the
+        // staging that waits for owners whose offers require approval.
+        assert!(auto.fit.fits, "{:?}", auto.fit.shortfalls);
+        assert_ne!(auto.placement_digest, 0);
+        let node_count = state.lock().unwrap().nodes.len();
+        assert_eq!(auto.offers.len(), node_count);
+        assert_eq!(auto.fit.per_node.len() > 0, true);
+        assert_eq!(
+            auto.staging.ready_to_stage,
+            auto.staging.nodes_awaiting_approval.is_empty()
+        );
+        assert!(auto.staging.ready_jobs + auto.staging.awaiting_jobs > 0);
+    }
+
+    #[tokio::test]
+    async fn owners_approve_plans_before_staging_reaches_their_nodes() {
+        let state = demo_state();
+        // One owner asks to review plans: their node's staging waits for approval.
+        let (node_id, mut offer) = {
+            let guard = state.lock().unwrap();
+            let node = guard
+                .nodes
+                .iter()
+                .find(|n| n.roles.contains(&NodeRole::ComputeWorker))
+                .expect("a compute node");
+            (node.id.0.clone(), node.default_offer())
+        };
+        offer.requires_approval = true;
+        offer.slots = 2;
+        state
+            .lock()
+            .unwrap()
+            .set_worker_offer(&node_id, Some(offer), Some(12.0), None);
+
+        let plan = get_grid_plan(State(state.clone()), Query(GridPlanQuery::default()))
+            .await
+            .0;
+        assert!(plan.offers[&node_id].requires_approval);
+        assert_eq!(plan.offers[&node_id].slots, 2);
+        assert!(plan.staging.approval_required.contains(&node_id));
+        let holds_content = plan.staging.nodes_awaiting_approval.contains(&node_id);
+        assert_eq!(
+            plan.fit.per_node.iter().find(|n| n.node.0 == node_id).map(|n| n.requires_approval),
+            Some(true)
+        );
+
+        let approved = post_grid_plan_approve(
+            State(state.clone()),
+            Json(GridApproveRequest {
+                model: None,
+                node: node_id.clone(),
+                approve: Some(true),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(approved.placement_digest, plan.placement_digest);
+        assert!(approved.staging.approved_nodes.contains(&node_id));
+        assert!(!approved.staging.nodes_awaiting_approval.contains(&node_id));
+        if holds_content {
+            assert!(approved.staging.ready_jobs > plan.staging.ready_jobs);
+        }
+
+        // The worker profile the scheduler sees carries the offer's slots.
+        let workers = {
+            let guard = state.lock().unwrap();
+            mesh_workers(
+                &guard.nodes,
+                &guard.live_workers,
+                &guard.grid_telemetry,
+                &effective_offers(&guard.nodes, &guard.grid_offers),
+            )
+        };
+        let profile = workers.iter().find(|w| w.id().0 == node_id).unwrap();
+        assert_eq!(profile.max_concurrent, 2);
+        assert_eq!(profile.free_system_ram_gb, Some(12.0));
+
+        // Withdrawing the approval puts the node back on hold, and a changed offer drops it too.
+        let withdrawn = post_grid_plan_approve(
+            State(state.clone()),
+            Json(GridApproveRequest {
+                model: None,
+                node: node_id.clone(),
+                approve: Some(false),
+            }),
+        )
+        .await
+        .0;
+        assert!(!withdrawn.staging.approved_nodes.contains(&node_id));
     }
 
     #[tokio::test]

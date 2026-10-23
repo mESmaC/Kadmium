@@ -151,6 +151,15 @@ pub struct WorkerRegisterRequest {
     pub join_ticket: Option<String>,
     /// If true, replaces the simulated demo fleet with live hardware nodes only.
     pub switch_to_live_only: bool,
+    /// What the owner lets the grid use on this machine; `None` means the node's default offer.
+    #[serde(default)]
+    pub offer: Option<kadmium_core::ResourceOffer>,
+    /// System RAM free on the worker at registration, in GiB, if it measured it.
+    #[serde(default)]
+    pub free_system_ram_gb: Option<f64>,
+    /// Memory streaming rate the worker measured on itself at start-up, in GB/s, if it did.
+    #[serde(default)]
+    pub measured_stream_gbps: Option<f64>,
 }
 
 /// Response returned by `POST /api/v1/cluster/register` after the coordinator verifies the worker's
@@ -183,6 +192,13 @@ pub struct WorkerHeartbeatRequest {
     /// Optional receipt if the worker just applied an OTA update queued on the previous heartbeat.
     #[serde(default)]
     pub applied_ota_ack: Option<WorkerUpdatePushAck>,
+    /// The owner's current offer, when it changed or the worker repeats it; `None` leaves the
+    /// coordinator's record as it is.
+    #[serde(default)]
+    pub offer: Option<kadmium_core::ResourceOffer>,
+    /// System RAM free on the worker right now, in GiB, if it measured it.
+    #[serde(default)]
+    pub free_system_ram_gb: Option<f64>,
 }
 
 /// Response returned by `POST /api/v1/cluster/heartbeat`.

@@ -149,6 +149,10 @@ pub struct GatewayState {
     /// Measured worker telemetry (compute cost per kind of work) kept across grid runs and
     /// restored at start-up from `target/kadmium-state/grid_telemetry.json`.
     pub grid_telemetry: kadmium_grid::TelemetryStore,
+    /// Owners' explicit resource offers by node id; nodes without one offer their default.
+    pub grid_offers: BTreeMap<String, kadmium_core::ResourceOffer>,
+    /// Owners' approvals of the current placement plan, by node id.
+    pub grid_plan_approvals: BTreeMap<String, kadmium_grid::PlanApproval>,
     pub coordinator_lan_ip: String,
     pub coordinator_http_port: u16,
     pub training_step_counter: u64,
@@ -275,6 +279,45 @@ impl GatewayState {
             grid_credit_entries: Vec::new(),
             grid_receipts: Vec::new(),
             grid_telemetry: kadmium_grid::TelemetryStore::new(),
+            grid_offers: BTreeMap::new(),
+            grid_plan_approvals: BTreeMap::new(),
+        }
+    }
+
+    /// Records what a worker's owner offers and what the worker measured about itself. An offer
+    /// is clamped to the machine the coordinator knows; a changed offer drops the owner's plan
+    /// approvals, since the plan they approved no longer applies.
+    pub fn set_worker_offer(
+        &mut self,
+        node_id: &str,
+        offer: Option<kadmium_core::ResourceOffer>,
+        free_system_ram_gb: Option<f64>,
+        measured_stream_gbps: Option<f64>,
+    ) {
+        if let Some(offer) = offer {
+            let clamped = match self.nodes.iter().find(|n| n.id.0 == node_id) {
+                Some(node) => offer.clamped_to(node),
+                None => offer,
+            };
+            if self.grid_offers.get(node_id) != Some(&clamped) {
+                self.grid_plan_approvals.remove(node_id);
+            }
+            self.grid_offers.insert(node_id.to_string(), clamped);
+        }
+        if free_system_ram_gb.is_some() || measured_stream_gbps.is_some() {
+            let now = LiveWorkerRegistration::now_unix_ms();
+            let telemetry = self
+                .grid_telemetry
+                .workers
+                .entry(kadmium_core::NodeId(node_id.to_string()))
+                .or_default();
+            if free_system_ram_gb.is_some() {
+                telemetry.free_system_ram_gb = free_system_ram_gb;
+            }
+            if measured_stream_gbps.is_some() {
+                telemetry.measured_stream_gbps = measured_stream_gbps;
+            }
+            telemetry.updated_unix_ms = now;
         }
     }
 
@@ -579,6 +622,7 @@ impl GatewayState {
     pub fn record_worker_heartbeat(&mut self, req: &WorkerHeartbeatRequest) -> WorkerHeartbeatAck {
         let now_ms = LiveWorkerRegistration::now_unix_ms();
         let mut state_changed = false;
+        self.set_worker_offer(&req.node_id.0, req.offer.clone(), req.free_system_ram_gb, None);
 
         if let Some(ota_ack) = &req.applied_ota_ack
             && ota_ack.accepted
@@ -1184,6 +1228,9 @@ mod tests {
         assert_eq!(state.nodes.len(), 1);
         assert_eq!(state.live_workers.len(), 1);
 
+        let mut offer = probe_node.default_offer();
+        offer.slots = 2;
+        offer.requires_approval = true;
         let hb_ack = state.record_worker_heartbeat(&WorkerHeartbeatRequest {
             node_id: probe_node.id.clone(),
             worker_tcp_addr: "127.0.0.1:7850".into(),
@@ -1192,8 +1239,17 @@ mod tests {
             external_vram_used_gb: 8.0,
             package_temp_celsius: 68.0,
             applied_ota_ack: None,
+            offer: Some(offer),
+            free_system_ram_gb: Some(9.5),
         });
         assert!(hb_ack.rebalance_triggered);
+        let recorded = &state.grid_offers[&probe_node.id.0];
+        assert_eq!(recorded.slots, 2);
+        assert!(recorded.requires_approval);
+        assert_eq!(
+            state.grid_telemetry.workers[&probe_node.id].free_system_ram_gb,
+            Some(9.5)
+        );
 
         // Verify OTA Update Manifest signature & receipt commit
         let ota_manifest = state.create_ota_update_manifest(

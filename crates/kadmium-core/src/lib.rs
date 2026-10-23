@@ -151,9 +151,12 @@ impl MemoryTierProfile {
         self.vram_gb + self.unified_mem_gb
     }
 
-    /// Total memory usable for resident model weights (Tier 0 + Tier 1 + 70% of Tier 2 System RAM).
+    /// Total memory usable for resident model weights: Tier 0 + Tier 1 + the offered share of
+    /// Tier 2 system RAM ([`canonical_numbers::OFFER_SYSTEM_RAM_FRAC`]).
     pub fn resident_weight_capacity_gb(&self) -> f64 {
-        self.vram_gb + self.unified_mem_gb + (self.system_ram_gb * 0.70)
+        self.vram_gb
+            + self.unified_mem_gb
+            + (self.system_ram_gb * canonical_numbers::OFFER_SYSTEM_RAM_FRAC)
     }
 
     /// Effective weighted memory bandwidth in GB/s across active tiers.
@@ -166,6 +169,138 @@ impl MemoryTierProfile {
         } else {
             self.system_ram_bw_gbps
         }
+    }
+}
+
+/// What a node's owner lets the grid use: the budgets the planner and scheduler spend. Lumabri's
+/// donor settings: the owner sets what is offered, a reserve of RAM is never offered, at most a
+/// few model allocations share the node, and a peer's plan is reviewed before anything is staged.
+/// The default offer comes from the capability vector and the canonical fractions; an explicit
+/// offer is clamped to the machine with [`ResourceOffer::clamped_to`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResourceOffer {
+    /// VRAM or unified memory the grid may fill with weights and KV, in GiB, when the host is idle.
+    pub fast_memory_gb: f64,
+    /// System RAM the grid may fill, in GiB; never reaches into `reserved_ram_gb`.
+    pub system_ram_gb: f64,
+    /// Local NVMe the grid may fill with cold banks, in GiB.
+    pub nvme_gb: f64,
+    /// RAM kept for the owner, in GiB, whatever `system_ram_gb` says.
+    pub reserved_ram_gb: f64,
+    /// Work instances the node runs at once.
+    pub slots: u32,
+    /// Distinct model allocations the node accepts at once.
+    pub max_allocations: u32,
+    /// The owner reviews a placement plan before anything is staged on the node.
+    pub requires_approval: bool,
+}
+
+impl ResourceOffer {
+    /// RAM kept for the owner: a quarter of the machine's RAM, bounded to 1-4 GiB.
+    pub fn ram_reserve_gb(total_ram_gb: f64) -> f64 {
+        (total_ram_gb * canonical_numbers::OFFER_RAM_RESERVE_FRAC)
+            .clamp(
+                canonical_numbers::OFFER_RAM_RESERVE_MIN_GB,
+                canonical_numbers::OFFER_RAM_RESERVE_MAX_GB,
+            )
+            .min(total_ram_gb.max(0.0))
+    }
+
+    /// The offer a node makes before its owner edits it: the canonical share of discrete VRAM and
+    /// all of the unified memory, the canonical share of RAM, all of the NVMe cache, the default
+    /// slots, and approval required unless the hardware is the owner's own.
+    pub fn default_for(node: &HardwareNode) -> Self {
+        let total_ram = node.memory.system_ram_gb.max(0.0);
+        let reserve = Self::ram_reserve_gb(total_ram);
+        Self {
+            fast_memory_gb: node.memory.vram_gb * canonical_numbers::OFFER_FAST_MEMORY_FRAC
+                + node.memory.unified_mem_gb,
+            system_ram_gb: (total_ram * canonical_numbers::OFFER_SYSTEM_RAM_FRAC)
+                .min((total_ram - reserve).max(0.0)),
+            nvme_gb: node.memory.nvme_cache_gb.max(0.0),
+            reserved_ram_gb: reserve,
+            slots: canonical_numbers::OFFER_DEFAULT_SLOTS,
+            max_allocations: canonical_numbers::OFFER_MAX_ALLOCATIONS,
+            requires_approval: node.trust_tier != NodeTrustTier::TrustedCore,
+        }
+    }
+
+    /// Clamps an owner's offer to the machine: never more memory than it has, never into the
+    /// reserve, at least one slot.
+    pub fn clamped_to(mut self, node: &HardwareNode) -> Self {
+        let total_ram = node.memory.system_ram_gb.max(0.0);
+        self.reserved_ram_gb = self
+            .reserved_ram_gb
+            .max(Self::ram_reserve_gb(total_ram))
+            .min(total_ram);
+        self.fast_memory_gb = self
+            .fast_memory_gb
+            .clamp(0.0, node.memory.fast_accelerator_memory_gb());
+        self.system_ram_gb = self
+            .system_ram_gb
+            .clamp(0.0, (total_ram - self.reserved_ram_gb).max(0.0));
+        self.nvme_gb = self.nvme_gb.clamp(0.0, node.memory.nvme_cache_gb.max(0.0));
+        self.slots = self.slots.max(1);
+        self.max_allocations = self.max_allocations.max(1);
+        self
+    }
+
+    /// The offer under the host's polite state. VRAM goes back to the owner's game first, unified
+    /// memory and RAM scale with the availability multiplier, slots scale with it too, and a
+    /// draining host offers nothing.
+    pub fn under_polite_state(&self, node: &HardwareNode, state: PoliteState) -> Self {
+        let rho = state.availability_multiplier();
+        let vram_factor = match state {
+            PoliteState::GamingOrHeavyApp => 0.15,
+            PoliteState::BatteryOrThermalThrottle => 0.50,
+            PoliteState::Draining => 0.0,
+            _ => 1.0,
+        };
+        let fast_total = node.memory.fast_accelerator_memory_gb();
+        // Split the offered fast memory between VRAM and unified memory in the machine's ratio.
+        let (vram_share, unified_share) = if fast_total > 0.0 {
+            (
+                self.fast_memory_gb * node.memory.vram_gb / fast_total,
+                self.fast_memory_gb * node.memory.unified_mem_gb / fast_total,
+            )
+        } else {
+            (0.0, 0.0)
+        };
+        let unified_factor = if state == PoliteState::Draining {
+            0.0
+        } else {
+            rho.max(0.5)
+        };
+        Self {
+            fast_memory_gb: vram_share * vram_factor + unified_share * unified_factor,
+            system_ram_gb: self.system_ram_gb * rho,
+            nvme_gb: self.nvme_gb,
+            reserved_ram_gb: self.reserved_ram_gb,
+            slots: if state == PoliteState::Draining {
+                0
+            } else {
+                ((self.slots as f64 * rho).ceil() as u32).max(1)
+            },
+            max_allocations: self.max_allocations,
+            requires_approval: self.requires_approval,
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "{:.1} GB fast, {:.1} GB RAM ({:.1} GB reserved), {:.0} GB NVMe, {} slots, {} allocations{}",
+            self.fast_memory_gb,
+            self.system_ram_gb,
+            self.reserved_ram_gb,
+            self.nvme_gb,
+            self.slots,
+            self.max_allocations,
+            if self.requires_approval {
+                ", approval required"
+            } else {
+                ""
+            }
+        )
     }
 }
 
@@ -218,17 +353,21 @@ impl HardwareNode {
         (self.fp16_tflops + self.cpu_tflops * 0.35 + self.npu_tops * 0.25) * rho
     }
 
-    /// Effective fast memory (VRAM + Unified Memory) available under the current PoliteState.
+    /// Effective fast memory (VRAM + Unified Memory) available under the current PoliteState:
+    /// the default offer's fast memory under that state.
     pub fn available_fast_memory_gb(&self) -> f64 {
-        let rho = self.polite_state.availability_multiplier();
-        // When gaming on a desktop/laptop, reserve most VRAM for the user's game.
-        let vram_factor = match self.polite_state {
-            PoliteState::GamingOrHeavyApp => 0.15,
-            PoliteState::BatteryOrThermalThrottle => 0.50,
-            PoliteState::Draining => 0.0,
-            _ => 0.90,
-        };
-        (self.memory.vram_gb * vram_factor) + (self.memory.unified_mem_gb * rho.max(0.5))
+        self.offered_now().fast_memory_gb
+    }
+
+    /// The offer this node makes before its owner edits it; see [`ResourceOffer::default_for`].
+    pub fn default_offer(&self) -> ResourceOffer {
+        ResourceOffer::default_for(self)
+    }
+
+    /// The default offer under the node's current polite state.
+    pub fn offered_now(&self) -> ResourceOffer {
+        self.default_offer()
+            .under_polite_state(self, self.polite_state)
     }
 
     /// Computes the FreeToken-inspired bandwidth-adaptive execution split $q^* \in [0.0, 1.0]$.

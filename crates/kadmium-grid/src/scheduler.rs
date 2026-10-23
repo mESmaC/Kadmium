@@ -16,7 +16,7 @@
 //! measured speed never pulls a unit away from the node that holds its weights, and a failed,
 //! invalid or cancelled instance is never a sample.
 
-use kadmium_core::{HardwareNode, NodeId, WorkloadKind};
+use kadmium_core::{HardwareNode, NodeId, ResourceOffer, WorkloadKind};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -46,6 +46,9 @@ pub struct WorkerProfile {
     /// Measured compute cost per kind of work, folded from validated results.
     #[serde(default)]
     pub compute: BTreeMap<String, ComputeEwma>,
+    /// The owner's explicit offer, if the worker sent one; `None` means the node's default offer.
+    #[serde(default)]
+    pub offer: Option<ResourceOffer>,
 }
 
 impl WorkerProfile {
@@ -62,6 +65,27 @@ impl WorkerProfile {
             last_seen_unix_ms: 0,
             free_system_ram_gb: None,
             compute: BTreeMap::new(),
+            offer: None,
+        }
+    }
+
+    /// Applies the owner's offer: its slots become the concurrency limit, and its fast memory
+    /// under the host's polite state becomes the free fast memory the matchmaker checks.
+    pub fn with_offer(mut self, offer: ResourceOffer) -> Self {
+        let offer = offer.clamped_to(&self.node);
+        self.max_concurrent = offer.slots.max(1);
+        self.free_fast_memory_gb = offer
+            .under_polite_state(&self.node, self.node.polite_state)
+            .fast_memory_gb;
+        self.offer = Some(offer);
+        self
+    }
+
+    /// The offer in force: the owner's, clamped to the machine, or the node's default.
+    pub fn effective_offer(&self) -> ResourceOffer {
+        match &self.offer {
+            Some(offer) => offer.clone().clamped_to(&self.node),
+            None => self.node.default_offer(),
         }
     }
 

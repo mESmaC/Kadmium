@@ -8,7 +8,7 @@
 
 use kadmium_core::NodeId;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ContentRef;
 
@@ -106,6 +106,58 @@ pub struct StagingJob {
     pub target_tier: ResidencyTier,
     pub bytes: u64,
     pub pin: bool,
+}
+
+/// An owner's approval of one placement plan for their node. Nothing is staged on a node whose
+/// offer requires approval until its owner has approved the plan that puts content there
+/// (lumabri: no model loads until every donor accepts). The approval binds to the placement's
+/// digest, so a changed plan asks again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanApproval {
+    pub node: NodeId,
+    pub model_id: String,
+    pub placement_digest: u64,
+    pub approved_unix_ms: u64,
+}
+
+impl PlanApproval {
+    pub fn covers(&self, model_id: &str, placement_digest: u64) -> bool {
+        self.model_id == model_id && self.placement_digest == placement_digest
+    }
+}
+
+/// Staging jobs split into the ones that can start now and the ones held for an owner's approval.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct StagingPlan {
+    pub ready: Vec<StagingJob>,
+    pub awaiting_approval: Vec<StagingJob>,
+}
+
+impl StagingPlan {
+    pub fn bytes_ready(&self) -> u64 {
+        self.ready.iter().map(|j| j.bytes).sum()
+    }
+
+    pub fn bytes_awaiting(&self) -> u64 {
+        self.awaiting_approval.iter().map(|j| j.bytes).sum()
+    }
+
+    /// Nodes with staging held back, in node-id order.
+    pub fn nodes_awaiting(&self) -> Vec<NodeId> {
+        let mut nodes: Vec<NodeId> = self
+            .awaiting_approval
+            .iter()
+            .map(|j| j.destination_node.clone())
+            .collect();
+        nodes.sort();
+        nodes.dedup();
+        nodes
+    }
+
+    /// Whether every job can start.
+    pub fn is_clear(&self) -> bool {
+        self.awaiting_approval.is_empty()
+    }
 }
 
 /// Which node holds which content, in which tier.
@@ -314,6 +366,24 @@ impl ReplicaCatalog {
         jobs
     }
 
+    /// Like [`ReplicaCatalog::plan_staging_with_capacity`], with every job bound for a node in
+    /// `needs_approval` held back until its owner approves the plan.
+    pub fn plan_staging_gated(
+        &self,
+        rules: &[PlacementRule],
+        capacity_bytes: &BTreeMap<NodeId, u64>,
+        needs_approval: &BTreeSet<NodeId>,
+    ) -> StagingPlan {
+        let (awaiting_approval, ready): (Vec<StagingJob>, Vec<StagingJob>) = self
+            .plan_staging_with_capacity(rules, capacity_bytes)
+            .into_iter()
+            .partition(|j| needs_approval.contains(&j.destination_node));
+        StagingPlan {
+            ready,
+            awaiting_approval,
+        }
+    }
+
     /// Records the replica a completed staging job created.
     pub fn apply_staging(&mut self, job: &StagingJob, now_unix_ms: u64) {
         let mut replica = Replica::new(
@@ -493,6 +563,44 @@ mod tests {
         assert_eq!(jobs[0].destination_node, node("pc"));
         assert_eq!(jobs[0].content, big);
         assert_eq!(jobs[1].destination_node, node("tiny"));
+    }
+
+    #[test]
+    fn gated_staging_holds_jobs_for_nodes_awaiting_approval() {
+        let mut catalog = ReplicaCatalog::new();
+        let bank = expert("L003/E007", 6_000_000);
+        catalog.record(Replica::new(
+            bank.clone(),
+            node("vault"),
+            ResidencyTier::NasVault,
+            0,
+        ));
+        let rules = vec![PlacementRule {
+            content: bank,
+            min_replicas: 3,
+            preferred_tier: ResidencyTier::SystemRam,
+            candidate_nodes: vec![node("owned"), node("peer")],
+            pin: false,
+        }];
+        let gated = catalog.plan_staging_gated(&rules, &BTreeMap::new(), &[node("peer")].into());
+        assert_eq!(gated.ready.len(), 1);
+        assert_eq!(gated.ready[0].destination_node, node("owned"));
+        assert_eq!(gated.awaiting_approval.len(), 1);
+        assert_eq!(gated.nodes_awaiting(), vec![node("peer")]);
+        assert_eq!(gated.bytes_awaiting(), 6_000_000);
+        assert!(!gated.is_clear());
+
+        let approval = PlanApproval {
+            node: node("peer"),
+            model_id: "toy".into(),
+            placement_digest: 42,
+            approved_unix_ms: 1,
+        };
+        assert!(approval.covers("toy", 42));
+        assert!(!approval.covers("toy", 43), "a changed plan asks again");
+        let clear = catalog.plan_staging_gated(&rules, &BTreeMap::new(), &BTreeSet::new());
+        assert!(clear.is_clear());
+        assert_eq!(clear.ready.len(), 2);
     }
 
     #[test]

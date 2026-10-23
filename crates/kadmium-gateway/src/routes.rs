@@ -464,6 +464,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         )
         .route("/api/v1/grid/inventory", get(crate::grid_api::get_grid_inventory))
         .route("/api/v1/grid/plan", get(crate::grid_api::get_grid_plan))
+        .route(
+            "/api/v1/grid/plan/approve",
+            post(crate::grid_api::post_grid_plan_approve),
+        )
         .route("/api/v1/grid/run", post(crate::grid_api::post_grid_run))
         .route("/api/v1/grid/train", post(crate::grid_api::post_grid_train))
         .route("/api/v1/grid/replay", post(crate::grid_api::post_grid_replay))
@@ -888,12 +892,19 @@ async fn post_cluster_register(
             Err(_) => req.node.network_latency_ms.max(0.2),
         };
 
+    let node_id = req.node.id.0.clone();
     let mut guard = state.lock().expect("gateway state lock");
     let ack = guard.register_live_worker(
         req.node,
         req.worker_tcp_addr,
         measured_rtt_ms,
         req.switch_to_live_only,
+    );
+    guard.set_worker_offer(
+        &node_id,
+        req.offer,
+        req.free_system_ram_gb,
+        req.measured_stream_gbps,
     );
     Json(ack)
 }
