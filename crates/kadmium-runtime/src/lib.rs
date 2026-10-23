@@ -9,6 +9,7 @@ use kadmium_core::{GradientCompressionCodec, NodeId, TrainingStrategy};
 use kadmium_sharding::ClusterShardPlan;
 use serde::{Deserialize, Serialize};
 
+pub mod diloco;
 pub mod exl3_qtip;
 pub mod fraud_proof;
 pub mod inference_compute;
@@ -20,6 +21,7 @@ pub mod repops;
 pub mod throughput_boost;
 pub mod training_compute;
 pub mod training_framework;
+pub use diloco::*;
 pub use exl3_qtip::*;
 pub use fraud_proof::*;
 pub use inference_compute::*;

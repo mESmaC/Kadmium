@@ -9,6 +9,7 @@ Commands:
   simulate      Run the full end-to-end heterogeneous cluster & live responsibility shift simulation
   probe         Probe and benchmark THIS local host machine (CPU, GPU, RAM, 64KB page-aligned bandwidth, and Join Ticket)
   dream         Run a standalone Dream-RSI (Recursive Self-Improvement through Evolving Worlds) offline replay simulation
+  diloco        Train a deterministic CPU regression workload using stateful DiLoCo island synchronization
   slice         Partition a large node pool (e.g., 100 nodes) into isolated sub-compute environments (Prod, Test, Train, RL)
   dataflow      Evaluate TPU / Compute-in-Memory (CIM) inspired Dynamic Token Streaming vs. Dynamic Weight Streaming
   cloud-shield  Evaluate Kadmium Cloud Business Model: Multi-Datacenter Spot Arbitrage + Bidirectional Downtime Protection
@@ -17,6 +18,28 @@ Commands:
   serve         Launch the Control Room and reference API diagnostics
   desktop       Open the Kadmium desktop app (the Companion in its own window) with a local coordinator
 ```
+
+---
+
+## `kadmium diloco`
+
+Runs a reproducible, single-process CPU training experiment: independent islands learn `y = 2*x + 1` from nonidentical input ranges. Weight and bias are separate shards of the same complete model on every island. Each island performs `H` local AdamW steps, submits its parameters to the synchronous DiLoCo barrier, then receives the committed outer update. Local AdamW moments and step counters persist across rounds.
+
+```bash
+cargo run -p kadmium-cli -- diloco --inner-steps 20 --rounds 25 --islands 3
+kadmium diloco --inner-steps 20 --rounds 25 --islands 3 --json
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--inner-steps <H>` | `20` | Local steps per island before synchronization, `1..=10000`. |
+| `--rounds <N>` | `25` | Outer synchronization rounds, `1..=1000`. |
+| `--islands <N>` | `3` | Independent learners, `2..=64`. |
+| `--json` | off | Include loss history, learned shards, optimizer settings and payload estimates. |
+
+The experiment limits total local steps (`H × rounds × islands`) to two million. Invalid inputs exit nonzero. Its fixed inner optimizer is AdamW (`lr=0.02`, betas `0.9/0.999`, epsilon `1e-8`, weight decay `0.01`); the outer Nesterov optimizer uses learning rate `0.7` and momentum `0.9`.
+
+The default run performs 500 local steps per island and 25 outer synchronizations, compared with 500 synchronizations at every local step. The reported 20× reduction describes synchronization frequency and a like-for-like FP32 parameter payload estimate; it is not a measured network reduction or speedup. No network workers, LLM weights, GPU execution, async RL or inference acceleration are exercised. The CLI starts a fresh experiment each time. For explicit session checkpoint/restore, use the [DiLoCo HTTP API](api-reference.md#stateful-diloco-sessions).
 
 ---
 

@@ -518,7 +518,7 @@ impl ExpertPlacementPlanner {
     }
 
     /// Like [`ExpertPlacementPlanner::plan`], with the trunk ranges sized for the given workload,
-    /// so a training step's islands match the training planner's layer split.
+    /// so a training preview's stages match the training planner's layer split.
     pub fn plan_for_workload(
         model: &ModelSpec,
         nodes: &[HardwareNode],
@@ -2208,7 +2208,7 @@ mod tests {
 // Training, replay and audit graphs
 // ================================================================================================
 
-/// Parameters of a [`AppKind::TrainForwardBackward`] unit: one island's forward and backward
+/// Parameters of a [`AppKind::TrainForwardBackward`] unit: one stage's forward and backward
 /// pass over its layer range for one micro-batch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrainStageParams {
@@ -2223,8 +2223,8 @@ pub struct TrainStageParams {
     pub learning_rate: f32,
 }
 
-/// Parameters of a [`AppKind::DeMoReduce`] unit: the DiLoCo outer step over every island's
-/// DeMo packet.
+/// Parameters of a legacy [`AppKind::DeMoReduce`] unit: independent per-stage gradient previews.
+/// Distinct layer ranges are not replica islands; this graph does not perform a DiLoCo sync.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeMoReduceParams {
     pub model_id: String,
@@ -2276,9 +2276,9 @@ impl StepGraphBuilder {
         )
     }
 
-    /// One distributed training step: every trunk range trains as an independent island on the
-    /// same micro-batch (a bag of units), and one reduce unit fans their DeMo packets in for the
-    /// DiLoCo outer step.
+    /// Legacy stateless training preview: every trunk range trains independently on the same
+    /// micro-batch, and a summary unit combines telemetry from the separate gradient previews.
+    /// This graph neither persists local optimizer state nor averages replica island deltas.
     pub fn training_step(
         model: &ModelSpec,
         placement: &ExpertPlacementPlan,
@@ -2474,7 +2474,7 @@ mod phase5_tests {
     use kadmium_core::sample_personal_cluster;
 
     #[test]
-    fn training_step_is_a_bag_of_islands_fanning_into_one_reduce() {
+    fn training_preview_is_a_bag_of_stages_fanning_into_one_summary() {
         let nodes = sample_personal_cluster();
         let model = ModelSpec::llama_3_70b_lora();
         let placement =

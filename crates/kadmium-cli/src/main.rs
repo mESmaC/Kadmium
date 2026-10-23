@@ -21,6 +21,7 @@ use kadmium_sharding::{
     SubClusterPartitioner,
 };
 
+mod diloco_ops;
 mod grid_ops;
 mod launch;
 mod ops;
@@ -44,6 +45,21 @@ enum Commands {
     Simulate,
     /// Run a Dream-RSI (Recursive Self-Improvement through Evolving Worlds) offline replay simulation cycle
     Dream,
+    /// Train a deterministic CPU regression workload with stateful DiLoCo island synchronization
+    Diloco {
+        /// Local AdamW steps per island before each synchronous outer update
+        #[arg(long, default_value_t = 20)]
+        inner_steps: u32,
+        /// Number of outer synchronization rounds
+        #[arg(long, default_value_t = 25)]
+        rounds: u32,
+        /// Independent learners with nonidentical deterministic datasets
+        #[arg(long, default_value_t = 3)]
+        islands: u32,
+        /// Print the experiment report as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Section a global compute pool (e.g., 100 nodes) into isolated Sub-Compute Environments (e.g., 5 clusters of 20 nodes)
     Slice {
         /// Total nodes in the global compute pool
@@ -309,6 +325,17 @@ async fn main() {
     match cli.command.unwrap_or(Commands::Simulate) {
         Commands::Simulate => run_simulation(),
         Commands::Dream => run_dream_rsi(),
+        Commands::Diloco {
+            inner_steps,
+            rounds,
+            islands,
+            json,
+        } => {
+            if let Err(error) = diloco_ops::run(inner_steps, rounds, islands, json) {
+                eprintln!("kadmium diloco: {error}");
+                std::process::exit(2);
+            }
+        }
         Commands::Slice { pool_size, slices } => run_slice(pool_size, slices),
         Commands::Dataflow {
             model,
