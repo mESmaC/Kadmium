@@ -14,12 +14,30 @@ When a model (`Llama-3-70B-LoRA` or `DeepSeek-V3`) is larger than any single con
 - [`Pipeline1F1BScheduler`](../../crates/kadmium-runtime/src/lib.rs) schedules **Warmup**, **Steady-State 1F1B (One-Forward-One-Backward)**, and **Cooldown** micro-batches, keeping pipeline bubble overhead under `~19%`.
 - Stage-boundary activations and gradients are compressed using **Hivemind 8-Bit Blockwise Dynamic Quantization** ([`BlockwiseInt8Tensor`](../../crates/kadmium-runtime/src/lib.rs)), cutting inter-node bandwidth by $4\times$.
 
-### B. Nous Research `DisTrO` / `DeMo` Frequency-Domain Momentum Compression
-Instead of syncing dense gradients on every step, nodes run $H = 50$ local inner steps (`DiLoCo`) and compress their outer momentum updates using **Orthonormal Discrete Cosine Transform (`DCT-II` / `IDCT-III`)**:
-1. [`DeMoDctCompressor::step_and_compress`](../../crates/kadmium-runtime/src/lib.rs) transforms the momentum chunk into frequency space and extracts only the **Top-$k$ fastest-moving frequency components**.
-2. Unsent frequencies are accumulated locally into a lossless residual buffer (`residual_error[i]`), guaranteeing exact energy conservation:
-   $$\hat{m}_t + e_{t+1} = m_t$$
-3. Achieves **`142x`–`800x` communication reduction**, shrinking outer-step sync over residential broadband to `<100ms`.
+### B. Stateful DiLoCo rounds
+
+[`DiLoCoSession`](../../crates/kadmium-runtime/src/diloco.rs) implements a synchronous outer training loop inspired by [OpenDiLoCo's pinned PyTorch implementation](https://github.com/PrimeIntellect-ai/OpenDiloco/blob/2d750e58a692ce1424d2a2366b2b3de1f42c9bf1/open_diloco/train_diloco_torch.py#L336-L353):
+
+1. All islands begin from the same committed parameter snapshot. Each island contains the same complete model layout; a shard is an identified parameter partition within that replica, not a different model layer contributed by another island.
+2. Each island takes exactly `H` local optimizer steps on its own data. Local AdamW moments survive outer synchronization.
+3. Islands submit their final parameter shards with the round number and the snapshot's `baseline_id`. The coordinator waits for every registered island, rejecting unknown/duplicate islands, stale rounds, mismatched baselines/layouts and invalid values.
+4. For master parameters `theta` and each locally trained replica `theta_i`, the outer pseudo-gradient is the equally weighted mean of `theta - theta_i`. Contributions are ordered by island ID and summed through the RepOps tree with FP64 accumulation before conversion to checked FP32 state. A persistent Nesterov momentum optimizer updates the master once; the new snapshot starts the next round.
+
+The barrier is synchronous even when submissions arrive at different times. A missing island prevents the round from committing. This implementation does not include OpenDiLoCo's networking or membership recovery, async reinforcement learning, or an inference acceleration technique. It adds an independent session API; existing generic training and RL endpoints do not automatically use this stateful loop.
+
+Run the integrated reference workload:
+
+```bash
+cargo run -p kadmium-cli -- diloco --inner-steps 20 --rounds 25 --islands 3 --json
+```
+
+This trains a real small CPU regression objective (`y = 2*x + 1`) with different data ranges per island, two parameter shards, persistent local AdamW state, and an outer Nesterov update. The report includes loss history and 25 synchronizations versus a 500-sync per-step baseline for the same local step count. Payload numbers count FP32 parameters uploaded and broadcast; they exclude protocol overhead and are not measured traffic. This proves the reference training path and cadence, not LLM convergence, GPU throughput or WAN performance.
+
+The [session HTTP API](../api-reference.md#stateful-diloco-sessions) exposes create, submit, status, committed snapshot and checkpoint/restore. Session checkpoints preserve master parameters, outer momentum and pending submissions. External learners must separately save their own model, local optimizer, data cursor and random state for a complete training restart. A committed snapshot can be consumed by a future inference adapter; no current inference model is automatically replaced.
+
+### C. DeMo frequency-domain compression
+
+[`DeMoDctCompressor::step_and_compress`](../../crates/kadmium-runtime/src/lib.rs) is a separate compression primitive: it transforms momentum chunks using DCT-II, selects top-k frequency components and retains unsent residuals. The new DiLoCo session API transports full FP32 parameter shards and does not enable this compressor. Communication reductions from sparse compression and from taking `H` local steps must be measured separately before combining claims.
 
 ---
 

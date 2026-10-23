@@ -261,6 +261,7 @@ pub struct OtaUpdatePushRequest {
 /// Builds the Axum router serving both the Unified Dashboard and all Backend REST/AI Gateway APIs.
 pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
     Router::new()
+        .merge(crate::diloco_api::router())
         .route("/", get(serve_dashboard))
         .route("/dashboard", get(serve_dashboard))
         .route("/site", get(serve_marketing_site))

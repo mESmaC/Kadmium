@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 
 pub mod checkpoints;
 pub mod coordinator;
+pub mod diloco_api;
 pub mod docs;
 pub mod grid_api;
 pub mod mcp;

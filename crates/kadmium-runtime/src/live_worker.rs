@@ -13,7 +13,7 @@
 //! (`WireFrameKind::FleetUpdatePush`) over real sockets.
 
 use crate::{
-    BlockwiseInt8Tensor, DeMoDctCompressor, DiLoCoOuterOptimizer, DistributedMoEPipelineExecutor,
+    BlockwiseInt8Tensor, DeMoDctCompressor, DistributedMoEPipelineExecutor,
     DistributedPipelineExecutionReport, DistributedQLoRAAdapter, ExecutorContext, ExecutorRegistry,
     ExpertResidencyTier, LAYER_BOUNDARY_BLOCK, LayerHook, LayerReference, MoERoutedExpertSelection,
     SparseDctPacket, SpeculativeDraftVerificationReport, StageExecutionTrace,
@@ -463,7 +463,8 @@ pub struct LiveTrainingStageTrace {
     pub repops_digest_fnv1a: u64,
 }
 
-/// Complete report from executing a live distributed QLoRA + `DeMo` DCT + `DiLoCo` training step.
+/// Legacy stateless QLoRA/DeMo per-stage gradient preview. It does not persist optimizer state or
+/// synchronize replica islands. Use a DiLoCo training session for stateful, shard-aligned rounds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDistributedTrainingStepReport {
     pub model_id: String,
@@ -474,7 +475,14 @@ pub struct LiveDistributedTrainingStepReport {
     pub mean_loss_before: f32,
     pub mean_loss_after: f32,
     pub mean_wire_compression_ratio: f64,
+    /// Legacy JSON key: norm of concatenated independent stage previews, not island consensus.
     pub diloco_outer_consensus_norm: f32,
+    #[serde(default)]
+    pub execution_mode: String,
+    #[serde(default)]
+    pub stage_preview_digest_fnv1a: u64,
+    #[serde(default)]
+    pub preview_error: Option<String>,
     pub total_step_wall_ms: f64,
     pub all_stages_repops_verified: bool,
 }
@@ -2462,8 +2470,9 @@ impl DistributedLanExecutor {
         (report, hop_telemetry)
     }
 
-    /// Executes a live distributed training step (`DistributedQLoRAAdapter` + `DeMoDctCompressor` +
-    /// `DiLoCoOuterOptimizer`) across all active stages in `plan` over TCP `WireFrame` sockets.
+    /// Executes a stateless per-stage QLoRA/DeMo gradient preview over TCP `WireFrame` sockets.
+    /// Each distinct layer range has its own synthetic reference baseline. The summary does not
+    /// average unrelated shards, save trained parameters, or perform a DiLoCo replica sync.
     pub async fn execute_live_training_step(
         plan: &ClusterShardPlan,
         step_index: u64,
@@ -2485,10 +2494,10 @@ impl DistributedLanExecutor {
         let q_target = BlockwiseInt8Tensor::quantize(&target_signal, 16);
 
         let mut stage_traces = Vec::new();
-        let mut island_updates: Vec<Vec<f32>> = Vec::new();
-        // (start layer, end layer, loss before, loss after, compression) per island, reduced
-        // in layer-range order like the grid's reduce unit.
-        let mut island_summaries: Vec<(u32, u32, f32, f32, f64)> = Vec::new();
+        let mut ordered_stage_gradients: Vec<(u32, u32, Vec<f32>)> = Vec::new();
+        // (start layer, end layer, loss before, loss after, compression) per stage, reduced
+        // in layer-range order like the grid's stateless preview unit.
+        let mut stage_summaries: Vec<(u32, u32, f32, f32, f64)> = Vec::new();
 
         for (stage_idx, assign) in plan
             .assignments
@@ -2537,7 +2546,7 @@ impl DistributedLanExecutor {
                     (r, lat, "Simulated Archetype Stage".to_string(), None)
                 };
 
-            island_summaries.push((
+            stage_summaries.push((
                 start_l,
                 end_l,
                 resp.loss_before,
@@ -2546,7 +2555,7 @@ impl DistributedLanExecutor {
             ));
 
             let decompressed = DeMoDctCompressor::decompress_packet(&resp.demo_dct_packet);
-            island_updates.push(decompressed);
+            ordered_stage_gradients.push((start_l, end_l, decompressed));
 
             stage_traces.push(LiveTrainingStageTrace {
                 stage_index: stage_idx,
@@ -2566,17 +2575,20 @@ impl DistributedLanExecutor {
         }
 
         // The reduce and its summary are RepOps reductions, the same ones the grid's reduce
-        // unit runs, so the two paths agree bit for bit in any island order.
+        // unit runs, so the two paths agree bit for bit in any stage arrival order.
         let count = stage_traces.len().max(1) as f32;
-        island_summaries.sort_by_key(|s| (s.0, s.1));
-        let losses_before: Vec<f32> = island_summaries.iter().map(|s| s.2).collect();
-        let losses_after: Vec<f32> = island_summaries.iter().map(|s| s.3).collect();
-        let compressions: Vec<f64> = island_summaries.iter().map(|s| s.4).collect();
-        let param_len = island_updates.first().map(|v| v.len()).unwrap_or(16);
-        let mut master_weights = vec![0.5f32; param_len];
-        let mut diloco = DiLoCoOuterOptimizer::new(param_len, 0.7, 0.9);
-        diloco.step_outer_nesterov(&mut master_weights, &island_updates);
-        let consensus_norm = repops::tree_norm_f32(&master_weights);
+        stage_summaries.sort_by_key(|s| (s.0, s.1));
+        let losses_before: Vec<f32> = stage_summaries.iter().map(|s| s.2).collect();
+        let losses_after: Vec<f32> = stage_summaries.iter().map(|s| s.3).collect();
+        let compressions: Vec<f64> = stage_summaries.iter().map(|s| s.4).collect();
+        ordered_stage_gradients.sort_by_key(|s| (s.0, s.1));
+        let stage_gradients: Vec<Vec<f32>> =
+            ordered_stage_gradients.into_iter().map(|s| s.2).collect();
+        let (preview_norm, stage_preview_digest_fnv1a, preview_error) =
+            match crate::scheduler::stateless_stage_gradient_preview(&stage_gradients, 0.7, 0.9) {
+                Ok((norm, digest)) => (norm, digest, None),
+                Err(error) => (0.0, 0, Some(error)),
+            };
 
         LiveDistributedTrainingStepReport {
             model_id: plan.model_id.clone(),
@@ -2592,9 +2604,12 @@ impl DistributedLanExecutor {
                 * 10.0)
                 .round()
                 / 10.0,
-            diloco_outer_consensus_norm: (consensus_norm * 1000.0).round() / 1000.0,
+            diloco_outer_consensus_norm: (preview_norm * 1000.0).round() / 1000.0,
+            execution_mode: crate::scheduler::STATELESS_STAGE_PREVIEW_MODE.to_string(),
+            stage_preview_digest_fnv1a,
+            all_stages_repops_verified: preview_error.is_none(),
+            preview_error,
             total_step_wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
-            all_stages_repops_verified: true,
         }
     }
 

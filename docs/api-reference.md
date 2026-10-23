@@ -124,6 +124,62 @@ Runs one live training step across the machines that hold training layers. The b
 
 ---
 
+### Stateful DiLoCo sessions
+
+These endpoints manage independent, in-memory synchronous training sessions. They do not change `/api/v1/training/step`, the grid training endpoints, RL execution or the active inference model. Each island trains a complete replica with an identical named shard layout, takes exactly `config.inner_steps` local optimizer steps from the committed snapshot, and submits its final parameters. The master advances only after all registered islands submit for the current round.
+
+| Method and path | Purpose |
+| :--- | :--- |
+| `POST /api/v1/training/diloco/sessions` | Create from `{session_id, config, island_ids, shards}`; `config` may be omitted for runtime defaults. |
+| `GET /api/v1/training/diloco/sessions` | List sessions. |
+| `GET /api/v1/training/diloco/sessions/{session_id}` | Inspect config, current round/baseline, received/pending islands, synchronization count and parameter payload estimates. |
+| `POST /api/v1/training/diloco/sessions/{session_id}/updates` | Submit `{island_id, round, baseline_id, local_steps, shards}`. Returns round progress; the last submission commits the outer update. |
+| `GET /api/v1/training/diloco/sessions/{session_id}/snapshot` | Get `{round, baseline_id, shards}` for committed master parameters. Pending island values are not exposed as committed weights. |
+| `GET /api/v1/training/diloco/sessions/{session_id}/checkpoint` | Download the session checkpoint as a JSON object. |
+| `POST /api/v1/training/diloco/restore` | Restore `{session_id, checkpoint}` under an unused session ID. |
+| `DELETE /api/v1/training/diloco/sessions/{session_id}` | Release a session. |
+
+Create and restore return `201` with `session_id` and flattened status fields; list returns an array of those status objects. Delete returns `204`. Unknown sessions return `404`; invalid create/restore data returns `400`; rejected updates, reused IDs or the 16-session limit return `409`. Session IDs contain 1–96 ASCII letters, digits, hyphens or underscores. Request bodies are limited to 8 MiB.
+
+This bounded reference engine accepts up to 64 islands and 64 named shards, with `inner_steps` in `1..=1000000`. The resident scalar budget is `parameters_per_island * (islands + 2) <= 262144`, counting local submissions, master parameters and momentum. It is intended for small adapters and reference workloads; full-model GPU training requires a backend with streamed or distributed parameter storage.
+
+Example create body, with two islands and two scalar shards:
+
+```json
+{
+  "session_id": "regression",
+  "config": {"inner_steps": 20, "outer_learning_rate": 0.7, "outer_momentum": 0.9},
+  "island_ids": ["a", "b"],
+  "shards": [
+    {"shard_id": "weight", "values": [0.0]},
+    {"shard_id": "bias", "values": [0.0]}
+  ]
+}
+```
+
+Read the snapshot, then include its exact `round` and `baseline_id` in every island's update. For example, after 20 actual local steps, island `a` may submit:
+
+```json
+{
+  "island_id": "a",
+  "round": 0,
+  "baseline_id": "COPY_THE_EXACT_SNAPSHOT_BASELINE_ID",
+  "local_steps": 20,
+  "shards": [
+    {"shard_id": "weight", "values": [0.35]},
+    {"shard_id": "bias", "values": [0.31]}
+  ]
+}
+```
+
+The values above illustrate the payload shape; clients must submit their own trained values. Shards match by ID, regardless of submission ordering. Unknown/duplicate islands, stale rounds, incorrect baseline markers or local-step counts, incompatible layouts and nonfinite values are rejected without replacing committed weights. The baseline marker checks matching round/starting weights; it is not cryptographic proof that a client performed its claimed training. The outer pseudo-gradient is the equally weighted mean of master-minus-local parameters, followed by persistent Nesterov momentum.
+
+`parameter_payload_estimates` counts dense FP32 parameter uploads and broadcasts. It excludes transport metadata, optimizer state and retries, so it is not a measured network-throughput figure. Checkpoints preserve the master, outer momentum and already accepted updates within an incomplete round. They do **not** contain external learners' AdamW state, data cursors or RNG state: callers must checkpoint those separately. Sessions disappear on coordinator restart unless a caller downloads and restores a checkpoint. A restored session may continue its incomplete barrier; restore does not overwrite an existing session.
+
+For a working local learner, see [`kadmium diloco`](cli-reference.md#kadmium-diloco) and the [training guide](guides/training-and-dream-rsi.md#b-stateful-diloco-rounds).
+
+---
+
 ### `POST /api/v1/training/checkpoint`
 Saves a `.ktb` checkpoint of the training model at the current step to `kadmium-checkpoints/kadmium-<model>-step-<n>.ktb` in the system temp folder, lists it in the bucket under `kdm://pool-bucket/checkpoints/`, and returns its `checkpoint_id`, `file_path`, `merkle_root_fnv64` and `zero_copy_verified` (every page matched its checksum).
 
@@ -294,7 +350,7 @@ Measures the placement in force: at most eight decode steps of one shape within 
 ```json
 { "step_index": 7, "learning_rate": 0.05 }
 ```
-Runs one distributed training step: every trunk range as an independent island unit fanning into one DeMo reduce. Returns the DiLoCo reduce report (mean losses, wire compression, consensus norm, master-weight digest), credit granted, hop telemetry and `disputes` as for `/api/v1/grid/run`. The reduce puts the islands in layer-range order and reduces them through the RepOps tree, so the report and its digest are the same whichever island returned first.
+Runs a stateless reference training preview for each trunk range and summarizes its DeMo gradients. Each stage has its own synthetic baseline; different layer ranges are never averaged as model replicas. The reduce report declares `execution_mode: "stateless_per_stage_gradient_preview"` and returns mean losses, wire compression, an aggregate norm/digest, credit, hop telemetry and `disputes` as for `/api/v1/grid/run`. Stage ranges are ordered canonically and summaries use the RepOps tree and manifest-bound digests, so arrival order does not affect the report. The legacy `diloco_outer_consensus_norm` and `master_weight_digest_fnv1a` keys remain for compatibility; they describe the independent-stage preview, not a saved model or DiLoCo consensus. Use the stateful DiLoCo session endpoints for persistent outer rounds.
 
 ### `POST /api/v1/grid/replay`
 ```json
