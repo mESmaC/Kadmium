@@ -4,6 +4,7 @@ members = [
     "crates/kadmium-core",
     "crates/kadmium-sharding",
     "crates/kadmium-data",
+    "crates/kadmium-grid",
     "crates/kadmium-runtime",
     "crates/kadmium-rl",
     "crates/kadmium-network",
@@ -25,6 +26,7 @@ description = "Consolidated, Aggregate, and Distributed AI/ML Compute Fabric in 
 kadmium-core = { path = "crates/kadmium-core" }
 kadmium-sharding = { path = "crates/kadmium-sharding" }
 kadmium-data = { path = "crates/kadmium-data" }
+kadmium-grid = { path = "crates/kadmium-grid" }
 kadmium-runtime = { path = "crates/kadmium-runtime" }
 kadmium-rl = { path = "crates/kadmium-rl" }
 kadmium-network = { path = "crates/kadmium-network" }

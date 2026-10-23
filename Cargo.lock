@@ -1343,6 +1343,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kadmium-grid"
+version = "0.1.0"
+dependencies = [
+ "kadmium-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "kadmium-network"
 version = "0.1.0"
 dependencies = [
@@ -1383,6 +1393,7 @@ name = "kadmium-sharding"
 version = "0.1.0"
 dependencies = [
  "kadmium-core",
+ "kadmium-grid",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

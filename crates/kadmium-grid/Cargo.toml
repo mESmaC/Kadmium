@@ -1,0 +1,12 @@
+[package]
+name = "kadmium-grid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generic distributed-compute substrate for Kadmium: work units and work graphs, a replica catalog with placement rules, a locality-aware scheduler with quorum validation, and a credit ledger"
+
+[dependencies]
+kadmium-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

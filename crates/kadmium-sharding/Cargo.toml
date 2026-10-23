@@ -7,6 +7,7 @@ description = "Asymmetric topology-aware model sharding, MoE tier placement, and
 
 [dependencies]
 kadmium-core.workspace = true
+kadmium-grid.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
