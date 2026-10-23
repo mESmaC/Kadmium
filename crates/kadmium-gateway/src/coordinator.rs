@@ -5,12 +5,14 @@
 //! live LAN/USB silicon bridges it finds, answers LAN discovery beacons, keeps worker
 //! health fresh, and serves the Control Room, Companion and AI gateway over HTTP.
 
-use crate::{GatewayState, build_router};
+use crate::GatewayState;
+use crate::inference_api::InferenceConfig;
 use kadmium_core::{KadmiumWorkspaceConfig, LiveHardwareProfiler};
 use kadmium_network::{
     DEFAULT_LAN_DISCOVERY_UDP_PORT, LanCoordinatorAnnouncement, LanCoordinatorDiscovery,
 };
 use kadmium_runtime::{DistributedLanExecutor, LiveNodeWorkerServer, LocalFleetSpawner};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 /// How to start a local coordinator.
@@ -18,6 +20,8 @@ use std::sync::{Arc, Mutex};
 pub struct CoordinatorOptions {
     /// HTTP port for the Control Room, Companion and AI gateway (default 7848).
     pub port: u16,
+    /// Explicit HTTP bind address; overrides the configuration and fallback port.
+    pub bind: Option<SocketAddr>,
     /// Optional `kadmium.toml` workspace configuration.
     pub config_path: Option<String>,
     /// Register only real probed hardware (no simulated demo fleet).
@@ -26,17 +30,55 @@ pub struct CoordinatorOptions {
     pub worker_port: u16,
     /// Spawn a 5-node local + online TCP test fleet for single-machine testing.
     pub spawn_fleet: bool,
+    /// Explicitly probe optional USB and lab-specific M4/CM4 bridge addresses.
+    pub discover_bridges: bool,
+    /// Optional real inference upstream. Without it the inference routes report unavailable.
+    pub inference: InferenceConfig,
 }
 
 impl Default for CoordinatorOptions {
     fn default() -> Self {
         Self {
             port: 7848,
+            bind: None,
             config_path: None,
             live_only: true,
             worker_port: kadmium_network::DEFAULT_WORKER_TCP_PORT,
             spawn_fleet: false,
+            discover_bridges: false,
+            inference: InferenceConfig::default(),
         }
+    }
+}
+
+/// Resolves command-line overrides ahead of configuration, then the caller's default.
+/// A port override retains the configured/default IP. A full bind and a port are ambiguous.
+pub fn resolve_coordinator_bind(
+    explicit_bind: Option<SocketAddr>,
+    explicit_port: Option<u16>,
+    configured: Option<SocketAddr>,
+    fallback: SocketAddr,
+) -> Result<SocketAddr, String> {
+    if explicit_bind.is_some() && explicit_port.is_some() {
+        return Err("choose either --bind or --port, not both".into());
+    }
+    let mut addr = explicit_bind.or(configured).unwrap_or(fallback);
+    if let Some(port) = explicit_port {
+        addr.set_port(port);
+    }
+    if addr.port() == 0 {
+        return Err("coordinator port must be in 1..=65535".into());
+    }
+    if addr.ip().is_ipv6() && addr.ip().is_unspecified() {
+        return Err("IPv6 wildcard binding is not supported; use a specific IPv6 address such as [::1], or 0.0.0.0 for IPv4 LAN access".into());
+    }
+    Ok(addr)
+}
+
+fn url_host(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => format!("[{ip}]"),
     }
 }
 
@@ -47,14 +89,57 @@ impl Default for CoordinatorOptions {
 pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> {
     let CoordinatorOptions {
         port,
+        bind,
         config_path,
         live_only,
         worker_port,
         spawn_fleet,
+        discover_bridges,
+        inference,
     } = options;
+    // Fail configuration errors before probing hardware or starting any listener.
+    inference.validate()?;
+    let inference_router = crate::inference_api::router(inference)?;
     let config_path = config_path.as_deref();
+    let config_text = config_path
+        .map(|path| {
+            let text = std::fs::read_to_string(path)
+                .map_err(|error| format!("could not read configuration {path}: {error}"))?;
+            KadmiumWorkspaceConfig::validate_kadmium_toml(&text)
+                .map_err(|error| format!("configuration {path}: {error}"))?;
+            Ok::<_, String>(text)
+        })
+        .transpose()?;
+    let configured_bind = config_text
+        .as_deref()
+        .map(KadmiumWorkspaceConfig::configured_coordinator_bind)
+        .transpose()?
+        .flatten();
+    let addr = resolve_coordinator_bind(
+        bind,
+        None,
+        configured_bind,
+        SocketAddr::from(([0, 0, 0, 0], port)),
+    )?;
+    let probed_node = LiveHardwareProfiler::probe_local_host();
+    let parsed_config = config_text
+        .as_deref()
+        .map(|text| KadmiumWorkspaceConfig::parse_kadmium_toml_for_node(text, probed_node.clone()))
+        .transpose()?;
+    let port = addr.port();
+    let local_node = parsed_config
+        .as_ref()
+        .map(|cfg| cfg.local_node.clone())
+        .unwrap_or(probed_node);
+    // Reserve HTTP first: an occupied port must not leave a worker/announcer behind.
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|error| format!("could not bind the coordinator on {addr}: {error}"))?;
     let mut gw_state = GatewayState::new();
     gw_state.coordinator_http_port = port;
+    if !addr.ip().is_unspecified() {
+        gw_state.coordinator_lan_ip = url_host(addr.ip());
+    }
     match gw_state.load_grid_telemetry() {
         Ok(n) if n > 0 => println!(
             "  [Grid] Restored measured telemetry for {n} workers from {}",
@@ -87,10 +172,10 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         *local_coordinator_url = format!("http://{}:{port}", gw_state.coordinator_lan_ip);
     }
 
-    if let Some(cfg_file) = config_path
-        && let Ok(raw_toml) = std::fs::read_to_string(cfg_file)
-        && let Ok(parsed_cfg) = KadmiumWorkspaceConfig::parse_kadmium_toml(&raw_toml)
-    {
+    if let Some(parsed_cfg) = &parsed_config {
+        gw_state.inference_model = parsed_cfg.planning_model()?;
+        gw_state.user_selected_model = true;
+        // Selecting a planning preset does not load any model weights.
         if parsed_cfg.cloud_shield_enabled {
             gw_state.companion_mode = crate::CompanionConnectionMode::KadmiumCloudManaged {
                 workspace_slug: parsed_cfg.cluster_name.clone(),
@@ -102,20 +187,22 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         }
         println!(
             "  [Config] Loaded workspace '{}' from {}",
-            parsed_cfg.cluster_name, cfg_file
+            parsed_cfg.cluster_name,
+            config_path.unwrap_or_default()
         );
     }
 
-    let local_node = LiveHardwareProfiler::probe_local_host();
     let lan_ip = gw_state.coordinator_lan_ip.clone();
 
     // Spawn built-in TCP WireFrame worker server for the coordinator's own hardware:
-    let local_worker =
-        LiveNodeWorkerServer::spawn_auto_port("0.0.0.0", worker_port, local_node.clone(), true)
-            .await
-            .map_err(|e| {
-                format!("could not start the local worker listener on port {worker_port}: {e}")
-            })?;
+    let local_worker = LiveNodeWorkerServer::spawn_auto_port(
+        &url_host(addr.ip()),
+        worker_port,
+        local_node.clone(),
+        true,
+    )
+    .await
+    .map_err(|e| format!("could not start the local worker listener on port {worker_port}: {e}"))?;
     let bound_worker_port = local_worker.local_addr.port();
     let worker_tcp_addr = format!("{lan_ip}:{bound_worker_port}");
 
@@ -127,175 +214,177 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
     );
 
     // Automatically detect and attach a physical CanMV K230 RISC-V + 6 TOPS KPU board over USB-CDC if connected:
-    let k230_probe = kadmium_core::K230UsbComputeBridge::probe_attached_k230();
     let mut attached_k230_banner: Option<String> = None;
+    let mut attached_m4_banner: Option<String> = None;
+    let mut attached_cm4_banner: Option<String> = None;
     let mut next_fleet_port = bound_worker_port.saturating_add(1);
-    if k230_probe.physical_board_detected
-        && let Ok(k230_server) = LiveNodeWorkerServer::spawn_auto_port(
-            "127.0.0.1",
-            next_fleet_port,
-            k230_probe.hardware_node.clone(),
-            true,
-        )
-        .await
-    {
-        next_fleet_port = k230_server.local_addr.port().saturating_add(1);
-        let k230_tcp_addr = k230_server.local_addr.to_string();
-        let port_label = k230_probe
-            .detected_serial_port
-            .clone()
-            .unwrap_or_else(|| "USB-BootROM".to_string());
-        let (usb_rtt, os_label, live_silicon, k230_digest) =
-            if let Some(proof) = &k230_probe.live_execution_proof {
-                (
-                    proof.usb_round_trip_latency_ms.max(0.85),
-                    proof.riscv_core_signature.clone(),
-                    proof.executed_on_physical_silicon,
-                    proof.k230_hardware_checksum_fnv1a,
-                )
-            } else {
-                (
-                    0.85,
-                    "rt-smart v1.8 (CanMV K230)".to_string(),
-                    false,
-                    0x627e_7e5b_5419_aca7,
-                )
-            };
-        gw_state.register_live_worker_with_meta(
-            k230_probe.hardware_node.clone(),
-            k230_tcp_addr.clone(),
-            usb_rtt,
-            live_only,
-            os_label.clone(),
-            "riscv64-c908-rvv1.0 (6 TOPS KPU)".to_string(),
-            format!(
-                "{} [{}]",
-                k230_probe.board_model, k230_probe.chip_unique_die_id
-            ),
-            format!("USB-CDC ({port_label})"),
-        );
-        gw_state
-            .spawned_fleet_instances
-            .push(kadmium_runtime::SpawnedLocalWorkerInstance {
-                server: k230_server,
-                os_name: os_label,
-                cpu_arch: "riscv64-c908-rvv1.0 (6 TOPS KPU)".to_string(),
-                board_or_model: format!(
+    if discover_bridges {
+        let k230_probe = kadmium_core::K230UsbComputeBridge::probe_attached_k230();
+        if k230_probe.physical_board_detected
+            && let Ok(k230_server) = LiveNodeWorkerServer::spawn_auto_port(
+                "127.0.0.1",
+                next_fleet_port,
+                k230_probe.hardware_node.clone(),
+                true,
+            )
+            .await
+        {
+            next_fleet_port = k230_server.local_addr.port().saturating_add(1);
+            let k230_tcp_addr = k230_server.local_addr.to_string();
+            let port_label = k230_probe
+                .detected_serial_port
+                .clone()
+                .unwrap_or_else(|| "USB-BootROM".to_string());
+            let (usb_rtt, os_label, live_silicon, k230_digest) =
+                if let Some(proof) = &k230_probe.live_execution_proof {
+                    (
+                        proof.usb_round_trip_latency_ms.max(0.85),
+                        proof.riscv_core_signature.clone(),
+                        proof.executed_on_physical_silicon,
+                        proof.k230_hardware_checksum_fnv1a,
+                    )
+                } else {
+                    (
+                        0.85,
+                        "rt-smart v1.8 (CanMV K230)".to_string(),
+                        false,
+                        0x627e_7e5b_5419_aca7,
+                    )
+                };
+            gw_state.register_live_worker_with_meta(
+                k230_probe.hardware_node.clone(),
+                k230_tcp_addr.clone(),
+                usb_rtt,
+                live_only,
+                os_label.clone(),
+                "riscv64-c908-rvv1.0 (6 TOPS KPU)".to_string(),
+                format!(
                     "{} [{}]",
                     k230_probe.board_model, k230_probe.chip_unique_die_id
                 ),
-                network_channel: format!("USB-CDC ({port_label})"),
-            });
-        attached_k230_banner = Some(format!(
-            "{} -> {} ({}, {}, RepOps={:#018x})",
-            port_label,
-            k230_tcp_addr,
-            k230_probe.board_model,
-            if live_silicon {
-                "LIVE RISC-V SILICON"
-            } else {
-                "USB-BRIDGE"
-            },
-            k230_digest
-        ));
-    }
-
-    // Automatically detect and attach a live Apple M4 platform node (192.168.40.237:7860) and Raspberry Pi CM4 node (192.168.40.75:7859) on the LAN:
-    let mut attached_m4_banner: Option<String> = None;
-    let m4_probe = kadmium_core::M4MacMiniLanBridge::probe_and_verify(None);
-    if m4_probe.physical_board_online
-        && let Ok(m4_server) = LiveNodeWorkerServer::spawn_auto_port(
-            "127.0.0.1",
-            next_fleet_port,
-            m4_probe.hardware_node.clone(),
-            true,
-        )
-        .await
-    {
-        next_fleet_port = m4_server.local_addr.port().saturating_add(1);
-        let m4_tcp_addr = m4_server.local_addr.to_string();
-        let os_label = "macOS 26 (Darwin 25.0.0)".to_string();
-        let arch_label = "arm64e (Apple M4 · Metal 4 + AMX)".to_string();
-        let board_label = m4_probe.board_model.clone();
-        gw_state.register_live_worker_with_meta(
-            m4_probe.hardware_node.clone(),
-            m4_tcp_addr.clone(),
-            m4_probe.execution_proof.lan_round_trip_ms.max(0.25),
-            live_only,
-            os_label.clone(),
-            arch_label.clone(),
-            board_label.clone(),
-            "LocalLAN".to_string(),
-        );
-        if let Some(w) = gw_state.live_workers.get_mut(&m4_probe.hardware_node.id.0) {
-            w.worker_lan_ip = kadmium_core::DEFAULT_M4_MAC_MINI_IP.to_string();
-            w.worker_tcp_port = kadmium_core::DEFAULT_M4_MAC_MINI_PORT;
+                format!("USB-CDC ({port_label})"),
+            );
+            gw_state
+                .spawned_fleet_instances
+                .push(kadmium_runtime::SpawnedLocalWorkerInstance {
+                    server: k230_server,
+                    os_name: os_label,
+                    cpu_arch: "riscv64-c908-rvv1.0 (6 TOPS KPU)".to_string(),
+                    board_or_model: format!(
+                        "{} [{}]",
+                        k230_probe.board_model, k230_probe.chip_unique_die_id
+                    ),
+                    network_channel: format!("USB-CDC ({port_label})"),
+                });
+            attached_k230_banner = Some(format!(
+                "{} -> {} ({}, {}, RepOps={:#018x})",
+                port_label,
+                k230_tcp_addr,
+                k230_probe.board_model,
+                if live_silicon {
+                    "LIVE RISC-V SILICON"
+                } else {
+                    "USB-BRIDGE"
+                },
+                k230_digest
+            ));
         }
-        gw_state
-            .spawned_fleet_instances
-            .push(kadmium_runtime::SpawnedLocalWorkerInstance {
-                server: m4_server,
-                os_name: os_label,
-                cpu_arch: arch_label,
-                board_or_model: board_label,
-                network_channel: "LocalLAN".to_string(),
-            });
-        attached_m4_banner = Some(format!(
-            "{} -> {} ({}, LIVE METAL 4 + AMX {:.1} GFLOP/s, RepOps={:#018x})",
-            m4_probe.lan_endpoint,
-            m4_tcp_addr,
-            m4_probe.board_model,
-            m4_probe.execution_proof.amx_sgemm_512_gflops,
-            m4_probe.execution_proof.metal_gpu_gemm_fnv1a64
-        ));
-    }
 
-    let mut attached_cm4_banner: Option<String> = None;
-    let cm4_probe = kadmium_core::ReTerminalCm4LanBridge::probe_and_verify(None);
-    if cm4_probe.physical_board_online
-        && let Ok(cm4_server) = LiveNodeWorkerServer::spawn_auto_port(
-            "127.0.0.1",
-            next_fleet_port,
-            cm4_probe.hardware_node.clone(),
-            true,
-        )
-        .await
-    {
-        next_fleet_port = cm4_server.local_addr.port().saturating_add(1);
-        let cm4_tcp_addr = cm4_server.local_addr.to_string();
-        let os_label = "Linux 6.12 (Debian Bookworm)".to_string();
-        let arch_label = "aarch64 (BCM2711 Cortex-A72 NEON)".to_string();
-        let board_label = cm4_probe.board_model.clone();
-        gw_state.register_live_worker_with_meta(
-            cm4_probe.hardware_node.clone(),
-            cm4_tcp_addr.clone(),
-            cm4_probe.execution_proof.lan_round_trip_ms.max(0.25),
-            live_only,
-            os_label.clone(),
-            arch_label.clone(),
-            board_label.clone(),
-            "LocalLAN".to_string(),
-        );
-        if let Some(w) = gw_state.live_workers.get_mut(&cm4_probe.hardware_node.id.0) {
-            w.worker_lan_ip = kadmium_core::DEFAULT_RETERMINAL_CM4_IP.to_string();
-            w.worker_tcp_port = kadmium_core::DEFAULT_RETERMINAL_CM4_PORT;
+        // Automatically detect and attach a live Apple M4 platform node (192.168.40.237:7860) and Raspberry Pi CM4 node (192.168.40.75:7859) on the LAN:
+        let m4_probe = kadmium_core::M4MacMiniLanBridge::probe_and_verify(None);
+        if m4_probe.physical_board_online
+            && let Ok(m4_server) = LiveNodeWorkerServer::spawn_auto_port(
+                "127.0.0.1",
+                next_fleet_port,
+                m4_probe.hardware_node.clone(),
+                true,
+            )
+            .await
+        {
+            next_fleet_port = m4_server.local_addr.port().saturating_add(1);
+            let m4_tcp_addr = m4_server.local_addr.to_string();
+            let os_label = "macOS 26 (Darwin 25.0.0)".to_string();
+            let arch_label = "arm64e (Apple M4 · Metal 4 + AMX)".to_string();
+            let board_label = m4_probe.board_model.clone();
+            gw_state.register_live_worker_with_meta(
+                m4_probe.hardware_node.clone(),
+                m4_tcp_addr.clone(),
+                m4_probe.execution_proof.lan_round_trip_ms.max(0.25),
+                live_only,
+                os_label.clone(),
+                arch_label.clone(),
+                board_label.clone(),
+                "LocalLAN".to_string(),
+            );
+            if let Some(w) = gw_state.live_workers.get_mut(&m4_probe.hardware_node.id.0) {
+                w.worker_lan_ip = kadmium_core::DEFAULT_M4_MAC_MINI_IP.to_string();
+                w.worker_tcp_port = kadmium_core::DEFAULT_M4_MAC_MINI_PORT;
+            }
+            gw_state
+                .spawned_fleet_instances
+                .push(kadmium_runtime::SpawnedLocalWorkerInstance {
+                    server: m4_server,
+                    os_name: os_label,
+                    cpu_arch: arch_label,
+                    board_or_model: board_label,
+                    network_channel: "LocalLAN".to_string(),
+                });
+            attached_m4_banner = Some(format!(
+                "{} -> {} ({}, LIVE METAL 4 + AMX {:.1} GFLOP/s, RepOps={:#018x})",
+                m4_probe.lan_endpoint,
+                m4_tcp_addr,
+                m4_probe.board_model,
+                m4_probe.execution_proof.amx_sgemm_512_gflops,
+                m4_probe.execution_proof.metal_gpu_gemm_fnv1a64
+            ));
         }
-        gw_state
-            .spawned_fleet_instances
-            .push(kadmium_runtime::SpawnedLocalWorkerInstance {
-                server: cm4_server,
-                os_name: os_label,
-                cpu_arch: arch_label,
-                board_or_model: board_label,
-                network_channel: "LocalLAN".to_string(),
-            });
-        attached_cm4_banner = Some(format!(
-            "{} -> {} ({}, LIVE ARMv8 NEON, RepOps={:#018x})",
-            cm4_probe.lan_endpoint,
-            cm4_tcp_addr,
-            cm4_probe.board_model,
-            cm4_probe.execution_proof.neon_gemm_fnv1a64
-        ));
+
+        let cm4_probe = kadmium_core::ReTerminalCm4LanBridge::probe_and_verify(None);
+        if cm4_probe.physical_board_online
+            && let Ok(cm4_server) = LiveNodeWorkerServer::spawn_auto_port(
+                "127.0.0.1",
+                next_fleet_port,
+                cm4_probe.hardware_node.clone(),
+                true,
+            )
+            .await
+        {
+            next_fleet_port = cm4_server.local_addr.port().saturating_add(1);
+            let cm4_tcp_addr = cm4_server.local_addr.to_string();
+            let os_label = "Linux 6.12 (Debian Bookworm)".to_string();
+            let arch_label = "aarch64 (BCM2711 Cortex-A72 NEON)".to_string();
+            let board_label = cm4_probe.board_model.clone();
+            gw_state.register_live_worker_with_meta(
+                cm4_probe.hardware_node.clone(),
+                cm4_tcp_addr.clone(),
+                cm4_probe.execution_proof.lan_round_trip_ms.max(0.25),
+                live_only,
+                os_label.clone(),
+                arch_label.clone(),
+                board_label.clone(),
+                "LocalLAN".to_string(),
+            );
+            if let Some(w) = gw_state.live_workers.get_mut(&cm4_probe.hardware_node.id.0) {
+                w.worker_lan_ip = kadmium_core::DEFAULT_RETERMINAL_CM4_IP.to_string();
+                w.worker_tcp_port = kadmium_core::DEFAULT_RETERMINAL_CM4_PORT;
+            }
+            gw_state
+                .spawned_fleet_instances
+                .push(kadmium_runtime::SpawnedLocalWorkerInstance {
+                    server: cm4_server,
+                    os_name: os_label,
+                    cpu_arch: arch_label,
+                    board_or_model: board_label,
+                    network_channel: "LocalLAN".to_string(),
+                });
+            attached_cm4_banner = Some(format!(
+                "{} -> {} ({}, LIVE ARMv8 NEON, RepOps={:#018x})",
+                cm4_probe.lan_endpoint,
+                cm4_tcp_addr,
+                cm4_probe.board_model,
+                cm4_probe.execution_proof.neon_gemm_fnv1a64
+            ));
+        }
     }
 
     if spawn_fleet
@@ -349,14 +438,15 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         active_model_id: gw_state.inference_plan.model_id.clone(),
         cluster_epoch: gw_state.epoch,
     };
-    let udp_disc_status = match LanCoordinatorDiscovery::spawn_responder(
-        DEFAULT_LAN_DISCOVERY_UDP_PORT,
-        announcement,
-    )
-    .await
-    {
-        Ok(addr) => format!("Active on UDP {addr} (KDMD auto-discovery)"),
-        Err(_) => "Port 7849 busy (use --coordinator URL on workers)".to_string(),
+    let udp_disc_status = if addr.ip().is_loopback() {
+        "Disabled for a loopback-only coordinator".to_string()
+    } else {
+        match LanCoordinatorDiscovery::spawn_responder(DEFAULT_LAN_DISCOVERY_UDP_PORT, announcement)
+            .await
+        {
+            Ok(addr) => format!("Active on UDP {addr} (KDMD auto-discovery)"),
+            Err(_) => "Port 7849 busy (use --coordinator URL on workers)".to_string(),
+        }
     };
 
     let state = Arc::new(Mutex::new(gw_state));
@@ -398,49 +488,22 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         }
     });
 
-    let app = build_router(state);
-    let addr = format!("0.0.0.0:{}", port);
+    let app = crate::routes::build_router_with_inference_router(state, inference_router);
     println!(
         "===================================================================================="
     );
-    println!(
-        " Kadmium (Cd-48) Control Room & AI Gateway listening on http://127.0.0.1:{}",
-        port
-    );
-    println!("    - LAN Coordinator URL:    http://{}:{}/", lan_ip, port);
-    println!("    - Cluster Control Room:   http://127.0.0.1:{}/", port);
-    println!(
-        "    - kadmium.ai Website:     http://127.0.0.1:{}/site",
-        port
-    );
-    println!(
-        "    - Desktop Companion UI:   http://127.0.0.1:{}/companion",
-        port
-    );
-    println!(
-        "    - Application Docs:       http://127.0.0.1:{}/docs",
-        port
-    );
-    println!(
-        "    - Design System Showcase: http://127.0.0.1:{}/design-system",
-        port
-    );
-    println!(
-        "    - OpenAI Chat Endpoint:   http://127.0.0.1:{}/v1/chat/completions",
-        port
-    );
-    println!(
-        "    - Anthropic Endpoint:     http://127.0.0.1:{}/v1/messages",
-        port
-    );
-    println!(
-        "    - MCP JSON-RPC Endpoint:  http://127.0.0.1:{}/mcp",
-        port
-    );
-    println!(
-        "    - Prometheus Metrics:     http://127.0.0.1:{}/metrics",
-        port
-    );
+    println!(" Kadmium (Cd-48) Control Room & AI Gateway listening on {addr}");
+    let origin = format!("http://{lan_ip}:{port}");
+    println!("    - Coordinator URL:        {origin}/");
+    println!("    - Cluster Control Room:   {origin}/");
+    println!("    - kadmium.ai Website:     {origin}/site");
+    println!("    - Desktop Companion UI:   {origin}/companion");
+    println!("    - Application Docs:       {origin}/docs");
+    println!("    - Design System Showcase: {origin}/design-system");
+    println!("    - OpenAI Chat Endpoint:   {origin}/v1/chat/completions");
+    println!("    - Anthropic Endpoint:     {origin}/v1/messages");
+    println!("    - MCP JSON-RPC Endpoint:  {origin}/mcp");
+    println!("    - Prometheus Metrics:     {origin}/metrics");
     println!(
         "------------------------------------------------------------------------------------"
     );
@@ -476,10 +539,68 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         "===================================================================================="
     );
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .map_err(|e| format!("could not bind the coordinator on {addr}: {e}"))?;
     axum::serve(listener, app)
         .await
         .map_err(|e| format!("coordinator stopped: {e}"))
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn binding_precedence_preserves_configured_ip_for_port_overrides() {
+        let default = "0.0.0.0:7848".parse().unwrap();
+        let configured = "127.0.0.2:9000".parse().unwrap();
+        let explicit = "127.0.0.1:9100".parse().unwrap();
+        assert_eq!(
+            resolve_coordinator_bind(None, None, None, default).unwrap(),
+            default
+        );
+        assert_eq!(
+            resolve_coordinator_bind(None, None, Some(configured), default).unwrap(),
+            configured
+        );
+        assert_eq!(
+            resolve_coordinator_bind(Some(explicit), None, Some(configured), default).unwrap(),
+            explicit
+        );
+        assert_eq!(
+            resolve_coordinator_bind(None, Some(9200), Some(configured), default).unwrap(),
+            "127.0.0.2:9200".parse().unwrap()
+        );
+        assert!(resolve_coordinator_bind(None, Some(0), None, default).is_err());
+        assert!(resolve_coordinator_bind(Some(explicit), Some(9200), None, default).is_err());
+        assert!(
+            resolve_coordinator_bind(Some("[::]:7848".parse().unwrap()), None, None, default)
+                .is_err()
+        );
+        assert_eq!(
+            resolve_coordinator_bind(Some("[::1]:7848".parse().unwrap()), None, None, default)
+                .unwrap(),
+            "[::1]:7848".parse().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn unreadable_explicit_configuration_is_not_silently_ignored() {
+        let path = std::env::temp_dir().join(format!(
+            "kadmium-missing-config-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let options = CoordinatorOptions {
+            config_path: Some(path.to_string_lossy().into_owned()),
+            ..CoordinatorOptions::default()
+        };
+        assert!(
+            run_coordinator(options)
+                .await
+                .unwrap_err()
+                .contains("could not read configuration")
+        );
+    }
 }

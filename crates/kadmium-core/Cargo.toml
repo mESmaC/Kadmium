@@ -8,4 +8,5 @@ description = "Core hardware profiles, memory tier hierarchies, model topologies
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 thiserror.workspace = true

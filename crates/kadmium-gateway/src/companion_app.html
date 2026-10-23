@@ -947,7 +947,7 @@
   /* ---------- Models ---------- */
   function ModelsPage({ core }) {
     const { overview } = core;
-    const [catalog] = useData('/v1/models');
+    const [catalog] = useData('/api/v1/reference/models');
     const [busy, run] = useBusy();
     const [imp, setImp] = useState({ model_id: 'llama-3.2-3b-instruct', source_path: '', format_hint: 'gguf', start_layer: '0', end_layer: '3' });
     const [imported, setImported] = useState(null);
@@ -962,7 +962,7 @@
     const models = all.filter(m => m.kadmium_fabric && isNum(m.kadmium_fabric.total_layers));
     const services = all.filter(m => !(m.kadmium_fabric && isNum(m.kadmium_fabric.total_layers)));
     const fit = w => w <= capacity ? h(K.Badge, { tone: 'ok' }, 'fits in memory') : w <= capacity + nvme ? h(K.Badge, { tone: 'warn' }, 'streams from NVMe') : h(K.Badge, { tone: 'danger' }, 'needs more machines');
-    const refresh = CORE.concat(['/v1/models']);
+    const refresh = CORE.concat(['/api/v1/reference/models']);
     const loadModel = id => run('load:' + id, () => postJSON('/api/v1/cluster/model', { inference_model_id: id }).then(d => { publish('/api/v1/cluster/overview', d); return d; }),
       d => { const n = (d.inference_plan.assignments || []).filter(a => a.layer_count > 0).length; return n ? 'Loaded ' + id + ' across ' + plural(n, 'machine') : 'Loaded ' + id + ', but no machine has the fast memory to hold its layers yet'; }, refresh);
     const unload = () => run('unload', () => postJSON('/api/v1/cluster/model', { unload: true }).then(d => { publish('/api/v1/cluster/overview', d); return d; }), 'Unloaded ' + inf.model_id, refresh);
@@ -1152,7 +1152,7 @@
     const [exl, setExl] = useState(null);
     const [exlModel, setExlModel] = useState('deepseek-v3-671b-exl3-2.5bpw');
     const [bpw, setBpw] = useState('2.55');
-    const [catalog] = useData('/v1/models');
+    const [catalog] = useData('/api/v1/reference/models');
     const liveIds = new Set(((workers && workers.workers) || []).map(w => w.node.id));
     const loaded = overview && overview.active_model_loaded;
     const models = ((catalog && catalog.data) || []).map(m => ({ value: m.id, label: m.id }));

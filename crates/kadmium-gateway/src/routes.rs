@@ -260,6 +260,28 @@ pub struct OtaUpdatePushRequest {
 
 /// Builds the Axum router serving both the Unified Dashboard and all Backend REST/AI Gateway APIs.
 pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
+    build_router_with_inference(state, crate::inference_api::InferenceConfig::default())
+        .expect("the default inference configuration is valid")
+}
+
+/// Uses a separate backend for compatible AI APIs; reference compute remains explicit.
+pub fn build_router_with_inference(
+    state: Arc<Mutex<GatewayState>>,
+    inference: crate::inference_api::InferenceConfig,
+) -> Result<Router, String> {
+    let inference_router = crate::inference_api::router(inference)?;
+    Ok(build_router_with_inference_router(state, inference_router))
+}
+
+/// Lets coordinator startup construct the fallible backend client before opening workers.
+pub(crate) fn build_router_with_inference_router(
+    state: Arc<Mutex<GatewayState>>,
+    inference_router: Router,
+) -> Router {
+    build_control_router(state).merge(inference_router)
+}
+
+fn build_control_router(state: Arc<Mutex<GatewayState>>) -> Router {
     Router::new()
         .merge(crate::diloco_api::router())
         .route("/", get(serve_dashboard))
@@ -478,10 +500,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/grid/train", post(crate::grid_api::post_grid_train))
         .route("/api/v1/grid/replay", post(crate::grid_api::post_grid_replay))
         .route("/api/v1/grid/credits", get(crate::grid_api::get_grid_credits))
-        .route("/v1/models", get(openai_list_models))
-        .route("/v1/embeddings", post(openai_embeddings))
-        .route("/v1/chat/completions", post(openai_chat_completions))
-        .route("/v1/messages", post(anthropic_messages))
+        .route("/api/v1/reference/models", get(openai_list_models))
+        .route("/api/v1/reference/embeddings", post(openai_embeddings))
+        .route("/api/v1/reference/chat/completions", post(openai_chat_completions))
+        .route("/api/v1/reference/messages", post(anthropic_messages))
         .with_state(state)
 }
 

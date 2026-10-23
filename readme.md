@@ -81,7 +81,7 @@ Kadmium synthesizes proven breakthroughs from local edge AI engines and battle-t
 | :--- | :--- |
 | **[FlashML-org/FreeToken](https://github.com/FlashML-org/FreeToken)** | **Bandwidth-Adaptive Execution ($q^*$ Policy) & Pre-Merged Weight Banks:** Dynamically splits token/tensor computation across CPU, RAM, PCIe, NPU, and GPU VRAM based on real-time interconnect throughput, backed by zero-copy memory-mapped tensor banks (`.ktb`). |
 | **[JustVugg/colibri](https://github.com/JustVugg/colibri) & [lumabri](https://github.com/JustVugg/lumabri)** | **NVMe MoE Expert Streaming, P2P Swarm Execution & Measured Allocation:** Pins dense attention layers in fast memory while streaming sparse Mixture-of-Experts (MoE) weights on demand from local NVMe or across a peer-to-peer swarm. The grid's allocation borrows their mechanisms too: measured compute cost in routing with residency first, owner-approved resource offers with a RAM reserve, usage-learned expert pins with a hysteresis-gated live re-pin, and calibration records bound to the exact placement they measured. |
-| **[niko1221/strata](https://github.com/niko1221/strata)** | **Zero-Friction Consumer Hardware Setup & Drop-In API Gateway:** One-command deployment across Windows/macOS/Linux with built-in OpenAI (`/v1/chat/completions`, `/v1/embeddings`) and Anthropic (`/v1/messages`) compatible endpoints. |
+| **[niko1221/strata](https://github.com/niko1221/strata/tree/7ddc17a38fe7f31637e895ecfba58c2cd43d65ec)** | **Setup and API ergonomics:** Inspiration for inspecting a hardware-fit launch plan and exposing familiar client endpoints. Kadmium's separate backend relay adds `/v1/embeddings`; this is not a claim that the reviewed Strata revision implements embeddings. |
 | **[BOINC/boinc](https://github.com/BOINC/boinc)** | **Polite Host Resource Harvesting & Workunit Verification:** Non-intrusive background execution that respects user activity (`<200 ms` Gaming Mode yield, 15s swapchain cooldown, battery/thermal envelopes) and spot-verifies untrusted peers. |
 | **[cern-fts/fts3](https://github.com/cern-fts/fts3) & [davix](https://github.com/cern-fts/davix)** | **Third-Party Peer-to-Peer Data Staging:** The coordinator never bottlenecks weight or dataset transfers. Nodes stream shards, datasets, and checkpoints directly peer-to-peer with bandwidth-aware retry state machines. |
 | **[NousResearch/DisTrO](https://github.com/NousResearch/DisTrO) & Psyche** | **DeMo (Decoupled Momentum) DCT Compression:** Compresses inter-node gradient synchronization by $10\times$–$85\times$ using Discrete Cosine Transform (DCT-II) fast-momentum extraction with local error-feedback accumulation. |
@@ -114,7 +114,7 @@ When you launch a game on your desktop or handheld, unplug a laptop, or attach a
 ### 4. Control Room Workspace App, Native Desktop Companion & Drop-In AI Gateway (`kadmium-gateway` & `kadmium-desktop`)
 - **10-Page Workspace Control Room (`/dashboard`):** Built-in single-binary web workspace organized into **Fabric** (*Overview, Nodes, Models & Shards, Data & Transfers*), **Work** (*Training, RL & Dream-RSI, Gateway & API, Slices*), and **Account** (*Kadmium Cloud, Settings*) with live 5-second cluster polling, node hardware/mesh inspection drawers, and an interactive chat/MCP playground.
 - **Native Desktop Companion (`kadmium-desktop`):** Runs the local coordinator and tray/window Companion in a native OS WebView (`WebView2` on Windows, `WKWebView` on macOS, `WebKitGTK` on Linux).
-- **Drop-In OpenAI, Anthropic & MCP Gateway:** Point Cursor, Claude Code, OpenWebUI, or custom Python scripts directly at `http://localhost:7848/v1` (`/v1/chat/completions`, `/v1/embeddings`, `/v1/messages`, `/mcp`).
+- **Inference Backend Relay & MCP:** Configure an existing inference server for native OpenAI-style `/v1/chat/completions`, `/v1/embeddings`, `/v1/models` and Anthropic `/v1/messages`. Supported features follow the backend; there is no protocol translation. `/mcp` remains a separate control-plane endpoint. Without a backend, `/v1` returns an explicit unavailable error.
 
 ---
 
@@ -186,14 +186,15 @@ kadmium/
 ## 🚀 Quickstart
 
 ### Prerequisites
-- **Rust 1.85+** (`cargo` and `rustc`)
+- **Current stable Rust** (`cargo` and `rustc`)
 
-### 1. Launch the Control Room Workspace & Drop-In AI Gateway
-Start the local coordinator probing your live host hardware (add `--demo` to include the simulated multi-node fleet or `--spawn-fleet` to launch 5 live local TCP worker daemons):
+### 1. Inspect a launch plan and connect an inference backend
+Inspect the recommendation, then launch the local coordinator using an inference server you have already started:
 ```bash
-cargo run --bin kadmium -- serve --port 7848
+cargo run --bin kadmium -- launch --plan
+cargo run --bin kadmium -- launch --inference-url http://127.0.0.1:8080
 ```
-Then open **`http://localhost:7848`** in your browser to access the 10-page **Control Room**, or point any OpenAI/Anthropic client at `http://localhost:7848/v1`.
+Open **`http://127.0.0.1:7848`** for the Control Room. Query `/v1/models` for actual backend model IDs. OpenAI clients use the `/v1` base URL; native Anthropic clients use the origin and require backend support for `/v1/messages`. `launch` does not download weights or start a GPU inference engine. Reference diagnostics are under `/api/v1/reference/*`. See [getting started](docs/getting-started.md) for setup, credential configuration and the installer assets planned for the next tagged release.
 
 ### 2. Open the Native Desktop Companion App
 ```bash

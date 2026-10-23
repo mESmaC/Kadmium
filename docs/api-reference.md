@@ -1,73 +1,67 @@
 # Kadmium HTTP & AI Gateway API Reference
 
-When `kadmium serve` is running (default `http://127.0.0.1:7848`), [`kadmium-gateway`](../crates/kadmium-gateway/src/lib.rs) exposes two families of HTTP endpoints:
-1. **Strata-Compatible AI Inference Gateway** (OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`)
+When `kadmium launch` or `kadmium serve` is running (default `http://127.0.0.1:7848`), [`kadmium-gateway`](../crates/kadmium-gateway/src/lib.rs) exposes two families of HTTP endpoints:
+1. **Native inference protocol relay** (OpenAI-style `/v1/chat/completions`, `/v1/embeddings`, `/v1/models`, and Anthropic `/v1/messages`)
 2. **Cluster Control Plane & Desktop Companion REST API** (`/api/v1/...`)
 
 ---
 
 ## 1. AI Inference Gateway Endpoints
 
-### `POST /v1/chat/completions` (OpenAI Compatible)
-Drop-in replacement for the OpenAI Chat Completions API. Works out of the box with the official `openai` Python/TypeScript SDKs, Cursor, Continue, LangChain, and OpenWebUI.
+### Configure an inference backend
 
-**Request Body:**
-```json
-{
-  "model": "deepseek-ai/DeepSeek-V3-671B-MoE-Q4_K_M",
-  "messages": [
-    { "role": "system", "content": "You are running on a Kadmium heterogeneous cluster." },
-    { "role": "user", "content": "Summarize our active pipeline route." }
-  ]
-}
+Start an inference server separately, then point Kadmium to its origin or `/v1` URL:
+
+```bash
+kadmium launch --inference-url http://127.0.0.1:8080
 ```
 
-**Response Body (`200 OK`):**
-Includes standard OpenAI `choices` plus a `kadmium_fabric` telemetry block showing the exact heterogeneous pipeline route and speculative draft node used:
-```json
-{
-  "id": "chatcmpl-kadmium-e1",
-  "object": "chat.completion",
-  "model": "deepseek-ai/DeepSeek-V3-671B-MoE-Q4_K_M",
-  "kadmium_fabric": {
-    "epoch": 1,
-    "pipeline_route": [
-      "main-gaming-pc[L0..L19]",
-      "mac-mini-m4-pro[L20..L44]",
-      "gaming-laptop-rtx4070[L45..L55]",
-      "friend-remote-pc[L56..L59]",
-      "legacy-thinkpad-t480[L60..L60]"
-    ],
-    "estimated_tokens_per_sec": 38.4,
-    "speculative_draft_node": "rk3588-sbc-bramble"
-  },
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Executed across the Kadmium heterogeneous mesh (Asymmetric Sharding + FreeToken q* + Colibri NVMe MoE Streaming)."
-      },
-      "finish_reason": "stop"
-    }
-  ]
-}
+`KADMIUM_INFERENCE_URL` supplies the URL when `--inference-url` is absent. Backend settings are not stored in TOML. If the backend needs a key, set `KADMIUM_INFERENCE_API_KEY` in the environment; it is never written to the workspace configuration or returned by the status endpoint. Kadmium does not download or launch a model server, select a backend model, or turn reference compute kernels into LLM generation. Without a configured backend, `/v1/*` returns `503 backend_not_configured`.
+
+| Endpoint | Contract |
+| :--- | :--- |
+| `GET /v1/models` | Returns the configured backend's actual model catalog. Use its IDs in requests. |
+| `POST /v1/chat/completions` | Forwards the complete OpenAI-style JSON request: conversation, tools, generation controls and provider extensions. |
+| `POST /v1/embeddings` | Forwards embedding requests and returns the backend's vectors and usage unchanged. Backend support is required. |
+| `POST /v1/messages` | Forwards native Anthropic Messages requests to the backend's `/v1/messages`. No OpenAI-to-Anthropic conversion is performed. |
+| `GET /api/v1/inference/status` | Shows configuration, endpoint and admission-slot usage. `readiness: "configuration_only"` is not a backend health check. |
+
+Successful response bodies come from the backend, including its IDs, usage, tool calls, stop reasons and optional fields. Kadmium adds an `x-request-id` header. For `stream: true`, backend SSE bytes are relayed as they arrive; OpenAI `[DONE]` and Anthropic event lifecycles are not synthesized or translated. A slot stays occupied until the response body finishes or the client disconnects. Once streaming has begun, a backend transport failure can terminate the stream; the client should treat a missing native end event as an incomplete response.
+
+OpenAI clients should use `http://127.0.0.1:7848/v1` as their base URL; Anthropic clients should use `http://127.0.0.1:7848`. Pass a real backend model ID, and include `max_tokens` for native Anthropic requests. Tools, images, structured output and sampling controls work only when the chosen backend supports them.
+
+```bash
+curl http://127.0.0.1:7848/v1/models
+curl -N http://127.0.0.1:7848/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"YOUR_BACKEND_MODEL_ID","messages":[{"role":"user","content":"Say hello."}],"max_tokens":32,"stream":true}'
+curl -N http://127.0.0.1:7848/v1/messages \
+  -H 'Content-Type: application/json' -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"YOUR_BACKEND_MODEL_ID","max_tokens":32,"messages":[{"role":"user","content":"Say hello."}],"stream":true}'
 ```
 
----
+### Admission, credentials and errors
 
-### `POST /v1/messages` (Anthropic Compatible)
-Drop-in replacement for the Anthropic Messages API (`claude` SDKs, Claude Code custom base URLs).
+Defaults are four in-flight backend requests and a 120-second request timeout, adjustable through `--inference-concurrency` and `--inference-timeout-secs`. JSON request bodies are limited to 2 MiB. Malformed JSON, invalid required fields and oversized bodies are rejected before backend execution.
 
-**Request Body:**
-```json
-{
-  "model": "deepseek-ai/DeepSeek-V3-671B-MoE-Q4_K_M",
-  "messages": [
-    { "role": "user", "content": "Hello from Anthropic SDK" }
-  ]
-}
-```
+Client `Authorization` and `x-api-key` credentials are not forwarded and do not authenticate clients to Kadmium. Only the configured backend key is sent: Bearer authentication for OpenAI routes, `x-api-key` for Anthropic. `anthropic-version` and `anthropic-beta` are forwarded on native Anthropic requests; the version defaults to `2023-06-01`. New `launch` configurations default to loopback, while `serve` retains its all-interface default. Use `--bind 127.0.0.1:7848` for local access or supply access control at the network/reverse-proxy boundary when exposing it to other machines.
+
+| HTTP status | Error code | Meaning |
+| :--- | :--- | :--- |
+| `400` | `invalid_json` / `invalid_request` | Correct the JSON body or required fields. |
+| `413` | `request_too_large` | Reduce the body below 2 MiB. |
+| `429` | `admission_full` | All slots are occupied; respect `Retry-After`. |
+| `503` | `backend_not_configured` | Set an inference backend URL. |
+| `504` | `upstream_timeout` | Backend request exceeded the configured timeout. |
+| `502` | `upstream_unavailable` / `upstream_redirect` | Backend could not be reached or returned a redirect, which Kadmium does not follow. |
+| `502` | `invalid_upstream_response` | Backend returned an incompatible content type; nonstreaming responses require JSON, streaming responses require SSE. |
+| Upstream `4xx`/`5xx` | `upstream_error` | Backend rejected/failed the request. Its private diagnostic body is not forwarded. |
+
+Errors use `{"error":{"message":"...","type":"...","code":"...","param":null},"request_id":"..."}`; native Anthropic errors also include `"type":"error"` at the top level. Upstream cookies, authentication headers and private error text are not exposed to clients.
+
+### Reference diagnostics
+
+The former synthetic responses remain under `GET /api/v1/reference/models` and `POST /api/v1/reference/chat/completions`, `/api/v1/reference/embeddings`, `/api/v1/reference/messages`. These exercise Kadmium's reference execution and planner telemetry, not a language model. They are separate from the configured inference backend and are not advertised as real model results.
 
 ---
 

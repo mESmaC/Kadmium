@@ -452,7 +452,7 @@
   function post(path, body, opts) {
     opts = opts || {};
     return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
-      .then(r => r.text().then(t => { let j = null; try { j = t ? JSON.parse(t) : null; } catch (e) { j = null; } if (!r.ok) throw new Error((j && (j.error || j.message)) || (t && t.length < 240 ? t : 'HTTP ' + r.status + ' from ' + path)); return j; }))
+      .then(r => r.text().then(t => { let j = null; try { j = t ? JSON.parse(t) : null; } catch (e) { j = null; } const message = j && (typeof j.error === 'string' ? j.error : (j.error && j.error.message) || j.message); if (!r.ok) throw new Error((typeof message === 'string' && message) || (t && t.length < 240 ? t : 'HTTP ' + r.status + ' from ' + path)); return j; }))
       .then(j => { if (opts.into) { cache[opts.into] = j; (listeners[opts.into] || []).forEach(fn => fn(j)); } refresh(opts.refresh || CLUSTER_PATHS); return j; });
   }
 
@@ -905,7 +905,7 @@
     const base = (workers && workers.coordinator_http_url) || window.location.origin;
     const stages = inf.assignments.filter(a => a.layer_count > 0).length;
     const runLivePass = () => act(post('/api/v1/pipeline/live', {}), d => (d.live_hops || []).length ? 'Test pass ran across ' + plural(d.live_hops.length, 'machine') + ' · ' + fmt.num(d.effective_tokens_per_sec, 1) + ' tok/s (' + fmt.ms(d.total_pipeline_latency_ms) + ')' : 'Nothing ran: no machine holds layers of ' + inf.model_id + ' yet', 'ok').catch(() => {});
-    const loadRecommended = () => act(post('/api/v1/cluster/model', { inference_model_id: inf.model_id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Loaded ' + inf.model_id + ' across your machines').catch(() => {});
+    const loadRecommended = () => act(post('/api/v1/cluster/model', { inference_model_id: inf.model_id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/api/v1/reference/models']) }), 'Loaded ' + inf.model_id + ' across your machines').catch(() => {});
     const setFleet = v => act(post('/api/v1/cluster/mode', { live_only: v === 'off' }, { into: '/api/v1/cluster/workers' }), v === 'off' ? 'Showing your real hardware only' : 'Added simulated demo machines next to your real ones', 'ok').catch(() => {});
     return h(F, null,
       h('section', { 'aria-labelledby': 'cr-start' },
@@ -1183,7 +1183,7 @@
   /* ============================ MODELS ============================ */
   function Models(props) {
     const { overview, route } = props;
-    const models = useApi('/v1/models');
+    const models = useApi('/api/v1/reference/models');
     const dataflow = useApi('/api/v1/dataflow');
     const kernels = useApi('/api/v1/runtime/kernels');
     const [trace, setTrace] = useState(null);
@@ -1202,12 +1202,12 @@
     const nvme = takers.reduce((s, n) => s + ((n.memory && n.memory.nvme_cache_gb) || 0), 0);
     const fit = w => w <= capacity ? ['fits in memory', 'ok'] : w <= capacity + nvme ? ['streams from disk', 'warn'] : ['needs more machines', 'danger'];
     const holders = inf.assignments.filter(a => a.layer_count > 0);
-    const refreshAll = C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models', '/api/v1/runtime/kernels']);
+    const refreshAll = C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/api/v1/reference/models', '/api/v1/runtime/kernels']);
     const load = id => { setBusy(id); act(post('/api/v1/cluster/model', { inference_model_id: id }, { into: '/api/v1/cluster/overview', refresh: refreshAll }), d => { const n = (d.inference_plan.assignments || []).filter(a => a.layer_count > 0).length; return n ? 'Loaded ' + id + ' across ' + n + ' machine' + (n === 1 ? '' : 's') : 'Loaded ' + id + ', but no machine has room for its layers yet'; }).catch(() => {}).finally(() => setBusy(null)); };
-    const unload = () => act(post('/api/v1/cluster/model', { unload: true }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), 'Unloaded ' + inf.model_id + ': your machines are idle again', 'warn').catch(() => {});
+    const unload = () => act(post('/api/v1/cluster/model', { unload: true }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/reference/models']) }), 'Unloaded ' + inf.model_id + ': your machines are idle again', 'warn').catch(() => {});
     const runTrace = () => act(post('/api/v1/pipeline/live', {}).then(d => { setTrace(d.report); return d.report; }), t => (t.stages || []).length ? 'Traced one step across ' + t.stages.length + ' machines · ' + fmt.num(t.effective_tokens_per_sec, 1) + ' tok/s' : 'Nothing ran: no machine holds layers of ' + inf.model_id + ' yet').catch(() => {});
-    const importLocalKtb = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), m => 'Compiled ' + m.model_id + ' to ' + m.compiled_ktb_path + ' (' + m.ktb_page_count + ' pages of 64 KiB)', 'ok').catch(() => {});
-    const send = () => { setBusy('send'); act(post('/v1/chat/completions', { model: inf.model_id, messages: [{ role: 'user', content: prompt }] }, { refresh: ['/api/v1/cluster/overview'] }), r => r.kadmium_fabric ? 'Answered across ' + r.kadmium_fabric.execution_trace.stages.length + ' machines at ' + fmt.num(r.kadmium_fabric.estimated_tokens_per_sec, 1) + ' tok/s' : 'Answered').then(setReply).catch(() => {}).finally(() => setBusy(null)); };
+    const importLocalKtb = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/api/v1/reference/models']) }), m => 'Compiled ' + m.model_id + ' to ' + m.compiled_ktb_path + ' (' + m.ktb_page_count + ' pages of 64 KiB)', 'ok').catch(() => {});
+    const send = () => { setBusy('send'); act(post('/api/v1/reference/chat/completions', { model: inf.model_id, messages: [{ role: 'user', content: prompt }] }, { refresh: ['/api/v1/cluster/overview'] }), 'Reference compute completed').then(setReply).catch(() => {}).finally(() => setBusy(null)); };
     const replyText = reply && reply.choices && reply.choices[0] ? reply.choices[0].message.content : null;
     return h(F, null,
       h('div', { className: 'cr-steps' },
@@ -1224,9 +1224,9 @@
               h('span', { className: 'row' }, active ? h(K.Badge, { tone: 'local', dot: true }, 'loaded') : h(K.Badge, { tone: f[1] }, f[0]),
                 h('span', { className: 'cta' }, busy === m.id ? 'Loading…' : active ? (measuredTps ? fmt.num(measuredTps, 1) + ' tok/s · see where it runs' : 'send it a prompt below') : recommended ? 'best fit · load it' : 'load it'))));
           })) : Loading('Reading the model list…'),
-          services.length ? h('p', { className: 'cr-desc' }, 'Also served through the API, without splitting: ', services.map((m, i) => h(F, { key: m.id }, i ? ', ' : '', h('code', null, m.id))), '.') : null),
-        h(Panel, { className: 'cr-step', title: 'Try it', sub: modelLoaded ? inf.model_id : 'loads the best fit first',
-            desc: 'Send a prompt to check the model answers. The reply shows how many machines took part and how fast it ran.' },
+          services.length ? h('p', { className: 'cr-desc' }, 'Reference services: ', services.map((m, i) => h(F, { key: m.id }, i ? ', ' : '', h('code', null, m.id))), '.') : null),
+        h(Panel, { className: 'cr-step', title: 'Test reference compute', sub: modelLoaded ? inf.model_id : 'uses the best-fit plan',
+            desc: 'Run a small reference workload to inspect worker execution. Its diagnostic reply is not generated by a language model. Use the API playground with a configured inference backend for generated answers.' },
           !modelLoaded ? h(C.Note, null, 'Nothing is loaded yet, so sending a prompt loads ', h('b', null, inf.model_id), ' first.') : null,
           h('div', { className: 'cr-ask' },
             h(K.Input, { label: 'Prompt', value: prompt, onChange: e => setPrompt(e.target.value), onKeyDown: e => { if (e.key === 'Enter' && prompt.trim() && busy !== 'send') send(); } }),
@@ -1435,44 +1435,45 @@
   function Gateway(props) {
     const { overview, workers, route } = props;
     const models = useApi('/v1/models');
+    const inference = useApi('/api/v1/inference/status');
     const mcp = useApi('/api/v1/mcp');
     const ga = useApi('/api/v1/ga/governance');
     const probe = useApi('/api/v1/host/probe');
     const [tab, setTab] = C.useTab(route, 'playground', ['playground', 'connect', 'mcp', 'keys']);
     const [model, setModel] = useState(null);
     const [prompt, setPrompt] = useState('Explain how Kadmium decides which node gets which layers, in three sentences.');
-    const [vision, setVision] = useState(false);
     const [reply, setReply] = useState(null), [live, setLive] = useState(null), [embed, setEmbed] = useState(null), [mcpReply, setMcpReply] = useState(null), [busy, setBusy] = useState(false);
     const liveOnly = workers && workers.live_only_mode;
-    const base = (workers && workers.coordinator_http_url) || (window.location.origin);
+    const base = window.location.origin;
     const list = (models && models.data) || [];
-    const activeModel = model || (overview && overview.inference_plan.model_id) || (list[0] && list[0].id);
-    const send = () => { setBusy(true); act(post('/v1/chat/completions', { model: activeModel, messages: [{ role: 'user', content: prompt }], vision_offload: vision || undefined }, { refresh: ['/api/v1/cluster/overview'] }), r => 'Answered across ' + (r.kadmium_fabric ? r.kadmium_fabric.execution_trace.stages.length + ' machines · ' + fmt.num(r.kadmium_fabric.estimated_tokens_per_sec, 1) + ' tok/s' : 'your machines')).then(setReply).catch(() => {}).finally(() => setBusy(false)); };
+    const activeModel = model || (list[0] && list[0].id);
+    const send = () => { setBusy(true); act(post('/v1/chat/completions', { model: activeModel, messages: [{ role: 'user', content: prompt }] }, { refresh: [] }), 'Received a backend response').then(setReply).catch(() => {}).finally(() => setBusy(false)); };
     const sendLive = () => { setBusy(true); act(post('/api/v1/pipeline/live', { prompt, max_tokens: 16 }), r => 'Live workers: ' + r.live_hops.length + ' hops · ' + fmt.ms(r.total_pipeline_latency_ms) + (r.all_stages_bit_identical ? ' · bit-identical' : ' · results differ')).then(setLive).catch(() => {}).finally(() => setBusy(false)); };
-    const sendEmbed = () => act(post('/v1/embeddings', { model: 'kadmium-embed-v1', input: [prompt], dimensions: 16 }, { refresh: [] }), r => 'Embedded ' + ((r.data || []).length) + ' input' + ((r.data || []).length === 1 ? '' : 's')).then(setEmbed).catch(() => {});
+    const sendEmbed = () => act(post('/v1/embeddings', { model: activeModel, input: [prompt] }, { refresh: [] }), r => 'Embedded ' + ((r.data || []).length) + ' input' + ((r.data || []).length === 1 ? '' : 's')).then(setEmbed).catch(() => {});
     const callTool = (name, args) => act(post('/mcp', { jsonrpc: '2.0', id: Date.now(), method: 'tools/call', params: { name, arguments: args || {} } }, { refresh: [] }), 'Called ' + name).then(setMcpReply).catch(() => {});
-    const loaded = !!(overview && overview.active_model_loaded);
+    const configured = !!(inference && inference.configured);
+    const assistantContent = reply && reply.choices && reply.choices[0] && reply.choices[0].message ? reply.choices[0].message.content : null;
+    const renderedReply = typeof assistantContent === 'string' ? assistantContent : JSON.stringify(assistantContent == null ? reply : assistantContent, null, 2);
     const curl = '$ curl ' + base + '/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"' + activeModel + '","messages":[{"role":"user","content":"Hello"}]}\'';
     const py = 'from openai import OpenAI\nclient = OpenAI(base_url="' + base + '/v1", api_key="kdm_local")\nr = client.chat.completions.create(model="' + activeModel + '",\n    messages=[{"role": "user", "content": "Hello"}])\nprint(r.choices[0].message.content)';
     const anthropic = '$ export ANTHROPIC_BASE_URL=' + base + '\n$ curl ' + base + '/v1/messages \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"' + activeModel + '","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}\'';
     return h(F, null,
       h('div', { className: 'cr-stats' },
         h(Stat, { label: 'OpenAI API', value: '/v1', meta: base + '/v1 · chat, embeddings, models', tone: 'cadmium' }),
-        h(Stat, { label: 'Anthropic API', value: '/v1/messages', meta: 'same address · streaming' }),
+        h(Stat, { label: 'Anthropic API', value: '/v1/messages', meta: 'requires native Messages support in the backend' }),
         h(Stat, { label: C.T('mcp', 'MCP tools'), value: mcp ? mcp.tools.length : '—', unit: 'tools', meta: mcp ? mcp.server_name + ' · ' + mcp.protocol_version + ' · stdio and http' : '—' }),
         h(Stat, { label: 'Models', value: list.length, meta: list.map(m => m.id).join(' · ') })),
       h(K.Tabs, { label: 'API and playground views', value: tab, onChange: setTab, items: [{ id: 'playground', label: 'Playground' }, { id: 'connect', label: 'Connect an app' }, { id: 'mcp', label: 'MCP tools', count: mcp ? mcp.tools.length : undefined }, { id: 'keys', label: 'API keys', count: (!liveOnly && ga) ? ga.scoped_api_keys.length : undefined }] }),
       tab === 'playground' ? h(C.TabPanel, { id: 'playground', label: 'Playground' }, h('div', { className: 'cr-main-aside' },
-        h(Panel, { title: 'Playground', sub: 'runs on your machines', tools: h('select', { className: 'cr-select', value: activeModel || '', onChange: e => setModel(e.target.value), 'aria-label': 'Model' }, list.map(m => h('option', { key: m.id, value: m.id }, m.id))) },
-          !loaded ? h(C.Note, null, 'No model is loaded yet. Sending a prompt loads ', h('b', null, activeModel || 'the best fit'), ' first, or ', h('a', { href: '#/models' }, 'choose a model'), '.') : null,
+        h(Panel, { title: 'Playground', sub: configured ? 'configured inference backend' : 'backend setup required', tools: h('select', { className: 'cr-select', value: activeModel || '', onChange: e => setModel(e.target.value), 'aria-label': 'Model' }, list.map(m => h('option', { key: m.id, value: m.id }, m.id))) },
+          !configured ? h(C.Note, null, 'Start Kadmium with an inference backend, for example ', h('code', null, 'kadmium launch --inference-url http://127.0.0.1:8080/v1'), '. Start the model server separately, then choose one of its models here.') : h(C.Note, null, 'Model availability and supported features come from the backend. Select an embedding model before requesting embeddings. Reference worker tests below run a separate diagnostic workload.'),
           h('textarea', { className: 'cr-textarea', value: prompt, onChange: e => setPrompt(e.target.value), rows: 4, 'aria-label': 'Prompt' }),
           h('div', { className: 'cr-rowwrap' },
-            h(K.Button, { variant: 'primary', icon: I('chat', 16), disabled: busy, title: 'POST /v1/chat/completions', onClick: send }, busy ? 'Running…' : 'Send'),
-            h(K.Button, { disabled: busy, title: 'POST /api/v1/pipeline/live: runs over TCP on the live worker processes', onClick: sendLive }, 'Send through live workers'),
-            h(K.Button, { variant: 'ghost', title: 'POST /v1/embeddings', onClick: sendEmbed }, 'Get an embedding'),
-            h('label', { className: 'cr-chip', style: { marginLeft: 'auto', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: vision, onChange: e => setVision(e.target.checked) }), 'send images to the vision model')),
-          !reply && !live && !embed ? h(Empty, null, 'Send a prompt to see the reply, which machines took part and how fast it ran.') : null,
-          reply ? h(F, null, h('div', { className: 'cr-reply' }, reply.choices && reply.choices[0] ? reply.choices[0].message.content : JSON.stringify(reply)),
+            h(K.Button, { variant: 'primary', icon: I('chat', 16), disabled: busy || !configured || !activeModel || !prompt.trim(), title: 'POST /v1/chat/completions', onClick: send }, busy ? 'Running…' : 'Send'),
+            h(K.Button, { disabled: busy, title: 'POST /api/v1/pipeline/live: reference compute over TCP', onClick: sendLive }, 'Test reference workers'),
+            h(K.Button, { variant: 'ghost', disabled: !configured || !activeModel || !prompt.trim(), title: 'POST /v1/embeddings', onClick: sendEmbed }, 'Get an embedding')),
+          !reply && !live && !embed ? h(Empty, null, 'Send a prompt to see the backend reply.') : null,
+          reply ? h(F, null, h('div', { className: 'cr-reply' }, renderedReply),
             reply.kadmium_fabric ? h('div', { className: 'cr-rowwrap' }, h(K.Badge, { tone: 'ok', dot: true }, fmt.num(reply.kadmium_fabric.estimated_tokens_per_sec, 1) + ' tok/s'), h(K.Badge, null, 'epoch ' + reply.kadmium_fabric.epoch), reply.kadmium_fabric.execution_trace && reply.kadmium_fabric.execution_trace.speculative_verification ? h(K.Badge, { tone: 'local' }, 'drafts ' + fmt.num(reply.kadmium_fabric.execution_trace.speculative_verification.acceptance_rate * 100, 0) + ' % accepted · ' + fmt.num(reply.kadmium_fabric.execution_trace.speculative_verification.effective_speedup_multiplier, 2) + '×') : null, h(K.Badge, null, reply.id)) : null) : null,
           live ? h(F, null, h('div', { className: 'cr-reply' }, live.generated_response),
             h(Table, { label: 'Hops through the live workers', rows: live.live_hops, rowKey: x => x.stage_index, cols: [{ key: 's', label: 'hop', render: x => '#' + x.stage_index }, { key: 'n', label: 'machine', render: x => x.hostname }, { key: 'l', label: 'layers', render: x => 'L' + x.start_layer + '–L' + x.end_layer }, { key: 't', label: 'via', render: x => h(K.Badge, { tone: String(x.transport_mode).indexOf('SkipPipe') >= 0 ? 'warn' : (String(x.transport_mode).indexOf('Simulated') >= 0 ? 'neutral' : 'local') }, x.transport_mode + (x.worker_tcp_addr ? ' · ' + x.worker_tcp_addr : '')) }, { key: 'ms', label: 'network + compute', num: true, render: x => fmt.ms(x.wire_plus_compute_ms) }, { key: 'd', label: C.T('repops', 'digest'), render: x => fmt.hex(x.repops_digest_fnv1a, 12) }] })) : null,
@@ -1480,7 +1481,7 @@
         h('div', { className: 'kd-stack', style: { gap: 'var(--space-5)' } },
           h(Panel, { title: 'This computer', sub: probe ? h(F, null, 'runs the coordinator · ', C.T('qstar', 'q*'), ' ' + probe.q_star_ratio) : '…' },
             probe ? h(K.NodeCard, { name: probe.local_node.hostname, hardware: C.hardwareLine(probe.local_node), kind: C.nodeKind(probe.local_node), placement: 'local', status: 'resident', shards: 'coordinator · ' + base.replace(/^https?:\/\//, ''), meters: C.nodeMeters(probe.local_node, null) }) : Loading()),
-          h(Panel, { title: 'Use it from your tools', desc: 'Any OpenAI-compatible tool works: Cursor, Claude Code, OpenWebUI, LangChain and more.' }, Code('$ export OPENAI_BASE_URL=' + base + '/v1\n$ export OPENAI_API_KEY=kdm_local', 'shell'))))) : null,
+          h(Panel, { title: 'Use it from your tools', desc: 'OpenAI and Anthropic request features depend on the configured backend. Inbound API keys are not enforced; keep this endpoint local or behind an authenticated proxy.' }, Code('$ export OPENAI_BASE_URL=' + base + '/v1\n$ export OPENAI_API_KEY=kdm_local', 'shell'))))) : null,
       tab === 'connect' ? h(C.TabPanel, { id: 'connect', label: 'Connect an app' },
         h(C.Note, null, 'Copy one of these into your app. Each one points at this coordinator, ', h('b', null, base), '.'),
         h('div', { className: 'cr-two' }, Code(curl, 'curl · OpenAI-compatible'), Code(py, 'Python · OpenAI SDK', 'text'), Code(anthropic, 'Anthropic Messages API'), Code('$ kadmium serve --port 7848\n# control room  ' + base + '\n# metrics       ' + base + '/metrics   (Prometheus)\n# w&b           ' + base + '/api/v1/telemetry/wandb', 'where everything lives'))) : null,
@@ -1491,9 +1492,9 @@
           mcp ? Code(mcp.stdio_config_json, '.mcp.json · Claude Code, Cursor, Claude Desktop', 'json') : null,
           mcpReply ? Code(JSON.stringify(mcpReply, null, 2), 'last reply from /mcp', 'json') : null))) : null,
       tab === 'keys' ? h(C.TabPanel, { id: 'keys', label: 'API keys' }, h('div', { className: 'cr-two' },
-        h(Panel, { title: 'Scoped API keys', sub: 'one slice each', flush: true, desc: h(F, null, 'Keys that only work for one ', C.T('slice', 'slice'), ', with a role that limits what they can do.') },
+        h(Panel, { title: 'Governance key examples', sub: 'reference policies', flush: true, desc: 'These examples describe slice policies. The inference gateway does not authenticate incoming clients with these keys.' },
           ga ? h(Table, { label: 'Scoped API keys', empty: 'No scoped keys yet. Keys are issued per slice, so create a slice first.', rows: liveOnly ? [] : ga.scoped_api_keys, rowKey: k => k.key_id, cols: [{ key: 'p', label: 'used by', render: k => h('span', { className: 'sans', style: { fontWeight: 600 } }, k.principal_name) }, { key: 'r', label: 'role', render: k => h(K.Badge, { tone: k.role === 'BlindSupplyProvider' ? 'warn' : 'local' }, fmt.words(k.role)) }, { key: 's', label: 'slice', render: k => k.bound_slice_id }, { key: 'k', label: 'key', render: k => h('span', { className: 'cr-rowwrap', style: { flexWrap: 'nowrap' } }, k.token_string.slice(0, 22) + '…', h(K.Button, { size: 'sm', variant: 'ghost', 'aria-label': 'Copy the key for ' + k.principal_name, onClick: () => copyText(k.token_string, 'key') }, I('copy', 14))) }] }) : Loading()),
-        h(Panel, { title: 'Slice limits', sub: 'enforced on every request', flush: true, desc: 'Hard limits a slice can’t exceed, whatever its keys ask for.' },
+        h(Panel, { title: 'Slice limit examples', sub: 'reference policies', flush: true, desc: 'These policy examples are separate from the configured inference backend. Gateway admission is controlled by its concurrency limit.' },
           ga ? h(Table, { label: 'Slice limits', empty: 'No limits yet. They apply once a slice exists.', rows: liveOnly ? [] : ga.slice_quotas, rowKey: (q, i) => q.slice_id || i, cols: [{ key: 's', label: 'slice', render: q => q.slice_id }, { key: 'v', label: 'fast memory cap', num: true, render: q => q.max_vram_gb != null ? q.max_vram_gb + ' GB' : (q.max_fast_memory_gb != null ? q.max_fast_memory_gb + ' GB' : '—') }, { key: 'c', label: 'cloud / hr', num: true, render: q => q.max_hourly_cloud_spend_usd != null ? fmt.usd(q.max_hourly_cloud_spend_usd) : '—' }, { key: 'r', label: 'requests', num: true, render: q => q.max_requests_per_min != null ? q.max_requests_per_min + ' / min' : '—' }] }) : Loading()))) : null);
   }
   C.pages.gateway = Gateway;
@@ -1535,7 +1536,7 @@
     const runStream = () => act(post('/api/v1/fts3/stream', {}), r => 'Sent ' + r.shard_name + ' · ' + fmt.num(r.ktb_total_bytes / 1024, 0) + ' KiB at ' + fmt.num(r.aggregate_goodput_mbps, 0) + ' Mbps · ' + r.target_receipts.length + ' pages checked').then(setStream).catch(() => {});
     const put = (body, okText) => act(post('/api/v1/storage/pool-bucket/object', body, { into: bucketPath, refresh: C.CLUSTER_PATHS.concat([bucketPath]) }), okText || (r => 'Bucket updated: ' + (r.bucket_objects || []).length + ' item(s) across ' + r.total_participating_nodes + ' machine(s)'), 'ok').catch(() => {});
     const addAnchor = (body, what) => act(post('/api/v1/storage/pool-bucket/anchor', body, { into: bucketPath, refresh: [bucketPath] }), 'Added a durable copy on ' + what, 'ok').catch(() => {});
-    const compileAndStage = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models', bucketPath]) }), m => 'Compiled ' + m.model_id + ' to a .ktb file (' + (m.ktb_page_count || m.page_count_64k || 0) + ' pages of 64 KiB) and added it to the bucket', 'ok').catch(() => {});
+    const compileAndStage = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/api/v1/reference/models', bucketPath]) }), m => 'Compiled ' + m.model_id + ' to a .ktb file (' + (m.ktb_page_count || m.page_count_64k || 0) + ' pages of 64 KiB) and added it to the bucket', 'ok').catch(() => {});
     const hf = (!liveOnly && integ) ? integ.sample_hf_pull_plan : null, gh = (!liveOnly && integ) ? integ.sample_github_ci_run : null;
     const ec = bucket && bucket.erasure_coding_verification;
     const wc = bucket && bucket.wire_token_carousel;

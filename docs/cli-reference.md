@@ -15,6 +15,7 @@ Commands:
   cloud-shield  Evaluate Kadmium Cloud Business Model: Multi-Datacenter Spot Arbitrage + Bidirectional Downtime Protection
   plan          Compute and print the asymmetric sharding plan for a target workload
   serve         Launch the Unified Web Control Dashboard & OpenAI/Anthropic compatible AI Gateway
+  launch        Inspect hardware-fit setup and launch with an existing inference backend
   desktop       Open the Kadmium desktop app (the Companion in its own window) with a local coordinator
 ```
 
@@ -62,15 +63,32 @@ cargo run -p kadmium-cli -- probe
 
 ## 2. `kadmium serve`
 
-Starts the **Kadmium Control Plane Dashboard** and **Strata-compatible OpenAI/Anthropic AI Gateway**.
+Starts the Control Room and native inference protocol relay. Real `/v1` responses require a separately running backend; without one, the coordinator remains available and inference returns `503`.
 
 ```bash
-kadmium serve --port 7848
+kadmium serve --bind 127.0.0.1:7848 --inference-url http://127.0.0.1:8080
 ```
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `-p`, `--port <PORT>` | `7848` | TCP port for the web dashboard, REST control plane, and `/v1/chat/completions` + `/v1/messages` endpoints. |
+| `--bind <IP:PORT>` | `0.0.0.0:7848` for `serve` | Explicit listener address; conflicts with `--port`. |
+| `--config <PATH>` | none for `serve` | Read workspace configuration; `serve` does not automatically open `kadmium.toml`. |
+| `--inference-url <URL>` | unconfigured | Existing backend origin or `/v1` URL. |
+| `--inference-concurrency <N>` | `4` | Maximum in-flight backend requests, including open response streams. |
+| `--inference-timeout-secs <N>` | `120` | Backend request timeout. |
+| `--discover-bridges` | off | Opt into optional USB and lab-specific device bridge probes. |
+
+`KADMIUM_INFERENCE_URL` can configure the backend. `KADMIUM_INFERENCE_API_KEY` supplies its credential without storing it in a file. For native Anthropic, the backend must support `/v1/messages`; Kadmium does not translate OpenAI responses.
+
+### `kadmium launch`
+
+```bash
+kadmium launch --plan
+kadmium launch --inference-url http://127.0.0.1:8080
+```
+
+`--plan` prints a human-readable hardware-fit recommendation and resolved launch settings without writing configuration or starting workers. Normal launch creates `kadmium.toml` when absent, preserves an existing file, then starts the coordinator. It accepts the same listener/backend flags as `serve`, with `--config` defaulting to `kadmium.toml` and a new configuration's listener defaulting to `127.0.0.1:7848`. Explicit listener flags override the file, then command defaults apply; `--port` preserves the selected IP. Recommendations are capacity estimates, not model downloads or benchmark results. See the [launch and configuration guide](guides/cli.md).
 
 ---
 
@@ -190,6 +208,8 @@ Probes the local host hardware (`VRAM`, `RAM`, `NVMe BW`, $q^*$) and generates a
 ```bash
 kadmium init --out kadmium.toml
 ```
+
+Without `--out`, prints the configuration. An existing output file is preserved unless `--force` is explicitly supplied with `--out`. Use `launch` to create a missing file and start, or `launch --plan` to inspect settings without writing.
 
 ---
 

@@ -1179,7 +1179,7 @@ pub fn run_mcp(inspect: bool) {
     }
 }
 
-pub fn run_init(out_path: Option<&str>) {
+pub fn run_init(out_path: Option<&str>, overwrite: bool) -> Result<(), String> {
     let local_node = LiveHardwareProfiler::probe_local_host();
     let cfg = KadmiumWorkspaceConfig::from_local_probe(local_node);
     let toml_text = cfg.render_kadmium_toml();
@@ -1194,9 +1194,10 @@ pub fn run_init(out_path: Option<&str>) {
     println!("{toml_text}");
 
     if let Some(path) = out_path {
-        std::fs::write(path, &toml_text).expect("Failed to write kadmium.toml to disk");
+        cfg.write_to_path(std::path::Path::new(path), overwrite)?;
         println!("  [OK] Wrote configuration manifest to: {path}");
     }
+    Ok(())
 }
 
 pub fn run_compile(model: &str, start_layer: u32, end_layer: u32, out_path: Option<&str>) {

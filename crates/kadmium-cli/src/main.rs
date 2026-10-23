@@ -6,7 +6,6 @@ use kadmium_core::{
     WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::{Fts3TransferScheduler, LocalModelDiskImporter};
-use kadmium_gateway::{CoordinatorOptions, run_coordinator};
 use kadmium_network::DEFAULT_WORKER_TCP_PORT;
 use kadmium_rl::{
     DisaggregatedRlPlan, DiscoveryTree, DreamRsiEvolutionReport, RlEnvironmentSuiteSpec,
@@ -23,6 +22,7 @@ use kadmium_sharding::{
 
 mod diloco_ops;
 mod grid_ops;
+mod launch;
 mod ops;
 use grid_ops::*;
 use ops::*;
@@ -90,26 +90,18 @@ enum Commands {
         #[arg(short, long, default_value = "inference")]
         workload: String,
     },
-    /// Launch the Unified Web Dashboard & OpenAI/Anthropic compatible API Gateway
+    /// Launch the dashboard and optional OpenAI-compatible inference gateway
     Serve {
-        /// Port to bind the HTTP dashboard and API gateway
-        #[arg(short, long, default_value_t = 7848)]
-        port: u16,
-        /// Optional path to `kadmium.toml` workspace configuration
-        #[arg(short, long)]
-        config: Option<String>,
-        /// Start with only real probed hardware nodes (default: true unless --demo is passed)
+        #[command(flatten)]
+        startup: launch::StartupArgs,
+    },
+    /// Plan or launch a local coordinator, creating hardware-aware configuration only if absent
+    Launch {
+        #[command(flatten)]
+        startup: launch::StartupArgs,
+        /// Show hardware, configuration and backend choices without writing files or starting workers
         #[arg(long)]
-        live: bool,
-        /// Include the 7-node simulated demo fleet alongside live hardware
-        #[arg(long)]
-        demo: bool,
-        /// Spawn a 5-node local + online TCP worker test fleet on ports 7851..=7855 for single-machine testing
-        #[arg(long)]
-        spawn_fleet: bool,
-        /// Local TCP port for the coordinator's built-in `WireFrame` stage worker listener
-        #[arg(long, default_value_t = DEFAULT_WORKER_TCP_PORT)]
-        worker_port: u16,
+        plan: bool,
     },
     /// Join a live Kadmium cluster as a persistent LAN/WAN `WireFrame` compute worker daemon (or verify a `kdm1_...` ticket)
     Join {
@@ -179,6 +171,9 @@ enum Commands {
         /// Optional output path to write `kadmium.toml` to disk
         #[arg(short, long)]
         out: Option<String>,
+        /// Replace an existing output file (requires --out)
+        #[arg(long, requires = "out")]
+        force: bool,
     },
     /// Compile and verify a 64 KiB page-aligned `.ktb` (Kadmium Tensor Bank) shard archive
     Compile {
@@ -341,14 +336,8 @@ async fn main() {
         Commands::CloudShield => run_cloud_shield(),
         Commands::Probe => run_probe(),
         Commands::Plan { model, workload } => run_plan(&model, &workload),
-        Commands::Serve {
-            port,
-            config,
-            live,
-            demo,
-            worker_port,
-            spawn_fleet,
-        } => run_server(port, config.as_deref(), live || !demo, worker_port, spawn_fleet).await,
+        Commands::Serve { startup } => run_startup(startup, false, false).await,
+        Commands::Launch { startup, plan } => run_startup(startup, true, plan).await,
         Commands::Join {
             coordinator,
             ticket,
@@ -387,7 +376,12 @@ async fn main() {
         } => run_calibrate(&coordinator, strategy.as_deref(), steps, rows).await,
         Commands::Pull { uri } => run_pull(&uri),
         Commands::Mcp { inspect } => run_mcp(inspect),
-        Commands::Init { out } => run_init(out.as_deref()),
+        Commands::Init { out, force } => {
+            if let Err(error) = run_init(out.as_deref(), force) {
+                eprintln!("kadmium init: {error}");
+                std::process::exit(1);
+            }
+        }
         Commands::Compile {
             model,
             start_layer,
@@ -1018,21 +1012,8 @@ fn run_simulation() {
     );
 }
 
-async fn run_server(
-    port: u16,
-    config_path: Option<&str>,
-    live_only: bool,
-    worker_port: u16,
-    spawn_fleet: bool,
-) {
-    let options = CoordinatorOptions {
-        port,
-        config_path: config_path.map(str::to_string),
-        live_only,
-        worker_port,
-        spawn_fleet,
-    };
-    if let Err(err) = run_coordinator(options).await {
+async fn run_startup(options: launch::StartupArgs, launch: bool, plan: bool) {
+    if let Err(err) = launch::run(options, launch, plan).await {
         eprintln!("kadmium: {err}");
         std::process::exit(1);
     }
@@ -1604,5 +1585,15 @@ async fn run_desktop(port: u16, live_only: bool, open_control_room: bool, check_
         }
     });
 
-    run_server(port, None, live_only, DEFAULT_WORKER_TCP_PORT, false).await;
+    run_startup(
+        launch::StartupArgs {
+            bind: Some(std::net::SocketAddr::from(([127, 0, 0, 1], port))),
+            live: live_only,
+            demo: !live_only,
+            ..launch::StartupArgs::default()
+        },
+        false,
+        false,
+    )
+    .await;
 }

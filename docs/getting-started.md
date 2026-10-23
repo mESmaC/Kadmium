@@ -1,30 +1,47 @@
 # Getting Started with Kadmium
 
-This guide walks you through installing **Kadmium**, profiling your local hardware, spinning up a heterogeneous cluster across your home or lab devices, and running your first distributed inference, training, or **Dream-RSI** workload.
+This guide covers installing **Kadmium**, inspecting a launch plan, opening the Control Room and connecting an existing inference backend. The backend supplies real generated text and embeddings; Kadmium's reference kernels and topology demonstrations remain separate.
 
 ---
 
 ## 1. Installation
 
-Kadmium compiles into a single dependency-free native binary (`kadmium`) across Windows, macOS (Apple Silicon), Linux (`x86_64`), and ARM64/RISC-V single-board computers.
+### Build the current source
 
-### Option A: Download Prebuilt Binary or Desktop Companion App
-Grab the latest release for your OS from the GitHub Releases page or `https://kadmium.ai/download`:
-- **Windows (`x86_64-pc-windows-msvc`):** `kadmium-x86_64-pc-windows-msvc.exe`, with `kadmium-desktop.exe` (the desktop app) next to it
-- **macOS Apple Silicon (`aarch64-apple-darwin`):** `kadmium-aarch64-apple-darwin.tar.gz`, which includes `kadmium-desktop`
-- **Linux Workstation / NAS / Cloud (`x86_64-unknown-linux-gnu`):** `kadmium-x86_64-unknown-linux-gnu.tar.gz`
-- **ARM64 SBCs — Orange Pi 5 / RK3588 / Raspberry Pi 5 (`aarch64-unknown-linux-gnu`):** `kadmium-aarch64-unknown-linux-gnu.tar.gz`
-
-### Option B: Build from Source (100% Pure Rust)
-Requires Rust `1.85+` (`rustup`):
+Use a current stable Rust toolchain:
 
 ```bash
-git clone https://github.com/kadmium-ai/kadmium.git
-cd kadmium
+git clone https://github.com/mESmaC/Kadmium.git
+cd Kadmium
 cargo build --release -p kadmium-cli
 ```
 
 The compiled binary will be located at `./target/release/kadmium` (or `.\target\release\kadmium.exe` on Windows).
+
+### Checked release installers (next tagged release)
+
+The release workflow and installer scripts are prepared for the next published `vX.Y.Z` tag. These instructions do not imply that a matching release already exists. Once its assets are published, run the installer from a checked-out repository and replace `vX.Y.Z` with that actual tag:
+
+```bash
+bash scripts/install.sh --version vX.Y.Z
+# Add --launch to start the installed binary after verification.
+```
+
+```powershell
+.\scripts\install.ps1 -Version vX.Y.Z
+# Add -Launch to start the installed binary after verification.
+```
+
+The installers verify the downloaded archive against `SHA256SUMS`, install into a per-user version directory and print the executable path. They do not change `PATH`; use the printed path or add its directory yourself. Checksums detect a damaged or mismatched archive, and are not independent release signatures.
+
+| Platform | Release archive |
+| :--- | :--- |
+| Windows x64 | `kadmium-windows-x86_64.zip` |
+| Apple Silicon macOS | `kadmium-macos-arm64.tar.gz` |
+| GNU Linux x64 | `kadmium-linux-x86_64.tar.gz` |
+| GNU Linux ARM64 | `kadmium-linux-arm64.tar.gz` |
+
+Windows/macOS archives also include the desktop companion. GNU Linux builds use Ubuntu 22.04 for x64 and Ubuntu 24.04 for ARM64 and require a compatible system runtime; these archives do not establish support for every distribution, musl, Intel macOS, Windows ARM or RISC-V. Build from source for other targets when their dependencies are available.
 
 ---
 
@@ -49,16 +66,25 @@ cargo run -p kadmium-cli -- probe
 
 ## 3. Launch the Coordinator & Live Control Dashboard
 
-Start the local Kadmium coordinator and Strata-compatible AI Gateway on port `7848`:
+Inspect the hardware-fit recommendation without writing configuration or starting workers:
 
 ```bash
-cargo run -p kadmium-cli -- serve --port 7848
+cargo run -p kadmium-cli -- launch --plan
 ```
 
-Open **`http://127.0.0.1:7848`** in your browser. From the interactive dashboard you can:
-- Inspect your **7-node heterogeneous cluster topology** (Gaming PC, Apple Silicon Mac Mini, Gaming Laptop, Home NAS Vault, Legacy Laptop, ARM SBC Bramble, and Friend's Remote PC).
-- Trigger live **Responsibility Shifts** (`Host Gaming Mode` auto-yield, `Cloud Burst Node Joined`, or `Coordinator Quorum Failover`) and watch CERN FTS3 P2P transfers rebalance layers without dropping active requests.
-- Inspect the **100-Node Sub-Cluster Pool Slicer**, **TPU/CIM Token vs. Weight Streaming** analyzer, **Dream-RSI Evolving Worlds** discovery tree, and **CloudShield** spot arbitrage planner.
+Then launch against an inference backend you have already started:
+
+```bash
+cargo run -p kadmium-cli -- launch --inference-url http://127.0.0.1:8080
+```
+
+`launch` creates `kadmium.toml` if absent, preserves an existing file and starts the coordinator. The recommendation is a capacity estimate, not a downloaded model or a measured performance result. `serve` also accepts backend configuration:
+
+```bash
+cargo run -p kadmium-cli -- serve --bind 127.0.0.1:7848 --inference-url http://127.0.0.1:8080
+```
+
+Open **`http://127.0.0.1:7848`** for the Control Room. Live hardware is the default; add `--demo` to `serve` for a simulated seven-node fleet. The coordinator can run without a backend for control-plane work, but real `/v1` inference then returns `503`. Read [`/api/v1/inference/status`](api-reference.md#configure-an-inference-backend) and call `/v1/models` to distinguish configured state from a reachable backend. See the [launch guide](guides/cli.md) for flags and configuration.
 
 ### Open the desktop app
 
@@ -79,8 +105,17 @@ cargo run -p kadmium-cli -- desktop
 
 ## 4. Connect Additional Devices
 
-### Local LAN Devices (Zero-Config mDNS)
-Any device on the same local Wi-Fi or Ethernet subnet running the Kadmium daemon or Desktop Companion App automatically discovers the active coordinator via mDNS (`_kadmium._udp.local`).
+### Join devices on a trusted LAN
+
+A new `launch` configuration listens on loopback, so other computers cannot join it. To accept peers, choose this coordinator's trusted-LAN address explicitly (replace the example IP with its real address):
+
+```bash
+kadmium launch --bind 192.168.1.10:7848 --inference-url http://127.0.0.1:8080
+# On another machine:
+kadmium join --coordinator http://192.168.1.10:7848
+```
+
+Automatic LAN discovery uses Kadmium UDP announcements on port `7849`, not mDNS. Peers can use `kadmium join` without `--coordinator` when these announcements reach them. The HTTP listener and worker/discovery ports must be reachable between the devices. Keep this on a trusted network or provide external access control; client inference API keys do not authenticate access to the coordinator.
 
 ### Remote Friends, Family, Lab Nodes, or Cloud GPUs (`kdm1_...` Join Tickets)
 To add a machine across the internet (behind home NAT) or in a cloud datacenter, copy the `kdm1_...` ticket printed by `kadmium probe` or `kadmium serve`.
@@ -95,9 +130,9 @@ Tickets encode:
 
 ---
 
-## 5. Run Inference with Any OpenAI or Anthropic Client
+## 5. Connect an inference client
 
-Once `kadmium serve` is running, point any existing SDK, IDE plugin (Cursor, Continue, Claude Code), or chat UI (OpenWebUI) to `http://127.0.0.1:7848`:
+Call `GET http://127.0.0.1:7848/v1/models` and choose a model ID reported by your backend. Client compatibility follows that backend's supported protocol and model features. Kadmium preserves complete request JSON and streams backend responses; it does not convert between OpenAI and Anthropic protocols.
 
 ### OpenAI-Compatible Endpoint (`POST /v1/chat/completions`)
 
@@ -105,10 +140,11 @@ Once `kadmium serve` is running, point any existing SDK, IDE plugin (Cursor, Con
 curl -X POST http://127.0.0.1:7848/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-ai/DeepSeek-V3-671B-MoE-Q4_K_M",
+    "model": "YOUR_BACKEND_MODEL_ID",
     "messages": [
-      {"role": "user", "content": "Explain how Kadmium shards MoE experts across NVMe and VRAM."}
-    ]
+      {"role": "user", "content": "Say hello."}
+    ],
+    "max_tokens": 32
   }'
 ```
 
@@ -117,13 +153,17 @@ curl -X POST http://127.0.0.1:7848/v1/chat/completions \
 ```bash
 curl -X POST http://127.0.0.1:7848/v1/messages \
   -H "Content-Type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "deepseek-ai/DeepSeek-V3-671B-MoE-Q4_K_M",
+    "model": "YOUR_BACKEND_MODEL_ID",
+    "max_tokens": 32,
     "messages": [
       {"role": "user", "content": "Hello from an Anthropic-compatible client!"}
     ]
   }'
 ```
+
+The backend must itself implement `/v1/messages` for the Anthropic example. OpenAI SDK base URLs end in `/v1`; Anthropic SDK base URLs use the origin `http://127.0.0.1:7848`. Some SDKs require a nonempty local `api_key` value; that client value is ignored by Kadmium. Configure the actual backend credential through `KADMIUM_INFERENCE_API_KEY`. Add `"stream": true` and use `curl -N` to see incremental events. See [API limits and error handling](api-reference.md#admission-credentials-and-errors).
 
 ---
 

@@ -93,6 +93,7 @@ pub fn ensure_coordinator(args: &Args) -> CoordinatorSource {
     let (tx, stopped) = channel();
     let options = CoordinatorOptions {
         port: args.port,
+        bind: Some(SocketAddr::from(([127, 0, 0, 1], args.port))),
         live_only: !args.demo,
         ..CoordinatorOptions::default()
     };
