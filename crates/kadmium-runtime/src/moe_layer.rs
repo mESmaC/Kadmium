@@ -11,12 +11,18 @@
 //!
 //! The kernels are reference implementations on small synthetic tensors, like the rest of the
 //! runtime today; real weights plug in behind the same three functions.
+//!
+//! Every reduction and transcendental in the layer goes through [`crate::repops`], so the bytes
+//! at a boundary do not depend on the backend that produced them, and every boundary carries a
+//! RepOps digest ([`LayerReference::boundary_digest`]): the commitment a Verde bisection
+//! compares layer by layer.
 
 use crate::{
     BlockwiseInt8Tensor, FusedRmsNormRopeKernel, KvPageBlock, MoEGatingRouter,
-    MoERoutedExpertSelection, PagedGqaAttentionKernel,
+    MoERoutedExpertSelection, PagedGqaAttentionKernel, TokenBatchInt8, repops,
 };
 use kadmium_data::KtbBankReader;
+use kadmium_grid::LayerDigest;
 use serde::{Deserialize, Serialize};
 
 /// Block size of the INT8 quantization applied at every layer boundary.
@@ -69,10 +75,10 @@ impl LayerReference {
             tokens_stored: 4,
             head_dim: dim,
             keys: (0..(4 * dim))
-                .map(|i| ((i as f32) * 0.03 + (layer as f32) * 0.1).cos() * 0.4)
+                .map(|i| repops::cos((i as f32) * 0.03 + (layer as f32) * 0.1) * 0.4)
                 .collect(),
             values: (0..(4 * dim))
-                .map(|i| ((i as f32) * 0.05 + (layer as f32) * 0.07).sin() * 0.4)
+                .map(|i| repops::sin((i as f32) * 0.05 + (layer as f32) * 0.07) * 0.4)
                 .collect(),
         }
     }
@@ -131,27 +137,29 @@ impl LayerReference {
             .iter()
             .enumerate()
             .map(|(i, &v)| {
-                let swish = v / (1.0 + (-v).exp());
+                let swish = repops::silu(v);
                 swish * Self::expert_weight(layer, expert, i) * gate
             })
             .collect()
     }
 
-    /// The residual plus every contribution in expert-id order, clamped. The order is fixed so the
-    /// sum is the same whether the partials came from one node or many.
+    /// The residual plus every contribution in expert-id order, clamped. Per element the terms
+    /// `[residual, partial of the lowest expert id, ...]` go through the RepOps reduce tree, so
+    /// the sum is the same whether the partials came from one node or many, in any order.
     pub fn combine(hidden: &[f32], partials: &[(u32, Vec<f32>)]) -> Vec<f32> {
         let mut ordered: Vec<&(u32, Vec<f32>)> = partials.iter().collect();
         ordered.sort_by_key(|(expert, _)| *expert);
-        let mut out = hidden.to_vec();
-        for (_, partial) in ordered {
-            for (o, p) in out.iter_mut().zip(partial.iter()) {
-                *o += *p;
-            }
-        }
-        for o in &mut out {
-            *o = o.clamp(-8.0, 8.0);
-        }
-        out
+        let mut terms: Vec<f32> = Vec::with_capacity(ordered.len() + 1);
+        hidden
+            .iter()
+            .enumerate()
+            .map(|(i, &h)| {
+                terms.clear();
+                terms.push(h);
+                terms.extend(ordered.iter().filter_map(|(_, p)| p.get(i).copied()));
+                repops::tree_sum_f32(&terms).clamp(-8.0, 8.0)
+            })
+            .collect()
     }
 
     /// Quantization applied at every layer boundary, on the wire or not.
@@ -182,6 +190,131 @@ impl LayerReference {
             .collect();
         (Self::combine(&h, &partials), routing)
     }
+
+    /// Runs layers `start..=end` from a dequantized boundary, quantizing at every layer boundary
+    /// and recording each boundary's digest. `hook` sees every layer's output before the
+    /// boundary quantization; it is how a test or a demo injects a fault at a known layer, and
+    /// how a dishonest node would.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_layers(
+        hidden_in: &[f32],
+        start: u32,
+        end: u32,
+        gamma: &[f32],
+        experts_per_layer: u32,
+        top_k: u32,
+        q_star: f64,
+        mut hook: Option<LayerHook<'_>>,
+    ) -> LayerRun {
+        let mut hidden = hidden_in.to_vec();
+        let mut boundary = None;
+        let mut layer_digests = Vec::new();
+        let mut routed = Vec::new();
+        for layer in start..=end {
+            let (mut out, routing) =
+                Self::layer_forward(&hidden, layer, gamma, experts_per_layer, top_k, q_star);
+            if let Some(hook) = hook.as_mut() {
+                hook(layer, &mut out);
+            }
+            routed.push((layer, routing.iter().map(|r| r.expert_id).collect()));
+            let q = Self::boundary_quantize(&out);
+            layer_digests.push(LayerDigest::new(layer, Self::boundary_digest(layer, &q)));
+            hidden = q.dequantize();
+            boundary = Some(q);
+        }
+        LayerRun {
+            hidden,
+            boundary,
+            layer_digests,
+            routed,
+        }
+    }
+
+    /// The RepOps digest of one layer boundary: the manifest id, the layer, and the exact INT8
+    /// codes and block scales. No floating-point reduction is involved, so two nodes that
+    /// produced the same bytes produce the same digest, and nothing else does.
+    pub fn boundary_digest(layer: u32, boundary: &BlockwiseInt8Tensor) -> u64 {
+        let mut digest = repops::Digest::new("layer-boundary");
+        digest
+            .update_u32(layer)
+            .update_u32(boundary.block_size as u32)
+            .update_u32(boundary.total_elements as u32)
+            .update_f32s(&boundary.absmax_scales)
+            .update_i8s(&boundary.quantized_data);
+        digest.finish()
+    }
+
+    /// The boundary digest of a batch: one row's digest, or the fold of the rows' digests in row
+    /// order, which is what a stage running the rows one at a time records for the same layer.
+    pub fn batch_boundary_digest(layer: u32, batch: &TokenBatchInt8) -> u64 {
+        match batch.row_tensors() {
+            Some(rows) if rows.len() > 1 => {
+                let digests: Vec<u64> = rows
+                    .iter()
+                    .map(|row| Self::boundary_digest(layer, row))
+                    .collect();
+                Self::fold_row_digests(&digests)
+            }
+            _ => Self::boundary_digest(layer, &batch.tensor),
+        }
+    }
+
+    /// Folds per-row boundary digests of one layer into the layer's digest for the batch.
+    pub fn fold_row_digests(row_digests: &[u64]) -> u64 {
+        if row_digests.len() == 1 {
+            row_digests[0]
+        } else {
+            repops::fold_chain("layer-rows", row_digests)
+        }
+    }
+
+    /// The digest of a trunk output: exact `f32` bytes, tagged with the layer.
+    pub fn trunk_digest(layer: u32, batch: &TokenBatchF32) -> u64 {
+        let mut digest = repops::Digest::new("layer-trunk");
+        digest
+            .update_u32(layer)
+            .update_u32(batch.rows)
+            .update_u32(batch.dim)
+            .update_f32s(&batch.data);
+        digest.finish()
+    }
+
+    /// The digest of one holder's expert partials for a layer.
+    pub fn partials_digest(batch: &ExpertPartialsBatch) -> u64 {
+        repops::digest_bytes("layer-partials", &batch.to_le_bytes())
+    }
+
+    /// The digest of a whole unit from its layer digests, in order.
+    pub fn unit_digest(layer_digests: &[LayerDigest]) -> u64 {
+        let digests: Vec<u64> = layer_digests.iter().map(|d| d.digest).collect();
+        repops::fold_chain("unit", &digests)
+    }
+
+    /// The L2 norm of a boundary from its integer-exact energy: the squared codes are summed in
+    /// integers per block, then scaled and reduced once.
+    pub fn boundary_l2(boundary: &BlockwiseInt8Tensor) -> f64 {
+        repops::int8_block_l2(
+            &boundary.quantized_data,
+            &boundary.absmax_scales,
+            boundary.block_size,
+        )
+    }
+}
+
+/// A per-layer hook: the layer index and its output before boundary quantization.
+pub type LayerHook<'a> = &'a mut dyn FnMut(u32, &mut Vec<f32>);
+
+/// What [`LayerReference::run_layers`] produced.
+#[derive(Debug, Clone)]
+pub struct LayerRun {
+    /// The last boundary, dequantized: the input of the next layer.
+    pub hidden: Vec<f32>,
+    /// The last boundary as quantized; `None` when no layer ran.
+    pub boundary: Option<BlockwiseInt8Tensor>,
+    /// One digest per layer, in layer order.
+    pub layer_digests: Vec<LayerDigest>,
+    /// The experts the router selected on every layer, `(layer, expert ids)`.
+    pub routed: Vec<(u32, Vec<u32>)>,
 }
 
 /// A batch of `rows` activations of width `dim` in exact `f32`, for the trunk output that expert

@@ -206,9 +206,9 @@ To make it effortless for friends, family, academic labs, and decentralized peer
 
 ### 7.2 Cross-Silicon Reproducible Verification (`Gensyn Verde` & `REE` Inspired)
 Classic BOINC verification relies on bit-exact output matching across identical CPU binaries. In AI/ML, an NVIDIA RTX 4090 (`CUDA`), an Apple M4 Mac Mini (`Metal`), and an AMD/Linux laptop (`ROCm`/`Vulkan`) produce slightly different IEEE-754 floating-point results due to non-associative parallel FMA reductions.
-Kadmium solves this via a two-tier verification engine:
-1. **Reproducible Reduction Accumulators (`RepOps`):** Enforces fixed-tree pairwise summation order and deterministic PRNG seeds for dropout/quantization noise on verification canary batches.
-2. **Refereed Layer-Bisection Game (`Verde`):** When a validator spot-check detects that a multi-layer shard or DiLoCo island update diverges beyond the bounded cosine/L2 tolerance $\epsilon$, Kadmium performs an interactive $O(\log L)$ binary search over intermediate layer activations between the worker and a trusted verifier (e.g., an SBC or Legacy Laptop verifier node) to isolate the exact faulty layer or corrupted tensor chunk in milliseconds.
+Kadmium applies the two mechanisms Gensyn published for this, RepOps and Verde, to its work units; section 9.6 has the protocol and what it proves today.
+1. **RepOps (reproducible operators, `kadmium-runtime::repops`):** every reduction in the reference math is a pairwise tree over the index space, every transcendental a fixed-order polynomial on IEEE basic operations, and every product is rounded once with no fused multiply-add. A backend may chunk, thread or reassociate as it likes; the bits do not change. A versioned manifest names the conventions, and its id is folded into every digest.
+2. **Verde (refereed layer bisection, `GridDispatcher::referee_dispute`):** every result commits to the RepOps digest of each layer boundary it ran. When two untrusted copies of a unit disagree, the referee finds the first divergent layer from the two chains, has a disputant open the boundary before it, checks the opening against the digest both committed to, and re-runs that one layer. The disputant whose digest it reproduces wins; the other is penalised with the layer named.
 3. **Contribution Ledger:** Tracks verified FLOP-hours, bytes staged via FTS3, RL rollouts verified, and tokens/steps contributed per node across the cluster.
 
 ---
@@ -247,7 +247,7 @@ Everything above describes AI workloads. Underneath them sits a generic distribu
 
 ### 9.1 Lifecycle and Validation
 
-A unit moves `Unsent -> Assigned -> Running -> Returned -> Validated -> Assimilated`, with `Invalid`, `Expired` and `Failed` as the other exits. Owned hardware (`TrustedCore`) validates on first return. Verified peers validate within a scalar tolerance, which absorbs cross-silicon floating-point drift. Untrusted nodes run two instances; agreement validates, disagreement opens a Verde dispute that the dispatcher settles by re-running the unit on a trusted referee (a `TrustedCore` worker that was not a disputant, or the coordinator in-process) and siding with the disputant whose RepOps digest the referee reproduces. The loser's instance is invalidated and penalised in the ledger. Stragglers running past their estimate are duplicated; the first validated result wins.
+A unit moves `Unsent -> Assigned -> Running -> Returned -> Validated -> Assimilated`, with `Invalid`, `Expired` and `Failed` as the other exits. Owned hardware (`TrustedCore`) validates on first return. Verified peers validate within a scalar tolerance, which absorbs cross-silicon floating-point drift. Untrusted nodes run two instances; agreement validates, disagreement opens a Verde dispute that the dispatcher settles with a trusted referee (a `TrustedCore` worker that was not a disputant, or the coordinator in-process). The referee locates the first divergent layer from the digest chains both results carry and re-runs that layer alone (section 9.6), or the whole unit when the unit is one step. The loser's instance is invalidated and penalised in the ledger with the layer named; when the referee reproduces neither disputant, both are penalised and the unit retries on other nodes. Stragglers running past their estimate are duplicated; the first validated result wins.
 
 ### 9.2 Execution Shapes Are Schedules, Not Executors
 
@@ -281,3 +281,44 @@ The matchmaker and the planner allocate from four sources, in this order of auth
 | **Calibration** | A measurement of the placement in force: at most eight decode steps of one shape within twenty seconds, recorded as milliseconds per token bound to the placement's digest, the node set, the versions that ran and the batch width. A fan-out measurement also runs one chain step on the same prompt and keeps whether the bytes matched; a record that fails that gate never steers a choice. Once both shapes carry a trusted record on the same mesh, the measurements decide the shape and the plan says `decided_by: measured`. Every record names the kernels it measured, which today are the synthetic references. | `CalibrationRecord`, `CalibrationStore`, `StrategyChoice::apply_measurements`, `target/kadmium-state/grid_calibrations.json` |
 
 A worker also measures its own memory streaming rate when it joins (a single-thread copy, a floor rather than the DRAM's peak), and the cost model uses that figure in place of the nominal RAM bandwidth for that node. All of this changes speed, never bytes: the equivalence tests still assert that chain, fan-out and replica-served fan-out produce the same output.
+
+### 9.6 RepOps and Verde: What Is Deterministic, What Is Committed, What Is Audited
+
+The two ideas come from Gensyn: RepOps, a library of operators that produce the same bits on any hardware by fixing the order of floating-point operations, and Verde, refereed delegation in which a neutral referee settles a dispute between two providers by re-running only the step where they first disagree. Kadmium borrows the fixed reduction order, the re-implemented transcendentals, the one-multiply-add convention, the commitment to intermediate states and the one-step referee. It leaves out the Merkle trees over operator graphs and Verde's two-level game, because a Kadmium unit is one forward over a layer range and the chain of layer digests is the whole commitment; it leaves out on-chain referees and token incentives, which it rejects elsewhere too.
+
+**What is deterministic.** `kadmium-runtime::repops` is the numerics the reference math is built on:
+
+| Primitive | Convention |
+| :--- | :--- |
+| Reduction | A pairwise tree over `next_power_of_two(n)` leaves, split at the midpoint of each node, leaves past the end absent rather than added as zeros. The value depends on the operands and their indices only, so a chunked, threaded or reassociated reduction merges its partials through the same tree and produces the same bits (`TreeReducer`). |
+| Dot product and norm | Every product rounded once (Rust never contracts to a fused multiply-add), then the tree; the norm is the IEEE square root of the tree sum of squares. |
+| INT8 boundary energy | Squared codes summed in integers per block, exact in any order; one tree over the block scales. |
+| `exp`, `ln`, `pow`, `sin`, `cos` | Fixed-order polynomials on IEEE basic operations, because the platform `libm` is allowed to differ in the last bit between CUDA, Metal, glibc and the MSVC runtime. Measured against the platform functions in the unit tests on this machine: `exp` and `ln` within 4e-7 relative, `sin` and `cos` within 2e-6 absolute on `|x| <= 100`. |
+| Manifest | Version 1 names these conventions; its id is the FNV-1a 64 of that text and is folded into every digest, so results computed under different conventions never compare equal. |
+
+Rebuilt on it: the fused RMSNorm and RoPE kernel, the paged attention kernel (a two-pass softmax over tree reductions rather than an online rescaling recurrence, which a split-KV backend could not reproduce), the SwiGLU expert, the router, the per-layer reference (trunk, expert contributions, combine), the DeMo DCT and its inverse (every coefficient contributes a term, zeros included, so the tree has the same shape for every packet), the Q4K matvec and QLoRA adapter, the DiLoCo outer step (islands reduced in canonical order, their bytes ascending) and the reduce's summaries. The tests prove bit-exactness across chunk sizes 1 to n, arrival orders and six simulated backends; chain, fan-out and replica-served fan-out still produce identical bytes; every layer boundary carries the same digest in both shapes; a DeMo reduce over three islands is bit-identical in any contributor order; the legacy pipeline and the grid chain agree digest for digest.
+
+**What is committed.** Every result record carries `layer_digests`: 12 bytes per layer, in layer order.
+
+| Unit | Each digest covers |
+| :--- | :--- |
+| `StageForward` | The manifest id, the layer and the exact INT8 codes and block scales of the layer boundary; for a batch, the rows' digests folded in row order. |
+| `TrunkForward` | The exact `f32` trunk output, or the boundary when the layer is dense. |
+| `ExpertSlice` | The holder's partials. |
+| `Combine` | The layer boundary, which equals the chain stage's digest for that layer. |
+| `TrainForwardBackward`, `DeMoReduce` | The exact bits of the shipped update, and of the master weights. |
+| `VerdeAudit` | The exact `f64` state after each layer of the synthetic challenge. |
+
+A unit's digest is the fold of its chain. A hardware bridge (K230, reTerminal CM4, M4 Mac mini) runs its stage on the device and returns one boundary, so its chain has one entry and a dispute over it re-runs the whole stage.
+
+**What is audited.** On a `VerdeBisection` disagreement the dispatcher runs the protocol below and settles through `WorkQueue::resolve_dispute_with_reason`; the run report lists every dispute.
+
+1. The referee is a `TrustedCore` worker that is online and was not a disputant, else the coordinator's in-process executor; with neither, the unit is cancelled.
+2. It compares the two chains and takes the first position where they differ (Verde's first phase, and the referee's only work so far: `digest_comparisons`, at most `L`). Chains of different lengths, or chains that agree while the result digests differ, are not bisectable and the referee re-runs the whole unit instead.
+3. The divergent layer's input is the boundary both disputants committed to at the layer before. The referee asks a disputant to open it: a probe that re-runs the unit's layers up to that boundary and returns it. An opening that does not reproduce the agreed digest is discarded (`openings_requested`, `openings_verified`). With no verified opening the referee reconstructs the boundary itself from the unit's input, which costs it the layers before the divergent one. When the divergent layer is the unit's first, the input is the unit's own, which the coordinator holds.
+4. The referee runs the divergent layer alone from that input, as a probe, and compares the digest it gets with each disputant's claim at that position: `referee_layers_run` is 1 when an opening verified.
+5. The disputant whose claim the referee reproduces wins and is credited; the other is invalidated with the reason `Verde: layer <l> digest not reproduced by referee`, which the ledger penalises. When the referee reproduces neither claim, both are penalised, both nodes are excluded from the unit, and it retries while the replica ceiling allows. The winner's output replaces whichever disputant returned last.
+
+The literature's `O(log L)` is the number of interactive rounds a bisection needs when the referee must query the parties for each intermediate hash. Here the chain travels with the result, so those rounds collapse into one message and what the referee re-executes is one layer. Measured in `cargo test` over three loopback TCP workers (two untrusted disputants, one trusted referee), an eight-layer stage with a fault injected at layer 5 settled with 6 digest comparisons, 1 opening and 1 referee layer, and faults at layers 0 and 7 were named exactly; the same holds for the synthetic audit unit with a tamperer at layer 4. These are counts of work, not timings; nothing here has been timed across real silicon.
+
+**What it does not prove.** The kernels are synthetic references on 64-float tensors. RepOps proves the mechanism and the bit-exactness of these references under any chunking; it proves nothing about the numerics of a real model until real kernels are rebuilt on the same primitives, with the manifest version bumped. The digest is FNV-1a 64, the content-addressing primitive the rest of Kadmium uses; it is not collision resistant, and the protocol does not depend on which hash it is. The trust assumption is Verde's: at least one honest disputant. The legacy audit endpoint (`/api/v1/verde/audit`) and the challenge the device scripts mirror are unchanged.

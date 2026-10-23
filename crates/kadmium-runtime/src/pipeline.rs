@@ -3,7 +3,7 @@
 //! Executable Asymmetric MoE Gating Router (`MoEGatingRouter`), multi-stage forward pass
 //! pipeline executor (`DistributedMoEPipelineExecutor`), and speculative draft verification.
 
-use crate::BlockwiseInt8Tensor;
+use crate::{BlockwiseInt8Tensor, repops};
 use kadmium_sharding::ClusterShardPlan;
 use serde::{Deserialize, Serialize};
 
@@ -46,13 +46,17 @@ impl MoEGatingRouter {
 
         let mut logits: Vec<(u32, f32)> = (0..total)
             .map(|e| {
-                let mut score = 0.0f32;
-                for (idx, &val) in hidden_state.iter().enumerate() {
-                    let phase = ((layer_idx as usize * 31 + e as usize * 17 + idx * 13) % 97)
-                        as f32
-                        * 0.064;
-                    score += val * phase.cos();
-                }
+                // The synthetic gate is a RepOps dot product of the hidden state with a phase
+                // vector, so the routing does not depend on the backend's reduction order.
+                let phases: Vec<f32> = (0..hidden_state.len())
+                    .map(|idx| {
+                        let phase = ((layer_idx as usize * 31 + e as usize * 17 + idx * 13) % 97)
+                            as f32
+                            * 0.064;
+                        repops::cos(phase)
+                    })
+                    .collect();
+                let score = repops::tree_dot_f32(hidden_state, &phases);
                 let locality_prior = if e < hot_expert_cutoff {
                     0.18
                 } else if e < warm_expert_cutoff {
@@ -71,16 +75,16 @@ impl MoEGatingRouter {
             .iter()
             .map(|x| x.1)
             .fold(f32::NEG_INFINITY, f32::max);
-        let exp_sum: f32 = top_slice
+        let exps: Vec<f32> = top_slice
             .iter()
-            .map(|(_, l)| (l - max_logit).exp())
-            .sum::<f32>()
-            .max(1e-8);
+            .map(|(_, l)| repops::exp(l - max_logit))
+            .collect();
+        let exp_sum = repops::tree_sum_f32(&exps).max(1e-8);
 
         top_slice
             .iter()
             .map(|&(expert_id, logit)| {
-                let weight = ((logit - max_logit).exp() / exp_sum * 10000.0).round() / 10000.0;
+                let weight = (repops::exp(logit - max_logit) / exp_sum * 10000.0).round() / 10000.0;
                 let residency = if expert_id < hot_expert_cutoff {
                     ExpertResidencyTier::HotVramOrUnified
                 } else if expert_id < warm_expert_cutoff {

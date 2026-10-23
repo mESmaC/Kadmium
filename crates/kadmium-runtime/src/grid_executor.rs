@@ -11,18 +11,26 @@
 //! The first executor, [`StageForwardExecutor`], runs today's contiguous-layer stage through the
 //! same kernels the legacy pipeline calls, so a chain graph reproduces the legacy pipeline
 //! digest for digest.
+//!
+//! Every result carries the RepOps digest of each layer boundary it ran. When two untrusted
+//! copies of a unit disagree, the dispatcher runs the Verde protocol in
+//! [`GridDispatcher::referee_dispute`]: it finds the first divergent layer from the two chains,
+//! has a disputant open the boundary before it, checks the opening against the digest both
+//! committed to, and re-runs that one layer on a trusted referee through a [`VerdeProbe`].
 
 use crate::{
     BlockwiseInt8Tensor, DistributedLanExecutor, ExpertPartial, ExpertPartialsBatch,
-    LAYER_BOUNDARY_BLOCK, LayerReference, LayerRouting, LiveStageForwardRequest,
-    MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8, execute_stage_layers_with_ktb_routed,
+    LAYER_BOUNDARY_BLOCK, LayerHook, LayerReference, LayerRouting, LiveStageForwardRequest,
+    LiveStageForwardResponse, MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8,
+    VERDE_CHALLENGE_INITIAL_ACTIVATION, execute_stage_layers_with_ktb_routed_hooked, repops,
+    verde_challenge_layers,
 };
 use kadmium_core::{NodeId, VerifiedComputeReceipt};
 use kadmium_grid::{
     AppKind, ContentAccess, ContentKind, ContentRef, CreditEntry, CreditLedger, CreditPolicy,
-    InstanceId, RecordedAccess, ReplicaCatalog, SchedulerEvent, SchedulerEventRecord,
+    InstanceId, LayerDigest, RecordedAccess, ReplicaCatalog, SchedulerEvent, SchedulerEventRecord,
     SchedulerPolicy, ValidationOutcome, WorkGraph, WorkQueue, WorkResultRecord, WorkUnit,
-    WorkUnitId, WorkerProfile, fnv1a_64,
+    WorkUnitId, WorkerProfile,
 };
 use kadmium_network::{LiveWorkerRegistration, WireFrameKind};
 use kadmium_sharding::{
@@ -105,6 +113,10 @@ pub struct WorkOutput {
     pub outputs: Vec<(ContentRef, Vec<u8>)>,
     pub payload: Vec<u8>,
     pub digest_fnv1a: u64,
+    /// The RepOps digest of every layer boundary the unit ran, in layer order: what a Verde
+    /// bisection compares between disputants. One entry for a unit that is one step, none for
+    /// a unit that runs no layers.
+    pub layer_digests: Vec<LayerDigest>,
     pub check_value: f64,
     /// Rows, rollouts or simulations the unit covered, for credit and receipts.
     pub units_processed: u64,
@@ -141,6 +153,35 @@ impl ExecutorContext {
     }
 }
 
+/// A Verde probe: the layers a bisection asks a node to run, and from what.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerdeProbe {
+    pub from_layer: u32,
+    pub to_layer: u32,
+    /// Content id of the boundary to start from, an opening delivered with the dispatch. `None`
+    /// starts from the unit's own input, which is only valid from the unit's first layer.
+    pub state_in: Option<String>,
+    /// Return the boundary after `to_layer` as a blob: an opening for the referee.
+    pub want_state_out: bool,
+}
+
+impl VerdeProbe {
+    /// The content id an opened boundary travels under.
+    pub fn state_id(unit_id: &WorkUnitId, layer: u32) -> String {
+        format!("{unit_id}/verde/state@{layer}")
+    }
+}
+
+/// What a probe produced.
+#[derive(Debug, Clone, Default)]
+pub struct VerdeProbeOutput {
+    /// One digest per layer run, in layer order.
+    pub layer_digests: Vec<LayerDigest>,
+    /// The boundary after the last layer run, when the probe asked for it.
+    pub state_out: Option<Vec<u8>>,
+    pub layers_run: u32,
+}
+
 /// Runs one kind of work unit on a worker.
 pub trait WorkExecutor: Send + Sync {
     fn app_kind(&self) -> AppKind;
@@ -150,6 +191,24 @@ pub trait WorkExecutor: Send + Sync {
         inputs: &WorkInputs,
         ctx: &ExecutorContext,
     ) -> Result<WorkOutput, String>;
+
+    /// Verde: runs only `probe.from_layer..=probe.to_layer` of the unit, from an opened boundary
+    /// or the unit's own input, and reports the digest of every layer it ran, with the boundary
+    /// after the last one when asked. Executors whose unit is one indivisible step keep this
+    /// default, and a dispute over such a unit re-runs it whole on the referee.
+    fn probe(
+        &self,
+        unit: &WorkUnit,
+        inputs: &WorkInputs,
+        ctx: &ExecutorContext,
+        probe: &VerdeProbe,
+    ) -> Result<VerdeProbeOutput, String> {
+        let _ = (unit, inputs, ctx, probe);
+        Err(format!(
+            "{} units are not bisectable",
+            self.app_kind().label()
+        ))
+    }
 }
 
 /// Executors by app kind, shared by every connection of a worker.
@@ -174,14 +233,14 @@ impl ExecutorRegistry {
     /// The executors every worker ships with.
     pub fn with_defaults() -> Self {
         let registry = Self::new();
-        registry.register(Arc::new(StageForwardExecutor));
+        registry.register(Arc::new(StageForwardExecutor::honest()));
         registry.register(Arc::new(TrunkForwardExecutor));
         registry.register(Arc::new(ExpertSliceExecutor));
         registry.register(Arc::new(CombineExecutor));
         registry.register(Arc::new(TrainForwardBackwardExecutor));
         registry.register(Arc::new(DeMoReduceExecutor));
         registry.register(Arc::new(DreamReplayExecutor));
-        registry.register(Arc::new(VerdeAuditExecutor));
+        registry.register(Arc::new(VerdeAuditExecutor::default()));
         registry
     }
 
@@ -220,6 +279,19 @@ impl ExecutorRegistry {
     ) -> Result<WorkOutput, String> {
         match self.get(&unit.app) {
             Some(executor) => executor.execute(unit, inputs, ctx),
+            None => Err(format!("no executor registered for {}", unit.app.label())),
+        }
+    }
+
+    pub fn probe(
+        &self,
+        unit: &WorkUnit,
+        inputs: &WorkInputs,
+        ctx: &ExecutorContext,
+        probe: &VerdeProbe,
+    ) -> Result<VerdeProbeOutput, String> {
+        match self.get(&unit.app) {
+            Some(executor) => executor.probe(unit, inputs, ctx, probe),
             None => Err(format!("no executor registered for {}", unit.app.label())),
         }
     }
@@ -293,6 +365,9 @@ pub struct WorkDispatchHeader {
     pub unit: WorkUnit,
     pub instance_id: InstanceId,
     pub epoch: u64,
+    /// Set on a Verde probe: run only these layers of the unit instead of the whole unit.
+    #[serde(default)]
+    pub probe: Option<VerdeProbe>,
 }
 
 /// A unit on its way to a worker, with the activation blobs it needs.
@@ -314,9 +389,16 @@ impl WorkDispatchPayload {
                 unit,
                 instance_id,
                 epoch,
+                probe: None,
             },
             blobs,
         }
+    }
+
+    /// Turns the dispatch into a Verde probe of the unit.
+    pub fn with_probe(mut self, probe: VerdeProbe) -> Self {
+        self.header.probe = Some(probe);
+        self
     }
 
     pub fn to_le_bytes(&self) -> Vec<u8> {
@@ -409,10 +491,48 @@ pub fn execute_dispatch(
 ) -> WorkResultPayload {
     let t0 = Instant::now();
     let WorkDispatchHeader {
-        unit, instance_id, ..
+        unit,
+        instance_id,
+        probe,
+        ..
     } = payload.header;
     let inputs = WorkInputs::from_blobs(payload.blobs);
     let bytes_in = inputs.total_bytes();
+    if let Some(probe) = probe {
+        // A Verde probe: the layers asked for, their digests, and the opened boundary if wanted.
+        return match registry.probe(&unit, &inputs, ctx, &probe) {
+            Ok(output) => {
+                let exec_ms = (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
+                let mut outputs = Vec::new();
+                let mut blobs = Vec::new();
+                if let Some(state) = output.state_out {
+                    let state_id = VerdeProbe::state_id(&unit.id, probe.to_layer);
+                    outputs.push(ContentRef::named(
+                        ContentKind::Activation,
+                        &state_id,
+                        state.len() as u64,
+                    ));
+                    blobs.push((state_id, state));
+                }
+                let bytes_out: u64 = blobs.iter().map(|(_, b)| b.len() as u64).sum();
+                let record = WorkResultRecord::new(
+                    unit.id.clone(),
+                    instance_id,
+                    NodeId(ctx.node_id.clone()),
+                    LayerReference::unit_digest(&output.layer_digests),
+                    exec_ms.max(0.01),
+                    now_unix_ms(),
+                )
+                .with_layer_digests(output.layer_digests)
+                .with_outputs(outputs)
+                .with_bytes_moved(bytes_in + bytes_out)
+                .with_units_processed(output.layers_run as u64)
+                .with_payload(serde_json::to_vec(&probe).unwrap_or_default());
+                WorkResultPayload::success(record, blobs)
+            }
+            Err(e) => WorkResultPayload::failure(e),
+        };
+    }
     match registry.execute(&unit, &inputs, ctx) {
         Ok(output) => {
             let exec_ms = (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
@@ -430,6 +550,7 @@ pub fn execute_dispatch(
             .with_outputs(output.outputs.iter().map(|(r, _)| r.clone()).collect())
             .with_bytes_moved(bytes_in + bytes_out)
             .with_units_processed(output.units_processed)
+            .with_layer_digests(output.layer_digests)
             .with_accessed(output.accessed);
             let blobs = output
                 .outputs
@@ -446,9 +567,122 @@ pub fn execute_dispatch(
 // Stage executor: today's contiguous-layer stage as a work unit
 // ================================================================================================
 
+/// A fault a broken or dishonest stage would introduce: an offset added to one element of one
+/// layer's output before the boundary is quantized. Tests and demos register a stage executor
+/// carrying one; every layer after it then diverges, and the bisection must still name this one.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct InjectedLayerFault {
+    pub layer: u32,
+    pub element: usize,
+    pub offset: f32,
+}
+
 /// Runs a [`AppKind::StageForward`] unit through the same kernels the legacy pipeline uses, one
-/// row at a time, and emits the output batch as the unit's activation output.
-pub struct StageForwardExecutor;
+/// row at a time, and emits the output batch as the unit's activation output with the RepOps
+/// digest of every layer boundary. Bisectable: a probe runs any sub-range of its layers from an
+/// opened boundary.
+#[derive(Debug, Clone, Default)]
+pub struct StageForwardExecutor {
+    /// The fault this executor injects, if it is the dishonest one of a test or a demo.
+    pub fault: Option<InjectedLayerFault>,
+}
+
+impl StageForwardExecutor {
+    pub fn honest() -> Self {
+        Self { fault: None }
+    }
+
+    pub fn with_injected_fault(fault: InjectedLayerFault) -> Self {
+        Self { fault: Some(fault) }
+    }
+
+    /// The per-row input tensors of a batch as the stage consumes them: a single-row batch
+    /// keeps the exact tensor it was sent, so the digest matches the legacy path bit for bit;
+    /// wider batches re-quantize each row.
+    fn row_inputs(batch: &TokenBatchInt8) -> Vec<BlockwiseInt8Tensor> {
+        if batch.rows == 1 {
+            return vec![batch.tensor.clone()];
+        }
+        let block_size = batch.tensor.block_size.max(1);
+        batch
+            .dequantize_rows()
+            .iter()
+            .map(|row| BlockwiseInt8Tensor::quantize(row, block_size))
+            .collect()
+    }
+
+    /// Runs layers `start..=end` for every row, each from its own INT8 tensor, through the
+    /// stage kernels with this executor's fault hook.
+    fn run_rows(
+        &self,
+        params: &StageForwardParams,
+        row_inputs: Vec<BlockwiseInt8Tensor>,
+        start: u32,
+        end: u32,
+        ctx: &ExecutorContext,
+    ) -> Vec<StageRowRun> {
+        let bank = ctx.resident_ktb_bank.lock().expect("resident bank lock");
+        let fault = self.fault;
+        let mut fault_hook = move |layer: u32, out: &mut Vec<f32>| {
+            if let Some(f) = fault
+                && f.layer == layer
+                && let Some(v) = out.get_mut(f.element)
+            {
+                *v += f.offset;
+            }
+        };
+        let mut runs = Vec::with_capacity(row_inputs.len());
+        for boundary_input in row_inputs {
+            let request = LiveStageForwardRequest {
+                epoch: params.epoch,
+                model_id: params.model_id.clone(),
+                stage_index: params.stage_index,
+                start_layer: start,
+                end_layer: end,
+                q_star_ratio: params.q_star_ratio,
+                boundary_input,
+                run_speculative_draft: false,
+            };
+            let hook: Option<LayerHook<'_>> = if fault.is_some() {
+                Some(&mut fault_hook)
+            } else {
+                None
+            };
+            runs.push(execute_stage_layers_with_ktb_routed_hooked(
+                &ctx.node_id,
+                &ctx.hostname,
+                &request,
+                Some(&bank),
+                params.experts_per_layer,
+                params.active_experts_per_token,
+                hook,
+            ));
+        }
+        runs
+    }
+}
+
+/// One row of a stage run: the stage response and the experts routed per layer.
+type StageRowRun = (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>);
+
+/// Folds per-row layer chains into one chain for the batch: per layer, the rows' digests in
+/// row order, as [`LayerReference::batch_boundary_digest`] folds a batch.
+fn fold_layer_chains<'a>(rows: impl Iterator<Item = &'a [LayerDigest]>) -> Vec<LayerDigest> {
+    let rows: Vec<&[LayerDigest]> = rows.collect();
+    let Some(first) = rows.first() else {
+        return Vec::new();
+    };
+    (0..first.len())
+        .map(|j| {
+            let digests: Vec<u64> = rows
+                .iter()
+                .filter_map(|r| r.get(j))
+                .map(|d| d.digest)
+                .collect();
+            LayerDigest::new(first[j].layer, LayerReference::fold_row_digests(&digests))
+        })
+        .collect()
+}
 
 impl WorkExecutor for StageForwardExecutor {
     fn app_kind(&self) -> AppKind {
@@ -463,55 +697,30 @@ impl WorkExecutor for StageForwardExecutor {
     ) -> Result<WorkOutput, String> {
         let params: StageForwardParams = unit.params_json().map_err(|e| e.to_string())?;
         let batch = inputs.activation_batch(unit)?;
-        let rows = batch.dequantize_rows();
         let block_size = batch.tensor.block_size.max(1);
-        let bank = ctx.resident_ktb_bank.lock().expect("resident bank lock");
+        let runs = self.run_rows(
+            &params,
+            Self::row_inputs(&batch),
+            params.start_layer,
+            params.end_layer,
+            ctx,
+        );
 
-        let mut out_values: Vec<f32> = Vec::with_capacity(rows.len() * batch.dim as usize);
-        let mut digests: Vec<u64> = Vec::with_capacity(rows.len());
+        let mut out_values: Vec<f32> = Vec::with_capacity(runs.len() * batch.dim as usize);
         let mut l2_sum = 0.0f64;
-        let mut last_response = None;
         let mut routed_hits: BTreeMap<(u32, u32), u64> = BTreeMap::new();
-
-        for row in &rows {
-            // A single-row batch keeps the exact tensor it was sent, so the digest matches the
-            // legacy path bit for bit; wider batches re-quantize each row.
-            let boundary_input = if batch.rows == 1 {
-                batch.tensor.clone()
-            } else {
-                BlockwiseInt8Tensor::quantize(row, block_size)
-            };
-            let request = LiveStageForwardRequest {
-                epoch: params.epoch,
-                model_id: params.model_id.clone(),
-                stage_index: params.stage_index,
-                start_layer: params.start_layer,
-                end_layer: params.end_layer,
-                q_star_ratio: params.q_star_ratio,
-                boundary_input,
-                run_speculative_draft: false,
-            };
-            let (response, routed) = execute_stage_layers_with_ktb_routed(
-                &ctx.node_id,
-                &ctx.hostname,
-                &request,
-                Some(&bank),
-                params.experts_per_layer,
-                params.active_experts_per_token,
-            );
+        for (response, routed) in &runs {
             for (layer, experts) in routed {
                 for expert in experts {
-                    *routed_hits.entry((layer, expert)).or_default() += 1;
+                    *routed_hits.entry((*layer, *expert)).or_default() += 1;
                 }
             }
             out_values.extend(response.boundary_output.dequantize());
-            digests.push(response.repops_digest_fnv1a);
             l2_sum += response.output_activation_l2_norm as f64;
-            last_response = Some(response);
         }
-        drop(bank);
-
-        let last = last_response.ok_or_else(|| "stage unit received an empty batch".to_string())?;
+        let (last, _) = runs
+            .last()
+            .ok_or_else(|| "stage unit received an empty batch".to_string())?;
         let out_batch = if batch.rows == 1 {
             TokenBatchInt8 {
                 rows: 1,
@@ -521,26 +730,82 @@ impl WorkExecutor for StageForwardExecutor {
         } else {
             TokenBatchInt8::quantize(&out_values, batch.rows, batch.dim, block_size)?
         };
-        let digest = if digests.len() == 1 {
-            digests[0]
-        } else {
-            let mut bytes = Vec::with_capacity(digests.len() * 8);
-            for d in &digests {
-                bytes.extend_from_slice(&d.to_le_bytes());
-            }
-            fnv1a_64(&bytes)
-        };
+        // One digest per layer for the batch, then the unit's digest from the chain: for a
+        // single row this is the legacy stage digest, bit for bit.
+        let layer_digests = fold_layer_chains(runs.iter().map(|(r, _)| r.layer_digests.as_slice()));
         let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
         Ok(WorkOutput {
             outputs: vec![(
                 StepGraphBuilder::output_ref(graph_id, &unit.id),
                 out_batch.to_le_bytes(),
             )],
-            payload: serde_json::to_vec(&last).unwrap_or_default(),
-            digest_fnv1a: digest,
-            check_value: l2_sum / rows.len().max(1) as f64,
-            units_processed: rows.len() as u64,
+            payload: serde_json::to_vec(last).unwrap_or_default(),
+            digest_fnv1a: LayerReference::unit_digest(&layer_digests),
+            layer_digests,
+            check_value: l2_sum / runs.len() as f64,
+            units_processed: runs.len() as u64,
             accessed: expert_accesses(&params.model_id, &routed_hits),
+        })
+    }
+
+    fn probe(
+        &self,
+        unit: &WorkUnit,
+        inputs: &WorkInputs,
+        ctx: &ExecutorContext,
+        probe: &VerdeProbe,
+    ) -> Result<VerdeProbeOutput, String> {
+        let params: StageForwardParams = unit.params_json().map_err(|e| e.to_string())?;
+        if probe.from_layer > probe.to_layer
+            || probe.from_layer < params.start_layer
+            || probe.to_layer > params.end_layer
+        {
+            return Err(format!(
+                "probe {}..={} is outside the stage's layers {}..={}",
+                probe.from_layer, probe.to_layer, params.start_layer, params.end_layer
+            ));
+        }
+        let (dim, row_inputs) = match &probe.state_in {
+            Some(id) => {
+                let bytes = inputs
+                    .blob(id)
+                    .ok_or_else(|| format!("probe is missing the opened boundary `{id}`"))?;
+                let opened = TokenBatchInt8::from_le_bytes(bytes)?;
+                let rows = match opened.row_tensors() {
+                    Some(rows) => rows,
+                    None if opened.rows == 1 => vec![opened.tensor.clone()],
+                    None => {
+                        return Err("an opened boundary with several rows needs a width that is a whole number of blocks".to_string());
+                    }
+                };
+                (opened.dim, rows)
+            }
+            None => {
+                if probe.from_layer != params.start_layer {
+                    return Err("a probe that does not start at the stage's first layer needs an opened boundary".to_string());
+                }
+                let batch = inputs.activation_batch(unit)?;
+                (batch.dim, Self::row_inputs(&batch))
+            }
+        };
+        let runs = self.run_rows(&params, row_inputs, probe.from_layer, probe.to_layer, ctx);
+        if runs.is_empty() {
+            return Err("probe received an empty batch".to_string());
+        }
+        let layer_digests = fold_layer_chains(runs.iter().map(|(r, _)| r.layer_digests.as_slice()));
+        let state_out = if probe.want_state_out {
+            let boundaries: Vec<BlockwiseInt8Tensor> = runs
+                .iter()
+                .map(|(r, _)| r.boundary_output.clone())
+                .collect();
+            Some(TokenBatchInt8::from_row_tensors(dim, &boundaries)?.to_le_bytes())
+        } else {
+            None
+        };
+        Ok(VerdeProbeOutput {
+            layer_digests,
+            state_out,
+            layers_run: probe.to_layer - probe.from_layer + 1,
         })
     }
 }
@@ -550,11 +815,7 @@ impl WorkExecutor for StageForwardExecutor {
 // ================================================================================================
 
 fn l2_norm(values: &[f32]) -> f64 {
-    values
-        .iter()
-        .map(|v| (*v as f64) * (*v as f64))
-        .sum::<f64>()
-        .sqrt()
+    repops::tree_sum_squares_f64(values).sqrt()
 }
 
 fn activation_input<'a>(
@@ -644,14 +905,17 @@ impl WorkExecutor for TrunkForwardExecutor {
                 .map(|h| LayerReference::combine(h, &[]))
                 .collect();
             let out = boundary_batch(&combined)?;
-            let bytes = out.to_le_bytes();
+            // The trunk is the layer boundary here, so its digest is the layer's boundary
+            // digest: the value a chain stage records for the same layer.
+            let digest = LayerReference::batch_boundary_digest(params.layer, &out);
             return Ok(WorkOutput {
                 outputs: vec![(
                     StepGraphBuilder::output_ref(graph_id, &unit.id),
-                    bytes.clone(),
+                    out.to_le_bytes(),
                 )],
                 payload: Vec::new(),
-                digest_fnv1a: fnv1a_64(&bytes),
+                digest_fnv1a: digest,
+                layer_digests: vec![LayerDigest::new(params.layer, digest)],
                 check_value: l2_norm(&combined.concat()),
                 units_processed: rows.len() as u64,
                 accessed: Vec::new(),
@@ -671,12 +935,12 @@ impl WorkExecutor for TrunkForwardExecutor {
             layer: params.layer,
             rows: routing_rows,
         };
-        let bytes = out.to_le_bytes();
+        let digest = LayerReference::trunk_digest(params.layer, &out);
         Ok(WorkOutput {
             outputs: vec![
                 (
                     StepGraphBuilder::output_ref(graph_id, &unit.id),
-                    bytes.clone(),
+                    out.to_le_bytes(),
                 ),
                 (
                     StepGraphBuilder::routing_ref(graph_id, &unit.id),
@@ -684,7 +948,8 @@ impl WorkExecutor for TrunkForwardExecutor {
                 ),
             ],
             payload: routing.to_json_bytes(),
-            digest_fnv1a: fnv1a_64(&bytes),
+            digest_fnv1a: digest,
+            layer_digests: vec![LayerDigest::new(params.layer, digest)],
             check_value: l2_norm(&out.data),
             units_processed: rows.len() as u64,
             accessed: expert_accesses(&params.model_id, &routed_hits),
@@ -754,12 +1019,12 @@ impl WorkExecutor for ExpertSliceExecutor {
             dim: trunk.dim,
             partials,
         };
-        let bytes = batch.to_le_bytes();
+        let digest = LayerReference::partials_digest(&batch);
         let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
         Ok(WorkOutput {
             outputs: vec![(
                 StepGraphBuilder::output_ref(graph_id, &unit.id),
-                bytes.clone(),
+                batch.to_le_bytes(),
             )],
             payload: serde_json::to_vec(&serde_json::json!({
                 "layer": params.layer,
@@ -767,7 +1032,8 @@ impl WorkExecutor for ExpertSliceExecutor {
                 "experts_applied": applied,
             }))
             .unwrap_or_default(),
-            digest_fnv1a: fnv1a_64(&bytes),
+            digest_fnv1a: digest,
+            layer_digests: vec![LayerDigest::new(params.layer, digest)],
             check_value: applied as f64,
             units_processed: trunk.rows as u64,
             accessed: expert_accesses(&params.model_id, &served_hits),
@@ -817,12 +1083,13 @@ impl WorkExecutor for CombineExecutor {
             out_rows.push(LayerReference::combine(trunk.row(row as usize), &partials));
         }
         let out = boundary_batch(&out_rows)?;
-        let bytes = out.to_le_bytes();
+        // The layer boundary: the same digest a chain stage records for this layer.
+        let digest = LayerReference::batch_boundary_digest(params.layer, &out);
         let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
         Ok(WorkOutput {
             outputs: vec![(
                 StepGraphBuilder::output_ref(graph_id, &unit.id),
-                bytes.clone(),
+                out.to_le_bytes(),
             )],
             payload: serde_json::to_vec(&serde_json::json!({
                 "layer": params.layer,
@@ -830,7 +1097,8 @@ impl WorkExecutor for CombineExecutor {
                 "partials": partial_batches.iter().map(|b| b.partials.len()).sum::<usize>(),
             }))
             .unwrap_or_default(),
-            digest_fnv1a: fnv1a_64(&bytes),
+            digest_fnv1a: digest,
+            layer_digests: vec![LayerDigest::new(params.layer, digest)],
             check_value: l2_norm(&out_rows.concat()),
             units_processed: trunk.rows as u64,
             accessed: Vec::new(),
@@ -885,9 +1153,43 @@ pub struct GridDispatchTrace {
     pub wall_ms: f64,
     pub exec_ms: f64,
     pub digest_fnv1a: u64,
+    /// The RepOps digest of every layer the unit ran, from the result record.
+    #[serde(default)]
+    pub layer_digests: Vec<LayerDigest>,
     pub check_value: f64,
     pub ok: bool,
     pub error: Option<String>,
+}
+
+/// One Verde dispute and how the referee settled it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerdeDisputeReport {
+    pub unit_id: WorkUnitId,
+    pub app: String,
+    pub disputants: Vec<NodeId>,
+    pub referee: Option<NodeId>,
+    /// `layer-bisection` when the disputants' digest chains diverge; `whole-unit` when they do
+    /// not (a one-step unit, or a result whose digest disagrees while its chain does not) or
+    /// when the executor refused a probe.
+    pub method: String,
+    /// Layers the unit ran, from the length of its digest chain; 1 for a one-step unit.
+    pub layers_in_unit: u32,
+    /// Digest comparisons made to find the first divergent layer: that layer's position plus
+    /// one, never more than `layers_in_unit`. The chains travel with the results, so this is
+    /// what the interactive rounds of a bisection cost here: comparisons, not re-execution.
+    pub digest_comparisons: u32,
+    /// Openings of the divergent layer's input asked of the disputants, and how many of them
+    /// reproduced the digest both had committed to.
+    pub openings_requested: u32,
+    pub openings_verified: u32,
+    pub divergent_layer: Option<u32>,
+    /// Layers the referee itself ran: one when an opening verified, the layers before the
+    /// divergent one as well when it had to reconstruct the input, the whole unit otherwise.
+    pub referee_layers_run: u32,
+    pub winner: Option<NodeId>,
+    pub losers: Vec<NodeId>,
+    pub outcome: String,
+    pub wall_ms: f64,
 }
 
 /// Outcome of running a graph.
@@ -901,6 +1203,9 @@ pub struct GridRunReport {
     pub wall_ms: f64,
     pub traces: Vec<GridDispatchTrace>,
     pub events: Vec<SchedulerEventRecord>,
+    /// Verde disputes the run settled, one per disputed unit.
+    #[serde(default)]
+    pub disputes: Vec<VerdeDisputeReport>,
     /// Validated results folded into the workers' measured compute estimates during the run.
     #[serde(default)]
     pub compute_samples: usize,
@@ -947,6 +1252,90 @@ struct DispatchOutcome {
     result: Result<WorkResultPayload, String>,
 }
 
+/// Where a referee action runs: a trusted worker over its channel, or the in-process executor.
+enum RefereeTarget {
+    Worker {
+        node: NodeId,
+        addr: String,
+    },
+    Local {
+        node: NodeId,
+        executor: LocalExecutor,
+    },
+}
+
+impl RefereeTarget {
+    fn node(&self) -> &NodeId {
+        match self {
+            Self::Worker { node, .. } | Self::Local { node, .. } => node,
+        }
+    }
+}
+
+/// What the referee concluded.
+enum Verdict {
+    Undecided,
+    /// The executor refused the probe: the unit is one indivisible step.
+    NotBisectable,
+    Winner(NodeId, String),
+    Neither(String),
+    Failed(String),
+}
+
+impl Verdict {
+    fn from_failure(message: Option<&str>) -> Self {
+        let message = message.unwrap_or("worker reported failure without a message");
+        if message.contains("not bisectable") {
+            Self::NotBisectable
+        } else {
+            Self::Failed(message.to_string())
+        }
+    }
+}
+
+fn elapsed_ms(t0: Instant) -> f64 {
+    (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0
+}
+
+/// The trace of one referee action: a probe, an opening or a whole-unit re-run.
+fn referee_trace(
+    unit_id: &WorkUnitId,
+    instance_id: InstanceId,
+    node_id: NodeId,
+    app: &str,
+    transport: String,
+    wall_ms: f64,
+    outcome: &Result<WorkResultPayload, String>,
+) -> GridDispatchTrace {
+    let record = outcome
+        .as_ref()
+        .ok()
+        .filter(|p| p.header.ok)
+        .and_then(|p| p.header.result.as_ref());
+    GridDispatchTrace {
+        unit_id: unit_id.clone(),
+        instance_id,
+        node_id,
+        app: app.to_string(),
+        transport,
+        wall_ms,
+        exec_ms: record.map_or(0.0, |r| r.exec_ms),
+        digest_fnv1a: record.map_or(0, |r| r.digest_fnv1a),
+        layer_digests: record.map(|r| r.layer_digests.clone()).unwrap_or_default(),
+        check_value: record.map_or(0.0, |r| r.check_value),
+        ok: record.is_some(),
+        error: match outcome {
+            Ok(p) if p.header.ok => None,
+            Ok(p) => Some(
+                p.error_message()
+                    .unwrap_or("worker reported failure without a message")
+                    .to_string(),
+            ),
+            Err(e) => Some(e.clone()),
+        },
+    }
+}
+
 pub struct GridDispatcher;
 
 impl GridDispatcher {
@@ -981,12 +1370,16 @@ impl GridDispatcher {
         let t_start = Instant::now();
         let mut queue = WorkQueue::new(config.policy.clone());
         let mut traces = Vec::new();
+        let mut disputes: Vec<VerdeDisputeReport> = Vec::new();
         let mut compute_samples = 0usize;
         let mut blobs: BTreeMap<String, Vec<u8>> = config
             .seed_blobs
             .iter()
             .map(|(r, b)| (r.content_id.clone(), b.clone()))
             .collect();
+        // Every returned instance's outputs, so a dispute can put the winner's back in
+        // circulation whichever disputant returned last.
+        let mut returned_blobs: BTreeMap<InstanceId, WorkBlobs> = BTreeMap::new();
 
         if let Err(e) = queue.submit_graph(graph, now_unix_ms()) {
             return GridRunReport {
@@ -998,6 +1391,7 @@ impl GridDispatcher {
                 wall_ms: 0.0,
                 traces,
                 events: vec![],
+                disputes,
                 compute_samples: 0,
                 accesses: vec![],
                 outputs: vec![],
@@ -1046,6 +1440,7 @@ impl GridDispatcher {
                         wall_ms: 0.0,
                         exec_ms: 0.0,
                         digest_fnv1a: 0,
+                        layer_digests: Vec::new(),
                         check_value: 0.0,
                         ok: false,
                         error: Some(error),
@@ -1120,6 +1515,7 @@ impl GridDispatcher {
                         wall_ms: 0.0,
                         exec_ms: 0.0,
                         digest_fnv1a: 0,
+                        layer_digests: Vec::new(),
                         check_value: 0.0,
                         ok: false,
                         error: Some(error),
@@ -1156,9 +1552,10 @@ impl GridDispatcher {
                             now_unix_ms(),
                         )
                     });
-                    for (id, bytes) in payload.blobs {
-                        blobs.insert(id, bytes);
+                    for (id, bytes) in &payload.blobs {
+                        blobs.insert(id.clone(), bytes.clone());
                     }
+                    returned_blobs.insert(outcome.instance_id.clone(), payload.blobs);
                     traces.push(GridDispatchTrace {
                         unit_id: outcome.unit_id.clone(),
                         instance_id: outcome.instance_id.clone(),
@@ -1168,6 +1565,7 @@ impl GridDispatcher {
                         wall_ms: outcome.wall_ms,
                         exec_ms: record.exec_ms,
                         digest_fnv1a: record.digest_fnv1a,
+                        layer_digests: record.layer_digests.clone(),
                         check_value: record.check_value,
                         ok: true,
                         error: None,
@@ -1178,6 +1576,7 @@ impl GridDispatcher {
                         Self::referee_dispute(
                             &mut queue,
                             &mut traces,
+                            &mut disputes,
                             &blobs,
                             &outcome.unit_id,
                             &nodes,
@@ -1187,6 +1586,17 @@ impl GridDispatcher {
                             config,
                         )
                         .await;
+                        // The outputs in circulation are the winner's, not whichever
+                        // disputant returned last.
+                        if let Some(record) = queue
+                            .status(&outcome.unit_id)
+                            .and_then(|s| s.validated.as_ref())
+                            && let Some(winner_blobs) = returned_blobs.get(&record.instance_id)
+                        {
+                            for (id, bytes) in winner_blobs {
+                                blobs.insert(id.clone(), bytes.clone());
+                            }
+                        }
                     }
                 }
                 Ok(payload) => {
@@ -1203,6 +1613,7 @@ impl GridDispatcher {
                         wall_ms: outcome.wall_ms,
                         exec_ms: 0.0,
                         digest_fnv1a: 0,
+                        layer_digests: Vec::new(),
                         check_value: 0.0,
                         ok: false,
                         error: Some(error.clone()),
@@ -1219,6 +1630,7 @@ impl GridDispatcher {
                         wall_ms: outcome.wall_ms,
                         exec_ms: 0.0,
                         digest_fnv1a: 0,
+                        layer_digests: Vec::new(),
                         check_value: 0.0,
                         ok: false,
                         error: Some(error.clone()),
@@ -1301,6 +1713,7 @@ impl GridDispatcher {
             wall_ms: (t_start.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
             traces,
             events: queue.drain_events(),
+            disputes,
             compute_samples,
             accesses,
             outputs,
@@ -1309,13 +1722,132 @@ impl GridDispatcher {
         }
     }
 
-    /// Settles a Verde dispute: the disputed unit is re-run by a trusted referee (a TrustedCore
-    /// worker that was not a disputant, else the in-process executor), and the disputant whose
-    /// digest the referee reproduces wins. With no referee or no match, the unit is cancelled.
+    /// Where an action for `node` runs: its live worker, else the in-process executor.
+    fn target_for(
+        node: &NodeId,
+        live_workers: &BTreeMap<String, LiveWorkerRegistration>,
+        local: Option<&LocalExecutor>,
+    ) -> Option<RefereeTarget> {
+        if let Some(reg) = live_workers.get(&node.0).filter(|w| w.online) {
+            return Some(RefereeTarget::Worker {
+                node: node.clone(),
+                addr: reg.worker_tcp_addr.clone(),
+            });
+        }
+        local.map(|executor| RefereeTarget::Local {
+            node: node.clone(),
+            executor: executor.clone(),
+        })
+    }
+
+    /// The referee: a TrustedCore worker that is online and was not a disputant, else the
+    /// in-process executor.
+    fn referee_for(
+        disputants: &[NodeId],
+        workers: &[WorkerProfile],
+        live_workers: &BTreeMap<String, LiveWorkerRegistration>,
+        local: Option<&LocalExecutor>,
+    ) -> Option<RefereeTarget> {
+        let worker = workers.iter().find(|w| {
+            w.online
+                && w.node.trust_tier.can_host_boundary_ingress_egress()
+                && !disputants.contains(w.id())
+                && live_workers.get(&w.id().0).is_some_and(|r| r.online)
+        });
+        if let Some(worker) = worker {
+            return Some(RefereeTarget::Worker {
+                node: worker.id().clone(),
+                addr: live_workers[&worker.id().0].worker_tcp_addr.clone(),
+            });
+        }
+        local.map(|executor| RefereeTarget::Local {
+            node: NodeId(executor.ctx.node_id.clone()),
+            executor: executor.clone(),
+        })
+    }
+
+    /// Sends a dispatch to a target and waits for the answer. Returns the transport label, the
+    /// result and the wall time.
+    async fn dispatch_to(
+        target: &RefereeTarget,
+        payload: WorkDispatchPayload,
+        config: &GridRunConfig,
+        label: &str,
+    ) -> (String, Result<WorkResultPayload, String>, f64) {
+        let t0 = Instant::now();
+        match target {
+            RefereeTarget::Worker { addr, .. } => {
+                let result = DistributedLanExecutor::channel_pool()
+                    .call(
+                        addr,
+                        WireFrameKind::WorkDispatch,
+                        config.epoch as u32,
+                        payload.to_le_bytes(),
+                        config.call_timeout,
+                    )
+                    .await
+                    .and_then(|frame| WorkResultPayload::from_le_bytes(&frame.payload));
+                (format!("{label} {addr}"), result, elapsed_ms(t0))
+            }
+            RefereeTarget::Local { executor, .. } => {
+                let registry = executor.registry.clone();
+                let ctx = executor.ctx.clone();
+                let result =
+                    tokio::task::spawn_blocking(move || execute_dispatch(payload, &registry, &ctx))
+                        .await
+                        .map_err(|e| format!("{label} task failed: {e}"));
+                (format!("{label} in-process"), result, elapsed_ms(t0))
+            }
+        }
+    }
+
+    /// Dispatches a Verde probe of `unit` to a target.
+    async fn dispatch_probe(
+        target: &RefereeTarget,
+        unit: &WorkUnit,
+        probe: &VerdeProbe,
+        blobs: WorkBlobs,
+        config: &GridRunConfig,
+        label: &str,
+    ) -> (InstanceId, String, Result<WorkResultPayload, String>, f64) {
+        let instance_id = InstanceId(format!(
+            "{}#{label}-L{}-L{}",
+            unit.id, probe.from_layer, probe.to_layer
+        ));
+        let payload =
+            WorkDispatchPayload::new(unit.clone(), instance_id.clone(), config.epoch, blobs)
+                .with_probe(probe.clone());
+        let (transport, result, wall_ms) = Self::dispatch_to(target, payload, config, label).await;
+        (
+            instance_id,
+            format!(
+                "{transport}: layers {}..={}",
+                probe.from_layer, probe.to_layer
+            ),
+            result,
+            wall_ms,
+        )
+    }
+
+    /// Settles a Verde dispute.
+    ///
+    /// When the disputants' results carry digest chains that diverge, the referee finds the
+    /// first divergent layer by comparing the chains (Verde's first phase: comparisons, not
+    /// re-execution), obtains that layer's input as an opening of the boundary before it from
+    /// a disputant, checked against the digest both committed to, and re-runs that one layer
+    /// through a [`VerdeProbe`]. The disputant whose layer digest it reproduces wins; the loser
+    /// is penalised with the layer named. When no opening verifies, the referee reconstructs
+    /// the input itself from the unit's input. When the chains do not diverge (a one-step unit,
+    /// or a result whose digest disagrees while its chain does not), or the executor refuses a
+    /// probe, the referee re-runs the whole unit and sides with the digest it reproduces. The
+    /// referee is a TrustedCore worker that was not a disputant, else the in-process executor;
+    /// with neither, or when the referee fails, the unit is cancelled. When the referee
+    /// reproduces no disputant, both are penalised and the unit retries elsewhere.
     #[allow(clippy::too_many_arguments)]
     async fn referee_dispute(
         queue: &mut WorkQueue,
         traces: &mut Vec<GridDispatchTrace>,
+        disputes: &mut Vec<VerdeDisputeReport>,
         blobs: &BTreeMap<String, Vec<u8>>,
         unit_id: &WorkUnitId,
         disputants: &[NodeId],
@@ -1324,10 +1856,14 @@ impl GridDispatcher {
         local: Option<&LocalExecutor>,
         config: &GridRunConfig,
     ) {
-        let Some(unit) = queue.status(unit_id).map(|s| s.unit.clone()) else {
+        let t0 = Instant::now();
+        let Some(status) = queue.status(unit_id).cloned() else {
             return;
         };
-        let attach: Vec<(String, Vec<u8>)> = unit
+        let unit = status.unit;
+        let records = status.returned;
+        let app = unit.app.label();
+        let inputs: WorkBlobs = unit
             .inputs
             .iter()
             .filter(|c| c.kind == ContentKind::Activation)
@@ -1337,83 +1873,292 @@ impl GridDispatcher {
                     .map(|b| (c.content_id.clone(), b.clone()))
             })
             .collect();
-        let instance_id = InstanceId(format!("{unit_id}#referee"));
-        let payload =
-            WorkDispatchPayload::new(unit.clone(), instance_id.clone(), config.epoch, attach);
-
-        let referee_worker = workers.iter().find(|w| {
-            w.online
-                && w.node.trust_tier.can_host_boundary_ingress_egress()
-                && !disputants.contains(w.id())
-                && live_workers.get(&w.id().0).is_some_and(|r| r.online)
+        let mut report = VerdeDisputeReport {
+            unit_id: unit_id.clone(),
+            app: app.clone(),
+            disputants: disputants.to_vec(),
+            referee: None,
+            method: "whole-unit".to_string(),
+            layers_in_unit: records
+                .iter()
+                .map(|r| r.layer_digests.len())
+                .max()
+                .unwrap_or(0)
+                .max(1) as u32,
+            digest_comparisons: 0,
+            openings_requested: 0,
+            openings_verified: 0,
+            divergent_layer: None,
+            referee_layers_run: 0,
+            winner: None,
+            losers: Vec::new(),
+            outcome: String::new(),
+            wall_ms: 0.0,
+        };
+        let first = records.first().cloned();
+        let other = first.as_ref().and_then(|a| {
+            records
+                .iter()
+                .find(|r| r.digest_fnv1a != a.digest_fnv1a)
+                .cloned()
         });
-        let t0 = Instant::now();
-        let (referee_node, transport, result) = if let Some(worker) = referee_worker {
-            let addr = live_workers[&worker.id().0].worker_tcp_addr.clone();
-            let result = DistributedLanExecutor::channel_pool()
-                .call(
-                    &addr,
-                    WireFrameKind::WorkDispatch,
-                    config.epoch as u32,
-                    payload.to_le_bytes(),
-                    config.call_timeout,
-                )
-                .await
-                .and_then(|frame| WorkResultPayload::from_le_bytes(&frame.payload));
-            (worker.id().clone(), format!("referee {addr}"), result)
-        } else if let Some(local) = local {
-            let registry = local.registry.clone();
-            let ctx = local.ctx.clone();
-            let node = NodeId(ctx.node_id.clone());
-            let result =
-                tokio::task::spawn_blocking(move || execute_dispatch(payload, &registry, &ctx))
-                    .await
-                    .map_err(|e| format!("referee task failed: {e}"));
-            (node, "referee in-process".to_string(), result)
-        } else {
+        let Some((a, b)) = first.zip(other) else {
+            report.outcome = "no two returned results disagree; unit cancelled".to_string();
             let _ = queue.cancel(unit_id, now_unix_ms());
+            report.wall_ms = elapsed_ms(t0);
+            disputes.push(report);
             return;
         };
-        let wall_ms = (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
-
-        let referee_digest = match &result {
-            Ok(payload) if payload.header.ok => {
-                payload.header.result.as_ref().map(|r| r.digest_fnv1a)
-            }
-            _ => None,
+        let Some(referee) = Self::referee_for(disputants, workers, live_workers, local) else {
+            report.outcome = "no trusted referee is online; unit cancelled".to_string();
+            let _ = queue.cancel(unit_id, now_unix_ms());
+            report.wall_ms = elapsed_ms(t0);
+            disputes.push(report);
+            return;
         };
-        traces.push(GridDispatchTrace {
-            unit_id: unit_id.clone(),
-            instance_id,
-            node_id: referee_node,
-            app: unit.app.label(),
-            transport,
-            wall_ms,
-            exec_ms: result
-                .as_ref()
-                .ok()
-                .and_then(|p| p.header.result.as_ref().map(|r| r.exec_ms))
-                .unwrap_or(0.0),
-            digest_fnv1a: referee_digest.unwrap_or(0),
-            check_value: 0.0,
-            ok: referee_digest.is_some(),
-            error: result.as_ref().err().cloned(),
-        });
+        report.referee = Some(referee.node().clone());
 
-        let winner = referee_digest.and_then(|digest| {
-            queue
-                .status(unit_id)
-                .and_then(|s| s.returned.iter().find(|r| r.digest_fnv1a == digest))
-                .map(|r| r.node_id.clone())
-        });
-        match winner {
-            Some(node) => {
-                let _ = queue.resolve_dispute(unit_id, &node, now_unix_ms());
+        let mut verdict = Verdict::Undecided;
+        if let Some(index) = a.first_divergent_index(&b) {
+            report.method = "layer-bisection".to_string();
+            report.digest_comparisons = (index + 1) as u32;
+            let layer = a.layer_digests[index].layer;
+            report.divergent_layer = Some(layer);
+            let first_layer = a.layer_digests[0].layer;
+            let mut probe_blobs = inputs.clone();
+            let mut state_in: Option<Vec<u8>> = None;
+            if index > 0 {
+                // The divergent layer's input is the boundary both disputants committed to
+                // at the layer before. Either may open it; the opening is checked against the
+                // agreed digest, so an opening that lies is caught here, not later.
+                let agreed = a.layer_digests[index - 1];
+                let state_id = VerdeProbe::state_id(unit_id, agreed.layer);
+                let opening = VerdeProbe {
+                    from_layer: first_layer,
+                    to_layer: agreed.layer,
+                    state_in: None,
+                    want_state_out: true,
+                };
+                for record in [&a, &b] {
+                    let Some(target) = Self::target_for(&record.node_id, live_workers, local)
+                    else {
+                        continue;
+                    };
+                    report.openings_requested += 1;
+                    let (instance_id, transport, outcome, wall_ms) = Self::dispatch_probe(
+                        &target,
+                        &unit,
+                        &opening,
+                        inputs.clone(),
+                        config,
+                        "verde-opening",
+                    )
+                    .await;
+                    traces.push(referee_trace(
+                        unit_id,
+                        instance_id,
+                        target.node().clone(),
+                        &app,
+                        transport,
+                        wall_ms,
+                        &outcome,
+                    ));
+                    if let Ok(payload) = &outcome
+                        && payload.header.ok
+                        && payload
+                            .header
+                            .result
+                            .as_ref()
+                            .and_then(|r| r.layer_digests.last())
+                            == Some(&agreed)
+                        && let Some((_, bytes)) =
+                            payload.blobs.iter().find(|(id, _)| *id == state_id)
+                    {
+                        report.openings_verified += 1;
+                        state_in = Some(bytes.clone());
+                        break;
+                    }
+                }
+                if state_in.is_none() {
+                    // No disputant opened the boundary: the referee reconstructs it from the
+                    // unit's input, which costs it the layers before the divergent one.
+                    let rebuild = VerdeProbe {
+                        from_layer: first_layer,
+                        to_layer: agreed.layer,
+                        state_in: None,
+                        want_state_out: true,
+                    };
+                    report.referee_layers_run += index as u32;
+                    let (instance_id, transport, outcome, wall_ms) = Self::dispatch_probe(
+                        &referee,
+                        &unit,
+                        &rebuild,
+                        inputs.clone(),
+                        config,
+                        "referee",
+                    )
+                    .await;
+                    traces.push(referee_trace(
+                        unit_id,
+                        instance_id,
+                        referee.node().clone(),
+                        &app,
+                        transport,
+                        wall_ms,
+                        &outcome,
+                    ));
+                    match outcome {
+                        Ok(payload) if payload.header.ok => {
+                            state_in = payload
+                                .blobs
+                                .into_iter()
+                                .find(|(id, _)| *id == state_id)
+                                .map(|(_, bytes)| bytes);
+                            if state_in.is_none() {
+                                verdict = Verdict::Failed(
+                                    "referee returned no boundary for the divergent layer"
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        Ok(payload) => verdict = Verdict::from_failure(payload.error_message()),
+                        Err(e) => verdict = Verdict::Failed(e),
+                    }
+                }
+                if let Some(bytes) = &state_in {
+                    probe_blobs.push((state_id, bytes.clone()));
+                }
             }
-            None => {
-                let _ = queue.cancel(unit_id, now_unix_ms());
+            if matches!(verdict, Verdict::Undecided) {
+                // The referee runs the divergent layer alone, from the verified boundary.
+                let probe = VerdeProbe {
+                    from_layer: layer,
+                    to_layer: layer,
+                    state_in: (index > 0)
+                        .then(|| VerdeProbe::state_id(unit_id, a.layer_digests[index - 1].layer)),
+                    want_state_out: false,
+                };
+                report.referee_layers_run += 1;
+                let (instance_id, transport, outcome, wall_ms) =
+                    Self::dispatch_probe(&referee, &unit, &probe, probe_blobs, config, "referee")
+                        .await;
+                traces.push(referee_trace(
+                    unit_id,
+                    instance_id,
+                    referee.node().clone(),
+                    &app,
+                    transport,
+                    wall_ms,
+                    &outcome,
+                ));
+                verdict = match outcome {
+                    Ok(payload) if payload.header.ok => {
+                        let reproduced = payload
+                            .header
+                            .result
+                            .as_ref()
+                            .and_then(|r| r.layer_digests.first())
+                            .map(|d| d.digest);
+                        let winner = reproduced.and_then(|digest| {
+                            records.iter().find(|r| {
+                                r.layer_digests
+                                    .get(index)
+                                    .is_some_and(|d| d.digest == digest)
+                            })
+                        });
+                        match winner {
+                            Some(w) => Verdict::Winner(
+                                w.node_id.clone(),
+                                format!(
+                                    "Verde: layer {layer} digest not reproduced by referee `{}`",
+                                    referee.node()
+                                ),
+                            ),
+                            None => Verdict::Neither(format!(
+                                "Verde: layer {layer} digest reproduced for no disputant by referee `{}`",
+                                referee.node()
+                            )),
+                        }
+                    }
+                    Ok(payload) => Verdict::from_failure(payload.error_message()),
+                    Err(e) => Verdict::Failed(e),
+                };
             }
         }
+
+        if matches!(verdict, Verdict::Undecided | Verdict::NotBisectable) {
+            // The whole unit again on the referee: the disputant whose digest it reproduces wins.
+            report.method = "whole-unit".to_string();
+            report.referee_layers_run += report.layers_in_unit;
+            let instance_id = InstanceId(format!("{unit_id}#referee"));
+            let payload = WorkDispatchPayload::new(
+                unit.clone(),
+                instance_id.clone(),
+                config.epoch,
+                inputs.clone(),
+            );
+            let (transport, outcome, wall_ms) =
+                Self::dispatch_to(&referee, payload, config, "referee").await;
+            traces.push(referee_trace(
+                unit_id,
+                instance_id,
+                referee.node().clone(),
+                &app,
+                transport,
+                wall_ms,
+                &outcome,
+            ));
+            verdict = match outcome {
+                Ok(payload) if payload.header.ok => {
+                    let digest = payload.header.result.as_ref().map(|r| r.digest_fnv1a);
+                    match digest.and_then(|d| records.iter().find(|r| r.digest_fnv1a == d)) {
+                        Some(w) => Verdict::Winner(
+                            w.node_id.clone(),
+                            format!(
+                                "Verde: result digest not reproduced by referee `{}`",
+                                referee.node()
+                            ),
+                        ),
+                        None => Verdict::Neither(format!(
+                            "Verde: result digest reproduced for no disputant by referee `{}`",
+                            referee.node()
+                        )),
+                    }
+                }
+                Ok(payload) => Verdict::Failed(
+                    payload
+                        .error_message()
+                        .unwrap_or("referee reported failure without a message")
+                        .to_string(),
+                ),
+                Err(e) => Verdict::Failed(e),
+            };
+        }
+
+        let now = now_unix_ms();
+        match verdict {
+            Verdict::Winner(node, reason) => {
+                let _ = queue.resolve_dispute_with_reason(unit_id, &node, &reason, now);
+                report.losers = disputants.iter().filter(|d| **d != node).cloned().collect();
+                report.winner = Some(node);
+                report.outcome = reason;
+            }
+            Verdict::Neither(reason) => {
+                let _ = queue.reject_dispute(unit_id, &reason, now);
+                report.losers = disputants.to_vec();
+                report.outcome = reason;
+            }
+            Verdict::Failed(error) => {
+                let _ = queue.cancel(unit_id, now);
+                report.outcome = format!("referee failed: {error}; unit cancelled");
+            }
+            Verdict::Undecided | Verdict::NotBisectable => {
+                let _ = queue.cancel(unit_id, now);
+                report.outcome = "referee reached no verdict; unit cancelled".to_string();
+            }
+        }
+        report.wall_ms = elapsed_ms(t0);
+        disputes.push(report);
     }
 
     fn release_slot(workers: &mut [WorkerProfile], node_id: &NodeId) {
@@ -1434,6 +2179,7 @@ impl GridRunReport {
             wall_ms: 0.0,
             exec_ms: 0.0,
             digest_fnv1a: 0,
+            layer_digests: Vec::new(),
             check_value: 0.0,
             ok: false,
             error: Some(error),
@@ -1450,7 +2196,7 @@ mod tests {
         prompt_seed_hidden,
     };
     use kadmium_core::{HardwareNode, ModelSpec, WorkloadKind, sample_personal_cluster};
-    use kadmium_grid::{CostEstimate, RedundancyPolicy};
+    use kadmium_grid::{CostEstimate, RedundancyPolicy, fnv1a_64};
     use kadmium_sharding::{
         ExecutionStrategy, ExpertPlacementPlanner, ShardPlanner, StepGraphBuilder,
     };
@@ -1509,6 +2255,7 @@ mod tests {
                 )],
                 payload: Vec::new(),
                 digest_fnv1a: fnv1a_64(&reversed),
+                layer_digests: Vec::new(),
                 check_value: reversed.len() as f64,
                 units_processed: 1,
                 accessed: Vec::new(),
@@ -1764,6 +2511,7 @@ mod fanout_tests {
     use super::*;
     use crate::{DEFAULT_INITIAL_KTB_MERKLE_ROOT, LiveNodeWorkerServer, prompt_seed_hidden};
     use kadmium_core::{HardwareNode, ModelSpec, sample_personal_cluster};
+    use kadmium_grid::fnv1a_64;
     use kadmium_sharding::{
         ExecutionStrategy, ExpertPlacementPlanner, ExpertPopularity, StepGraphBuilder,
     };
@@ -2076,6 +2824,86 @@ mod fanout_tests {
         assert_eq!(TokenBatchInt8::from_le_bytes(&fan_out2).unwrap().rows, 2);
         assert_ne!(chain2, chain_bytes);
     }
+
+    #[tokio::test]
+    async fn every_layer_boundary_carries_the_same_digest_in_both_shapes() {
+        let cluster = sample_personal_cluster();
+        let nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        let w0 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[0].clone(), false)
+            .await
+            .expect("spawn worker 0");
+        let w1 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[1].clone(), false)
+            .await
+            .expect("spawn worker 1");
+        let mut live_workers = BTreeMap::new();
+        live_workers.insert(
+            nodes[0].id.0.clone(),
+            registration(&nodes[0], &w0.local_addr.to_string(), 0.3),
+        );
+        live_workers.insert(
+            nodes[1].id.0.clone(),
+            registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
+        );
+        let model = toy_moe();
+
+        for prompts in [vec!["layer digests"], vec!["row one", "row two"]] {
+            let values: Vec<f32> = prompts
+                .iter()
+                .flat_map(|p| prompt_seed_hidden(p, 64))
+                .collect();
+            let seed = TokenBatchInt8::quantize(&values, prompts.len() as u32, 64, 16).unwrap();
+            let (chain, _) = run_shape(
+                ExecutionStrategy::PipelineChain,
+                &model,
+                &nodes,
+                &live_workers,
+                &seed,
+                "digests-chain",
+            )
+            .await;
+            let (fan_out, _) = run_shape(
+                ExecutionStrategy::ExpertParallel,
+                &model,
+                &nodes,
+                &live_workers,
+                &seed,
+                "digests-ep",
+            )
+            .await;
+
+            // The chain's stage results carry one digest per layer, in layer order.
+            let mut chain_layers: Vec<LayerDigest> = Vec::new();
+            for stage in 0..8 {
+                match chain.trace_for(&WorkUnitId::new(format!("stage-{stage:02}"))) {
+                    Some(trace) => chain_layers.extend(trace.layer_digests.iter().copied()),
+                    None => break,
+                }
+            }
+            assert_eq!(chain_layers.len(), model.num_layers as usize, "{prompts:?}");
+            for (i, d) in chain_layers.iter().enumerate() {
+                assert_eq!(d.layer, i as u32);
+            }
+            // The fan-out's combine unit for each layer produced the same boundary digest.
+            for d in &chain_layers {
+                let combine = fan_out
+                    .trace_for(&WorkUnitId::new(format!("L{:03}-combine", d.layer)))
+                    .expect("combine trace");
+                assert_eq!(
+                    combine.digest_fnv1a, d.digest,
+                    "{prompts:?}: layer {} boundary digest differs between shapes",
+                    d.layer
+                );
+                assert_eq!(combine.layer_digests, vec![*d]);
+            }
+            // A stage's digest is the fold of its layer digests under the manifest.
+            let stage = chain.trace_for(&WorkUnitId::new("stage-00")).unwrap();
+            assert_eq!(
+                stage.digest_fnv1a,
+                LayerReference::unit_digest(&stage.layer_digests)
+            );
+            assert_ne!(stage.digest_fnv1a, LayerReference::unit_digest(&[]));
+        }
+    }
 }
 
 // ================================================================================================
@@ -2141,6 +2969,7 @@ impl WorkExecutor for TrainForwardBackwardExecutor {
             }))
             .unwrap_or_default(),
             digest_fnv1a: response.repops_digest_fnv1a,
+            layer_digests: Vec::new(),
             check_value: response.loss_after as f64,
             units_processed: input.rows.max(1) as u64,
             accessed: Vec::new(),
@@ -2149,7 +2978,9 @@ impl WorkExecutor for TrainForwardBackwardExecutor {
 }
 
 /// Runs a [`AppKind::DeMoReduce`] unit: decompresses every island's DeMo packet and applies the
-/// DiLoCo outer Nesterov step to the master weights.
+/// DiLoCo outer Nesterov step to the master weights. The islands are put in canonical order
+/// (their layer range) and reduced through the RepOps tree, so the report and its digest are
+/// bit-identical whichever island returned first.
 pub struct DeMoReduceExecutor;
 
 impl WorkExecutor for DeMoReduceExecutor {
@@ -2179,6 +3010,7 @@ impl WorkExecutor for DeMoReduceExecutor {
         if responses.is_empty() {
             return Err("reduce received no island packets".to_string());
         }
+        responses.sort_by_key(|r| (r.start_layer, r.end_layer));
         let island_updates: Vec<Vec<f32>> = responses
             .iter()
             .map(|r| crate::DeMoDctCompressor::decompress_packet(&r.demo_dct_packet))
@@ -2188,33 +3020,29 @@ impl WorkExecutor for DeMoReduceExecutor {
         let mut diloco =
             crate::DiLoCoOuterOptimizer::new(param_len, params.outer_lr, params.outer_momentum);
         diloco.step_outer_nesterov(&mut master_weights, &island_updates);
-        let consensus_norm = master_weights.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let consensus_norm = repops::tree_norm_f32(&master_weights);
         let count = responses.len() as f32;
-        let mut weight_bytes = Vec::with_capacity(param_len * 4);
-        for w in &master_weights {
-            weight_bytes.extend_from_slice(&w.to_le_bytes());
-        }
+        let losses_before: Vec<f32> = responses.iter().map(|r| r.loss_before).collect();
+        let losses_after: Vec<f32> = responses.iter().map(|r| r.loss_after).collect();
+        let compressions: Vec<f64> = responses.iter().map(|r| r.wire_compression_ratio).collect();
+        let master_weight_digest_fnv1a = {
+            let mut digest = repops::Digest::new("demo-reduce");
+            digest.update_f32s(&master_weights);
+            digest.finish()
+        };
         let report = DeMoReduceReport {
             step_index: params.step_index,
             contributors: responses.len(),
-            mean_loss_before: ((responses.iter().map(|r| r.loss_before).sum::<f32>() / count)
-                * 10_000.0)
-                .round()
+            mean_loss_before: ((repops::tree_sum_f32(&losses_before) / count) * 10_000.0).round()
                 / 10_000.0,
-            mean_loss_after: ((responses.iter().map(|r| r.loss_after).sum::<f32>() / count)
-                * 10_000.0)
-                .round()
+            mean_loss_after: ((repops::tree_sum_f32(&losses_after) / count) * 10_000.0).round()
                 / 10_000.0,
-            mean_wire_compression_ratio: ((responses
-                .iter()
-                .map(|r| r.wire_compression_ratio)
-                .sum::<f64>()
-                / count as f64)
+            mean_wire_compression_ratio: ((repops::tree_sum_f64(&compressions) / count as f64)
                 * 10.0)
                 .round()
                 / 10.0,
             diloco_outer_consensus_norm: (consensus_norm * 1000.0).round() / 1000.0,
-            master_weight_digest_fnv1a: fnv1a_64(&weight_bytes),
+            master_weight_digest_fnv1a,
         };
         let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
         Ok(WorkOutput {
@@ -2224,6 +3052,7 @@ impl WorkExecutor for DeMoReduceExecutor {
             )],
             payload: serde_json::to_vec(&report).unwrap_or_default(),
             digest_fnv1a: report.master_weight_digest_fnv1a,
+            layer_digests: Vec::new(),
             check_value: consensus_norm as f64,
             units_processed: responses.len() as u64,
             accessed: Vec::new(),
@@ -2269,6 +3098,7 @@ impl WorkExecutor for DreamReplayExecutor {
             }))
             .unwrap_or_default(),
             digest_fnv1a: response.evolved_policy_hash_fnv64,
+            layer_digests: Vec::new(),
             check_value: response.evolved_peak_speedup,
             units_processed: response.mcts_simulations_run as u64,
             accessed: Vec::new(),
@@ -2277,8 +3107,20 @@ impl WorkExecutor for DreamReplayExecutor {
 }
 
 /// Runs a [`AppKind::VerdeAudit`] unit: a layer-bisection challenge on this node, whose RepOps
-/// digest is what redundant copies are compared on.
-pub struct VerdeAuditExecutor;
+/// digest is what redundant copies are compared on. Bisectable: a probe runs any sub-range of
+/// the challenge's layers from an opened state. `tamper_at_layer` makes this the executor a
+/// dishonest node would run, for tests and demos: it corrupts that layer whatever the unit
+/// asked for, and its openings lie the same way its result did.
+#[derive(Debug, Clone, Default)]
+pub struct VerdeAuditExecutor {
+    pub tamper_at_layer: Option<u32>,
+}
+
+impl VerdeAuditExecutor {
+    fn fault_for(&self, params: &kadmium_sharding::VerdeAuditParams) -> Option<u32> {
+        self.tamper_at_layer.or(params.inject_fault_at_layer)
+    }
+}
 
 impl WorkExecutor for VerdeAuditExecutor {
     fn app_kind(&self) -> AppKind {
@@ -2299,7 +3141,7 @@ impl WorkExecutor for VerdeAuditExecutor {
             start_layer: params.start_layer,
             target_layer: params.target_layer,
             initial_activation: Vec::new(),
-            inject_fault_at_layer: params.inject_fault_at_layer,
+            inject_fault_at_layer: self.fault_for(&params),
         };
         let response =
             crate::execute_verde_layer_challenge_local(&ctx.node_id, &ctx.hostname, &request);
@@ -2319,6 +3161,61 @@ impl WorkExecutor for VerdeAuditExecutor {
             check_value: response.repops_tree_sum,
             units_processed: (params.target_layer.saturating_sub(params.start_layer) + 1) as u64,
             accessed: Vec::new(),
+            layer_digests: response.layer_digests,
+        })
+    }
+
+    fn probe(
+        &self,
+        unit: &WorkUnit,
+        inputs: &WorkInputs,
+        _ctx: &ExecutorContext,
+        probe: &VerdeProbe,
+    ) -> Result<VerdeProbeOutput, String> {
+        let params: kadmium_sharding::VerdeAuditParams =
+            unit.params_json().map_err(|e| e.to_string())?;
+        if probe.from_layer > probe.to_layer
+            || probe.from_layer < params.start_layer
+            || probe.to_layer > params.target_layer
+        {
+            return Err(format!(
+                "probe {}..={} is outside the audit's layers {}..={}",
+                probe.from_layer, probe.to_layer, params.start_layer, params.target_layer
+            ));
+        }
+        let mut state: Vec<f64> = match &probe.state_in {
+            Some(id) => {
+                let bytes = inputs
+                    .blob(id)
+                    .ok_or_else(|| format!("probe is missing the opened state `{id}`"))?;
+                if !bytes.len().is_multiple_of(8) {
+                    return Err("an opened audit state is a vector of f64".to_string());
+                }
+                bytes
+                    .chunks_exact(8)
+                    .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+                    .collect()
+            }
+            None => {
+                if probe.from_layer != params.start_layer {
+                    return Err("a probe that does not start at the audit's first layer needs an opened state".to_string());
+                }
+                VERDE_CHALLENGE_INITIAL_ACTIVATION.to_vec()
+            }
+        };
+        let layer_digests = verde_challenge_layers(
+            &mut state,
+            probe.from_layer,
+            probe.to_layer,
+            self.fault_for(&params),
+        );
+        let state_out = probe
+            .want_state_out
+            .then(|| state.iter().flat_map(|v| v.to_le_bytes()).collect());
+        Ok(VerdeProbeOutput {
+            layer_digests,
+            state_out,
+            layers_run: probe.to_layer - probe.from_layer + 1,
         })
     }
 }
@@ -2524,7 +3421,7 @@ mod phase5_tests {
             inputs: &WorkInputs,
             ctx: &ExecutorContext,
         ) -> Result<WorkOutput, String> {
-            let mut honest = VerdeAuditExecutor.execute(unit, inputs, ctx)?;
+            let mut honest = VerdeAuditExecutor::default().execute(unit, inputs, ctx)?;
             honest.digest_fnv1a = honest.digest_fnv1a.wrapping_add(1);
             honest.check_value += 1.0;
             Ok(honest)
@@ -2585,5 +3482,341 @@ mod phase5_tests {
         );
         assert_eq!(report.receipts.len(), 1);
         assert_eq!(report.receipts[0].provider_node_id, honest);
+        // The tamperer changed its digest but not its layer chain, so there was nothing to
+        // bisect: the referee re-ran the whole unit.
+        assert_eq!(report.disputes.len(), 1);
+        assert_eq!(report.disputes[0].method, "whole-unit");
+        assert_eq!(report.disputes[0].referee_layers_run, 8);
+        assert_eq!(report.disputes[0].winner.as_ref(), Some(&honest));
+        assert_eq!(report.disputes[0].losers, vec![tamperer]);
+    }
+
+    /// Two untrusted disputants, both real TCP workers, over one eight-layer stage; the second
+    /// disputant's stage executor corrupts `fault_layer`. The referee is a third TCP worker on
+    /// owned hardware, or the coordinator's in-process executor.
+    async fn disputed_stage(
+        fault_layer: u32,
+        in_process_referee: bool,
+    ) -> (GridRunReport, NodeId, NodeId, Vec<u8>) {
+        let cluster = sample_personal_cluster();
+        let mut nodes = [cluster[0].clone(), cluster[2].clone(), cluster[3].clone()];
+        nodes[1].trust_tier = NodeTrustTier::UntrustedAuditedMiddleLayersOnly;
+        nodes[2].trust_tier = NodeTrustTier::UntrustedAuditedMiddleLayersOnly;
+        let w0 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[0].clone(), false)
+            .await
+            .expect("spawn referee worker");
+        let w1 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[1].clone(), false)
+            .await
+            .expect("spawn honest worker");
+        let w2 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[2].clone(), false)
+            .await
+            .expect("spawn tampering worker");
+        w2.executors
+            .register(Arc::new(StageForwardExecutor::with_injected_fault(
+                InjectedLayerFault {
+                    layer: fault_layer,
+                    element: 0,
+                    offset: 0.45,
+                },
+            )));
+        let mut live_workers = BTreeMap::new();
+        if !in_process_referee {
+            live_workers.insert(
+                nodes[0].id.0.clone(),
+                registration(&nodes[0], &w0.local_addr.to_string(), 0.3),
+            );
+        }
+        live_workers.insert(
+            nodes[1].id.0.clone(),
+            registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
+        );
+        live_workers.insert(
+            nodes[2].id.0.clone(),
+            registration(&nodes[2], &w2.local_addr.to_string(), 0.2),
+        );
+
+        let graph_id = "verde/step-1";
+        let prompt = StepGraphBuilder::prompt_ref(graph_id);
+        let mut unit = WorkUnit::new("stage-00", AppKind::StageForward)
+            .with_params_json(&kadmium_sharding::StageForwardParams {
+                model_id: "toy-moe".into(),
+                epoch: 1,
+                session_id: "verde".into(),
+                stage_index: 0,
+                start_layer: 0,
+                end_layer: 7,
+                rows: 1,
+                q_star_ratio: 0.7,
+                experts_per_layer: 8,
+                active_experts_per_token: 2,
+            })
+            .unwrap()
+            .with_placement(kadmium_grid::PlacementConstraints {
+                excluded_nodes: vec![nodes[0].id.clone()],
+                ..kadmium_grid::PlacementConstraints::default()
+            })
+            .with_cost(kadmium_grid::CostEstimate::new(1e9, 0, 4096, 2.0))
+            .with_redundancy(kadmium_grid::RedundancyPolicy::untrusted());
+        unit.inputs = vec![prompt.clone()];
+        let mut graph = WorkGraph::new(graph_id);
+        graph.add_unit(unit);
+        let unit = graph.unit(&WorkUnitId::new("stage-00")).unwrap().clone();
+
+        let seed =
+            TokenBatchInt8::quantize(&crate::prompt_seed_hidden("verde bisection", 64), 1, 64, 16)
+                .unwrap();
+        let config = GridRunConfig::default().with_seed(prompt.clone(), seed.to_le_bytes());
+        let (bank, _) = crate::build_initial_resident_ktb_bank("deepseek-v3-671b-moe-q4k", 1);
+        let referee = LocalExecutor {
+            registry: ExecutorRegistry::with_defaults(),
+            ctx: ExecutorContext::new(
+                "node-coordinator",
+                "coordinator",
+                Arc::new(Mutex::new(bank)),
+            ),
+        };
+        let mut workers = GridDispatcher::workers_from_registrations(&live_workers);
+        let report = GridDispatcher::run_graph(
+            &graph,
+            &mut workers,
+            &ReplicaCatalog::new(),
+            &live_workers,
+            in_process_referee.then_some(&referee),
+            &config,
+        )
+        .await;
+
+        // What an honest node produces for the same unit, computed in-process.
+        let oracle = execute_dispatch(
+            WorkDispatchPayload::new(
+                unit,
+                InstanceId("oracle".into()),
+                1,
+                vec![(prompt.content_id.clone(), seed.to_le_bytes())],
+            ),
+            &referee.registry,
+            &referee.ctx,
+        );
+        assert!(oracle.header.ok);
+        let honest_output = oracle.blobs.into_iter().next().unwrap().1;
+        (
+            report,
+            nodes[1].id.clone(),
+            nodes[2].id.clone(),
+            honest_output,
+        )
+    }
+
+    #[tokio::test]
+    async fn verde_bisection_locates_an_injected_layer_fault_over_tcp() {
+        for (fault_layer, in_process_referee) in [(5u32, false), (0u32, true), (7u32, false)] {
+            let (report, honest, tamperer, honest_output) =
+                disputed_stage(fault_layer, in_process_referee).await;
+            assert!(
+                report.success,
+                "fault at layer {fault_layer}: {:?}",
+                report.traces
+            );
+            assert_eq!(report.disputes.len(), 1, "fault at layer {fault_layer}");
+            let dispute = &report.disputes[0];
+            assert_eq!(dispute.method, "layer-bisection");
+            assert_eq!(dispute.layers_in_unit, 8);
+            assert_eq!(
+                dispute.divergent_layer,
+                Some(fault_layer),
+                "the first divergent layer is the one the fault was injected at"
+            );
+            assert_eq!(dispute.digest_comparisons, fault_layer + 1);
+            assert_eq!(
+                dispute.referee_layers_run, 1,
+                "the referee ran one layer, not the unit"
+            );
+            if fault_layer == 0 {
+                assert_eq!(dispute.openings_requested, 0);
+            } else {
+                assert!(dispute.openings_verified >= 1);
+                assert!(
+                    report
+                        .traces
+                        .iter()
+                        .any(|t| t.ok && t.transport.starts_with("verde-opening")),
+                    "a disputant opened the boundary over its channel"
+                );
+            }
+            assert_eq!(dispute.winner.as_ref(), Some(&honest));
+            assert_eq!(dispute.losers, vec![tamperer.clone()]);
+            assert!(dispute.outcome.contains(&format!("layer {fault_layer}")));
+            let referee_transport = if in_process_referee {
+                "referee in-process"
+            } else {
+                "referee 127.0.0.1"
+            };
+            assert!(
+                report
+                    .traces
+                    .iter()
+                    .any(|t| t.ok && t.transport.starts_with(referee_transport)),
+                "{:?}",
+                report.traces
+            );
+            assert!(report.events.iter().any(|e| matches!(
+                &e.event,
+                SchedulerEvent::Invalidated { node, reason, .. }
+                    if *node == tamperer && reason.contains(&format!("layer {fault_layer}"))
+            )));
+            assert!(report.events.iter().any(|e| matches!(
+                &e.event,
+                SchedulerEvent::DisputeSettled { winner: Some(w), .. } if *w == honest
+            )));
+            assert_eq!(report.credits.len(), 1);
+            assert_eq!(report.credits[0].node_id, honest);
+            assert_eq!(
+                report.output("verde/step-1/stage-00/out").unwrap(),
+                honest_output.as_slice(),
+                "the output in circulation is the honest one"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_disputes_bisect_to_the_tampered_layer_too() {
+        let cluster = sample_personal_cluster();
+        let mut nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        nodes[0].trust_tier = NodeTrustTier::UntrustedAuditedMiddleLayersOnly;
+        nodes[1].trust_tier = NodeTrustTier::UntrustedAuditedMiddleLayersOnly;
+        let (_w0, w1, live_workers) = two_workers(&nodes).await;
+        w1.executors.register(Arc::new(VerdeAuditExecutor {
+            tamper_at_layer: Some(4),
+        }));
+        let unit = StepGraphBuilder::audit_unit("audit", 1, "a2", 0, 7, None);
+        let mut graph = WorkGraph::new("audit/a2");
+        graph.add_unit(unit);
+        let mut workers = GridDispatcher::workers_from_registrations(&live_workers);
+        let (bank, _) = crate::build_initial_resident_ktb_bank("deepseek-v3-671b-moe-q4k", 1);
+        let referee = LocalExecutor {
+            registry: ExecutorRegistry::with_defaults(),
+            ctx: ExecutorContext::new(
+                "node-coordinator",
+                "coordinator",
+                Arc::new(Mutex::new(bank)),
+            ),
+        };
+        let report = GridDispatcher::run_graph(
+            &graph,
+            &mut workers,
+            &ReplicaCatalog::new(),
+            &live_workers,
+            Some(&referee),
+            &GridRunConfig::default(),
+        )
+        .await;
+        assert!(report.success, "{:?}", report.traces);
+        assert_eq!(report.disputes.len(), 1);
+        let dispute = &report.disputes[0];
+        assert_eq!(dispute.method, "layer-bisection");
+        assert_eq!(dispute.divergent_layer, Some(4));
+        assert_eq!(dispute.referee_layers_run, 1);
+        assert!(dispute.openings_verified >= 1);
+        assert_eq!(dispute.winner.as_ref(), Some(&nodes[0].id));
+        assert_eq!(dispute.losers, vec![nodes[1].id.clone()]);
+        assert_eq!(report.credits.len(), 1);
+        assert_eq!(report.credits[0].node_id, nodes[0].id);
+    }
+
+    #[test]
+    fn the_demo_reduce_is_bit_identical_in_any_contributor_order() {
+        let (bank, _) = crate::build_initial_resident_ktb_bank("deepseek-v3-671b-moe-q4k", 1);
+        let local = LocalExecutor {
+            registry: ExecutorRegistry::with_defaults(),
+            ctx: ExecutorContext::new("node-a", "a", Arc::new(Mutex::new(bank))),
+        };
+        let input = TokenBatchInt8::quantize(
+            &(0..32)
+                .map(|i| ((i as f32) * 0.11).cos() * 0.6)
+                .collect::<Vec<_>>(),
+            1,
+            32,
+            16,
+        )
+        .unwrap();
+        let target = TokenBatchInt8::quantize(
+            &(0..16)
+                .map(|j| ((j as f32) * 0.17).sin() * 0.5)
+                .collect::<Vec<_>>(),
+            1,
+            16,
+            16,
+        )
+        .unwrap();
+        // Three islands over different layer ranges, as the training graph would run them.
+        let islands: Vec<crate::LiveStageTrainingResponse> = [(0u32, 9u32), (10, 19), (20, 29)]
+            .iter()
+            .map(|(start, end)| {
+                crate::execute_stage_training_local(
+                    "node-a",
+                    "a",
+                    &crate::LiveStageTrainingRequest {
+                        epoch: 1,
+                        model_id: "llama-3-70b-lora".into(),
+                        stage_index: (*start / 10) as usize,
+                        start_layer: *start,
+                        end_layer: *end,
+                        step_index: 3,
+                        micro_batch_id: 3,
+                        learning_rate: 1e-4,
+                        boundary_input: input.tensor.clone(),
+                        target_signal: target.tensor.clone(),
+                    },
+                )
+            })
+            .collect();
+        let refs: Vec<ContentRef> = (0..3)
+            .map(|i| ContentRef::named(ContentKind::Activation, &format!("g/island-{i}/out"), 0))
+            .collect();
+        let mut unit = WorkUnit::new("demo-reduce", AppKind::DeMoReduce)
+            .with_params_json(&kadmium_sharding::DeMoReduceParams {
+                model_id: "llama-3-70b-lora".into(),
+                epoch: 1,
+                session_id: "g".into(),
+                step_index: 3,
+                outer_lr: 0.7,
+                outer_momentum: 0.9,
+                contributors: vec![],
+            })
+            .unwrap();
+        unit.inputs = refs.clone();
+        unit.graph_id = Some("g".into());
+        let run = |order: [usize; 3]| {
+            let blobs: Vec<(String, Vec<u8>)> = order
+                .iter()
+                .enumerate()
+                .map(|(slot, &island)| {
+                    (
+                        refs[slot].content_id.clone(),
+                        serde_json::to_vec(&islands[island]).unwrap(),
+                    )
+                })
+                .collect();
+            let result = execute_dispatch(
+                WorkDispatchPayload::new(unit.clone(), InstanceId("r".into()), 1, blobs),
+                &local.registry,
+                &local.ctx,
+            );
+            assert!(result.header.ok, "{:?}", result.header.error);
+            let record = result.header.result.unwrap();
+            (
+                record.digest_fnv1a,
+                record.check_value,
+                result.blobs[0].1.clone(),
+            )
+        };
+        let forward = run([0, 1, 2]);
+        let backward = run([2, 1, 0]);
+        let rotated = run([1, 2, 0]);
+        assert_eq!(forward, backward);
+        assert_eq!(forward, rotated);
+        let report: DeMoReduceReport = serde_json::from_slice(&forward.2).unwrap();
+        assert_eq!(report.contributors, 3);
+        assert_ne!(report.master_weight_digest_fnv1a, 0);
     }
 }

@@ -4,6 +4,7 @@
 //! NVMe DMA prefetching (`ColibriNvmeDoubleBuffer`), and distributed QLoRA forward/backward
 //! adapter updates (`DistributedQLoRAAdapter`).
 
+use crate::repops;
 use serde::{Deserialize, Serialize};
 
 /// 4-bit Group-Quantized (`Q4_K` / 32-element block) Tensor for `.ktb` weight banks.
@@ -62,29 +63,33 @@ impl Q4KBlockTensor {
     }
 
     /// Computes fused on-the-fly 4-bit dequantization + matrix-vector multiplication $y = W x$
-    /// without materializing the full FP32 matrix in memory.
+    /// without materializing the full FP32 matrix in memory. Each row is a RepOps dot product:
+    /// one rounding per product, then the fixed reduce tree.
     pub fn matvec_f32(&self, input: &[f32]) -> Vec<f32> {
         assert_eq!(input.len(), self.cols);
         let mut output = vec![0.0f32; self.rows];
-        let mut global_idx = 0usize;
 
-        for out_val in output.iter_mut() {
-            let mut sum = 0.0f32;
-            for &x_val in input.iter() {
-                let block_idx = global_idx / self.block_size;
-                let scale = self.block_scales[block_idx];
-                let min_v = self.block_mins[block_idx];
-                let byte = self.packed_nibbles[global_idx / 2];
-                let q = if global_idx.is_multiple_of(2) {
-                    (byte & 0x0F) as f32
-                } else {
-                    ((byte >> 4) & 0x0F) as f32
-                };
-                let w = min_v + scale * q;
-                sum += w * x_val;
-                global_idx += 1;
-            }
-            *out_val = sum;
+        for (r, out_val) in output.iter_mut().enumerate() {
+            let base = r * self.cols;
+            let products: Vec<f32> = input
+                .iter()
+                .enumerate()
+                .map(|(c, &x_val)| {
+                    let global_idx = base + c;
+                    let block_idx = global_idx / self.block_size;
+                    let scale = self.block_scales[block_idx];
+                    let min_v = self.block_mins[block_idx];
+                    let byte = self.packed_nibbles[global_idx / 2];
+                    let q = if global_idx.is_multiple_of(2) {
+                        (byte & 0x0F) as f32
+                    } else {
+                        ((byte >> 4) & 0x0F) as f32
+                    };
+                    let w = min_v + scale * q;
+                    w * x_val
+                })
+                .collect();
+            *out_val = repops::tree_sum_f32(&products);
         }
         output
     }
@@ -195,18 +200,11 @@ impl DistributedQLoRAAdapter {
 
         let mut h = vec![0.0f32; self.rank];
         for (r, h_val) in h.iter_mut().enumerate() {
-            let mut sum = 0.0f32;
-            for (c, &x_val) in x.iter().enumerate() {
-                sum += self.lora_a[r * self.d_in + c] * x_val;
-            }
-            *h_val = sum;
+            *h_val = repops::tree_dot_f32(&self.lora_a[r * self.d_in..(r + 1) * self.d_in], x);
         }
 
         for (o, y_val) in y.iter_mut().enumerate() {
-            let mut delta = 0.0f32;
-            for (r, &h_val) in h.iter().enumerate() {
-                delta += self.lora_b[o * self.rank + r] * h_val;
-            }
+            let delta = repops::tree_dot_f32(&self.lora_b[o * self.rank..(o + 1) * self.rank], &h);
             *y_val += scale * delta;
         }
 
@@ -225,12 +223,13 @@ impl DistributedQLoRAAdapter {
         let scale = self.alpha / (self.rank.max(1) as f32);
 
         let mut dy = vec![0.0f32; self.d_out];
-        let mut loss = 0.0f32;
+        let mut loss_terms = vec![0.0f32; self.d_out];
         for o in 0..self.d_out {
             let diff = y[o] - y_target[o];
             dy[o] = diff;
-            loss += 0.5 * diff * diff;
+            loss_terms[o] = 0.5 * diff * diff;
         }
+        let loss = repops::tree_sum_f32(&loss_terms);
 
         let mut grad_b = vec![0.0f32; self.d_out * self.rank];
         for (o, &dy_val) in dy.iter().enumerate() {
@@ -240,12 +239,12 @@ impl DistributedQLoRAAdapter {
         }
 
         let mut dh = vec![0.0f32; self.rank];
+        let mut column = vec![0.0f32; self.d_out];
         for (r, dh_val) in dh.iter_mut().enumerate() {
-            let mut acc = 0.0f32;
-            for (o, &dy_val) in dy.iter().enumerate() {
-                acc += self.lora_b[o * self.rank + r] * dy_val;
+            for (o, slot) in column.iter_mut().enumerate() {
+                *slot = self.lora_b[o * self.rank + r];
             }
-            *dh_val = scale * acc;
+            *dh_val = scale * repops::tree_dot_f32(&column, &dy);
         }
 
         let mut grad_a = vec![0.0f32; self.rank * self.d_in];

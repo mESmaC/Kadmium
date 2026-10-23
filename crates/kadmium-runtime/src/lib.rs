@@ -16,6 +16,7 @@ pub mod kernels;
 pub mod grid_executor;
 pub mod live_worker;
 pub mod moe_layer;
+pub mod repops;
 pub mod throughput_boost;
 pub mod training_compute;
 pub mod training_framework;
@@ -185,32 +186,34 @@ impl DeMoDctCompressor {
         }
     }
 
-    /// Orthonormal 1D Discrete Cosine Transform Type-II (`DCT-II`).
+    /// Orthonormal 1D Discrete Cosine Transform Type-II (`DCT-II`). Every coefficient is a
+    /// RepOps dot product with its cosine basis row, so the packet does not depend on how a
+    /// backend chunks the sum.
     pub fn dct_ii(input: &[f32]) -> Vec<f32> {
         let n = input.len();
         if n == 0 {
             return Vec::new();
         }
         let n_f = n as f32;
-        let mut out = vec![0.0f32; n];
-        for (k, out_k) in out.iter_mut().enumerate() {
-            let mut sum = 0.0f32;
-            let k_f = k as f32;
-            for (i, &x) in input.iter().enumerate() {
-                let angle = std::f32::consts::PI * ((i as f32) + 0.5) * k_f / n_f;
-                sum += x * angle.cos();
-            }
-            let scale = if k == 0 {
-                (1.0 / n_f).sqrt()
-            } else {
-                (2.0 / n_f).sqrt()
-            };
-            *out_k = sum * scale;
-        }
-        out
+        (0..n)
+            .map(|k| {
+                let k_f = k as f32;
+                let basis: Vec<f32> = (0..n)
+                    .map(|i| repops::cos(std::f32::consts::PI * ((i as f32) + 0.5) * k_f / n_f))
+                    .collect();
+                let scale = if k == 0 {
+                    (1.0 / n_f).sqrt()
+                } else {
+                    (2.0 / n_f).sqrt()
+                };
+                repops::tree_dot_f32(input, &basis) * scale
+            })
+            .collect()
     }
 
     /// Orthonormal 1D Inverse Discrete Cosine Transform (`IDCT-III`, exact inverse of `dct_ii`).
+    /// Every coefficient contributes a term, zeros included, so the reduce tree has the same
+    /// shape for every packet and a sparse packet reconstructs to the same bits everywhere.
     pub fn idct_iii(coeffs: &[f32]) -> Vec<f32> {
         let n = coeffs.len();
         if n == 0 {
@@ -219,20 +222,23 @@ impl DeMoDctCompressor {
         let n_f = n as f32;
         let scale0 = (1.0 / n_f).sqrt();
         let scale_k = (2.0 / n_f).sqrt();
-        let mut out = vec![0.0f32; n];
-
-        for (i, out_i) in out.iter_mut().enumerate() {
-            let mut sum = coeffs[0] * scale0;
-            let i_half = (i as f32) + 0.5;
-            for (k, &c) in coeffs.iter().enumerate().skip(1) {
-                if c.abs() > 0.0 {
-                    let angle = std::f32::consts::PI * i_half * (k as f32) / n_f;
-                    sum += c * scale_k * angle.cos();
-                }
-            }
-            *out_i = sum;
-        }
-        out
+        (0..n)
+            .map(|i| {
+                let i_half = (i as f32) + 0.5;
+                let terms: Vec<f32> = coeffs
+                    .iter()
+                    .enumerate()
+                    .map(|(k, &c)| {
+                        if k == 0 {
+                            c * scale0
+                        } else {
+                            c * scale_k * repops::cos(std::f32::consts::PI * i_half * (k as f32) / n_f)
+                        }
+                    })
+                    .collect();
+                repops::tree_sum_f32(&terms)
+            })
+            .collect()
     }
 
     /// Executes one DeMo step:
