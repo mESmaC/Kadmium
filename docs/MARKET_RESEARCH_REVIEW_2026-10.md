@@ -10,6 +10,8 @@
 
 ---
 
+**Setup dependency decision — 23 October 2026.** Keep the existing dependency set. The additive consumer setup work (`launch --plan`, non-overwriting creation of a missing configuration and checked release installers) changes no Cargo manifests or lockfile and introduces no direct or transitive Rust dependencies. It does not add an external inference relay, including behind an optional feature. A relay is deferred pending a future owner decision on dependencies and downstream access/authentication, streaming and resource limits. Existing `serve`, `desktop`, listener and parser behavior remains unchanged. The `/v1` routes still run reference compute and return fixed diagnostic text/vectors; they are not general OpenAI/Anthropic SDK replacements or language-model generation. This note qualifies gateway/setup claims in this dated review without replacing its historical measurements or the later RepOps update. Current behavior is documented in the [launch guide](guides/cli.md) and [API reference](api-reference.md).
+
 ## Part A — The case for Kadmium
 
 ### 1. Executive summary

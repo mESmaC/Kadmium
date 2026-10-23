@@ -1,6 +1,10 @@
 # Kadmium (`Cd-48`) — Technical Specsheet & Product Roadmap
 
-**Kadmium** (`https://kadmium.ai`, signature `Cd-48`) is an open-source, 100% Pure Rust consolidated, aggregate, and distributed AI/ML compute fabric. It turns heterogeneous personal, lab, and cloud hardware—gaming desktops, Apple Silicon Macs, gaming laptops, legacy laptops, ARM/RISC-V SBCs, Home NAS storage vaults, friends' idle PCs, and burst spot GPUs—into a single elastic reactor for **LLM/MoE Inference**, **Fault-Tolerant Distributed Training**, and **Disaggregated RL + Dream-RSI**.
+**Kadmium** (`https://kadmium.ai`, signature `Cd-48`) is an open-source Rust compute-fabric project for heterogeneous personal, lab and cloud hardware. The current implementation includes control-plane, transport, planning and reference-workload mechanisms; real language-model execution remains integration work.
+
+**Current setup and API status:** `launch --plan` inspects setup, and `launch` creates a missing configuration without overwriting an existing file before starting the existing coordinator. The `/v1` routes keep their current diagnostic behavior: fixed message text, reference vectors and planning metadata. They do not provide a full OpenAI/Anthropic SDK replacement, incremental model generation or an external inference relay. Roadmap completion labels below describe implemented mechanisms or historical milestones, not proof of production model-serving readiness; the [API reference](api-reference.md) specifies the current behavior.
+
+**Dependency decision: KEEP EXISTING.** The setup change modifies no Cargo manifest or lockfile and adds no direct or transitive Rust dependencies. A relay is deferred, not included behind an optional feature. It requires a future owner decision about dependencies and downstream access/authentication, streaming and resource limits. `serve`, `desktop`, listener defaults and configuration parsing remain unchanged. Checked installers require assets from a published matching tag; see [installation](getting-started.md#1-installation).
 
 ---
 
@@ -12,7 +16,7 @@
 | :--- | :--- |
 | **Brand & Code Identity** | **Kadmium** (`Cd-48`, atomic number 48) · `kadmium` CLI & crate namespace · `.ktb` tensor banks |
 | **Implementation Language** | **100% Pure Rust** (`edition = "2024"`, zero Python/CUDA-toolkit runtime dependency for orchestration) |
-| **Workspace Architecture** | 8 crates: `kadmium-core`, `kadmium-sharding`, `kadmium-data`, `kadmium-network`, `kadmium-runtime`, `kadmium-rl`, `kadmium-gateway`, `kadmium-cli` |
+| **Workspace Architecture** | 10 crates: `kadmium-core`, `kadmium-sharding`, `kadmium-data`, `kadmium-grid`, `kadmium-network`, `kadmium-runtime`, `kadmium-rl`, `kadmium-gateway`, `kadmium-cli`, `kadmium-desktop` |
 | **Licensing & Distribution** | Dual **MIT / Apache-2.0** Open-Source Core + optional **`kadmium.ai` Managed Hybrid Cloud** |
 | **Visual Design System** | Control-room industrial aesthetic · `--cadmium` (`#F5B700`) = **Local Hardware** · `--cherenkov` (`#38BDF8`) = **Cloud Burst** |
 
@@ -61,8 +65,9 @@
 
 | Interface | Endpoint / Command | Specification |
 | :--- | :--- | :--- |
-| **OpenAI Gateway** | `POST /v1/chat/completions` | Drop-in OpenAI API supporting both standard JSON and **`text/event-stream` SSE (`"stream": true`)** |
-| **Anthropic Gateway** | `POST /v1/messages` | Drop-in Anthropic Messages API for Claude Code and agentic harnesses |
+| **Chat-shaped reference diagnostic** | `POST /v1/chat/completions` | Fixed diagnostic text and reference execution telemetry; `stream: true` returns prebuilt SSE, not generated tokens or a full OpenAI protocol implementation. |
+| **Messages-shaped reference diagnostic** | `POST /v1/messages` | Fixed diagnostic text/timing in an Anthropic-shaped response; limited SSE events, without full Messages/SDK compatibility. |
+| **Reference model/vector APIs** | `GET /v1/models`, `POST /v1/embeddings` | Planning catalog and reference hidden-state vectors, not verified loaded models or pretrained semantic embeddings. |
 | **Model Context Protocol** | `kadmium mcp` (stdio) & `POST /mcp` (HTTP) | Full **MCP `2025-03-26`** JSON-RPC 2.0 server exposing 7 tools, 5 `kadmium://` resources, and 2 workflow prompts |
 | **Ecosystem Connectors** | `kadmium pull <URI>` & `GET /api/v1/integrations` | Native **`hf://`** (selective byte-range `.safetensors` $\to$ `.ktb`), **`gh://`** (commit-pinned RL/Dream-RSI slices), **`oci://`**, **`s3://`**, **`wandb://`** |
 | **Kadmium Supply Grid** | `kadmium lease` & `GET /api/v1/supply/marketplace` | Two-sided compute leasing: rent out idle local GPUs, M4 Mac Minis, SBCs, and NAS vaults for **direct USD** or **1.25× Kadmium Cloud credits** with `<200ms` Polite auto-yield, blind middle-layer privacy (`Layer 0` & `N-1` stay on renter), and `Verde RepOps` cryptographic settlement |
@@ -147,5 +152,5 @@ flowchart LR
 - [x] **20-Slot Phone Farm Box & Mobile Phone Cluster Support (`kadmium-core::phone_farm`)**: First-class profiler and USB-ADB / OTG-Ethernet bridge scanner for 20-Slot Phone Farm Boxes (`Snapdragon 845 / 865 / 8 Gen 2`, `120–240 GB LPDDR5/X`, `95W–145W` BMS battery-eliminator power) and standalone mobile phones governed by `MobilePocketPolitePolicy` (`< 39.0 °C` skin temp, screen-off + charger-only harvesting).
 - [x] **`EXL3 / QTIP` Lookup-Free Bitshift Trellis Quantization & FWHT Incoherence (`kadmium-runtime::exl3_qtip`)**: Randomized Fast Walsh-Hadamard Transform ($\tilde{W} = H_m \operatorname{diag}(s_u) W \operatorname{diag}(s_v) H_n^\top$), on-the-fly empirical Hessian $LDL^\top$ error feedback, and Viterbi dynamic-programming bitshift trellis quantization (`2.0–6.0 bpw`) with distributed cluster conversion.
 - [x] **Live Multi-Node TCP `WireFrame` Workers & PagedAttention KV-Cache Migration (`kadmium-runtime::live_worker`, `kadmium-network::live_mesh`)**: Real TCP `KDMF` socket servers, 5-node local fleet spawner, live `.ktb` FTS3 page streaming, TCP `KvPageBlock` state migration with disk journaling, and Over-The-Air (OTA) signed binary/weight fleet updates (`LAN` direct push + `WAN` heartbeat pull).
-- [x] **Local `.gguf` / `.safetensors` to `.ktb` Disk Importer & Multimodal/Embeddings Gateway (`kadmium-data::importer`, `kadmium-gateway::routes`)**: Scans local Ollama / LM Studio / Hugging Face caches to transcode `.gguf` v3 and `.safetensors` directly into `64 KiB` Merkle-verified `.ktb` archives on disk, plus `/v1/embeddings`, `/v1/models`, and vision patch offloading.
+- [x] **Local `.gguf` / `.safetensors` to `.ktb` Disk Importer & Reference API Diagnostics (`kadmium-data::importer`, `kadmium-gateway::routes`)**: Local cache/import mechanisms and `.ktb` archive generation, plus reference vectors at `/v1/embeddings`, a planning catalog at `/v1/models`, and vision patch diagnostics. These routes do not establish real multimodal model execution or semantic embeddings.
 - [x] **Modded Nintendo Switch (`Mariko T210B01 16nm` & `Erista T210 20nm`) Tegra X1/X1+ E-Waste Node Support (`kadmium-core::tegra_switch`, `kadmium switch`, `/api/v1/cluster/switch-tegra`)**: Repurposes modded Switch 1 consoles (and cracked-screen / broken-rail e-waste motherboards out of 150M+ units sold) as **NVIDIA Jetson Nano / TX1-equivalent** CUDA (`sm_53` FP16 `half2` under Switchroot Ubuntu L4T) or Horizon OS `deko3d` Maxwell compute workers (`1.26–1.30 FP16 TFLOPS`, `34.1–38.4 GB/s` unified LPDDR4X at `7.4W` docked wall draw with `BQ24193` 80% battery charge-limit/bypass protection).

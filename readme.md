@@ -25,7 +25,7 @@ Meanwhile, vast amounts of capable silicon sit underutilized in homes, dorms, st
 
 Distributed scientific computing solved heterogeneous resource aggregation decades ago (**BOINC**, **CERN WLCG / FTS3 / Davix**), yet mainstream ML frameworks still crash or stall when one node is slower than another.
 
-**Kadmium (`Cd-48`)** bridges that gap. Written in **100% Pure Rust** and compiled into a zero-dependency binary, Kadmium unifies any heterogeneous collection of machines into a single, self-balancing AI/ML compute fabric for **asymmetric sharded inference, distributed 1F1B / DiLoCo training, verifiable GRPO reinforcement learning, and Dream-RSI offline self-improvement**.
+**Kadmium (`Cd-48`)** is a Rust compute-fabric project for heterogeneous machines, with a working control plane, worker transport, planners and reference workloads for inference, training and RL. Its current kernels run small reference tensors; the `/v1` routes return fixed diagnostic text and reference vectors, not language-model generation. Real model execution remains integration work. Rust crates and platform components are dependencies; a packaged CLI does not require a Python environment.
 
 ---
 
@@ -33,11 +33,13 @@ Distributed scientific computing solved heterogeneous resource aggregation decad
 
 Kadmium is currently in **Phase 4 (`v0.4` — Platform-Generalized Compute Fabric, Direct USB-C/USB4 Interconnect & Workspace Control Room)**. The core Rust control plane, live `KDMF` binary TCP wire protocol, multi-tier `.ktb` tensor bank format, 10-page Workspace Control Room UI, and native Desktop Companion (`wry` + `tao`) are implemented, tested (`81+` workspace test suites), and running against real multi-device hardware.
 
+The phase labels describe the project's roadmap, not release or model-serving readiness. In particular, completed gateway scaffolding does not establish full OpenAI/Anthropic SDK compatibility or real LLM output. See the [current API contract](docs/api-reference.md) and the [reference-execution qualifications](docs/MARKET_RESEARCH_REVIEW_2026-10.md#2-what-kadmium-is-from-the-code).
+
 | Phase | Milestone | Status | Key Deliverables |
 | :--- | :--- | :--- | :--- |
 | **Phase 1 (`v0.1`)** | **Core Sharding, $q^*$ Policy & `.ktb` Tensor Banks** | ✅ **Complete** | Capability vector modeling, FreeToken $q^*$ bandwidth-adaptive split, `64 KiB` page-aligned `.ktb` weight banks with Merkle proofs, FTS3 third-party staging, GGUF v3 / SafeTensors transcoders, EXL3/QTIP trellis quantization. |
 | **Phase 2 (`v0.2`)** | **Live WireFrame (`KDMF`) TCP Mesh & Verified Training** | ✅ **Complete** | Binary `KDMF` TCP wire framing, live multi-node inference & 1F1B training execution, Nous DeMo/DisTrO DCT gradient compression, Sharded-Island DiLoCo, Gensyn Verde `RepOps` + $O(\log L)$ layer-bisection auditing, RAID-5 algebraic straggler recovery. |
-| **Phase 3 (`v0.3`)** | **Workspace Control Room, Native Desktop Companion & Ecosystem** | ✅ **Complete** | 10-page Control Room workspace UI (`dashboard.html`), native Desktop Companion window (`kadmium-desktop`), zero-click LAN pairing (6-digit SAS), Hugging Face byte-range slicer, MCP server (`stdio` + HTTP), OpenAI (`/v1/chat/completions`) & Anthropic (`/v1/messages`) gateways. |
+| **Phase 3 (`v0.3`)** | **Workspace Control Room, Native Desktop Companion & Ecosystem** | ✅ **Complete** | 10-page Control Room workspace UI (`dashboard.html`), native Desktop Companion window (`kadmium-desktop`), zero-click LAN pairing (6-digit SAS), Hugging Face byte-range slicer, MCP server (`stdio` + HTTP), reference diagnostics at `/v1/chat/completions` and `/v1/messages`. |
 | **Phase 4 (`v0.4`)** | **Platform-Level Generality & USB-C / USB4 Direct Interconnects** | 🟢 **Current Phase** | **Platform Abstraction Layer** (*Same Silicon $\to$ Supported; Same OS $\to$ Supported* across 26 silicon families & 8 OS families), **USB-C / USB4 / Thunderbolt (`30–80 Gbps`) & Dual-Role `USB-NCM` Direct Interconnect Engine**, switchless USB-C daisy-chain ring routing, live hardware verification across Windows, macOS (Apple M4), Linux ARM64, and RISC-V. |
 | **Phase 5 (`v0.5`)** | **Zero-Copy Hardware Backend Bindings & RDMA / Thunderbolt DMA** | 🔜 **Next Up** | Direct native GPU kernel FFI dispatch (`Metal 4` command buffers, `CUDA` / `HIP` PTX driver API, `Vulkan` compute pipelines) replacing reference host buffers on large layer shards, plus OS-bypass Thunderbolt PCIe DMA ring buffers. |
 | **Phase 6 (`v1.0 GA`)** | **Managed CloudShield, Supply Grid Clearinghouse & Public Registry** | 🗓️ **Planned** | Production multi-cloud spot arbitrage broker, `<400ms` bidirectional Local $\leftrightarrow$ Cloud failover shield, double-entry Supply Grid clearinghouse (`Grid-Zero`), and public Dream-RSI World Registry. |
@@ -81,7 +83,7 @@ Kadmium synthesizes proven breakthroughs from local edge AI engines and battle-t
 | :--- | :--- |
 | **[FlashML-org/FreeToken](https://github.com/FlashML-org/FreeToken)** | **Bandwidth-Adaptive Execution ($q^*$ Policy) & Pre-Merged Weight Banks:** Dynamically splits token/tensor computation across CPU, RAM, PCIe, NPU, and GPU VRAM based on real-time interconnect throughput, backed by zero-copy memory-mapped tensor banks (`.ktb`). |
 | **[JustVugg/colibri](https://github.com/JustVugg/colibri) & [lumabri](https://github.com/JustVugg/lumabri)** | **NVMe MoE Expert Streaming, P2P Swarm Execution & Measured Allocation:** Pins dense attention layers in fast memory while streaming sparse Mixture-of-Experts (MoE) weights on demand from local NVMe or across a peer-to-peer swarm. The grid's allocation borrows their mechanisms too: measured compute cost in routing with residency first, owner-approved resource offers with a RAM reserve, usage-learned expert pins with a hysteresis-gated live re-pin, and calibration records bound to the exact placement they measured. |
-| **[niko1221/strata](https://github.com/niko1221/strata)** | **Zero-Friction Consumer Hardware Setup & Drop-In API Gateway:** One-command deployment across Windows/macOS/Linux with built-in OpenAI (`/v1/chat/completions`, `/v1/embeddings`) and Anthropic (`/v1/messages`) compatible endpoints. |
+| **[niko1221/strata](https://github.com/niko1221/strata/tree/7ddc17a38fe7f31637e895ecfba58c2cd43d65ec)** | **Consumer Setup Inspiration:** Hardware-aware setup informs the additive `launch --plan` and configuration-creation workflow. Kadmium's existing API-shaped diagnostics are not Strata's inference engine or a full OpenAI/Anthropic integration. |
 | **[BOINC/boinc](https://github.com/BOINC/boinc)** | **Polite Host Resource Harvesting & Workunit Verification:** Non-intrusive background execution that respects user activity (`<200 ms` Gaming Mode yield, 15s swapchain cooldown, battery/thermal envelopes) and spot-verifies untrusted peers. |
 | **[cern-fts/fts3](https://github.com/cern-fts/fts3) & [davix](https://github.com/cern-fts/davix)** | **Third-Party Peer-to-Peer Data Staging:** The coordinator never bottlenecks weight or dataset transfers. Nodes stream shards, datasets, and checkpoints directly peer-to-peer with bandwidth-aware retry state machines. |
 | **[NousResearch/DisTrO](https://github.com/NousResearch/DisTrO) & Psyche** | **DeMo (Decoupled Momentum) DCT Compression:** Compresses inter-node gradient synchronization by $10\times$–$85\times$ using Discrete Cosine Transform (DCT-II) fast-momentum extraction with local error-feedback accumulation. |
@@ -111,10 +113,10 @@ When you launch a game on your desktop or handheld, unplug a laptop, or attach a
 - **Sharded-Island DiLoCo + DeMo DCT Compression:** Shards large models across local consumer devices as a single logical island and syncs outer-loop updates over WAN with $10\times$–$85\times$ DCT gradient compression.
 - **Decentralized RL Post-Training (`kadmium-rl`):** Runs GRPO/PPO policy rollouts on GPU/Metal/APU nodes while Linux SBCs and CPUs execute parallel WASI / code-verification reward sandboxes.
 
-### 4. Control Room Workspace App, Native Desktop Companion & Drop-In AI Gateway (`kadmium-gateway` & `kadmium-desktop`)
+### 4. Control Room Workspace App, Native Desktop Companion & Reference API (`kadmium-gateway` & `kadmium-desktop`)
 - **10-Page Workspace Control Room (`/dashboard`):** Built-in single-binary web workspace organized into **Fabric** (*Overview, Nodes, Models & Shards, Data & Transfers*), **Work** (*Training, RL & Dream-RSI, Gateway & API, Slices*), and **Account** (*Kadmium Cloud, Settings*) with live 5-second cluster polling, node hardware/mesh inspection drawers, and an interactive chat/MCP playground.
 - **Native Desktop Companion (`kadmium-desktop`):** Runs the local coordinator and tray/window Companion in a native OS WebView (`WebView2` on Windows, `WKWebView` on macOS, `WebKitGTK` on Linux).
-- **Drop-In OpenAI, Anthropic & MCP Gateway:** Point Cursor, Claude Code, OpenWebUI, or custom Python scripts directly at `http://localhost:7848/v1` (`/v1/chat/completions`, `/v1/embeddings`, `/v1/messages`, `/mcp`).
+- **Reference HTTP API & MCP:** `/v1/chat/completions` and `/v1/messages` return fixed diagnostic messages; `/v1/embeddings` returns reference vectors and `/v1/models` lists planning presets. These are not drop-in chat/agent SDK endpoints. MCP tools use the separate `/mcp` endpoint or `kadmium mcp`.
 
 ---
 
@@ -123,7 +125,7 @@ When you launch a game on your desktop or handheld, unplug a laptop, or attach a
 ```mermaid
 flowchart TB
     subgraph Clients["Clients, IDEs & Interfaces"]
-        API["OpenAI / Anthropic / MCP Clients\n(Cursor, Claude Code, SDKs)"]
+        API["Reference API Requests / MCP Tools\nDiagnostic Output, Not LLM Generation"]
         ControlRoom["10-Page Control Room Workspace\n(http://localhost:7848/dashboard)"]
         Companion["Native Desktop Companion\n(kadmium-desktop · wry + tao)"]
     end
@@ -176,7 +178,7 @@ kadmium/
     ├── kadmium-runtime/        # Multi-silicon kernel dispatcher, work executors & grid dispatcher, live TCP pipeline, 1F1B/DiLoCo/GaLore training, EXL3, Verde
     ├── kadmium-rl/             # Disaggregated RL fabric, WASI reward sandboxes, GRPO/PPO & Dream-RSI MCTS simulator
     ├── kadmium-network/        # USB-C/USB4/TB 30-80Gbps direct DMA engine, KDMF wire framing, RAID-5 striper, NAT hole-punching
-    ├── kadmium-gateway/        # Axum server, 10-page Control Room, Marketing Site, Docs Portal, OpenAI/Anthropic/MCP APIs
+    ├── kadmium-gateway/        # Axum server, Control Room, Docs Portal, reference API diagnostics and MCP
     ├── kadmium-cli/            # Single-binary `kadmium` CLI (serve, join, desktop, probe, plan, bench, import, exl3)
     └── kadmium-desktop/        # Native Desktop Companion window (WebView2 / WKWebView / WebKitGTK)
 ```
@@ -186,14 +188,17 @@ kadmium/
 ## 🚀 Quickstart
 
 ### Prerequisites
-- **Rust 1.85+** (`cargo` and `rustc`)
+- **Current stable Rust** (`cargo` and `rustc`)
 
-### 1. Launch the Control Room Workspace & Drop-In AI Gateway
-Start the local coordinator probing your live host hardware (add `--demo` to include the simulated multi-node fleet or `--spawn-fleet` to launch 5 live local TCP worker daemons):
+### 1. Inspect and launch the Control Room
+Inspect a plan, then start the existing coordinator (add `--demo` for the simulated fleet or `--spawn-fleet` for local worker testing):
 ```bash
-cargo run --bin kadmium -- serve --port 7848
+cargo run --bin kadmium -- launch --plan
+cargo run --bin kadmium -- launch
 ```
-Then open **`http://localhost:7848`** in your browser to access the 10-page **Control Room**, or point any OpenAI/Anthropic client at `http://localhost:7848/v1`.
+Then open **`http://localhost:7848`** for the **Control Room**. `launch` creates `kadmium.toml` only if missing; its preset recommendation is informational and does not load a model. The existing all-interface listener, `serve`, `desktop` and configuration-parser behavior remain unchanged. Use trusted-network or external access controls. See the [launch guide](docs/guides/cli.md) and [checked installers for the next tagged release](docs/getting-started.md#1-installation).
+
+**Dependency decision: keep the existing dependencies.** This setup change adds no direct or transitive Rust dependencies and changes no Cargo manifests or lockfile. An external inference relay is deferred, with no optional relay code included; it requires a future owner decision and a downstream access/authentication design. The existing diagnostic `/v1` behavior remains in place.
 
 ### 2. Open the Native Desktop Companion App
 ```bash

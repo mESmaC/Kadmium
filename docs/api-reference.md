@@ -1,29 +1,33 @@
 # Kadmium HTTP & AI Gateway API Reference
 
-When `kadmium serve` is running (default `http://127.0.0.1:7848`), [`kadmium-gateway`](../crates/kadmium-gateway/src/lib.rs) exposes two families of HTTP endpoints:
-1. **Strata-Compatible AI Inference Gateway** (OpenAI `/v1/chat/completions` and Anthropic `/v1/messages`)
+When `kadmium launch` or `kadmium serve` is running, [`kadmium-gateway`](../crates/kadmium-gateway/src/lib.rs) exposes two families of HTTP endpoints. The default port is `7848`; the coordinator listens on all interfaces and is accessible locally at `http://127.0.0.1:7848`.
+
+1. **Reference compute diagnostics with OpenAI/Anthropic-shaped responses** (`/v1/...`)
 2. **Cluster Control Plane & Desktop Companion REST API** (`/api/v1/...`)
 
 ---
 
-## 1. AI Inference Gateway Endpoints
+## 1. Reference API Endpoints
 
-### `POST /v1/chat/completions` (OpenAI Compatible)
-Drop-in replacement for the OpenAI Chat Completions API. Works out of the box with the official `openai` Python/TypeScript SDKs, Cursor, Continue, LangChain, and OpenWebUI.
+These routes retain their existing behavior. They execute small reference workloads and return diagnostic output, not generated language-model responses. There is no external inference relay or backend URL/key setting. This setup change keeps the existing Cargo dependencies and does not replace these routes with an unconfigured-backend error.
+
+The API shapes are useful for inspecting reference execution, but are not a promise of full OpenAI/Anthropic protocol or SDK compatibility. A model ID in a response or `active_loaded` in the catalog is diagnostic state, not evidence that production model weights were loaded. Throughput fields describe reference execution or estimates, not measured language-model generation.
+
+### `POST /v1/chat/completions` (reference diagnostic)
+
+Accepts `messages` plus optional `model`, `stream` and `vision_offload`. The final message supplies the text sample for reference execution; earlier conversation turns do not form a model context. The supplied model name labels the response and does not select or load model weights. Sampling controls, tools and other provider options are not implemented.
 
 **Request Body:**
 ```json
 {
-  "model": "deepseek-ai/DeepSeek-V3-671B-MoE-Q4_K_M",
   "messages": [
-    { "role": "system", "content": "You are running on a Kadmium heterogeneous cluster." },
-    { "role": "user", "content": "Summarize our active pipeline route." }
+    { "role": "user", "content": "Run a reference step." }
   ]
 }
 ```
 
 **Response Body (`200 OK`):**
-Includes standard OpenAI `choices` plus a `kadmium_fabric` telemetry block showing the exact heterogeneous pipeline route and speculative draft node used:
+Includes an OpenAI-shaped `choices` array with a fixed assistant message plus a `kadmium_fabric` telemetry block. The following is an illustrative excerpt, not a throughput benchmark or a guarantee of this topology:
 ```json
 {
   "id": "chatcmpl-kadmium-e1",
@@ -56,18 +60,29 @@ Includes standard OpenAI `choices` plus a `kadmium_fabric` telemetry block showi
 
 ---
 
-### `POST /v1/messages` (Anthropic Compatible)
-Drop-in replacement for the Anthropic Messages API (`claude` SDKs, Claude Code custom base URLs).
+### `POST /v1/messages` (reference diagnostic)
+
+Accepts the same limited request structure as the chat route and returns a fixed diagnostic message containing stage and timing information. It does not implement the full Anthropic Messages contract, tool use, conversation processing or model generation.
 
 **Request Body:**
 ```json
 {
-  "model": "deepseek-ai/DeepSeek-V3-671B-MoE-Q4_K_M",
   "messages": [
-    { "role": "user", "content": "Hello from Anthropic SDK" }
+    { "role": "user", "content": "Run a reference step." }
   ]
 }
 ```
+
+### Streaming, models and embeddings
+
+`stream: true` on either message route returns a prebuilt `text/event-stream` response after reference execution. The OpenAI-shaped stream contains fixed chunks and `[DONE]`; the Anthropic-shaped stream contains a limited diagnostic event sequence. Neither is incremental token generation or a complete provider streaming protocol.
+
+| Endpoint | Current behavior |
+| :--- | :--- |
+| `GET /v1/models` | Returns Kadmium's planning catalog and reference activity metadata, not a list of loaded language models. |
+| `POST /v1/embeddings` | Takes string input or an array of strings, optional `model` and `dimensions` (default `64`), and returns reference hidden-state vectors with telemetry. These are not pretrained semantic embeddings. |
+
+Client API keys do not authenticate access to these routes. Keep the all-interface coordinator on a trusted network or provide external access controls. A future external inference relay requires a separate dependency and downstream-access design decision; none is included here. The MCP endpoint remains separately available at `/mcp`.
 
 ---
 
