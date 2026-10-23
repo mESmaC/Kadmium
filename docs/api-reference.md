@@ -255,3 +255,34 @@ Returns the complete `v1.0 GA` governance bundle:
 - `slice_quotas` & `scoped_api_keys`: Multi-tenant sub-cluster resource quotas and MAC-signed `kdm_live_...` API keys (`SubClusterRbacEngine`).
 - `dream_rsi_world_registry`: Public catalog of commit-pinned `gh://` WASI RL worlds (`DreamRsiWorldRegistry`).
 - `sample_fraud_proof`: Self-verifying $O(\log_2 L)$ `VerdeFraudProofCertificate` (`VerdeFraudProofEngine`).
+
+## 7. Grid Substrate Endpoints (`/api/v1/grid/*`)
+
+The grid substrate (`kadmium-grid`) runs every workload as a graph of work units scheduled across the mesh. These endpoints expose the mesh as one machine, the planner's shape choice, graph runs, and the credit ledger. Every throughput figure a planner endpoint returns is modelled; every wall time a run endpoint returns is measured on the synthetic reference kernels.
+
+### `GET /api/v1/grid/inventory`
+The mesh summed as one machine: online nodes, FP16 TFLOPS (total and polite-availability-weighted), fast memory, system RAM, NVMe, CPU threads, free slots, hop latency range and backends, plus a one-line summary, the number of grid runs, and the last run's record.
+
+### `GET /api/v1/grid/plan?model=<id>&strategy=<chain|expert-parallel>`
+The cost model's choice between the pipeline chain and expert-parallel shapes for a model on the current mesh, with both estimates (ms per token, hops per step, cold streaming), the rationale, and the placement summary (trunk ranges, experts, share in fast memory, replicated experts, cold gigabytes, rules, fast memory used per node). `strategy` forces a shape. `modelled` is always `true`.
+
+### `POST /api/v1/grid/run`
+```json
+{ "prompt": "text", "rows": 1, "strategy": "chain" }
+```
+Runs one decode step as a work graph over live workers, with simulated nodes executed in-process on the coordinator. Returns the shape, graph id, units total and validated, measured wall time, the modelled ms per token for that shape, the final boundary digest, per-unit hop telemetry, credit granted and receipts issued.
+
+### `POST /api/v1/grid/train`
+```json
+{ "step_index": 7, "learning_rate": 0.05 }
+```
+Runs one distributed training step: every trunk range as an independent island unit fanning into one DeMo reduce. Returns the DiLoCo reduce report (mean losses, wire compression, consensus norm, master-weight digest), credit granted and hop telemetry.
+
+### `POST /api/v1/grid/replay`
+```json
+{ "rollouts": 8, "mcts_simulations": 32, "world_id": "gpu-kernel-world" }
+```
+Runs a Dream-RSI replay batch as a bag of independent units. Returns the nodes used, credit granted and the supply-grid receipts for each validated unit.
+
+### `GET /api/v1/grid/credits`
+The cumulative credit ledger since the coordinator started: every entry, totals by node, every receipt, and the USD and cloud-credit totals at the canonical clearing rates.

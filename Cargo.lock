@@ -1332,6 +1332,7 @@ dependencies = [
  "axum",
  "kadmium-core",
  "kadmium-data",
+ "kadmium-grid",
  "kadmium-network",
  "kadmium-rl",
  "kadmium-runtime",

@@ -462,6 +462,12 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             "/api/v1/cluster/switch-tegra",
             get(post_switch_tegra_node).post(post_switch_tegra_node),
         )
+        .route("/api/v1/grid/inventory", get(crate::grid_api::get_grid_inventory))
+        .route("/api/v1/grid/plan", get(crate::grid_api::get_grid_plan))
+        .route("/api/v1/grid/run", post(crate::grid_api::post_grid_run))
+        .route("/api/v1/grid/train", post(crate::grid_api::post_grid_train))
+        .route("/api/v1/grid/replay", post(crate::grid_api::post_grid_replay))
+        .route("/api/v1/grid/credits", get(crate::grid_api::get_grid_credits))
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
         .route("/v1/chat/completions", post(openai_chat_completions))
@@ -1271,7 +1277,8 @@ async fn get_pipeline_execution(
         let guard = state.lock().expect("gateway state lock");
         (guard.inference_plan.clone(), guard.live_workers.clone())
     };
-    let (report, hops) = DistributedLanExecutor::execute_live_pipeline(
+    let (report, hops) = crate::grid_api::execute_step_or_legacy(
+        &state,
         &plan,
         "Verify asymmetric MoE routing and speculative draft verification across the cluster.",
         &workers,
@@ -1309,7 +1316,7 @@ async fn get_live_pipeline_execution(
         (guard.inference_plan.clone(), guard.live_workers.clone())
     };
     let (report, live_hops) =
-        DistributedLanExecutor::execute_live_pipeline(&plan, &prompt_text, &workers).await;
+        crate::grid_api::execute_step_or_legacy(&state, &plan, &prompt_text, &workers).await;
     {
         let mut guard = state.lock().expect("gateway state lock");
         guard.active_model_loaded = true;
@@ -2015,7 +2022,7 @@ async fn openai_chat_completions(
     };
 
     let (exec_report, live_hops) =
-        DistributedLanExecutor::execute_live_pipeline(&plan, &prompt_sample, &workers).await;
+        crate::grid_api::execute_step_or_legacy(&state, &plan, &prompt_sample, &workers).await;
 
     {
         let mut guard = state.lock().expect("gateway state lock");
@@ -2125,7 +2132,7 @@ async fn anthropic_messages(
     };
 
     let (exec_report, live_hops) =
-        DistributedLanExecutor::execute_live_pipeline(&plan, &prompt_sample, &workers).await;
+        crate::grid_api::execute_step_or_legacy(&state, &plan, &prompt_sample, &workers).await;
 
     {
         let mut guard = state.lock().expect("gateway state lock");

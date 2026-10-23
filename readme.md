@@ -160,7 +160,7 @@ flowchart TB
 
 ## 📦 Workspace Structure
 
-Kadmium is organized as a modular **9-crate Pure Rust** Cargo workspace:
+Kadmium is organized as a modular **10-crate Pure Rust** Cargo workspace. The `kadmium-grid` crate is the generic distributed-compute substrate underneath the AI workloads: work units with a BOINC-style lifecycle, work graphs, a replica catalog with placement rules, a locality-aware scheduler with quorum validation, and a credit ledger. Inference steps, training steps, Dream-RSI replay batches and Verde audits are work graphs scheduled on it; a pipeline is a chain graph and expert parallelism is a fan-out graph, and the two produce identical bytes.
 
 ```text
 kadmium/
@@ -172,7 +172,8 @@ kadmium/
     ├── kadmium-core/           # Platform abstraction (26 silicon / 8 OS families), q* policy, OS hooks
     ├── kadmium-sharding/       # Asymmetric sharding, TPU/CIM dataflow modes, live responsibility shifting, CloudShield
     ├── kadmium-data/           # 64 KiB page-aligned .ktb tensor banks, FTS3 staging, GGUF/SafeTensors/HF importers
-    ├── kadmium-runtime/        # Multi-silicon kernel dispatcher, live TCP pipeline, 1F1B/DiLoCo/GaLore training, EXL3, Verde
+    ├── kadmium-grid/           # Compute substrate: work units & graphs, replica catalog, locality scheduler, quorum validation, credit ledger
+    ├── kadmium-runtime/        # Multi-silicon kernel dispatcher, work executors & grid dispatcher, live TCP pipeline, 1F1B/DiLoCo/GaLore training, EXL3, Verde
     ├── kadmium-rl/             # Disaggregated RL fabric, WASI reward sandboxes, GRPO/PPO & Dream-RSI MCTS simulator
     ├── kadmium-network/        # USB-C/USB4/TB 30-80Gbps direct DMA engine, KDMF wire framing, RAID-5 striper, NAT hole-punching
     ├── kadmium-gateway/        # Axum server, 10-page Control Room, Marketing Site, Docs Portal, OpenAI/Anthropic/MCP APIs

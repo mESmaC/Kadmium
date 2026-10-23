@@ -707,6 +707,23 @@ fn run_plan(model_name: &str, workload_name: &str) {
     print_hardware_table(&nodes);
     print_shard_plan(&plan);
 
+    let (choice, placement) =
+        kadmium_sharding::StrategyCostModel::default().choose(&model, &nodes, None);
+    println!("\n--- Grid Execution Shape (modelled from the capability vectors, not measured) ---");
+    println!("  * Chosen shape: {:?}", choice.chosen);
+    println!(
+        "  * Pipeline chain:  {:>8.2} ms/token | {:>3} hops | {:>8.2} ms cold streaming",
+        choice.chain.ms_per_token, choice.chain.hops_per_step, choice.chain.cold_stream_ms
+    );
+    println!(
+        "  * Expert-parallel: {:>8.2} ms/token | {:>3} hops | {:>8.2} ms cold streaming",
+        choice.expert_parallel.ms_per_token,
+        choice.expert_parallel.hops_per_step,
+        choice.expert_parallel.cold_stream_ms
+    );
+    println!("  * Placement: {}", placement.summary());
+    println!("  * Why: {}", choice.rationale);
+
     let transfers = Fts3TransferScheduler::plan_initial_staging(&plan, &nodes);
     println!(
         "\n--- CERN FTS3 / Davix Third-Party P2P Staging Transfers ({} Direct QUIC Streams) ---",

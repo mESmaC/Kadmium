@@ -12,6 +12,7 @@ kadmium-data.workspace = true
 kadmium-runtime.workspace = true
 kadmium-rl.workspace = true
 kadmium-network.workspace = true
+kadmium-grid.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true

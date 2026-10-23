@@ -36,11 +36,13 @@ use std::collections::BTreeMap;
 pub mod checkpoints;
 pub mod coordinator;
 pub mod docs;
+pub mod grid_api;
 pub mod mcp;
 pub mod routes;
 
 pub use checkpoints::{TrainingCheckpoint, TrainingCheckpointList, TrainingResumeReport};
 pub use coordinator::{CoordinatorOptions, run_coordinator};
+pub use grid_api::*;
 pub(crate) use docs::DOC_OVERVIEW_MD;
 pub use docs::{DocumentationPage, build_documentation_catalog};
 pub use mcp::{KadmiumMcpManifest, KadmiumMcpServer, McpJsonRpcRequest, McpJsonRpcResponse};
@@ -138,6 +140,12 @@ pub struct GatewayState {
     pub spawned_fleet_instances: Vec<SpawnedLocalWorkerInstance>,
     /// When true, `nodes` contains only live physical/spawned machines registered in `live_workers`.
     pub live_only_mode: bool,
+    /// Work graphs run through the grid dispatcher since start.
+    pub grid_runs: u64,
+    pub grid_last_run: Option<GridLastRun>,
+    /// Credit entries and supply-grid receipts from every grid run, cumulative.
+    pub grid_credit_entries: Vec<kadmium_grid::CreditEntry>,
+    pub grid_receipts: Vec<kadmium_core::VerifiedComputeReceipt>,
     pub coordinator_lan_ip: String,
     pub coordinator_http_port: u16,
     pub training_step_counter: u64,
@@ -259,6 +267,10 @@ impl GatewayState {
             last_measured_tokens_per_sec: None,
             last_measured_pipeline_latency_ms: None,
             resumed_from_checkpoint: None,
+            grid_runs: 0,
+            grid_last_run: None,
+            grid_credit_entries: Vec::new(),
+            grid_receipts: Vec::new(),
         }
     }
 
