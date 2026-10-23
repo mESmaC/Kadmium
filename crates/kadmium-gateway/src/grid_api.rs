@@ -23,7 +23,7 @@ use kadmium_runtime::{
     DeMoReduceReport, DistributedLanExecutor, DistributedMoEPipelineExecutor,
     DistributedPipelineExecutionReport, ExecutorContext, ExecutorRegistry, GridDispatcher,
     GridRunConfig, GridRunReport, LiveHopTelemetry, LocalExecutor, TokenBatchInt8,
-    build_initial_resident_ktb_bank, prompt_seed_hidden,
+    VerdeDisputeReport, build_initial_resident_ktb_bank, prompt_seed_hidden,
 };
 use kadmium_sharding::{
     CALIBRATION_MAX_STEPS, CALIBRATION_MAX_WALL_MS, CalibrationBinding, CalibrationRecord,
@@ -56,6 +56,9 @@ pub struct GridLastRun {
     /// Validated results that became measured compute samples on their workers.
     #[serde(default)]
     pub compute_samples: usize,
+    /// Verde disputes the run settled.
+    #[serde(default)]
+    pub disputes: usize,
 }
 
 /// The placements the coordinator keeps between runs for a model: both shapes, planned once
@@ -529,6 +532,7 @@ fn record_run(
         nodes_used,
         epoch,
         compute_samples: report.compute_samples,
+        disputes: report.disputes.len(),
     });
 }
 
@@ -1221,6 +1225,10 @@ pub struct GridRunApiResponse {
     pub placement_cached: bool,
     pub routing_recorded: usize,
     pub repin_swaps: usize,
+    /// Verde disputes the step settled: the first divergent layer, the referee's work and who
+    /// was penalised, one per disputed unit.
+    #[serde(default)]
+    pub disputes: Vec<VerdeDisputeReport>,
     pub error: Option<String>,
 }
 
@@ -1255,6 +1263,7 @@ pub async fn post_grid_run(
                 .repin
                 .as_ref()
                 .map_or(0, |r| r.proposal.swaps.len()),
+            disputes: outcome.report.disputes.clone(),
             error: None,
         }),
         Err(error) => {
@@ -1282,6 +1291,7 @@ pub async fn post_grid_run(
                 placement_cached: false,
                 routing_recorded: 0,
                 repin_swaps: 0,
+                disputes: Vec::new(),
                 error: Some(error),
             })
         }
@@ -1303,6 +1313,9 @@ pub struct GridTrainApiResponse {
     pub reduce: Option<DeMoReduceReport>,
     pub credits_granted: f64,
     pub hops: Vec<LiveHopTelemetry>,
+    /// Verde disputes the step settled, one per disputed unit.
+    #[serde(default)]
+    pub disputes: Vec<VerdeDisputeReport>,
     pub error: Option<String>,
 }
 
@@ -1358,6 +1371,7 @@ pub async fn post_grid_train(
                 reduce: None,
                 credits_granted: 0.0,
                 hops: Vec::new(),
+                disputes: Vec::new(),
                 error: Some(e),
             });
         }
@@ -1414,6 +1428,7 @@ pub async fn post_grid_train(
         reduce,
         credits_granted: report.credits.iter().map(|c| c.credits).sum(),
         hops,
+        disputes: report.disputes.clone(),
         error: (!report.success).then(|| {
             format!(
                 "validated {} of {} units",

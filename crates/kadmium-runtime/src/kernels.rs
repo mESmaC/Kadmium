@@ -10,7 +10,7 @@
 //!    `Metal SIMD-group`, `Vulkan Subgroup`, `AVX-512 FMA`, `ARM NEON DotProd`) and verifies deterministic
 //!    `Verde RepOps` parity across heterogeneous silicon.
 
-use crate::{Q4KBlockTensor, VerdeVerificationEngine};
+use crate::{Q4KBlockTensor, VerdeVerificationEngine, repops};
 use kadmium_core::{ComputeBackend, HardwareNode};
 use serde::{Deserialize, Serialize};
 
@@ -100,12 +100,9 @@ impl FusedRmsNormRopeKernel {
             return Vec::new();
         }
 
-        // 1. Deterministic fixed-tree sum of squares for RepOps cross-silicon parity
-        let mean_sq = input[..d]
-            .iter()
-            .map(|&x| (x as f64) * (x as f64))
-            .sum::<f64>()
-            / (d as f64);
+        // 1. RepOps fixed-tree sum of squares, so the norm does not depend on the backend's
+        //    reduction order.
+        let mean_sq = repops::tree_sum_squares_f64(&input[..d]) / (d as f64);
         let inv_rms = (1.0 / (mean_sq + (eps as f64)).sqrt()) as f32;
 
         let mut normed: Vec<f32> = input[..d]
@@ -114,13 +111,14 @@ impl FusedRmsNormRopeKernel {
             .map(|(&x, &g)| x * inv_rms * g)
             .collect();
 
-        // 2. In-place complex pair rotation: (x_{2k}, x_{2k+1}) -> R(m * theta_k) * (x_{2k}, x_{2k+1})
+        // 2. In-place complex pair rotation: (x_{2k}, x_{2k+1}) -> R(m * theta_k) * (x_{2k}, x_{2k+1}),
+        //    with the RepOps `pow`, `sin` and `cos` rather than the platform `libm`.
         let half_d = d / 2;
         for k in 0..half_d {
             let exponent = (2 * k) as f32 / (d as f32);
-            let freq = 1.0 / rope_theta.powf(exponent);
+            let freq = 1.0 / repops::pow(rope_theta, exponent);
             let angle = (token_pos as f32) * freq;
-            let (sin_a, cos_a) = angle.sin_cos();
+            let (sin_a, cos_a) = repops::sin_cos(angle);
 
             let x0 = normed[2 * k];
             let x1 = normed[2 * k + 1];
@@ -149,8 +147,10 @@ pub struct PagedGqaAttentionKernel;
 
 impl PagedGqaAttentionKernel {
     /// Computes exact scaled dot-product attention for a query vector `q` (`[head_dim]`)
-    /// streaming across non-contiguous `KvPageBlock` pages in a single online pass
-    /// without materializing the full attention score vector in memory.
+    /// across non-contiguous `KvPageBlock` pages. The scores, the softmax denominator and the
+    /// weighted values are RepOps reductions over the token index, so a backend that splits the
+    /// sequence across threads or pages (flash decoding) produces the same bits as one that
+    /// streams it, which an online rescaling recurrence would not.
     pub fn forward_flash_paged(q: &[f32], kv_pages: &[KvPageBlock]) -> Vec<f32> {
         let head_dim = q.len();
         if head_dim == 0 || kv_pages.is_empty() {
@@ -158,10 +158,8 @@ impl PagedGqaAttentionKernel {
         }
 
         let scale = 1.0 / (head_dim as f32).sqrt();
-        let mut running_max = f32::NEG_INFINITY;
-        let mut running_sum_exp = 0.0f32;
-        let mut acc_out = vec![0.0f32; head_dim];
-
+        let mut scores: Vec<f32> = Vec::new();
+        let mut values: Vec<&[f32]> = Vec::new();
         for page in kv_pages {
             if page.head_dim != head_dim {
                 continue;
@@ -169,29 +167,28 @@ impl PagedGqaAttentionKernel {
             for t in 0..page.tokens_stored {
                 let offset = t * head_dim;
                 let k_slice = &page.keys[offset..offset + head_dim];
-                let v_slice = &page.values[offset..offset + head_dim];
+                scores.push(repops::tree_dot_f32(q, k_slice) * scale);
+                values.push(&page.values[offset..offset + head_dim]);
+            }
+        }
+        if scores.is_empty() {
+            return vec![0.0; head_dim];
+        }
 
-                let score = q.iter().zip(k_slice).map(|(&qi, &ki)| qi * ki).sum::<f32>() * scale;
-
-                // Online FlashAttention-2 safe softmax update
-                let new_max = running_max.max(score);
-                let exp_prev = (running_max - new_max).exp();
-                let exp_curr = (score - new_max).exp();
-
-                running_sum_exp = running_sum_exp * exp_prev + exp_curr;
-                for d in 0..head_dim {
-                    acc_out[d] = acc_out[d] * exp_prev + exp_curr * v_slice[d];
+        let max_score = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let weights: Vec<f32> = scores.iter().map(|s| repops::exp(s - max_score)).collect();
+        let denominator = repops::tree_sum_f32(&weights);
+        let mut out = vec![0.0f32; head_dim];
+        if denominator > 0.0 {
+            let mut terms = vec![0.0f32; weights.len()];
+            for (d, o) in out.iter_mut().enumerate() {
+                for (term, (w, v)) in terms.iter_mut().zip(weights.iter().zip(&values)) {
+                    *term = w * v[d];
                 }
-                running_max = new_max;
+                *o = repops::tree_sum_f32(&terms) / denominator;
             }
         }
-
-        if running_sum_exp > 0.0 {
-            for v in &mut acc_out {
-                *v /= running_sum_exp;
-            }
-        }
-        acc_out
+        out
     }
 }
 
@@ -220,7 +217,7 @@ impl FusedSwiGluExpertKernel {
 
     #[inline]
     fn silu(x: f32) -> f32 {
-        x / (1.0 + (-x).exp())
+        repops::silu(x)
     }
 
     /// Executes the fused gate + up projection, elementwise $\text{SiLU}(g) \odot u$, and down projection.
@@ -273,8 +270,10 @@ impl HardwareKernelDispatcher {
         let hidden_dim = 64usize;
         let intermediate_dim = 128usize;
 
+        // Synthetic inputs through the RepOps transcendentals too, so the canonical digest is
+        // the same on every platform's `libm`.
         let input: Vec<f32> = (0..hidden_dim)
-            .map(|i| ((i as f32) * 0.09).sin() * 0.5)
+            .map(|i| repops::sin((i as f32) * 0.09) * 0.5)
             .collect();
         let gamma: Vec<f32> = vec![1.0; hidden_dim];
 
@@ -285,10 +284,10 @@ impl HardwareKernelDispatcher {
         let build_page = |page_id: u32, seed: f32| -> KvPageBlock {
             let tokens = 16usize;
             let keys = (0..(tokens * hidden_dim))
-                .map(|idx| ((idx as f32) * 0.03 + seed).cos() * 0.4)
+                .map(|idx| repops::cos((idx as f32) * 0.03 + seed) * 0.4)
                 .collect();
             let values = (0..(tokens * hidden_dim))
-                .map(|idx| ((idx as f32) * 0.05 - seed).sin() * 0.4)
+                .map(|idx| repops::sin((idx as f32) * 0.05 - seed) * 0.4)
                 .collect();
             KvPageBlock {
                 page_id,
@@ -306,13 +305,13 @@ impl HardwareKernelDispatcher {
 
         // 3. Fused SwiGLU Expert over Q4_K quantized weights
         let w_gate: Vec<f32> = (0..(intermediate_dim * hidden_dim))
-            .map(|i| ((i as f32) * 0.017).sin() * 0.25)
+            .map(|i| repops::sin((i as f32) * 0.017) * 0.25)
             .collect();
         let w_up: Vec<f32> = (0..(intermediate_dim * hidden_dim))
-            .map(|i| ((i as f32) * 0.023).cos() * 0.25)
+            .map(|i| repops::cos((i as f32) * 0.023) * 0.25)
             .collect();
         let w_down: Vec<f32> = (0..(hidden_dim * intermediate_dim))
-            .map(|i| ((i as f32) * 0.013).sin() * 0.25)
+            .map(|i| repops::sin((i as f32) * 0.013) * 0.25)
             .collect();
 
         let swiglu = FusedSwiGluExpertKernel::from_fp32_weights(

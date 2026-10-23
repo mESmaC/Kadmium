@@ -14,11 +14,10 @@
 
 use crate::{
     BlockwiseInt8Tensor, DeMoDctCompressor, DiLoCoOuterOptimizer, DistributedMoEPipelineExecutor,
-    DistributedPipelineExecutionReport, DistributedQLoRAAdapter, ExecutorContext,
-    ExecutorRegistry, ExpertResidencyTier, LAYER_BOUNDARY_BLOCK, LayerReference,
-    MoERoutedExpertSelection, SparseDctPacket, SpeculativeDraftVerificationReport,
-    StageExecutionTrace, VerdeVerificationEngine, WorkDispatchPayload, WorkResultPayload,
-    execute_dispatch,
+    DistributedPipelineExecutionReport, DistributedQLoRAAdapter, ExecutorContext, ExecutorRegistry,
+    ExpertResidencyTier, LAYER_BOUNDARY_BLOCK, LayerHook, LayerReference, MoERoutedExpertSelection,
+    SparseDctPacket, SpeculativeDraftVerificationReport, StageExecutionTrace,
+    VerdeVerificationEngine, WorkDispatchPayload, WorkResultPayload, execute_dispatch, repops,
 };
 use kadmium_core::{
     HardwareNode, NodeId, NodeRole, PoliteState, sample_personal_cluster,
@@ -27,6 +26,7 @@ use kadmium_data::{
     Fts3PagePatchEngine, KTB_PAGE_ALIGNMENT_BYTES, KtbBankPacker, KtbBankReader, KtbMerkleTree,
     MerkleInclusionProof, TensorEncoding, compute_fnv1a64_checksum,
 };
+use kadmium_grid::LayerDigest;
 use kadmium_network::{
     DEFAULT_KADMIUM_RUNTIME_VERSION, FleetUpdateManifest, LiveWorkerRegistration, PeerChannelPool,
     WireFrame, WireFrameKind, WorkerUpdatePushAck,
@@ -207,6 +207,10 @@ pub struct LiveVerdeBisectionResponse {
     pub layer_state_sample: Vec<f64>,
     pub repops_tree_sum: f64,
     pub repops_digest_fnv1a: u64,
+    /// One digest per layer the challenge ran in software, the exact bits of the state after
+    /// it; empty when a hardware bridge ran the challenge and returned only the end state.
+    #[serde(default)]
+    pub layer_digests: Vec<LayerDigest>,
     pub compute_exec_ms: f64,
 }
 
@@ -384,7 +388,12 @@ pub struct LiveStageForwardResponse {
     pub boundary_output: BlockwiseInt8Tensor,
     pub boundary_int8_payload_bytes: usize,
     pub output_activation_l2_norm: f32,
+    /// The stage's RepOps digest: the fold of `layer_digests` under the current manifest.
     pub repops_digest_fnv1a: u64,
+    /// One boundary digest per layer the stage ran, in layer order; a hardware bridge, which
+    /// returns only the last boundary, reports one digest for the whole range.
+    #[serde(default)]
+    pub layer_digests: Vec<LayerDigest>,
     pub compute_exec_ms: f64,
     pub draft_tokens: Vec<String>,
     pub draft_probs: Vec<f64>,
@@ -539,6 +548,30 @@ pub fn execute_stage_layers_with_ktb_routed(
     experts_per_layer: u32,
     top_k: u32,
 ) -> (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>) {
+    execute_stage_layers_with_ktb_routed_hooked(
+        node_id,
+        hostname,
+        req,
+        resident_ktb_bytes,
+        experts_per_layer,
+        top_k,
+        None,
+    )
+}
+
+/// [`execute_stage_layers_with_ktb_routed`] with a per-layer hook that sees every layer's
+/// output before its boundary is quantized: how a test injects a fault at a known layer, and
+/// what a dishonest node could do. Layers run on a hardware bridge never pass through it.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_stage_layers_with_ktb_routed_hooked(
+    node_id: &str,
+    hostname: &str,
+    req: &LiveStageForwardRequest,
+    resident_ktb_bytes: Option<&[u8]>,
+    experts_per_layer: u32,
+    top_k: u32,
+    hook: Option<LayerHook<'_>>,
+) -> (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>) {
     let t0 = Instant::now();
     let mut hidden = req.boundary_input.dequantize();
     let dim = hidden.len().max(16);
@@ -622,21 +655,22 @@ pub fn execute_stage_layers_with_ktb_routed(
         }
     }
     let mut routed_per_layer: Vec<(u32, Vec<u32>)> = Vec::new();
+    let mut layer_digests: Vec<LayerDigest> = Vec::new();
     if k230_hw_exec_ms.is_none() {
-        for layer in req.start_layer..=req.end_layer {
-            let (out, routing) = LayerReference::layer_forward(
-                &hidden,
-                layer,
-                &gamma,
-                experts_per_layer,
-                top_k,
-                req.q_star_ratio,
-            );
-            routed_per_layer.push((layer, routing.iter().map(|r| r.expert_id).collect()));
-            let boundary = LayerReference::boundary_quantize(&out);
-            hidden = boundary.dequantize();
-            last_boundary = Some(boundary);
-        }
+        let run = LayerReference::run_layers(
+            &hidden,
+            req.start_layer,
+            req.end_layer,
+            &gamma,
+            experts_per_layer,
+            top_k,
+            req.q_star_ratio,
+            hook,
+        );
+        hidden = run.hidden;
+        last_boundary = run.boundary;
+        layer_digests = run.layer_digests;
+        routed_per_layer = run.routed;
     } else {
         routed_per_layer.push((
             req.start_layer,
@@ -646,14 +680,19 @@ pub fn execute_stage_layers_with_ktb_routed(
 
     let q_boundary =
         last_boundary.unwrap_or_else(|| BlockwiseInt8Tensor::quantize(&hidden, LAYER_BOUNDARY_BLOCK));
+    if layer_digests.is_empty() {
+        // A hardware bridge returns the stage's last boundary only: one commitment for the
+        // whole range, which a Verde bisection treats as a single layer.
+        layer_digests.push(LayerDigest::new(
+            req.end_layer,
+            LayerReference::boundary_digest(req.end_layer, &q_boundary),
+        ));
+    }
     let boundary_bytes = q_boundary.quantized_data.len() + q_boundary.absmax_scales.len() * 4;
-    let dequant = q_boundary.dequantize();
-    let l2_norm = dequant.iter().map(|v| v * v).sum::<f32>().sqrt();
+    let l2_norm = LayerReference::boundary_l2(&q_boundary) as f32;
 
-    // Compute deterministic Gensyn Verde RepOps digest
-    let f64_vals: Vec<f64> = dequant.iter().map(|&v| v as f64).collect();
-    let repops_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&f64_vals);
-    let repops_digest = fnv1a_f64_digest(req.start_layer, req.end_layer, repops_sum);
+    // The stage's RepOps digest: its layer boundary digests folded under the current manifest.
+    let repops_digest = LayerReference::unit_digest(&layer_digests);
 
     let (draft_tokens, draft_probs) = if req.run_speculative_draft {
         (
@@ -683,6 +722,7 @@ pub fn execute_stage_layers_with_ktb_routed(
         boundary_int8_payload_bytes: boundary_bytes,
         output_activation_l2_norm: (l2_norm * 1000.0).round() / 1000.0,
         repops_digest_fnv1a: repops_digest,
+        layer_digests,
         compute_exec_ms: compute_exec_ms.max(0.05),
         draft_tokens,
         draft_probs,
@@ -794,10 +834,16 @@ pub fn execute_stage_training_local(
     let dct_packet = demo.step_and_compress(&last_grads, 4);
     let ratio = dct_packet.compression_ratio();
 
+    // The island's RepOps digest: the exact bits of the update it ships, under the manifest.
     let decomp = DeMoDctCompressor::decompress_packet(&dct_packet);
-    let f64_vals: Vec<f64> = decomp.iter().map(|&v| v as f64).collect();
-    let repops_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&f64_vals);
-    let repops_digest = fnv1a_f64_digest(req.start_layer, req.end_layer, repops_sum);
+    let repops_digest = {
+        let mut digest = repops::Digest::new("island-step");
+        digest
+            .update_u32(req.start_layer)
+            .update_u32(req.end_layer)
+            .update_f32s(&decomp);
+        digest.finish()
+    };
 
     let compute_exec_ms = cm4_hw_ms
         .unwrap_or_else(|| (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0);
@@ -959,6 +1005,36 @@ fn fnv1a_f64_digest(start_layer: u32, end_layer: u32, sum: f64) -> u64 {
     hash
 }
 
+/// The synthetic Verde challenge's initial activation, shared by every node that runs it.
+pub const VERDE_CHALLENGE_INITIAL_ACTIVATION: [f64; 8] =
+    [0.42, -0.18, 0.77, 0.31, -0.54, 0.63, 0.12, -0.29];
+
+/// Advances the synthetic Verde challenge state through layers `from..=to`, with the fault at
+/// `inject_fault_at_layer` when there is one, and returns one digest per layer: the exact bits
+/// of the state after it under the RepOps manifest. The layer function itself is unchanged
+/// from the challenge the hardware bridges mirror.
+pub fn verde_challenge_layers(
+    state: &mut [f64],
+    from: u32,
+    to: u32,
+    inject_fault_at_layer: Option<u32>,
+) -> Vec<LayerDigest> {
+    let mut digests = Vec::new();
+    for l in from..=to {
+        for (idx, val) in state.iter_mut().enumerate() {
+            let coeff = 1.008 + ((l as usize * 7 + idx * 3) % 19) as f64 * 0.0005;
+            *val = (*val * coeff + (l as f64) * 0.0015).tanh();
+        }
+        if inject_fault_at_layer == Some(l) && !state.is_empty() {
+            state[0] += 0.45;
+        }
+        let mut digest = repops::Digest::new("verde-audit-layer");
+        digest.update_u32(l).update_f64s(state);
+        digests.push(LayerDigest::new(l, digest.finish()));
+    }
+    digests
+}
+
 /// Computes deterministic layer transitions `start_layer..=target_layer` using Gensyn Verde `RepOps`
 /// pairwise tree reductions so referee and worker nodes produce bit-identical digests across CUDA, Metal, RISC-V, and CPU.
 pub fn execute_verde_layer_challenge_local(
@@ -968,7 +1044,7 @@ pub fn execute_verde_layer_challenge_local(
 ) -> LiveVerdeBisectionResponse {
     let t0 = Instant::now();
     let mut state = if req.initial_activation.is_empty() {
-        vec![0.42, -0.18, 0.77, 0.31, -0.54, 0.63, 0.12, -0.29]
+        VERDE_CHALLENGE_INITIAL_ACTIVATION.to_vec()
     } else {
         req.initial_activation.clone()
     };
@@ -997,6 +1073,7 @@ pub fn execute_verde_layer_challenge_local(
                 layer_state_sample: sample,
                 repops_tree_sum: sum,
                 repops_digest_fnv1a: digest,
+                layer_digests: Vec::new(),
                 compute_exec_ms: hw_ms.max(0.05),
             };
         }
@@ -1023,6 +1100,7 @@ pub fn execute_verde_layer_challenge_local(
                 layer_state_sample: sample,
                 repops_tree_sum: sum,
                 repops_digest_fnv1a: digest,
+                layer_digests: Vec::new(),
                 compute_exec_ms: hw_ms.max(0.05),
             };
         }
@@ -1049,20 +1127,18 @@ pub fn execute_verde_layer_challenge_local(
                 layer_state_sample: sample,
                 repops_tree_sum: sum,
                 repops_digest_fnv1a: digest,
+                layer_digests: Vec::new(),
                 compute_exec_ms: hw_ms.max(0.05),
             };
         }
     }
 
-    for l in req.start_layer..=req.target_layer {
-        for (idx, val) in state.iter_mut().enumerate() {
-            let coeff = 1.008 + ((l as usize * 7 + idx * 3) % 19) as f64 * 0.0005;
-            *val = (*val * coeff + (l as f64) * 0.0015).tanh();
-        }
-        if req.inject_fault_at_layer == Some(l) && !state.is_empty() {
-            state[0] += 0.45;
-        }
-    }
+    let layer_digests = verde_challenge_layers(
+        &mut state,
+        req.start_layer,
+        req.target_layer,
+        req.inject_fault_at_layer,
+    );
 
     let repops_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&state);
     let digest = fnv1a_f64_digest(req.start_layer, req.target_layer, repops_sum);
@@ -1076,6 +1152,7 @@ pub fn execute_verde_layer_challenge_local(
         layer_state_sample: state.into_iter().take(4).collect(),
         repops_tree_sum: (repops_sum * 1_000_000.0).round() / 1_000_000.0,
         repops_digest_fnv1a: digest,
+        layer_digests,
         compute_exec_ms: elapsed_ms.max(0.05),
     }
 }
@@ -2409,9 +2486,9 @@ impl DistributedLanExecutor {
 
         let mut stage_traces = Vec::new();
         let mut island_updates: Vec<Vec<f32>> = Vec::new();
-        let mut sum_loss_before = 0.0f32;
-        let mut sum_loss_after = 0.0f32;
-        let mut sum_compression = 0.0f64;
+        // (start layer, end layer, loss before, loss after, compression) per island, reduced
+        // in layer-range order like the grid's reduce unit.
+        let mut island_summaries: Vec<(u32, u32, f32, f32, f64)> = Vec::new();
 
         for (stage_idx, assign) in plan
             .assignments
@@ -2460,9 +2537,13 @@ impl DistributedLanExecutor {
                     (r, lat, "Simulated Archetype Stage".to_string(), None)
                 };
 
-            sum_loss_before += resp.loss_before;
-            sum_loss_after += resp.loss_after;
-            sum_compression += resp.wire_compression_ratio;
+            island_summaries.push((
+                start_l,
+                end_l,
+                resp.loss_before,
+                resp.loss_after,
+                resp.wire_compression_ratio,
+            ));
 
             let decompressed = DeMoDctCompressor::decompress_packet(&resp.demo_dct_packet);
             island_updates.push(decompressed);
@@ -2484,12 +2565,18 @@ impl DistributedLanExecutor {
             });
         }
 
+        // The reduce and its summary are RepOps reductions, the same ones the grid's reduce
+        // unit runs, so the two paths agree bit for bit in any island order.
         let count = stage_traces.len().max(1) as f32;
+        island_summaries.sort_by_key(|s| (s.0, s.1));
+        let losses_before: Vec<f32> = island_summaries.iter().map(|s| s.2).collect();
+        let losses_after: Vec<f32> = island_summaries.iter().map(|s| s.3).collect();
+        let compressions: Vec<f64> = island_summaries.iter().map(|s| s.4).collect();
         let param_len = island_updates.first().map(|v| v.len()).unwrap_or(16);
         let mut master_weights = vec![0.5f32; param_len];
         let mut diloco = DiLoCoOuterOptimizer::new(param_len, 0.7, 0.9);
         diloco.step_outer_nesterov(&mut master_weights, &island_updates);
-        let consensus_norm = master_weights.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let consensus_norm = repops::tree_norm_f32(&master_weights);
 
         LiveDistributedTrainingStepReport {
             model_id: plan.model_id.clone(),
@@ -2497,9 +2584,14 @@ impl DistributedLanExecutor {
             step_index,
             learning_rate,
             stages: stage_traces,
-            mean_loss_before: ((sum_loss_before / count) * 10000.0).round() / 10000.0,
-            mean_loss_after: ((sum_loss_after / count) * 10000.0).round() / 10000.0,
-            mean_wire_compression_ratio: ((sum_compression / (count as f64)) * 10.0).round() / 10.0,
+            mean_loss_before: ((repops::tree_sum_f32(&losses_before) / count) * 10000.0).round()
+                / 10000.0,
+            mean_loss_after: ((repops::tree_sum_f32(&losses_after) / count) * 10000.0).round()
+                / 10000.0,
+            mean_wire_compression_ratio: ((repops::tree_sum_f64(&compressions) / (count as f64))
+                * 10.0)
+                .round()
+                / 10.0,
             diloco_outer_consensus_norm: (consensus_norm * 1000.0).round() / 1000.0,
             total_step_wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
             all_stages_repops_verified: true,
@@ -3158,6 +3250,76 @@ impl TokenBatchInt8 {
             .chunks(self.dim.max(1) as usize)
             .map(<[f32]>::to_vec)
             .collect()
+    }
+
+    /// A batch from one INT8 tensor per row, the inverse of [`TokenBatchInt8::row_tensors`]:
+    /// the exact codes and scales, concatenated, so an opened boundary dequantizes to the same
+    /// bits the node that produced it fed to its next layer.
+    pub fn from_row_tensors(dim: u32, rows: &[BlockwiseInt8Tensor]) -> Result<Self, String> {
+        let Some(first) = rows.first() else {
+            return Err("TokenBatchInt8: no rows".to_string());
+        };
+        if rows.len() == 1 {
+            return Ok(Self {
+                rows: 1,
+                dim,
+                tensor: first.clone(),
+            });
+        }
+        let block = first.block_size.max(1);
+        if !(dim as usize).is_multiple_of(block) {
+            return Err(format!(
+                "TokenBatchInt8: rows of width {dim} are not a whole number of {block}-element blocks"
+            ));
+        }
+        let mut absmax_scales = Vec::new();
+        let mut quantized_data = Vec::new();
+        for row in rows {
+            if row.block_size != first.block_size || row.total_elements != dim as usize {
+                return Err("TokenBatchInt8: rows differ in width or block size".to_string());
+            }
+            absmax_scales.extend_from_slice(&row.absmax_scales);
+            quantized_data.extend_from_slice(&row.quantized_data);
+        }
+        Ok(Self {
+            rows: rows.len() as u32,
+            dim,
+            tensor: BlockwiseInt8Tensor {
+                block_size: block,
+                total_elements: rows.len() * dim as usize,
+                absmax_scales,
+                quantized_data,
+            },
+        })
+    }
+
+    /// The batch as one INT8 tensor per row, when every row is a whole number of blocks (so the
+    /// flat quantization equals per-row quantization); `None` when a block straddles rows.
+    pub fn row_tensors(&self) -> Option<Vec<BlockwiseInt8Tensor>> {
+        let dim = self.dim as usize;
+        let block = self.tensor.block_size.max(1);
+        if dim == 0 || !dim.is_multiple_of(block) || self.rows == 0 {
+            return None;
+        }
+        let blocks_per_row = dim / block;
+        let rows = self.rows as usize;
+        if self.tensor.quantized_data.len() < rows * dim
+            || self.tensor.absmax_scales.len() < rows * blocks_per_row
+        {
+            return None;
+        }
+        Some(
+            (0..rows)
+                .map(|r| BlockwiseInt8Tensor {
+                    block_size: block,
+                    total_elements: dim,
+                    absmax_scales: self.tensor.absmax_scales
+                        [r * blocks_per_row..(r + 1) * blocks_per_row]
+                        .to_vec(),
+                    quantized_data: self.tensor.quantized_data[r * dim..(r + 1) * dim].to_vec(),
+                })
+                .collect(),
+        )
     }
 
     /// Serializes as `rows u32 LE | dim u32 LE | tensor bytes`.

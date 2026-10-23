@@ -514,6 +514,20 @@ pub struct RecordedAccess {
     pub hits: u64,
 }
 
+/// The RepOps digest of one layer boundary inside a unit: the commitment a Verde bisection
+/// compares between disputants, one per layer the unit ran, in layer order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LayerDigest {
+    pub layer: u32,
+    pub digest: u64,
+}
+
+impl LayerDigest {
+    pub fn new(layer: u32, digest: u64) -> Self {
+        Self { layer, digest }
+    }
+}
+
 /// What a worker returns for one instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkResultRecord {
@@ -524,6 +538,11 @@ pub struct WorkResultRecord {
     pub outputs: Vec<ContentRef>,
     /// RepOps digest of the result, the basis of bit-exact validation.
     pub digest_fnv1a: u64,
+    /// The RepOps digest of every layer boundary the unit ran, in layer order: 12 bytes per
+    /// layer, enough for a referee to find the first divergent layer without re-running the
+    /// unit. Empty for units that do not run layers.
+    #[serde(default)]
+    pub layer_digests: Vec<LayerDigest>,
     /// Scalar summary of the result (an L2 norm, a loss) for tolerance validation.
     pub check_value: f64,
     pub exec_ms: f64,
@@ -553,6 +572,7 @@ impl WorkResultRecord {
             node_id,
             outputs: Vec::new(),
             digest_fnv1a,
+            layer_digests: Vec::new(),
             check_value: 0.0,
             exec_ms,
             bytes_moved: 0,
@@ -566,6 +586,35 @@ impl WorkResultRecord {
     pub fn with_accessed(mut self, accessed: Vec<ContentAccess>) -> Self {
         self.accessed = accessed;
         self
+    }
+
+    pub fn with_layer_digests(mut self, layer_digests: Vec<LayerDigest>) -> Self {
+        self.layer_digests = layer_digests;
+        self
+    }
+
+    /// The position of the first entry at which this result's digest chain and `other`'s
+    /// disagree, when both carry chains of the same length, starting at the same layer, that
+    /// differ somewhere. Verde's first phase: the referee scans the two commitment sequences
+    /// for the first difference, which costs comparisons rather than re-execution.
+    pub fn first_divergent_index(&self, other: &WorkResultRecord) -> Option<usize> {
+        if self.layer_digests.is_empty()
+            || self.layer_digests.len() != other.layer_digests.len()
+            || self.layer_digests[0].layer != other.layer_digests[0].layer
+        {
+            return None;
+        }
+        self.layer_digests
+            .iter()
+            .zip(&other.layer_digests)
+            .position(|(a, b)| a != b)
+    }
+
+    /// This result's digest at the first divergent position, see
+    /// [`WorkResultRecord::first_divergent_index`].
+    pub fn first_divergent_layer(&self, other: &WorkResultRecord) -> Option<LayerDigest> {
+        self.first_divergent_index(other)
+            .map(|index| self.layer_digests[index])
     }
 
     pub fn with_units_processed(mut self, units_processed: u64) -> Self {

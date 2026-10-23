@@ -478,6 +478,13 @@ pub enum SchedulerEvent {
     DisputeOpened {
         unit: WorkUnitId,
     },
+    /// A Verde dispute settled: `winner` validated, or `None` when the referee reproduced no
+    /// disputant and the unit was rejected. `reason` says what the referee found.
+    DisputeSettled {
+        unit: WorkUnitId,
+        winner: Option<NodeId>,
+        reason: String,
+    },
     Duplicated {
         unit: WorkUnitId,
         original: InstanceId,
@@ -1143,6 +1150,23 @@ impl WorkQueue {
     }
 
     fn settle_instance(&mut self, instance_id: &InstanceId, node: &NodeId, valid: bool, now: u64) {
+        self.settle_instance_with_reason(
+            instance_id,
+            node,
+            valid,
+            "disagrees with the validated result",
+            now,
+        );
+    }
+
+    fn settle_instance_with_reason(
+        &mut self,
+        instance_id: &InstanceId,
+        node: &NodeId,
+        valid: bool,
+        reason: &str,
+        now: u64,
+    ) {
         if let Some(instance) = self.instances.get_mut(instance_id) {
             if instance.state != WorkState::Returned {
                 return;
@@ -1160,7 +1184,7 @@ impl WorkQueue {
                 SchedulerEvent::Invalidated {
                     instance: instance_id.clone(),
                     node: node.clone(),
-                    reason: "disagrees with the validated result".to_string(),
+                    reason: reason.to_string(),
                 },
             );
         }
@@ -1188,6 +1212,23 @@ impl WorkQueue {
         &mut self,
         unit_id: &WorkUnitId,
         winning_node: &NodeId,
+        now: u64,
+    ) -> Result<ValidationOutcome, GridError> {
+        self.resolve_dispute_with_reason(
+            unit_id,
+            winning_node,
+            "disagrees with the validated result",
+            now,
+        )
+    }
+
+    /// [`WorkQueue::resolve_dispute`] with what the referee found recorded against every loser,
+    /// such as the layer whose digest it could not reproduce.
+    pub fn resolve_dispute_with_reason(
+        &mut self,
+        unit_id: &WorkUnitId,
+        winning_node: &NodeId,
+        reason: &str,
         now: u64,
     ) -> Result<ValidationOutcome, GridError> {
         let status = self
@@ -1219,12 +1260,20 @@ impl WorkQueue {
         self.settle_instance(&winner.instance_id, &winner.node_id, true, now);
         self.sample_compute(&app, &winner, now);
         for l in &losers {
-            self.settle_instance(&l.instance_id, &l.node_id, false, now);
+            self.settle_instance_with_reason(&l.instance_id, &l.node_id, false, reason, now);
         }
         let status = self.units.get_mut(unit_id).expect("unit exists");
         status.validated = Some(winner.clone());
         status.state = WorkState::Validated;
         status.dispute_open = false;
+        self.emit(
+            now,
+            SchedulerEvent::DisputeSettled {
+                unit: unit_id.clone(),
+                winner: Some(winner.node_id.clone()),
+                reason: reason.to_string(),
+            },
+        );
         self.emit(
             now,
             SchedulerEvent::Validated {
@@ -1236,6 +1285,81 @@ impl WorkQueue {
         Ok(ValidationOutcome::Validated {
             node: winner.node_id,
         })
+    }
+
+    /// Settles a Verde dispute against every disputant, because the referee reproduced none of
+    /// them. Their instances are invalidated and their nodes excluded from the unit, which goes
+    /// back to the queue while the replica ceiling allows another attempt and fails otherwise.
+    pub fn reject_dispute(
+        &mut self,
+        unit_id: &WorkUnitId,
+        reason: &str,
+        now: u64,
+    ) -> Result<ValidationOutcome, GridError> {
+        let status = self
+            .units
+            .get(unit_id)
+            .ok_or_else(|| GridError::UnknownUnit(unit_id.clone()))?;
+        if !status.dispute_open {
+            return Err(GridError::InvalidTransition {
+                unit: unit_id.clone(),
+                from: status.state,
+                to: WorkState::Invalid,
+            });
+        }
+        let returned = status.returned.clone();
+        let instance_count = status.instances.len();
+        let max_replicas = status.unit.redundancy.max_replicas as usize;
+        let min_quorum = status.unit.redundancy.min_quorum.max(1);
+        for r in &returned {
+            self.settle_instance_with_reason(&r.instance_id, &r.node_id, false, reason, now);
+        }
+        let status = self.units.get_mut(unit_id).expect("unit exists");
+        status.dispute_open = false;
+        status.returned.clear();
+        for r in &returned {
+            if !status.unit.placement.excluded_nodes.contains(&r.node_id) {
+                status.unit.placement.excluded_nodes.push(r.node_id.clone());
+            }
+        }
+        let outcome = if instance_count < max_replicas {
+            status.state = WorkState::Unsent;
+            status.attempts += 1;
+            let attempt = status.attempts;
+            self.emit(
+                now,
+                SchedulerEvent::Retried {
+                    unit: unit_id.clone(),
+                    attempt,
+                    reason: reason.to_string(),
+                },
+            );
+            ValidationOutcome::Pending {
+                returned: 0,
+                needed: min_quorum,
+            }
+        } else {
+            status.state = WorkState::Invalid;
+            self.emit(
+                now,
+                SchedulerEvent::Failed {
+                    unit: unit_id.clone(),
+                    reason: format!("{reason}; the replica ceiling allows no further attempt"),
+                },
+            );
+            ValidationOutcome::Invalid {
+                reason: reason.to_string(),
+            }
+        };
+        self.emit(
+            now,
+            SchedulerEvent::DisputeSettled {
+                unit: unit_id.clone(),
+                winner: None,
+                reason: reason.to_string(),
+            },
+        );
+        Ok(outcome)
     }
 
     /// Periodic housekeeping: expires units past their deadline, fails instances on workers that
@@ -1772,6 +1896,82 @@ mod tests {
                 .resolve_dispute(&"slice".into(), &assigned[1].node_id, 5)
                 .is_err()
         );
+        assert!(queue.events().iter().any(|e| matches!(
+            &e.event,
+            SchedulerEvent::DisputeSettled { winner: Some(node), .. } if *node == assigned[1].node_id
+        )));
+    }
+
+    #[test]
+    fn a_dispute_the_referee_reproduces_for_nobody_excludes_both_and_retries_elsewhere() {
+        let catalog = ReplicaCatalog::new();
+        let mut workers = vec![
+            worker("a", NodeTrustTier::UntrustedAuditedMiddleLayersOnly),
+            worker("b", NodeTrustTier::UntrustedAuditedMiddleLayersOnly),
+            worker("c", NodeTrustTier::UntrustedAuditedMiddleLayersOnly),
+            worker("d", NodeTrustTier::UntrustedAuditedMiddleLayersOnly),
+        ];
+        let unit = WorkUnit::new("stage", AppKind::StageForward)
+            .with_redundancy(RedundancyPolicy::untrusted());
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+        queue.submit(unit, 0).unwrap();
+        let first = queue.dispatch_push(&mut workers, &catalog, 1);
+        assert_eq!(first.len(), 2);
+        queue
+            .report_result(&first[0].instance_id, result(&first[0], 1, 0.0, 2), 2)
+            .unwrap();
+        let outcome = queue
+            .report_result(&first[1].instance_id, result(&first[1], 2, 0.0, 3), 3)
+            .unwrap();
+        assert!(matches!(outcome, ValidationOutcome::DisputeOpened { .. }));
+
+        let rejected = queue
+            .reject_dispute(&"stage".into(), "Verde: layer 3 reproduced for neither", 4)
+            .unwrap();
+        assert_eq!(
+            rejected,
+            ValidationOutcome::Pending {
+                returned: 0,
+                needed: 2
+            }
+        );
+        let status = queue.status(&"stage".into()).unwrap();
+        assert!(!status.dispute_open);
+        assert_eq!(status.state, WorkState::Unsent);
+        assert_eq!(status.unit.placement.excluded_nodes.len(), 2);
+        assert!(status.returned.is_empty());
+        for i in &first {
+            assert_eq!(queue.instance(&i.instance_id).unwrap().state, WorkState::Invalid);
+            workers
+                .iter_mut()
+                .find(|w| w.id() == &i.node_id)
+                .unwrap()
+                .in_flight = 0;
+        }
+        let invalidated = queue
+            .events()
+            .iter()
+            .filter(|e| matches!(&e.event, SchedulerEvent::Invalidated { reason, .. } if reason.contains("layer 3")))
+            .count();
+        assert_eq!(invalidated, 2);
+        assert!(queue.events().iter().any(|e| matches!(
+            &e.event,
+            SchedulerEvent::DisputeSettled { winner: None, .. }
+        )));
+
+        // The retry goes to the two nodes that were not disputants.
+        let second = queue.dispatch_push(&mut workers, &catalog, 5);
+        assert_eq!(second.len(), 2);
+        let disputants: Vec<&NodeId> = first.iter().map(|i| &i.node_id).collect();
+        assert!(second.iter().all(|i| !disputants.contains(&&i.node_id)));
+        queue
+            .report_result(&second[0].instance_id, result(&second[0], 9, 0.0, 6), 6)
+            .unwrap();
+        let validated = queue
+            .report_result(&second[1].instance_id, result(&second[1], 9, 0.0, 7), 7)
+            .unwrap();
+        assert!(matches!(validated, ValidationOutcome::Validated { .. }));
+        assert!(queue.reject_dispute(&"stage".into(), "again", 8).is_err());
     }
 
     #[test]

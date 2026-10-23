@@ -193,6 +193,9 @@ impl DiLoCoOuterOptimizer {
     /// 1. Computes averaged pseudo-gradient $\Delta \theta = \frac{1}{K} \sum_{k=1}^K (\theta^{(0)} - \theta_k^{(H)})$
     /// 2. Updates outer Nesterov velocity $v_t = \mu v_{t-1} + \Delta \theta$
     /// 3. Updates master shard parameters $\theta^{(t+1)} = \theta^{(0)} - \eta_{\text{outer}} (\mu v_t + \Delta \theta)$
+    ///
+    /// The islands are reduced in a canonical order (their exact bytes, ascending) through the
+    /// RepOps tree, so the step is bit-identical however the contributions arrived.
     pub fn step_outer_nesterov(
         &mut self,
         master_weights: &mut [f32],
@@ -201,20 +204,32 @@ impl DiLoCoOuterOptimizer {
         if island_inner_weights.is_empty() {
             return;
         }
-        let k_islands = island_inner_weights.len() as f32;
+        let mut islands: Vec<&Vec<f32>> = island_inner_weights.iter().collect();
+        islands.sort_by(|a, b| Self::canonical_order(a, b));
+        let k_islands = islands.len() as f32;
         let n = master_weights.len();
         assert_eq!(n, self.velocity.len());
+        let mut terms = vec![0.0f32; islands.len()];
 
         for i in 0..n {
-            let mut sum_pseudo_grad = 0.0f32;
-            for island_w in island_inner_weights {
-                sum_pseudo_grad += master_weights[i] - island_w[i];
+            for (term, island_w) in terms.iter_mut().zip(&islands) {
+                *term = master_weights[i] - island_w[i];
             }
-            let avg_pseudo_grad = sum_pseudo_grad / k_islands;
+            let avg_pseudo_grad = crate::repops::tree_sum_f32(&terms) / k_islands;
 
             self.velocity[i] = self.outer_momentum_mu * self.velocity[i] + avg_pseudo_grad;
             let nesterov_step = self.outer_momentum_mu * self.velocity[i] + avg_pseudo_grad;
             master_weights[i] -= self.outer_lr * nesterov_step;
         }
+    }
+
+    /// The order contributions are reduced in: by length, then by the bits of their values.
+    /// Identical contributions are interchangeable, so the order is total on what matters.
+    pub fn canonical_order(a: &[f32], b: &[f32]) -> std::cmp::Ordering {
+        a.len().cmp(&b.len()).then_with(|| {
+            a.iter()
+                .map(|v| v.to_bits())
+                .cmp(b.iter().map(|v| v.to_bits()))
+        })
     }
 }
