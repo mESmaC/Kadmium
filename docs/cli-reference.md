@@ -39,6 +39,8 @@ kadmium diloco --inner-steps 20 --rounds 25 --islands 3 --json
 
 The experiment limits total local steps (`H × rounds × islands`) to two million. Invalid inputs exit nonzero. Its fixed inner optimizer is AdamW (`lr=0.02`, betas `0.9/0.999`, epsilon `1e-8`, weight decay `0.01`); the outer Nesterov optimizer uses learning rate `0.7` and momentum `0.9`.
 
+AdamW is hand-written only for this deterministic two-parameter CPU example and is not a shared or production optimizer API. No shared AdamW exists; GaLore/Muon implement different algorithms and are not substitutes. The session delegates its outer update to the shared `DiLoCoOuterOptimizer`; callers of the session API remain responsible for their own local optimizer and its checkpoints. A parameter shard here is a named part of the complete replica present on every island, not a pipeline stage distributed by the session engine.
+
 The default run performs 500 local steps per island and 25 outer synchronizations, compared with 500 synchronizations at every local step. The reported 20× reduction describes synchronization frequency and a like-for-like FP32 parameter payload estimate; it is not a measured network reduction or speedup. No network workers, LLM weights, GPU execution, async RL or inference acceleration are exercised. The CLI starts a fresh experiment each time. For explicit session checkpoint/restore, use the [DiLoCo HTTP API](api-reference.md#stateful-diloco-sessions).
 
 ---

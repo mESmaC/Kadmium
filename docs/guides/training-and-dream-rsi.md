@@ -1,27 +1,27 @@
 # Guide: Distributed Training, RL & Dream-RSI Evolving Worlds
 
-Kadmium goes beyond distributed inference: it enables **fault-tolerant pre-training, LoRA/QLoRA fine-tuning, Disaggregated Reinforcement Learning (GRPO/PPO), and Dream-RSI self-improvement** across home broadband and heterogeneous hardware.
+Kadmium provides reference training and RL mechanisms, plus a bounded stateful DiLoCo outer loop for complete replicas. The pipeline-sharded and large-model workflows below are target designs; the current session engine does not provide distributed model-scale pre-training or fine-tuning.
 
 ---
 
 ## 1. Fault-Tolerant Distributed Training (`Sharded-Island DiLoCo` + `DeMo`)
 
-Standard `AllReduce` data-parallel training stalls completely over 100–300 Mbps home internet or Wi-Fi links. Kadmium combines three breakthroughs in [`kadmium-runtime`](../../crates/kadmium-runtime/src/lib.rs):
+The runtime exposes separate pipeline planning, stateful outer synchronization and gradient-compression mechanisms. They do not yet form an integrated pipeline-sharded DiLoCo learner.
 
-### A. Asymmetric 1F1B Pipeline Parallelism + Sharded Islands
-When a model (`Llama-3-70B-LoRA` or `DeepSeek-V3`) is larger than any single consumer GPU:
-- [`ShardPlanner`](../../crates/kadmium-sharding/src/lib.rs) partitions layers asymmetrically across your LAN devices (`main-gaming-pc` $\to$ `mac-mini-m4-pro` $\to$ `gaming-laptop-rtx4070` $\to$ `friend-remote-pc`).
-- [`Pipeline1F1BScheduler`](../../crates/kadmium-runtime/src/lib.rs) schedules **Warmup**, **Steady-State 1F1B (One-Forward-One-Backward)**, and **Cooldown** micro-batches, keeping pipeline bubble overhead under `~19%`.
-- Stage-boundary activations and gradients are compressed using **Hivemind 8-Bit Blockwise Dynamic Quantization** ([`BlockwiseInt8Tensor`](../../crates/kadmium-runtime/src/lib.rs)), cutting inter-node bandwidth by $4\times$.
+### A. Pipeline planning and stage previews
+
+[`ShardPlanner`](../../crates/kadmium-sharding/src/lib.rs) assigns layer ranges, [`Pipeline1F1BScheduler`](../../crates/kadmium-runtime/src/lib.rs) models the warmup, steady-state and cooldown schedule, and [`BlockwiseInt8Tensor`](../../crates/kadmium-runtime/src/lib.rs) provides boundary quantization. In the [target sharded-island design](../ARCHITECTURE.md#53-mode-c-sharded-island-diloco-target-architecture), several devices inside one island would collectively hold a full replica.
+
+The current `/api/v1/training/step` and grid training endpoints instead run independent synthetic stage previews. Each request resets the stage's model state; counters and loss history do not turn those previews into a persistent learner. Their summaries report `execution_mode: "stateless_per_stage_gradient_preview"`, not a completed island synchronization.
 
 ### B. Stateful DiLoCo rounds
 
 [`DiLoCoSession`](../../crates/kadmium-runtime/src/diloco.rs) implements a synchronous outer training loop inspired by [OpenDiLoCo's pinned PyTorch implementation](https://github.com/PrimeIntellect-ai/OpenDiloco/blob/2d750e58a692ce1424d2a2366b2b3de1f42c9bf1/open_diloco/train_diloco_torch.py#L336-L353):
 
-1. All islands begin from the same committed parameter snapshot. Each island contains the same complete model layout; a shard is an identified parameter partition within that replica, not a different model layer contributed by another island.
-2. Each island takes exactly `H` local optimizer steps on its own data. Local AdamW moments survive outer synchronization.
+1. All islands begin from the same committed parameter snapshot. Each island contains the same complete model layout; a shard is an identified parameter partition within that replica, not a different model layer contributed by another island. Every island submits every shard. The session API does not construct or execute a pipeline inside a replica.
+2. Each island's caller takes exactly `H` local optimizer steps on its own data. The caller owns and retains the local optimizer state; `DiLoCoSession` does not implement that optimizer.
 3. Islands submit their final parameter shards with the round number and the snapshot's `baseline_id`. The coordinator waits for every registered island, rejecting unknown/duplicate islands, stale rounds, mismatched baselines/layouts and invalid values.
-4. For master parameters `theta` and each locally trained replica `theta_i`, the outer pseudo-gradient is the equally weighted mean of `theta - theta_i`. Contributions are ordered by island ID and summed through the RepOps tree with FP64 accumulation before conversion to checked FP32 state. A persistent Nesterov momentum optimizer updates the master once; the new snapshot starts the next round.
+4. For master parameters `theta` and each locally trained replica `theta_i`, the session forms FP32 pseudo-gradients `theta - theta_i` and calls the shared `DiLoCoOuterOptimizer::try_step_pseudo_gradients`. That optimizer orders contributors by pseudo-gradient bits, computes the equally weighted mean using the RepOps FP64 tree reduction and applies its existing FP32 Nesterov update with persistent momentum. The new snapshot starts the next round.
 
 The barrier is synchronous even when submissions arrive at different times. A missing island prevents the round from committing. This implementation does not include OpenDiLoCo's networking or membership recovery, async reinforcement learning, or an inference acceleration technique. It adds an independent session API; existing generic training and RL endpoints do not automatically use this stateful loop.
 
@@ -32,6 +32,8 @@ cargo run -p kadmium-cli -- diloco --inner-steps 20 --rounds 25 --islands 3 --js
 ```
 
 This trains a real small CPU regression objective (`y = 2*x + 1`) with different data ranges per island, two parameter shards, persistent local AdamW state, and an outer Nesterov update. The report includes loss history and 25 synchronizations versus a 500-sync per-step baseline for the same local step count. Payload numbers count FP32 parameters uploaded and broadcast; they exclude protocol overhead and are not measured traffic. This proves the reference training path and cadence, not LLM convergence, GPU throughput or WAN performance.
+
+The hand-written AdamW implementation is private to this deterministic two-parameter CLI example. There is no shared AdamW implementation; the existing GaLore/Muon primitives are different algorithms, so they are not substituted here. This example does not expose a general or production optimizer. The session uses the shared Nesterov outer optimizer, while external callers supply and checkpoint their own local optimizer.
 
 The [session HTTP API](../api-reference.md#stateful-diloco-sessions) exposes create, submit, status, committed snapshot and checkpoint/restore. Session checkpoints preserve master parameters, outer momentum and pending submissions. External learners must separately save their own model, local optimizer, data cursor and random state for a complete training restart. A committed snapshot can be consumed by a future inference adapter; no current inference model is automatically replaced.
 

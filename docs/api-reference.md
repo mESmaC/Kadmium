@@ -94,7 +94,7 @@ Returns [`ClusterOverviewResponse`](../crates/kadmium-gateway/src/lib.rs), a com
 - `nodes`: All `HardwareNode` profiles, 5-tier memory hierarchies, trust tiers, and polite states.
 - `inference_plan` & `training_plan`: Current [`ClusterShardPlan`](../crates/kadmium-sharding/src/lib.rs) layer and MoE expert assignments.
 - `rl_plan`: Disaggregated `Actor`/`Environment`/`Learner` assignments + `DreamRsiEvolutionReport`.
-- `training_telemetry`: Live DiLoCo + `DeMo` DCT compression ratio and `Verde` verification status.
+- `training_telemetry`: Planning/sample metadata with the current legacy preview counters, loss and checkpoint position. Its island count, local-step interval and `verde_repops_verified` flag are sampled metadata, not evidence of island synchronization or the last preview's digest check. Use `/api/v1/training/step`'s `all_stages_repops_verified` for payload consistency and the separate session API for actual barrier progress.
 - `fts3_transfers`: Active CERN FTS3 P2P shard transfer jobs from `home-nas-vault`.
 - `boinc_workunits` & `mesh_links`: Workunit canary verification status and P2P latency/bandwidth matrix.
 
@@ -135,13 +135,26 @@ Returns [`Pipeline1F1BSchedule`](../crates/kadmium-runtime/src/lib.rs), the exac
 ---
 
 ### `POST /api/v1/training/step`
-Runs one live training step across the machines that hold training layers. The body is optional: `{"learning_rate": 0.02}` sets the step size (default `0.05`, clamped to `(0, 1]`). Returns the step report (loss before and after on each stage, `DeMo` compression, RepOps digests) with `global_step` and the recent `loss_history`.
+Runs a stateless reference training preview for each stage assigned training layers. Each stage starts from its own synthetic baseline on every request; different layer ranges are not model replicas and are not averaged into a shared model. The body is optional: `{"learning_rate": 0.02}` sets the step size (default `0.05`, clamped to `(0, 1]`). Returns per-stage loss before/after, `DeMo` compression, RepOps digests, `global_step` and the recent `loss_history`. These counters do not imply persistent model or local optimizer updates.
+
+| Report field | Meaning |
+| :--- | :--- |
+| `execution_mode` | `"stateless_per_stage_gradient_preview"`; distinguishes this legacy preview from a stateful DiLoCo session. |
+| `stage_preview_digest_fnv1a` | Manifest-bound digest of the canonical aggregate stage preview. It is not a checkpoint or a digest of committed DiLoCo master weights. |
+| `preview_error` | `null` when aggregate preview arithmetic succeeds; otherwise a diagnostic error string. On error the preview norm and digest are zero placeholders, not valid preview results. Check this separately from stage digest verification. |
+| `all_stages_repops_verified` | True only for a nonempty set of returned stages whose reported island-step digests match recomputation from the received payload under the current RepOps manifest, and whose layer ranges match the requested ranges. This is payload/digest consistency, not independent kernel re-execution or a referee proof. |
+
+A payload may have a consistent digest yet fail preview arithmetic, or have valid preview arithmetic yet an inconsistent digest. Neither verification field certifies a stateful training round.
+
+The compatibility field `diloco_outer_consensus_norm` is the norm of concatenated independent stage previews, not replica consensus. Use the [DiLoCo sessions](#stateful-diloco-sessions) for persistent master parameters, outer momentum and synchronization barriers.
 
 ---
 
 ### Stateful DiLoCo sessions
 
 These endpoints manage independent, in-memory synchronous training sessions. They do not change `/api/v1/training/step`, the grid training endpoints, RL execution or the active inference model. Each island trains a complete replica with an identical named shard layout, takes exactly `config.inner_steps` local optimizer steps from the committed snapshot, and submits its final parameters. The master advances only after all registered islands submit for the current round.
+
+A session `ParameterShard` is a named slice of the parameter vector inside **each complete replica**. Every island submits every shard; the session does not assign different layers to different islands or execute a pipeline within an island. Pipeline partitioning across devices inside each replica is a [target architecture](ARCHITECTURE.md#53-mode-c-sharded-island-diloco-target-architecture), not a capability provided by this session engine. Local learner execution and optimizer state belong to the caller.
 
 | Method and path | Purpose |
 | :--- | :--- |
@@ -154,7 +167,7 @@ These endpoints manage independent, in-memory synchronous training sessions. The
 | `POST /api/v1/training/diloco/restore` | Restore `{session_id, checkpoint}` under an unused session ID. |
 | `DELETE /api/v1/training/diloco/sessions/{session_id}` | Release a session. |
 
-Create and restore return `201` with `session_id` and flattened status fields; list returns an array of those status objects. Delete returns `204`. Unknown sessions return `404`; invalid create/restore data returns `400`; rejected updates, reused IDs or the 16-session limit return `409`. Session IDs contain 1–96 ASCII letters, digits, hyphens or underscores. Request bodies are limited to 8 MiB.
+Create and restore return `201` with `session_id` and flattened status fields; list returns an array of those status objects. Delete returns `204`. Unknown sessions return `404`; invalid create/restore data returns `400`; rejected updates, reused IDs or the 16-session limit return `409`. Session IDs, island IDs and parameter shard IDs each contain 1–96 ASCII letters, digits, hyphens or underscores. Request bodies are limited to 8 MiB.
 
 This bounded reference engine accepts up to 64 islands and 64 named shards, with `inner_steps` in `1..=1000000`. The resident scalar budget is `parameters_per_island * (islands + 2) <= 262144`, counting local submissions, master parameters and momentum. It is intended for small adapters and reference workloads; full-model GPU training requires a backend with streamed or distributed parameter storage.
 
@@ -187,7 +200,7 @@ Read the snapshot, then include its exact `round` and `baseline_id` in every isl
 }
 ```
 
-The values above illustrate the payload shape; clients must submit their own trained values. Shards match by ID, regardless of submission ordering. Unknown/duplicate islands, stale rounds, incorrect baseline markers or local-step counts, incompatible layouts and nonfinite values are rejected without replacing committed weights. The baseline marker checks matching round/starting weights; it is not cryptographic proof that a client performed its claimed training. The outer pseudo-gradient is the equally weighted mean of master-minus-local parameters, followed by persistent Nesterov momentum.
+The values above illustrate the payload shape; clients must submit their own trained values. Shards match by ID, regardless of submission ordering. Unknown/duplicate islands, stale rounds, incorrect baseline markers or local-step counts, incompatible layouts and nonfinite values are rejected without replacing committed weights. The baseline marker checks matching round/starting weights; it is not cryptographic proof that a client performed its claimed training. The session forms FP32 master-minus-local pseudo-gradients and delegates the outer update to the shared `DiLoCoOuterOptimizer::try_step_pseudo_gradients`: contributors are ordered by pseudo-gradient bits, averaged with the RepOps FP64 tree reduction and applied through the existing FP32 Nesterov update with persistent momentum.
 
 `parameter_payload_estimates` counts dense FP32 parameter uploads and broadcasts. It excludes transport metadata, optimizer state and retries, so it is not a measured network-throughput figure. Checkpoints preserve the master, outer momentum and already accepted updates within an incomplete round. They do **not** contain external learners' AdamW state, data cursors or RNG state: callers must checkpoint those separately. Sessions disappear on coordinator restart unless a caller downloads and restores a checkpoint. A restored session may continue its incomplete barrier; restore does not overwrite an existing session.
 
