@@ -23,6 +23,7 @@
 //!    (`99.86%` NAND write-amplification reduction, `12.5+ yr` flash lifespan).
 
 use crate::NodeId;
+use crate::canonical_numbers::*;
 use serde::{Deserialize, Serialize};
 
 /// Buyer category submitting a production workload to **Kadmium Reactor**.
@@ -220,7 +221,7 @@ impl ReactorEscrowAndStewardLedgerEngine {
     ///    actual modest living-wage headcount payroll + relay infrastructure, `100%` of the surplus
     ///    automatically overflows into the Community STEM & Host Grant Pool!
     pub fn evaluate_clearinghouse_ledger() -> ReactorClearinghouseLedgerReport {
-        let electricity_rate_kwh = 0.14;
+        let electricity_rate_kwh = EIA_US_RESIDENTIAL_KWH_USD_2026;
 
         // Raw micro-settlement slices (including 1 intentionally spoofed/corrupted slice #5)
         let raw_slices = vec![
@@ -230,27 +231,27 @@ impl ReactorEscrowAndStewardLedgerEngine {
                 ReactorBuyerCategory::AcademicResearchLab,
                 "node-m4-macmini",
                 "m4-mac-mini-pro",
-                "Sharded-Island DiLoCo H=500 outer step (Llama-3-70B)",
+                "Sharded-Island DiLoCo H=500 outer step (Llama-3-70B, 10x-85x DeMo DCT)",
                 "Layers L26..L45",
                 3600.0f64,
                 38.0f64,
                 0xa19f_883c_4402_7b09u64,
                 0xa19f_883c_4402_7b09u64,
-                0.252f64,
+                0.240f64,
             ),
             (
                 "slice-smb-002",
-                "Oakwood Family Medicine (HIPAA)",
+                "Apex Engineering & CAD Studio",
                 ReactorBuyerCategory::SmallMidSizedBusiness,
                 "node-rtx4090-main",
                 "cameron-main-rig",
-                "Blind FWHT 'Just-Enough-Boost' clinical note extraction",
-                "Overflow Layers L56..L75 (FWHT Shielded)",
+                "Weight-stationary batch token evaluation (1.5M tokens @ $0.22/1M, zero plaintext egress)",
+                "Middle Layers L22..L48",
                 3600.0,
                 290.0,
                 0xd84c_210f_9b77_3e11u64,
                 0xd84c_210f_9b77_3e11u64,
-                0.324,
+                0.330,
             ),
             (
                 "slice-saas-003",
@@ -572,59 +573,60 @@ impl ClosetSiliconLongevityGovernor {
     }
 
     /// Builds the Embedded Systems Engineer specification for the **Kadmium `Cd-48` Reactor Box**
-    /// (`$249` Cost-Plus Open-Hardware Compute Sidecar, Home Server & Reactor Earner) vs.
-    /// NVIDIA DGX Spark (`$3,500`) and AMD Strix Halo (`$1,999`).
+    /// (`$379` Cost-Plus Open-Hardware Coordinator, `.ktb` NAS Seed Vault, Speculative Draft/WASI
+    /// Node & Home Server, with `$275` Oct-2026 memory-supercycle BOM) vs. NVIDIA DGX Spark (`$6,950`)
+    /// and Framework Strix Halo (`$2,459`).
     pub fn evaluate_embedded_reactor_box() -> EmbeddedReactorBoxSpec {
         let market_comparison = vec![
             MiniMlBoxComparisonEntry {
-                system_name: "NVIDIA DGX Spark (Project DIGITS)".into(),
-                retail_price_usd: 3_500.0,
+                system_name: "NVIDIA DGX Spark 128GB (Oct 2026 Retail)".into(),
+                retail_price_usd: 6_950.0,
                 est_bom_cost_usd: None,
                 memory_and_storage: "128 GB LPDDR5x (273 GB/s) · 4 TB NVMe".into(),
                 wall_power_watts: 170.0,
                 general_purpose_open_linux: true,
-                primary_role: "Monolithic single-box workstation ($3,500 upfront CapEx wall)".into(),
-                net_monthly_reactor_earnings_after_power_usd: 42.50,
-                estimated_payback_months: Some(82.4),
+                primary_role: "Monolithic single-box workstation ($6,950 upfront CapEx wall)".into(),
+                net_monthly_reactor_earnings_after_power_usd: 38.00,
+                estimated_payback_months: Some(182.9),
             },
             MiniMlBoxComparisonEntry {
-                system_name: "AMD Ryzen AI Max+ 395 Mini-PC (Strix Halo)".into(),
-                retail_price_usd: 1_999.0,
+                system_name: "Framework Desktop Strix Halo 128GB (Jan 2026 Retail)".into(),
+                retail_price_usd: 2_459.0,
                 est_bom_cost_usd: None,
                 memory_and_storage: "128 GB LPDDR5x (256 GB/s) · 2 TB NVMe".into(),
                 wall_power_watts: 120.0,
                 general_purpose_open_linux: true,
-                primary_role: "High-end prosumer mini-PC ($2,000 upfront CapEx)".into(),
-                net_monthly_reactor_earnings_after_power_usd: 38.20,
-                estimated_payback_months: Some(52.3),
+                primary_role: "High-end prosumer mini-PC ($2,459 upfront CapEx)".into(),
+                net_monthly_reactor_earnings_after_power_usd: 34.00,
+                estimated_payback_months: Some(72.3),
             },
             MiniMlBoxComparisonEntry {
-                system_name: "Kadmium Cd-48 Reactor Box (32GB Open-Hardware Node)".into(),
-                retail_price_usd: 249.0,
-                est_bom_cost_usd: Some(185.0),
-                memory_and_storage: "32 GB LPDDR5 + M.2 PCIe 3.0x4 NVMe Slot (BYO or 1TB)".into(),
+                system_name: "Kadmium Cd-48 Reactor Box (32GB Coordinator, .ktb NAS & WASI Node)".into(),
+                retail_price_usd: RK3588_32GB_NAS_NODE_RETAIL_USD_2026,
+                est_bom_cost_usd: Some(RK3588_32GB_NAS_NODE_BOM_USD_2026),
+                memory_and_storage: "32 GB LPDDR5 (~25 GB/s) + M.2 PCIe 3.0x4 NVMe Slot".into(),
                 wall_power_watts: 16.0,
                 general_purpose_open_linux: true,
-                primary_role: "3-in-1: Local 'Just-Enough-Boost' Sidecar + General Home Linux Server + 24/7 Reactor Earner".into(),
-                net_monthly_reactor_earnings_after_power_usd: 19.40,
-                estimated_payback_months: Some(12.8),
+                primary_role: "24/7 Mesh Coordinator + .ktb NAS Seed Vault + Speculative Draft/Tokenizer + WASI Verifier + Open Linux Home Server".into(),
+                net_monthly_reactor_earnings_after_power_usd: 7.40,
+                estimated_payback_months: None,
             },
         ];
 
         EmbeddedReactorBoxSpec {
-            product_name: "Kadmium Cd-48 Reactor Box (Open-Hardware Embedded Node)".into(),
-            tagline: "Designed by an Embedded Systems Engineer: An affordable $249 general-purpose Linux mini-box that boosts your local PC, runs your home services, and earns on Kadmium Reactor 24/7.".into(),
+            product_name: "Kadmium Cd-48 Reactor Box (32GB Coordinator, .ktb NAS & WASI Node)".into(),
+            tagline: "Designed by an Embedded Systems Engineer: A $379 Cost-Plus ($275 Oct-2026 BOM) general-purpose Linux home server, 24/7 mesh coordinator, .ktb NAS seed vault, speculative draft/tokenizer, and WASI verifier.".into(),
             soc_and_npu: "8-Core ARM64 (4x Cortex-A76 + 4x Cortex-A55) + 6 TOPS INT4/INT8 NPU + T-MAC LUT Ternary Engine".into(),
             unified_memory_gb: 32,
             nvme_slot_spec: "M.2 2280 PCIe 3.0 x4 NVMe (Zero-Wear Read-Only .ktb mmap + RS(8,2) Bucket Seeder)".into(),
-            networking_and_io: "Dual 2.5GbE RJ45 (Direct PC Sidecar Bridge + LAN Switch) + USB-C 3.2 + 40-Pin GPIO/I2C/UART Header".into(),
+            networking_and_io: "Dual 2.5GbE RJ45 + USB-C 3.2 DRD + 40-Pin GPIO/I2C/UART Header".into(),
             power_delivery: "Battery-Free 12V DC / USB-C PD Wall Supply (16W active / 4W idle — 0% battery swelling risk)".into(),
-            estimated_bom_cost_usd: 185.0,
-            honest_cost_plus_retail_price_usd: 249.0,
+            estimated_bom_cost_usd: RK3588_32GB_NAS_NODE_BOM_USD_2026,
+            honest_cost_plus_retail_price_usd: RK3588_32GB_NAS_NODE_RETAIL_USD_2026,
             multi_purpose_capabilities: vec![
-                "1. Local 'Just-Enough-Boost' Sidecar: Plugs into your desktop PC via 2.5GbE to hold 24 GB of overflow 70B layers (L56..L75) or cold MoE experts at $0/hr.".into(),
-                "2. 100% Open General-Purpose Linux Box: Full mainline Debian/Ubuntu root access, Docker, Home Assistant, TrueNAS/Samba, Pi-hole, WireGuard, or GPIO embedded lab work—zero lock-in.".into(),
-                "3. Silent 16W 24/7 Kadmium Reactor Earner: Draws only ~$1.61/mo in electricity (@ $0.14/kWh) while earning ~$19.40/mo net cash or $26.25/mo in 1.25x Reactor Credits.".into(),
+                "1. 24/7 Mesh Coordinator, .ktb Seed Vault & Draft/Tokenizer Node: Seeds 64 KiB .ktb weight pages over Dual 2.5GbE/USB-C and runs 0.6B speculative draft trees + WASI RL sandboxes (not pitched as a fast DDR5/VRAM execution replacement).".into(),
+                "2. 100% Open General-Purpose Linux Home Server: Full mainline Debian/Ubuntu root access, Docker, Home Assistant, TrueNAS/Samba, Pi-hole, WireGuard, or GPIO embedded lab work—zero lock-in.".into(),
+                "3. Honest Oct-2026 Memory-Supercycle Pricing ($379 Retail / ~$275 BOM): Covers 2026 32GB LPDDR5 board cost plus 9% payment/platform fees, shipping, and warranty without selling at a loss.".into(),
             ],
             market_comparison,
         }
@@ -684,9 +686,12 @@ mod tests {
         assert!(longevity.read_only_ktb_flash_pinning_active);
         assert!(longevity.average_flash_wear_reduction_pct > 99.8);
 
-        // 4. Verify Embedded Reactor Box ($249 Cost-Plus vs $3,500 DGX Spark)
+        // 4. Verify Embedded Reactor Box ($379 Cost-Plus vs $6,950 DGX Spark)
         let hw = &report.embedded_reactor_box;
-        assert!((hw.honest_cost_plus_retail_price_usd - 249.0).abs() < 1e-6);
+        assert!(
+            (hw.honest_cost_plus_retail_price_usd - RK3588_32GB_NAS_NODE_RETAIL_USD_2026).abs()
+                < 1e-6
+        );
         assert_eq!(hw.unified_memory_gb, 32);
         assert_eq!(hw.multi_purpose_capabilities.len(), 3);
         assert_eq!(hw.market_comparison.len(), 3);

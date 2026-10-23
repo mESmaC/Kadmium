@@ -881,6 +881,7 @@ pub fn sample_node_pool(total_nodes: usize) -> Vec<HardwareNode> {
     pool
 }
 
+pub mod canonical_numbers;
 pub mod governance;
 pub mod k230_bridge;
 pub mod m4_mac_mini;
@@ -893,6 +894,7 @@ pub mod reterminal_cm4;
 pub mod supply;
 pub mod tegra_switch;
 
+pub use canonical_numbers::*;
 pub use governance::*;
 pub use k230_bridge::*;
 pub use m4_mac_mini::*;

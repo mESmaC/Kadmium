@@ -3,7 +3,12 @@
 //! Two-sided **Kadmium Supply Grid** compute-leasing engine (`SupplySettlementEngine`),
 //! host lease policies (`SupplyLeasePolicy`), cryptographic `RepOps` receipts, and
 //! datacenter-avoidance grid impact accounting (`DatacenterAvoidanceMetrics`).
+//!
+//! All market rates, electricity prices (`$0.182/kWh` EIA 2026), serverless token price floors,
+//! wholesale GPU index anchors, and credit liability parameters are imported directly from
+//! [`crate::canonical_numbers`] (`2026-10-20` R4 Market Research Review).
 
+use crate::canonical_numbers::*;
 use crate::{ComputeBackend, HardwareNode, NodeId};
 use serde::{Deserialize, Serialize};
 
@@ -12,16 +17,16 @@ use serde::{Deserialize, Serialize};
 pub enum SupplyPayoutMode {
     /// Direct USD settlement via Stripe Connect / USDC.
     UsdDirectPayout,
-    /// Kadmium Cloud burst & failover credits with a 1.25x reciprocity multiplier.
+    /// Kadmium Cloud burst & failover credits (`1.0x–1.25x` wholesale-indexed credit rate, 12-month expiry).
     KadmiumCloudCredits { bonus_multiplier: f64 },
 }
 
 /// Fine-grained capability mask controlling which network workloads may run on leased hardware.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupplyWorkloadMask {
-    /// Host middle transformer layers (`1..N-2`); never sees raw user prompts or output logits.
+    /// Host middle transformer layers (`1..N-2`); zero plaintext egress (`Layer 0` & `Layer N-1` stay local).
     pub allow_middle_layer_inference: bool,
-    /// Participate in bandwidth-decoupled Sharded-Island DiLoCo + Nous DeMo training steps.
+    /// Participate in bandwidth-decoupled Sharded-Island DiLoCo + Nous DeMo (`10x–85x` DCT) training steps.
     pub allow_diloco_demo_training: bool,
     /// Execute fuel-metered `WasiMicroSandbox` reward checks and Dream-RSI MCTS rollouts on CPU/SBC.
     pub allow_wasi_rl_sandboxes: bool,
@@ -59,7 +64,7 @@ impl Default for SupplyLeasePolicy {
         Self {
             enabled: true,
             payout_mode: SupplyPayoutMode::KadmiumCloudCredits {
-                bonus_multiplier: 1.25,
+                bonus_multiplier: OVERNIGHT_CREDIT_MULTIPLIER,
             },
             daily_lease_hours: 12.0,
             only_when_polite_idle: true,
@@ -69,23 +74,30 @@ impl Default for SupplyLeasePolicy {
     }
 }
 
-/// Transparent 5-Factor Unit-Economic Valuation Breakdown explaining **why** a node earns what it earns
-/// and how Kadmium maintains a sustainable **25% platform gross margin** on direct USD payouts (`>35%` on Credits).
+/// Output-Delivered Unit-Economic Valuation Breakdown (`2026-10-20` R4 Model) explaining **why**
+/// a node clears at its rate based on **what it actually produces** (delivered batch tokens/hr,
+/// verified WASI rollouts/hr, and `.ktb` GiB seeded/hr priced at a discount to serverless),
+/// rather than overpricing slow-bandwidth boards by raw memory capacity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeValuationBreakdown {
-    /// Component 1: Fast Leased Memory Value (`VRAM / UMA GiB * $0.0065/GiB/hr`).
+    /// Delivered batch token & middle-layer activation value (`$/active hr` at `$0.22 / 1M tokens`,
+    /// bounded by effective memory bandwidth $\text{BW}_{\text{eff}}$ and uplink).
     pub fast_memory_capacity_usd_hr: f64,
-    /// Component 2: Memory Bandwidth Value (`GB/s * $0.000085/(GB/s)/hr` — governs token decode speed).
+    /// Memory-bandwidth-governed token throughput component (`$/active hr`).
     pub memory_bandwidth_usd_hr: f64,
-    /// Component 3: Tensor/CPU Compute Value (`Effective FP16 TFLOPS * $0.00055/TFLOP/hr` — governs prefill/training/RL).
+    /// Verified WASI RL sandbox rollout & compute component (`$/active hr` at `$0.14 / 1k rollouts`).
     pub compute_tflops_usd_hr: f64,
-    /// Component 4: Pooled Storage Bucket & Seeding Value (`NVMe TiB * $0.0035 + Uplink Gbps * $0.0020`).
+    /// `.ktb` Merkle-verified P2P shard seeding component (`$/active hr` at `$0.008 / GiB`).
     pub storage_and_seed_usd_hr: f64,
-    /// Component 5: Network Latency & Uptime Reliability Multiplier (`0.85 ..= 1.05`).
+    /// Network latency & uptime reliability multiplier (`0.85 ..= 1.05`).
     pub network_reliability_factor: f64,
+    /// Modelled batch tokens processed per active hour on this node (`tokens/hr`).
+    pub delivered_batch_tokens_per_hr: u64,
+    /// Effective buyer cost per 1M tokens on this node (`$/1M tokens`, anchored below serverless list prices).
+    pub buyer_effective_usd_per_1m_tokens: f64,
     /// Gross hourly rate paid by the **Buyer / Renter** when this node is actively executing a job (`$/active hr`).
     pub gross_buyer_clearing_rate_usd_hr: f64,
-    /// Kadmium Platform Take-Rate (`25.0%` — covers `relay.kadmium.ai`, `Verde` referee audits, Stripe fees & company margin).
+    /// Kadmium Platform Take-Rate (`25.0%` = `20%` capped Cost-Plus Ops + `5%` STEM Grant Pool).
     pub kadmium_platform_take_rate_pct: f64,
     /// Kadmium's net platform revenue retained per active hour (`$/active hr`).
     pub kadmium_platform_margin_usd_hr: f64,
@@ -93,35 +105,35 @@ pub struct NodeValuationBreakdown {
     pub host_active_job_usd_per_hr: f64,
     /// Host standby retainer while idle/online and seeding `RS(8,2)` shards for `kdm://pool-bucket/` (`$/standby hr`).
     pub host_standby_storage_retainer_usd_hr: f64,
-    /// Realistic expected network demand utilization duty cycle (`%` of leased hours with an active paid buyer job).
+    /// Modelled network demand utilization duty cycle (`%` of leased hours with an active paid buyer job).
     pub expected_active_utilization_pct: f64,
     /// Estimated wall-plug power draw under active load (`Watts`).
     pub estimated_active_power_watts: f64,
-    /// Estimated electricity cost per active hour at `$0.14 / kWh` US residential average (`$/active hr`).
+    /// Estimated electricity cost per active hour at `$0.182 / kWh` EIA 2026 US residential average (`$/active hr`).
     pub estimated_electricity_cost_usd_per_active_hr: f64,
     /// Estimated total monthly electricity cost across active + standby leased hours (`$/mo`).
     pub estimated_monthly_electricity_cost_usd: f64,
-    /// Host's **true net monthly USD profit after subtracting electricity cost** (`$/mo`).
+    /// Host's **net monthly USD cash profit after subtracting `$0.182/kWh` electricity cost** (`$/mo`).
     pub net_monthly_profit_after_power_usd: f64,
-    /// Human-readable formula breakdown showing how each hardware dimension contributes to the rate.
+    /// Human-readable formula breakdown showing delivered output, $/1M tokens, and power deduction.
     pub formula_explanation: String,
 }
 
-/// Company-level Unit Economics, Cost-Plus Steward-Ownership Charter & Sustainability Proof
-/// ensuring **Kadmium Reactor** never overpays hosts, never subsidizes unutilized idle time,
-/// and caps operational take-rate strictly to fair living-wage headcount, relay infrastructure,
-/// and local STEM / academic / small-business reinvestment.
+/// Company-level Unit Economics, Cost-Plus Steward-Ownership Charter, and Credit Redemption Liability
+/// accounting (`2026-10-20` R4 Model).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompanySustainabilitySummary {
+    /// Date stamp of the underlying market & energy constants (`"2026-10-20"`).
+    pub numbers_date_stamp: String,
     /// Total monthly gross billings collected from Compute Buyers / Renters across these nodes (`$/mo`).
     pub gross_monthly_buyer_billings_usd: f64,
     /// Total monthly direct USD payout liability to Hosts (`75.0%` of active buyer billings + storage retainer, `$/mo`).
     pub host_direct_usd_payout_liability_usd: f64,
     /// Kadmium's net platform revenue on direct USD payouts (`25.0%` gross margin, `$/mo`).
     pub kadmium_net_revenue_on_usd_payout_usd: f64,
-    /// Wholesale fulfillment cost when hosts choose `1.25x` Cloud Credits instead of cash (`$/mo`).
+    /// Expected credit redemption liability COGS (`credits_issued * 70% redemption_rate * wholesale_fulfillment_cost`, `$/mo`).
     pub credit_redemption_wholesale_fulfillment_cost_usd: f64,
-    /// Kadmium's net platform margin when hosts choose `1.25x` Cloud Credits (`%`).
+    /// Kadmium's net platform margin after accounting for credit redemption liability (`%`).
     pub kadmium_gross_margin_on_credit_payout_pct: f64,
     /// Blended company gross margin across `40%` USD Payout / `60%` Credit Payout mix (`%`).
     pub blended_company_gross_margin_pct: f64,
@@ -131,20 +143,23 @@ pub struct CompanySustainabilitySummary {
     pub headcount_and_infra_cost_plus_pct: f64,
     /// Share reinvested into local STEM programs, academic grants, and small business compute credits (`5.0%`).
     pub community_stem_and_small_biz_grant_pct: f64,
-    /// Open-book steward-ownership charter explaining why Kadmium Reactor charges less while paying hosts more.
+    /// Credit expiration window in months (`12` months) preventing unbounded credit float.
+    pub credit_expiry_months: u32,
+    /// Open-book steward-ownership charter explaining why Kadmium Reactor charges less while paying hosts 75% of delivered value.
     pub steward_ownership_charter: String,
     /// Strict solvency invariant: `No-Demand = No-Compute-Payout` (hosts are paid strictly from verified buyer jobs).
     pub zero_unfunded_subsidy_invariant_verified: bool,
 }
 
 /// How **Kadmium Reactor** positions itself to a specific B2B / Institutional Compute Buyer segment
-/// based on hard engineering ROI, compliance, and cost reduction (rather than charity alone).
+/// (all throughput & cost figures explicitly labelled **Modelled** per R4 §3.3 / §6.4 until measured).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuyerSegmentPositioning {
     pub buyer_segment: String,
     pub primary_workload_wedge: String,
     pub hyperscaler_pain_point: String,
     pub kadmium_reactor_solution: String,
+    /// Modelled cost or throughput advantage from the R4 capability envelope (labelled modelled until `kadmium bench` lands).
     pub verified_cost_or_speed_advantage: String,
 }
 
@@ -157,7 +172,7 @@ pub struct NodeSupplyQuote {
     pub eligible_workloads: Vec<String>,
     /// Realistic demand-weighted effective USD/hr across the lease window (`active_duty * active_rate + standby_retainer`).
     pub usd_rate_per_hour: f64,
-    /// Realistic demand-weighted effective Cloud Credits/hr (`1.25x`).
+    /// Realistic demand-weighted effective Cloud Credits/hr (`1.0x–1.25x` wholesale-indexed credit rate, 12-month expiry).
     pub cloud_credit_rate_per_hour_usd: f64,
     pub projected_monthly_usd: f64,
     pub projected_monthly_cloud_credits_usd: f64,
@@ -179,8 +194,7 @@ pub struct VerifiedComputeReceipt {
 }
 
 /// Quantifies why harvesting already-manufactured consumer, office & lab silicon (plus existing surplus
-/// datacenter spot slots) avoids building additional hyperscale datacenters and reverses the regressive
-/// ratepayer/e-waste externality onto a direct dividend for everyday people.
+/// datacenter spot slots) avoids building additional hyperscale datacenters (`2026-10-20` R4-sourced figures).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatacenterAvoidanceMetrics {
     /// Liters of evaporative cooling tower water avoided per month (`0 L` additional water on air-cooled edge nodes).
@@ -189,9 +203,9 @@ pub struct DatacenterAvoidanceMetrics {
     pub embodied_carbon_avoided_kg_co2e: f64,
     /// Fraction of compute satisfied by already-plugged-in consumer/lab hardware before touching existing datacenter spot slots.
     pub local_silicon_first_utilization_pct: f64,
-    /// Verified grid ratepayer externality note (e.g., PJM capacity auction 9.3x spike from $28.92 to $269.92-$333/MW-day, $16.4B ratepayer burden).
+    /// Verified grid ratepayer externality note (PJM capacity auction 9.3x spike from $28.92 to $269.92-$333/MW-day, $16.4B ratepayer burden; IEA 415 TWh in 2024 -> 945 TWh by 2030).
     pub ratepayer_grid_externality_avoided: String,
-    /// Verified global e-waste upcycling note (62M tonnes/yr UN Global E-waste Monitor; upcycling UFS + LPDDR4/5 phones, laptops, PCs & servers).
+    /// Verified global e-waste & Steam GPU population note (62M tonnes/yr UN GEM; ~2.4M 24GB GPUs, ~0.56M 32GB GPUs, and ~11.8M 16GB GPUs online at Steam's 43.5M concurrent peak).
     pub ewaste_closet_silicon_upcycling: String,
     /// Core Kadmium Reactor thesis ("If AI companies want compute, they can pay the people who would otherwise suffer from scaling operations for it").
     pub people_powered_compute_thesis: String,
@@ -223,30 +237,32 @@ pub struct SupplyMarketplaceSnapshot {
 pub struct SupplySettlementEngine;
 
 impl SupplySettlementEngine {
-    /// Computes per-node and cluster-wide supply earnings quotes using a rigorous, transparent
-    /// **5-Factor Market Clearing & Unit-Economics Formula**:
+    /// Computes per-node and cluster-wide supply earnings quotes using the **R4 Output-Delivered
+    /// Work-Unit Clearing Formula** (`2026-10-20`):
     ///
-    /// $$\text{BuyerRate}_{\text{active}} = \eta_{\text{net}} \cdot \left( 0.0065 \cdot M_{\text{fast}} + 0.000085 \cdot \text{BW}_{\text{GB/s}} + 0.00055 \cdot \text{TFLOPS} + S_{\text{bucket}} \right)$$
+    /// Instead of pricing what hardware *is* (which overprices low-bandwidth 25 GB/s SBCs relative to
+    /// serverless $/token), buyers pay for **what the node actually delivers per active hour**:
+    /// 1. **Delivered Batch Tokens / Hour** ($\text{Tokens}_{\text{hr}}$ bounded by $\text{BW}_{\text{eff}}$
+    ///    and network uplink, cleared at **`$0.22 / 1M tokens`** — a ~25% discount to the `$0.28/$0.42`
+    ///    DeepSeek-V3.2 serverless floor and ~85% below frontier-open `$1.74/$3.48`).
+    /// 2. **Verified WASI RL Sandbox Rollouts / Hour** (cleared at **`$0.14 / 1,000 rollouts`**).
+    /// 3. **Merkle-Verified `.ktb` Shard Seeding** (cleared at **`$0.008 / GiB served`**).
     ///
-    /// - **Kadmium Platform Take-Rate ($\tau = 25.0\%$):** Retained from the buyer's payment to cover
-    ///   `relay.kadmium.ai` bandwidth, `Verde RepOps` referee verification, Stripe settlement, and company profit.
-    /// - **Host Active Rate ($75.0\%$ of Buyer Rate):** Paid strictly during cryptographically verified
-    ///   compute execution.
-    /// - **Demand Utilization Duty Cycle ($u \in [0.32, 0.65]$):** Models realistic marketplace match rates
-    ///   (rather than promising 100% 24/7 utilization) plus a small `kdm://pool-bucket/` storage retainer
-    ///   during standby hours, alongside full electricity cost deduction at `$0.14 / kWh`.
+    /// - **Kadmium Platform Take-Rate ($\tau = 25.0\%$):** `20%` capped Cost-Plus Ops + `5%` STEM Grant Pool.
+    /// - **Host Active Rate ($75.0\%$ of Delivered Buyer Value):** Paid strictly on verified work units.
+    /// - **Electricity Deduction (`$0.182 / kWh` EIA 2026):** Transparently subtracted so hosts see true net cash vs. `1.25x` wholesale-indexed credit value.
     pub fn evaluate_cluster_supply(
         nodes: &[HardwareNode],
         policy: &SupplyLeasePolicy,
     ) -> SupplyMarketplaceSnapshot {
         let credit_multiplier = match policy.payout_mode {
-            SupplyPayoutMode::UsdDirectPayout => 1.25,
+            SupplyPayoutMode::UsdDirectPayout => OVERNIGHT_CREDIT_MULTIPLIER,
             SupplyPayoutMode::KadmiumCloudCredits { bonus_multiplier } => bonus_multiplier,
         };
         let monthly_hours = (policy.daily_lease_hours.clamp(0.0, 24.0)) * 30.0;
         let lease_frac = (policy.max_vram_lease_fraction / 0.80).clamp(0.25, 1.125);
-        let platform_take_rate = 0.25; // 25.0% Kadmium Platform Gross Margin on Direct USD
-        let electricity_rate_kwh = 0.14; // $0.14 / kWh US residential average
+        let platform_take_rate = 1.0 - STEWARD_HOST_SHARE_FRAC; // 25.0%
+        let electricity_rate_kwh = EIA_US_RESIDENTIAL_KWH_USD_2026; // $0.182 / kWh (EIA Oct 2026)
 
         let mut node_quotes = Vec::with_capacity(nodes.len());
         let mut total_hourly_usd = 0.0;
@@ -255,28 +271,49 @@ impl SupplySettlementEngine {
         let mut total_power_cost_monthly = 0.0;
 
         for node in nodes {
-            // 1. Component 1: Leased Fast Memory Capacity Value ($0.0065 / GiB / active hr for VRAM;
-            //    $0.0048 / GiB / active hr for Unified Memory; $0.0004 / GiB for System DDR4/DDR5)
-            let leased_vram = node.memory.vram_gb * policy.max_vram_lease_fraction;
-            let leased_uma = node.memory.unified_mem_gb * policy.max_vram_lease_fraction;
-            let leased_ram = node.memory.system_ram_gb * 0.50;
-            let mem_val =
-                (leased_vram * 0.0065) + (leased_uma * 0.0048) + (leased_ram * 0.00035);
-
-            // 2. Component 2: Memory Bandwidth Value ($0.000085 / (GB/s) / active hr)
-            let eff_bw = node
+            // Effective memory bandwidth in GB/s governs real token throughput (R4 §3.1)
+            let eff_bw_gbps = node
                 .memory
                 .vram_bw_gbps
                 .max(node.memory.unified_mem_bw_gbps)
                 .max(node.memory.system_ram_bw_gbps);
-            let bw_val = eff_bw * 0.000085 * lease_frac;
+            let fast_mem_gb = node.memory.vram_gb + node.memory.unified_mem_gb;
 
-            // 3. Component 3: Effective Compute Value ($0.00055 / FP16 TFLOP / active hr)
-            let comp_val = node.fp16_tflops * 0.00055 * lease_frac;
+            // 1. Delivered Batch Token Throughput (weight-stationary batch / rollout work, R4 §3.6 & §6.3):
+            //    Bounded by memory bandwidth (with batched reuse across concurrent sequences) and uplink.
+            let delivered_tokens_per_hr: u64 = if fast_mem_gb >= 20.0 && eff_bw_gbps >= 250.0 {
+                // 24GB+ high-BW GPU (e.g. RTX 4090 @ 1008 GB/s) or 48GB+ Apple M4 Pro (@ 273–546 GB/s)
+                // running batched weight-stationary rollouts/evals (~1.1M–1.6M tokens/hr per R4 §6.3)
+                ((eff_bw_gbps * 1_650.0 * lease_frac) as u64).clamp(450_000, 1_650_000)
+            } else if fast_mem_gb >= 8.0 && eff_bw_gbps >= 100.0 {
+                // 8GB–16GB laptop GPU or mid-tier UMA (~180k–420k batch tokens/hr)
+                ((eff_bw_gbps * 1_200.0 * lease_frac) as u64).clamp(150_000, 450_000)
+            } else {
+                // Low-bandwidth SBC (e.g. 25 GB/s RK3588) or CPU node: routed to WASI sandboxes,
+                // speculative draft trees, and .ktb seeding rather than slow LLM layer decode!
+                ((eff_bw_gbps * 600.0 * lease_frac) as u64).clamp(15_000, 90_000)
+            };
 
-            // 4. Component 4: Decentralized Pool Storage Bucket (NVMe TiB + Seed Uplink Gbps)
+            let token_work_usd_hr = (delivered_tokens_per_hr as f64 / 1_000_000.0)
+                * SUPPLY_GRID_BATCH_CLEARING_USD_PER_1M_TOKENS;
+
+            // 2. Bandwidth-governed fast-tier residency bonus (only when BW >= 150 GB/s so 25 GB/s boards are never overpriced)
+            let bw_residency_usd_hr = if eff_bw_gbps >= 150.0 {
+                (fast_mem_gb * 0.0022 * (eff_bw_gbps / 400.0).min(2.0)) * lease_frac
+            } else {
+                0.0
+            };
+
+            // 3. Verified WASI RL Sandbox & DeMo aggregator throughput ($0.14 per 1,000 fuel-metered rollouts)
+            let wasi_rollouts_per_hr = (node.cpu_threads as f64) * 32.0 * lease_frac;
+            let comp_val = (wasi_rollouts_per_hr / 1000.0) * SUPPLY_GRID_WASI_CLEARING_USD_PER_1K_ROLLOUTS
+                + (node.fp16_tflops * 0.00018 * lease_frac);
+
+            // 4. Merkle-verified .ktb P2P shard seeding ($0.008 / GiB served)
             let nvme_tib = node.memory.nvme_cache_gb / 1024.0;
-            let storage_val = (nvme_tib * 0.0035) + (node.network_uplink_gbps.min(10.0) * 0.0015);
+            let seeded_gib_per_hr =
+                (nvme_tib * 1.8 + node.network_uplink_gbps.min(10.0) * 0.6).clamp(0.2, 8.0);
+            let storage_val = seeded_gib_per_hr * SUPPLY_GRID_KTB_SEED_CLEARING_USD_PER_GIB;
 
             // 5. Network Latency & Reliability Factor
             let net_factor = if node.network_latency_ms <= 1.0 && node.network_uplink_gbps >= 2.5 {
@@ -287,37 +324,49 @@ impl SupplySettlementEngine {
                 0.92
             };
 
-            let gross_buyer_active_hr =
-                ((mem_val + bw_val + comp_val + storage_val) * net_factor).clamp(0.016, 1.80);
+            // Anchor the gross buyer clearing rate to delivered work units, capped by the R4 wholesale GPU index
+            let gross_buyer_active_hr = ((token_work_usd_hr
+                + bw_residency_usd_hr
+                + comp_val
+                + storage_val)
+                * net_factor)
+                .clamp(0.018, WHOLESALE_MEDIAN_RTX4090_USD_HR);
+
+            let buyer_effective_usd_per_1m_tokens = if delivered_tokens_per_hr > 0 {
+                ((gross_buyer_active_hr / (delivered_tokens_per_hr as f64 / 1_000_000.0)) * 100.0)
+                    .round()
+                    / 100.0
+            } else {
+                SUPPLY_GRID_BATCH_CLEARING_USD_PER_1M_TOKENS
+            };
+
             let platform_margin_active_hr = gross_buyer_active_hr * platform_take_rate;
-            let host_active_usd_hr = gross_buyer_active_hr * (1.0 - platform_take_rate);
+            let host_active_usd_hr = gross_buyer_active_hr * STEWARD_HOST_SHARE_FRAC;
 
             // Standby storage bucket & warm-shard retainer during non-active hours (funded by bucket storage fees)
             let standby_retainer_hr = (nvme_tib * 0.0022 + 0.0012).clamp(0.001, 0.015);
 
-            // Realistic marketplace demand utilization duty cycle + active power draw by hardware class
+            // Modelled marketplace demand duty cycle + active power draw by hardware class
             let (duty_cycle, active_watts, standby_watts) = match node.backend {
                 ComputeBackend::Cuda => {
                     if node.memory.vram_gb >= 20.0 {
-                        (0.62, 290.0, 35.0) // High demand for 24GB+ VRAM middle-layer shards (62% duty cycle)
+                        (0.60, 290.0, 35.0)
                     } else {
-                        (0.48, 95.0, 14.0) // Moderate demand for 8GB laptop GPUs (48% duty cycle)
+                        (0.45, 95.0, 14.0)
                     }
                 }
-                ComputeBackend::MetalUnified => (0.65, 38.0, 7.0), // Very high demand for 48GB+ Apple UMA large MoE shards!
-                ComputeBackend::CpuArmNeonNpu => (0.45, 16.0, 4.0), // Steady demand for WASI RL verifiers & T-MAC draft
+                ComputeBackend::MetalUnified => (0.65, 38.0, 7.0),
+                ComputeBackend::CpuArmNeonNpu => (0.45, 16.0, 4.0),
                 ComputeBackend::CpuAvx512OrAvx2 => {
                     if node.memory.nvme_cache_gb >= 2048.0 {
-                        (0.55, 55.0, 28.0) // NAS storage grounding & DeMo aggregator
+                        (0.55, 55.0, 28.0)
                     } else {
-                        (0.32, 28.0, 6.0) // Legacy CPU laptop (32% duty cycle on WASI sandboxes)
+                        (0.32, 28.0, 6.0)
                     }
                 }
                 _ => (0.45, 85.0, 15.0),
             };
 
-            // Expected demand-weighted effective hourly rate across the user's leased window:
-            // EffectiveRate = duty_cycle * host_active_usd_hr + (1 - duty_cycle) * standby_retainer_hr
             let effective_usd_per_hr =
                 (duty_cycle * host_active_usd_hr) + ((1.0 - duty_cycle) * standby_retainer_hr);
             let usd_rate_per_hour = (effective_usd_per_hr * 1000.0).round() / 1000.0;
@@ -332,7 +381,7 @@ impl SupplySettlementEngine {
             let projected_monthly_cloud_credits_usd =
                 ((projected_monthly_usd * credit_multiplier) * 100.0).round() / 100.0;
 
-            // Electricity cost calculation (@ $0.14 / kWh)
+            // Electricity cost calculation (@ $0.182 / kWh EIA 2026 residential average)
             let power_cost_active_hr = (active_watts / 1000.0) * electricity_rate_kwh;
             let power_cost_standby_hr = (standby_watts / 1000.0) * electricity_rate_kwh;
             let monthly_power_usd = if policy.enabled {
@@ -345,11 +394,10 @@ impl SupplySettlementEngine {
             let net_monthly_profit_usd =
                 ((projected_monthly_usd - monthly_power_usd) * 100.0).round() / 100.0;
 
-            // Buyer billings for this node across the month (active hours * gross buyer rate + standby storage fees)
             let node_buyer_monthly = if policy.enabled {
                 monthly_hours
                     * ((duty_cycle * gross_buyer_active_hr)
-                        + ((1.0 - duty_cycle) * (standby_retainer_hr / 0.75)))
+                        + ((1.0 - duty_cycle) * (standby_retainer_hr / STEWARD_HOST_SHARE_FRAC)))
             } else {
                 0.0
             };
@@ -362,27 +410,28 @@ impl SupplySettlementEngine {
             }
 
             let formula_explanation = format!(
-                "Buyer Active=${:.3}/hr [Mem=${:.3} + BW=${:.3} + FLOP=${:.3} + Disk/Net=${:.3}] x {:.2} Rel | -25% Kadmium Fee (${:.3}/hr) => Host Active=${:.3}/hr @ {:.0}% Duty + ${:.3}/hr Standby | Power={:.0}W (${:.3}/act-hr)",
+                "Output-Cleared Buyer=${:.3}/act-hr ({:.2}M tok/hr @ ${:.2}/1M + WASI=${:.3} + Seed=${:.3}) | -25% Fee => Host Active=${:.3}/hr @ {:.0}% Duty | Power={:.0}W @ $0.182/kWh (${:.3}/act-hr)",
                 gross_buyer_active_hr,
-                mem_val * net_factor,
-                bw_val * net_factor,
+                delivered_tokens_per_hr as f64 / 1_000_000.0,
+                buyer_effective_usd_per_1m_tokens,
                 comp_val * net_factor,
                 storage_val * net_factor,
-                net_factor,
-                platform_margin_active_hr,
                 host_active_usd_hr,
                 duty_cycle * 100.0,
-                standby_retainer_hr,
                 active_watts,
                 power_cost_active_hr
             );
 
             let breakdown = NodeValuationBreakdown {
-                fast_memory_capacity_usd_hr: (mem_val * net_factor * 1000.0).round() / 1000.0,
-                memory_bandwidth_usd_hr: (bw_val * net_factor * 1000.0).round() / 1000.0,
+                fast_memory_capacity_usd_hr: (token_work_usd_hr * net_factor * 1000.0).round()
+                    / 1000.0,
+                memory_bandwidth_usd_hr: (bw_residency_usd_hr * net_factor * 1000.0).round()
+                    / 1000.0,
                 compute_tflops_usd_hr: (comp_val * net_factor * 1000.0).round() / 1000.0,
                 storage_and_seed_usd_hr: (storage_val * net_factor * 1000.0).round() / 1000.0,
                 network_reliability_factor: net_factor,
+                delivered_batch_tokens_per_hr: delivered_tokens_per_hr,
+                buyer_effective_usd_per_1m_tokens,
                 gross_buyer_clearing_rate_usd_hr: (gross_buyer_active_hr * 1000.0).round() / 1000.0,
                 kadmium_platform_take_rate_pct: 25.0,
                 kadmium_platform_margin_usd_hr: (platform_margin_active_hr * 1000.0).round()
@@ -401,13 +450,15 @@ impl SupplySettlementEngine {
             };
 
             let mut eligible_workloads = Vec::new();
-            if node.memory.vram_gb >= 8.0 || node.memory.unified_mem_gb >= 16.0 {
+            if (node.memory.vram_gb >= 8.0 || node.memory.unified_mem_gb >= 16.0)
+                && eff_bw_gbps >= 100.0
+            {
                 if policy.workload_mask.allow_middle_layer_inference {
                     eligible_workloads
-                        .push("Middle-layer MoE/dense activations (Layers 1..N-2)".into());
+                        .push("Batch middle-layer activations (Layers 1..N-2, zero plaintext egress)".into());
                 }
                 if policy.workload_mask.allow_diloco_demo_training {
-                    eligible_workloads.push("DiLoCo + DeMo DCT outer-step training island".into());
+                    eligible_workloads.push("DiLoCo + DeMo (10x-85x DCT) outer-step training island".into());
                 }
             }
             if policy.workload_mask.allow_wasi_rl_sandboxes {
@@ -419,13 +470,13 @@ impl SupplySettlementEngine {
 
             let hardware_summary = if node.memory.vram_gb > 0.0 {
                 format!(
-                    "{:?} · {:.0} GB VRAM · {:.1} TFLOPS",
-                    node.backend, node.memory.vram_gb, node.fp16_tflops
+                    "{:?} · {:.0} GB VRAM ({:.0} GB/s) · {:.1} TFLOPS",
+                    node.backend, node.memory.vram_gb, eff_bw_gbps, node.fp16_tflops
                 )
             } else if node.memory.unified_mem_gb > 0.0 {
                 format!(
-                    "{:?} · {:.0} GB UMA · {:.1} TFLOPS",
-                    node.backend, node.memory.unified_mem_gb, node.fp16_tflops
+                    "{:?} · {:.0} GB UMA ({:.0} GB/s) · {:.1} TFLOPS",
+                    node.backend, node.memory.unified_mem_gb, eff_bw_gbps, node.fp16_tflops
                 )
             } else {
                 format!(
@@ -445,7 +496,7 @@ impl SupplySettlementEngine {
                 projected_monthly_cloud_credits_usd,
                 valuation_breakdown: breakdown,
                 privacy_isolation:
-                    "Blind middle-shard execution (Layer 0 & Layer N-1 stay on renter TrustedCore)"
+                    "Zero plaintext egress (Layer 0 & Layer N-1 stay on renter TrustedCore; non-regulated workloads only)"
                         .into(),
                 verification_protocol:
                     "Gensyn Verde RepOps FNV-1a digest + O(log L) refereed bisection".into(),
@@ -464,51 +515,69 @@ impl SupplySettlementEngine {
             ((total_projected_monthly_usd - total_estimated_monthly_electricity_usd) * 100.0)
                 .round()
                 / 100.0;
-        let equivalent_l40s_burst_hours_per_month =
-            ((total_projected_monthly_cloud_credits_usd / 0.75) * 10.0).round() / 10.0;
 
-        // Company Sustainability Math:
-        // - If hosts take Direct USD: Kadmium collects `total_gross_buyer_monthly` from buyers and pays
-        //   `total_host_usd_monthly` (75%), retaining 25.0% net platform margin.
-        // - If hosts take 1.25x Cloud Credits: when hosts redeem those credits on the grid/spot pool,
-        //   Kadmium's wholesale fulfillment cost is ~68% of retail credit face value, yielding a 36.2% net margin!
+        let retail_l40s_indexed = indexed_retail_burst_usd_hr(WHOLESALE_VERIFIED_L40S_USD_HR);
+        let equivalent_l40s_burst_hours_per_month = ((total_projected_monthly_cloud_credits_usd
+            / retail_l40s_indexed)
+            * 10.0)
+            .round()
+            / 10.0;
+
+        // Honest Credit Redemption Liability Math (R4 §6.3):
+        // Credits are NOT free; each issued credit dollar carries an expected redemption rate (70% within
+        // the 12-month expiry window) and a blended fulfillment cost (~75% when fulfilled across community + spot).
         let net_rev_usd_mode =
             ((total_gross_buyer_monthly - total_projected_monthly_usd) * 100.0).round() / 100.0;
-        let credit_wholesale_cost =
-            ((total_projected_monthly_cloud_credits_usd * 0.68) * 100.0).round() / 100.0;
+        let credit_wholesale_cost = ((total_projected_monthly_cloud_credits_usd
+            * EXPECTED_CREDIT_REDEMPTION_RATE
+            * PREPAID_PACK_FULFILLMENT_COGS_RATIO)
+            * 100.0)
+            .round()
+            / 100.0;
         let credit_margin_pct = if total_gross_buyer_monthly > 0.0 {
             (((total_gross_buyer_monthly - credit_wholesale_cost) / total_gross_buyer_monthly)
                 * 1000.0)
                 .round()
                 / 10.0
         } else {
-            36.2
+            34.0
         };
         let blended_margin_pct = ((0.40 * 25.0 + 0.60 * credit_margin_pct) * 10.0).round() / 10.0;
 
         let company_sustainability = CompanySustainabilitySummary {
+            numbers_date_stamp: CANONICAL_NUMBERS_DATE_STAMP.into(),
             gross_monthly_buyer_billings_usd: (total_gross_buyer_monthly * 100.0).round() / 100.0,
             host_direct_usd_payout_liability_usd: total_projected_monthly_usd,
             kadmium_net_revenue_on_usd_payout_usd: net_rev_usd_mode,
             credit_redemption_wholesale_fulfillment_cost_usd: credit_wholesale_cost,
             kadmium_gross_margin_on_credit_payout_pct: credit_margin_pct,
             blended_company_gross_margin_pct: blended_margin_pct,
-            host_compute_share_pct: 75.0,
-            headcount_and_infra_cost_plus_pct: 20.0,
-            community_stem_and_small_biz_grant_pct: 5.0,
-            steward_ownership_charter: "Open-Book Steward-Ownership: 75% of every active compute dollar goes directly to the people who contribute silicon; 20% scales strictly with modest living-wage employee/founder salaries and relay infrastructure; 5% funds local STEM programs, academic labs, and small businesses.".into(),
+            host_compute_share_pct: STEWARD_HOST_SHARE_FRAC * 100.0,
+            headcount_and_infra_cost_plus_pct: STEWARD_COST_PLUS_OPS_FRAC * 100.0,
+            community_stem_and_small_biz_grant_pct: STEWARD_STEM_GRANT_FRAC * 100.0,
+            credit_expiry_months: CREDIT_EXPIRY_MONTHS,
+            steward_ownership_charter: "Open-Book Steward-Ownership (2026-10-20 R4 Model): 75% of every verified work-unit dollar goes to the hardware host; 20% scales strictly with modest living-wage headcount and relay infrastructure (surplus swept to grants); 5% funds STEM and small-business compute grants. Issued credits expire in 12 months and are booked as a redemption liability.".into(),
             zero_unfunded_subsidy_invariant_verified: total_gross_buyer_monthly
                 >= total_projected_monthly_usd,
         };
 
         let datacenter_avoidance = DatacenterAvoidanceMetrics {
-            // Typical hyperscale evaporative cooling consumes ~1.8L per kWh; air-cooled home/lab silicon consumes 0L additional cooling water
             cooling_water_saved_liters_per_month: (monthly_hours * 0.65 * 1.8 * 10.0).round()
                 / 10.0,
             embodied_carbon_avoided_kg_co2e: (nodes.len() as f64) * 340.0,
             local_silicon_first_utilization_pct: 88.5,
-            ratepayer_grid_externality_avoided: "PJM capacity auction prices jumped 9.3x ($28.92 -> $269.92-$333/MW-day, adding $16.4B to utility bills across 13 states) to subsidize AI hyperscaler campuses that create almost no permanent local jobs.".into(),
-            ewaste_closet_silicon_upcycling: "62M tonnes/yr global e-waste (UN GEM, only 22.3% recycled): Kadmium Reactor upcycles dormant phones (UFS 3.0/4.0, LPDDR4X/5), laptops, PCs, and retired servers sitting in closets into paid compute nodes.".into(),
+            ratepayer_grid_externality_avoided: format!(
+                "PJM capacity auction prices jumped 9.3x ($28.92 -> $269.92-$333/MW-day, adding $16.4B to utility bills across 13 states); IEA projects global datacenter power rising from {:.0} TWh (2024) to {:.0} TWh (2030 base case).",
+                IEA_DATACENTER_TWH_2024, IEA_DATACENTER_TWH_2030_BASE
+            ),
+            ewaste_closet_silicon_upcycling: format!(
+                "Steam Hardware Survey (Sep/Oct 2026 @ {:.1}M peak concurrent users) shows ~{:.1}M 24GB GPUs, ~{:.2}M 32GB GPUs, and ~{:.1}M 16GB GPUs (~{:.1}M cumulative 12GB+ GPUs) online, alongside 62M tonnes/yr global e-waste (UN GEM, 22.3% recycled).",
+                STEAM_PEAK_CONCURRENT_USERS_MILLIONS,
+                STEAM_DERIVED_24GB_GPUS_MILLIONS,
+                STEAM_DERIVED_32GB_GPUS_MILLIONS,
+                STEAM_DERIVED_16GB_GPUS_MILLIONS,
+                STEAM_DERIVED_12GB_PLUS_GPUS_MILLIONS
+            ),
             people_powered_compute_thesis: "If AI companies and institutions want compute, they can pay the people who would otherwise suffer from scaling operations for it.".into(),
             grid_philosophy: "Zero additional datacenters required: Kadmium Reactor aggregates dormant consumer, office & lab silicon first, and absorbs existing surplus spot slots in already-built datacenters only when local capacity overflows.".into(),
         };
@@ -516,31 +585,31 @@ impl SupplySettlementEngine {
         let buyer_positioning_matrix = vec![
             BuyerSegmentPositioning {
                 buyer_segment: "1. Academic Research Institutions & University STEM Labs".into(),
-                primary_workload_wedge: "Departmental Lab Unification + Sharded-Island DiLoCo Training + 70B-671B Open-Weight Evals".into(),
-                hyperscaler_pain_point: "Priced out by $3.95-$6.50/hr H100 rates and 6-month NAIRR queues while 50-300 campus lab PCs/Macs sit idle overnight.".into(),
-                kadmium_reactor_solution: "Unifies existing campus GPUs/Macs at $0 CapEx (<200ms Polite student auto-yield) + bursts onto Kadmium Reactor at Cost-Plus rates while earning 1.25x Reactor Credits during summer/overnight idle hours.".into(),
-                verified_cost_or_speed_advantage: "Stretches NSF/NIH grant compute budgets 3.2x-4.0x with zero campus hardware lock-in.".into(),
+                primary_workload_wedge: "Departmental Lab Unification + Sharded-Island DiLoCo Training (10x-85x DeMo DCT) + Open-Weight Evals".into(),
+                hyperscaler_pain_point: "Priced out by $5.49-$7.00/hr dedicated H100 endpoints and 6-month NAIRR queues while 50-300 campus lab PCs/Macs sit idle overnight.".into(),
+                kadmium_reactor_solution: "Unifies existing campus GPUs/Macs at $0 CapEx (<200ms Polite student auto-yield) + earns 1.0x-1.25x wholesale-indexed Reactor Credits overnight to burst frontier evals & DiLoCo runs.".into(),
+                verified_cost_or_speed_advantage: "Modelled (R4 §3.3 / §6.4): stretches NSF/NIH grant compute budgets 2.5x-3.5x on batch/eval workloads with zero campus hardware lock-in.".into(),
             },
             BuyerSegmentPositioning {
-                buyer_segment: "2. Small & Mid-Sized Businesses (Legal, Healthcare, Engineering, Local Commerce)".into(),
-                primary_workload_wedge: "Zero-CapEx Private Office AI + $0.07/hr Cryptographically Blind 'Just-Enough-Boost'".into(),
-                hyperscaler_pain_point: "Cannot send HIPAA/privileged plaintext to public APIs, and cannot afford $25,000+ local server appliances or $2,500/mo dedicated cloud endpoints.".into(),
-                kadmium_reactor_solution: "Pools existing office PCs/Macs and spills only the missing 25% middle layers (L56..L75) to Kadmium Reactor wrapped in an Orthogonal FWHT Blind-Activation Shield (Layer 0 & Layer N-1 never leave the building).".into(),
-                verified_cost_or_speed_advantage: "-94.1% burst cost ($0.07/hr vs. $1.19/hr full GPU) and 9.34x faster than CPU RAM offload with 100% on-prem prompt/output privacy.".into(),
+                buyer_segment: "2. Regulated Small & Mid-Sized Businesses (Legal ABA Rule 1.6, Healthcare HIPAA, Defense CMMC)".into(),
+                primary_workload_wedge: "100% Air-Gapped / On-Premise Office LAN Mesh (Zero External Egress)".into(),
+                hyperscaler_pain_point: "Cannot send HIPAA PHI, privileged legal discovery, or CMMC CUI to public APIs or anonymous residential nodes, and balk at $25,000+ dedicated server appliances.".into(),
+                kadmium_reactor_solution: "Pools the 5-50 Macs and Windows PCs already inside the office firewall in strictly air-gapped LAN mode (zero packets leave the building; optional burst only via FIPS 140-3 TLS to a direct BAA-signed datacenter partner, never community hosts).".into(),
+                verified_cost_or_speed_advantage: "Modelled (R4 §3.3 M2 5-dev office mesh): 38-85 tok/s on gpt-oss-120b, 15 tok/s on dense 70B, 4-16 tok/s (~32 aggregate) on DeepSeek-V3 671B with 100% on-prem boundary containment.".into(),
             },
             BuyerSegmentPositioning {
-                buyer_segment: "3. AI Startups & Agentic SaaS Companies".into(),
-                primary_workload_wedge: "Disaggregated GRPO RL Post-Training (100K WASI Sandboxes) + Batch Inference + DiLoCo Fine-Tuning".into(),
-                hyperscaler_pain_point: "Burning 70% of seed runway idling $4/hr GPUs while waiting on CPU compiler/unit-test RL rollouts or paying hyperscaler 70% gross margins.".into(),
-                kadmium_reactor_solution: "Offloads 100,000 fuel-metered WasiMicroSandbox compiler/test rollouts to upcycled Phone Farm Boxes & SBCs + streams 327.1 Gbps kdm://pool-bucket/ token carousels + Cost-Plus GPU learner steps.".into(),
-                verified_cost_or_speed_advantage: "55%-75% lower RL & batch compute burn + positive 'People-Powered Compute' ESG brand goodwill.".into(),
+                buyer_segment: "3. AI Startups & Agentic Engineering Teams".into(),
+                primary_workload_wedge: "Zero-Rate-Limit Office LAN Mesh + Disaggregated GRPO WASI Rollouts + Batch Token Processing".into(),
+                hyperscaler_pain_point: "38% of engineering orgs hit API rate limits/usage caps, while dedicated H100 endpoints cost $5.49-$7.00/hr and stall waiting on CPU compiler/test RL rewards.".into(),
+                kadmium_reactor_solution: "Pools team hardware with zero rate limits + offloads parallel WASI compiler/test sandboxes and batch token sweeps to the Supply Grid at $0.22/1M tokens (25% below V3.2 serverless floor, 85% below frontier-open).".into(),
+                verified_cost_or_speed_advantage: "Modelled (R4 §6.3 / §6.4): eliminates 429 rate limits and cuts batch/RL verification burn by 45%-70% vs. frontier-open & dedicated endpoints.".into(),
             },
             BuyerSegmentPositioning {
                 buyer_segment: "4. Government Facilities, Municipal Agencies & Public-Sector Labs".into(),
-                primary_workload_wedge: "Air-Gapped Sovereign Local Mesh + Federal/Municipal E-Waste Circularity & Ratepayer Protection".into(),
+                primary_workload_wedge: "Air-Gapped Sovereign Local Mesh + Municipal E-Waste Circularity & Ratepayer Protection".into(),
                 hyperscaler_pain_point: "Strict data sovereignty (ITAR/CMMC/CJIS), municipal budget freezes, taxpayer backlash against hyperscaler grid subsidies, and retired government IT e-waste.".into(),
                 kadmium_reactor_solution: "100% Pure Rust zero-C-dependency binary (`kadmium`) that clusters existing agency desktops and decommissioned servers on-prem with cryptographic Verde RepOps audit logs.".into(),
-                verified_cost_or_speed_advantage: "$0 new datacenter CapEx, zero external telemetry in air-gapped mode, and turns retired municipal silicon into sovereign AI capacity.".into(),
+                verified_cost_or_speed_advantage: "Modelled: $0 new datacenter CapEx, zero external telemetry in air-gapped mode, and converts retired municipal silicon into sovereign AI capacity.".into(),
             },
         ];
 
@@ -549,31 +618,31 @@ impl SupplySettlementEngine {
                 receipt_id: "rcpt-cd48-9941a".into(),
                 provider_node_id: NodeId("node-rtx4090-main".into()),
                 workload_summary:
-                    "deepseek-v3-671b-moe · middle layers 14..31 (blind activation relay)".into(),
-                tokens_or_rollouts_processed: 148_200,
+                    "deepseek-v3-671b-moe · weight-stationary batch rollouts (1.42M tokens @ $0.22/1M)".into(),
+                tokens_or_rollouts_processed: 1_420_000,
                 verde_repops_digest_fnv1a: 0xd84c_210f_9b77_3e11,
-                earned_usd: 1.52,
-                earned_cloud_credits_usd: 1.90,
+                earned_usd: 0.28,
+                earned_cloud_credits_usd: 0.35,
             },
             VerifiedComputeReceipt {
                 receipt_id: "rcpt-cd48-9941b".into(),
                 provider_node_id: NodeId("node-m4-macmini".into()),
                 workload_summary:
-                    "llama-3-70b-lora · Sharded-Island DiLoCo H=500 outer step (DeMo DCT)".into(),
-                tokens_or_rollouts_processed: 64_000,
+                    "llama-3-70b-lora · Sharded-Island DiLoCo H=500 outer step (10x-85x DeMo DCT)".into(),
+                tokens_or_rollouts_processed: 640_000,
                 verde_repops_digest_fnv1a: 0xa19f_883c_4402_7b09,
-                earned_usd: 1.16,
-                earned_cloud_credits_usd: 1.45,
+                earned_usd: 0.22,
+                earned_cloud_credits_usd: 0.28,
             },
             VerifiedComputeReceipt {
                 receipt_id: "rcpt-cd48-9941c".into(),
                 provider_node_id: NodeId("node-sbc-cluster".into()),
                 workload_summary:
-                    "Dream-RSI MCTS replay + 512 WasiMicroSandbox kernel verifications".into(),
-                tokens_or_rollouts_processed: 512,
+                    "Dream-RSI MCTS replay + 1,000 WasiMicroSandbox kernel verifications (@ $0.14/1k)".into(),
+                tokens_or_rollouts_processed: 1_000,
                 verde_repops_digest_fnv1a: 0x77e2_104a_cc58_12f4,
-                earned_usd: 0.24,
-                earned_cloud_credits_usd: 0.30,
+                earned_usd: 0.11,
+                earned_cloud_credits_usd: 0.14,
             },
         ];
 
@@ -607,8 +676,15 @@ mod tests {
         let policy = SupplyLeasePolicy::default();
         let snap = SupplySettlementEngine::evaluate_cluster_supply(&nodes, &policy);
 
+        assert_eq!(
+            snap.company_sustainability.numbers_date_stamp,
+            CANONICAL_NUMBERS_DATE_STAMP
+        );
         assert!(snap.company_sustainability.zero_unfunded_subsidy_invariant_verified);
-        assert!(snap.company_sustainability.gross_monthly_buyer_billings_usd > snap.total_projected_monthly_usd);
+        assert!(
+            snap.company_sustainability.gross_monthly_buyer_billings_usd
+                > snap.total_projected_monthly_usd
+        );
         assert!(snap.company_sustainability.blended_company_gross_margin_pct >= 25.0);
         assert!(
             (snap.company_sustainability.host_compute_share_pct
@@ -618,6 +694,7 @@ mod tests {
                 .abs()
                 < 1e-6
         );
+        assert_eq!(snap.company_sustainability.credit_expiry_months, 12);
         assert_eq!(snap.buyer_positioning_matrix.len(), 4);
         assert!(
             snap.datacenter_avoidance
@@ -634,7 +711,10 @@ mod tests {
             let b = &q.valuation_breakdown;
             assert!((b.kadmium_platform_take_rate_pct - 25.0).abs() < 1e-6);
             assert!(b.gross_buyer_clearing_rate_usd_hr > b.host_active_job_usd_per_hr);
-            assert!(b.expected_active_utilization_pct >= 30.0 && b.expected_active_utilization_pct <= 70.0);
+            assert!(
+                b.expected_active_utilization_pct >= 30.0
+                    && b.expected_active_utilization_pct <= 70.0
+            );
         }
     }
 }

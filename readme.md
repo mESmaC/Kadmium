@@ -84,7 +84,7 @@ Kadmium synthesizes proven breakthroughs from local edge AI engines and battle-t
 | **[niko1221/strata](https://github.com/niko1221/strata)** | **Zero-Friction Consumer Hardware Setup & Drop-In API Gateway:** One-command deployment across Windows/macOS/Linux with built-in OpenAI (`/v1/chat/completions`, `/v1/embeddings`) and Anthropic (`/v1/messages`) compatible endpoints. |
 | **[BOINC/boinc](https://github.com/BOINC/boinc)** | **Polite Host Resource Harvesting & Workunit Verification:** Non-intrusive background execution that respects user activity (`<200 ms` Gaming Mode yield, 15s swapchain cooldown, battery/thermal envelopes) and spot-verifies untrusted peers. |
 | **[cern-fts/fts3](https://github.com/cern-fts/fts3) & [davix](https://github.com/cern-fts/davix)** | **Third-Party Peer-to-Peer Data Staging:** The coordinator never bottlenecks weight or dataset transfers. Nodes stream shards, datasets, and checkpoints directly peer-to-peer with bandwidth-aware retry state machines. |
-| **[NousResearch/DisTrO](https://github.com/NousResearch/DisTrO) & Psyche** | **DeMo (Decoupled Momentum) DCT Compression:** Compresses inter-node gradient synchronization by $1{,}000\times$–$3{,}000\times$ using Discrete Cosine Transform (DCT) fast-momentum extraction with local error-feedback accumulation. |
+| **[NousResearch/DisTrO](https://github.com/NousResearch/DisTrO) & Psyche** | **DeMo (Decoupled Momentum) DCT Compression:** Compresses inter-node gradient synchronization by $10\times$–$85\times$ using Discrete Cosine Transform (DCT-II) fast-momentum extraction with local error-feedback accumulation. |
 | **[PrimeIntellect-ai/OpenDiLoCo](https://github.com/PrimeIntellect-ai/OpenDiloco)** | **Sharded-Island DiLoCo & Async RL Post-Training:** Combines fast inner-loop local optimization on sharded LAN/USB4 islands with periodic outer-loop Nesterov pseudo-gradient sync across WAN peers. |
 | **[learning-at-home/hivemind](https://github.com/learning-at-home/hivemind) & [petals](https://github.com/bigscience-workshop/petals)** | **SWARM Parallelism & 8-Bit Blockwise Quantization:** Latency-weighted micro-batch routing around slow/churning peers and compressed boundary activations. |
 | **[gensyn-ai/rl-swarm](https://github.com/gensyn-ai/rl-swarm) & [ree](https://github.com/gensyn-ai/ree)** | **Reproducible Cross-Silicon Execution (`RepOps`) & Verde Verification:** Solves floating-point drift across mixed CUDA, Metal, Vulkan, and CPU nodes using deterministic reductions and $O(\log L)$ refereed layer-bisection audits. |
@@ -108,7 +108,7 @@ When you launch a game on your desktop or handheld, unplug a laptop, or attach a
 ### 3. Distributed & Decentralized Training Engine (`kadmium-runtime`)
 - **Asymmetric 1F1B & Zero-Bubble (`ZBH1`) Pipeline Training:** Schedules forward, backward-input, and backward-weight passes across heterogeneous nodes with FWHT INT8 activation checkpointing.
 - **GaLore + Muon Newton-Schulz & Hadamard FP8 Training:** Orthogonalized low-rank gradient projection and block-Hadamard outlier suppression for memory-efficient fine-tuning on consumer GPUs/APUs.
-- **Sharded-Island DiLoCo + DeMo DCT Compression:** Shards large models across local consumer devices as a single logical island and syncs outer-loop updates over WAN with $1{,}000\times$ bandwidth reduction.
+- **Sharded-Island DiLoCo + DeMo DCT Compression:** Shards large models across local consumer devices as a single logical island and syncs outer-loop updates over WAN with $10\times$–$85\times$ DCT gradient compression.
 - **Decentralized RL Post-Training (`kadmium-rl`):** Runs GRPO/PPO policy rollouts on GPU/Metal/APU nodes while Linux SBCs and CPUs execute parallel WASI / code-verification reward sandboxes.
 
 ### 4. Control Room Workspace App, Native Desktop Companion & Drop-In AI Gateway (`kadmium-gateway` & `kadmium-desktop`)
@@ -232,7 +232,9 @@ cargo test --workspace
 ## 📖 Documentation
 
 - [**`docs/ARCHITECTURE.md`**](docs/ARCHITECTURE.md) — Deep-dive mathematical and systems specification covering capability vectors, $q^*$ bandwidth-adaptive routing, live responsibility shifting, asymmetric 1F1B & Sharded-Island DiLoCo training, `.ktb` tensor banks, and Verde reproducible verification.
-- [**`docs/BUSINESS_PLAN_AND_STANCE.md`**](docs/BUSINESS_PLAN_AND_STANCE.md) — Master Business Plan, Pay-In & Pay-Out Pricing Model, `75 / 20 / 5` Steward-Ownership Charter, and Moral/Ethical Stance.
+- [**`docs/NUMBERS_2026-10.md`**](docs/NUMBERS_2026-10.md) — Single dated (`2026-10-20`) source-of-truth ledger for wholesale GPU index rates, serverless token benchmarks, EIA electricity tariffs (`$0.182/kWh`), Steam-derived GPU counts, and hardware BOM constants (paired with [`crates/kadmium-core/src/canonical_numbers.rs`](crates/kadmium-core/src/canonical_numbers.rs)).
+- [**`docs/BUSINESS_PLAN_AND_STANCE.md`**](docs/BUSINESS_PLAN_AND_STANCE.md) — Master Business Plan, Output-Delivered Supply Grid Clearing Model, Deferred Revenue & Credit Liability Accounting, Audited Compliance Boundaries, `75 / 20 / 5` Steward-Ownership Charter, and Moral/Ethical Stance.
+- [**`docs/MARKET_RESEARCH_REVIEW_2026-10.md`**](docs/MARKET_RESEARCH_REVIEW_2026-10.md) — R4 Market Research & Fact-Check Review auditing wholesale GPU pricing, serverless token floors, and capability envelopes.
 - **Interactive Docs Portal** — Run `cargo run --bin kadmium -- serve` and visit **`http://localhost:7848/docs`**.
 
 ---

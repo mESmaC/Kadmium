@@ -4,6 +4,10 @@
 //! Prime Intellect, and AWS EC2 when a workload overflows local `--cadmium` hardware—without
 //! requiring new greenfield datacenter construction.
 
+use kadmium_core::canonical_numbers::{
+    WHOLESALE_VERIFIED_A100_80GB_USD_HR, WHOLESALE_VERIFIED_H100_80GB_USD_HR,
+    WHOLESALE_VERIFIED_L40S_USD_HR, indexed_retail_burst_usd_hr,
+};
 use serde::{Deserialize, Serialize};
 
 /// Real-time spot orderbook quote from an existing datacenter provider.
@@ -42,54 +46,54 @@ impl SpotOrderbookBidEngine {
     pub fn query_live_orderbook() -> Vec<SpotOrderbookQuote> {
         let raw = [
             (
-                "spot-runpod-l40s-ord",
-                "RunPod Spot",
+                "spot-spheron-l40s-ord",
+                "Spheron Verified Spot",
                 "us-ord-1",
                 "NVIDIA L40S 48GB",
                 48.0,
                 362.0,
-                0.79,
+                WHOLESALE_VERIFIED_L40S_USD_HR,
                 0.04,
             ),
             (
-                "spot-vast-a100-iad",
-                "Vast.ai Verified Tier-3",
+                "spot-spheron-a100-iad",
+                "Spheron / RunPod Verified Tier-3",
                 "us-east-iad",
                 "NVIDIA A100 SXM4 80GB",
                 80.0,
                 312.0,
-                1.19,
+                WHOLESALE_VERIFIED_A100_80GB_USD_HR,
                 0.05,
             ),
             (
-                "spot-prime-h100-ams",
-                "Prime Intellect Decentralized Pool",
+                "spot-vast-h100-ams",
+                "Vast.ai / Spheron Verified Pool",
                 "eu-ams-2",
                 "NVIDIA H100 PCIe 80GB",
                 80.0,
                 756.0,
-                1.69,
+                WHOLESALE_VERIFIED_H100_80GB_USD_HR,
                 0.03,
             ),
             (
-                "spot-lambda-a6000-dfw",
-                "Lambda Cloud Surplus",
+                "spot-novita-l40s-dfw",
+                "Novita Surplus Spot Floor",
                 "us-south-dfw",
-                "NVIDIA RTX A6000 48GB",
+                "NVIDIA L40S 48GB",
                 48.0,
-                154.8,
+                362.0,
                 0.55,
-                0.02,
+                0.08,
             ),
             (
-                "spot-aws-g6e-useast",
-                "AWS EC2 g6e.2xlarge Spot",
+                "spot-modal-l40s-useast",
+                "Modal On-Demand Burst",
                 "us-east-1",
                 "NVIDIA L40S 48GB",
                 48.0,
                 362.0,
-                0.94,
-                0.06,
+                1.95,
+                0.01,
             ),
         ];
 
@@ -192,8 +196,17 @@ pub struct DynamicKvBoundarySlideStep {
     pub oom_prevented: bool,
 }
 
-/// Cryptographic & linear-algebraic verification of the **Session-Keyed Orthogonal Hadamard
-/// Blind-Activation Shield** ($\tilde{h} = h Q^\top$, $\tilde{W} = Q W Q^\top$, $y = (\tilde{h} \tilde{W}) Q$).
+/// Linear-algebraic verification of the **Session-Keyed Orthogonal Hadamard
+/// Wire-Obfuscation Rotation** ($\tilde{h} = h Q^\top$, $\tilde{W} = Q W Q^\top$, $y = (\tilde{h} \tilde{W}) Q$).
+///
+/// > **Threat Model & Compliance Boundary (R4 Audit):**
+/// > An orthogonal Walsh-Hadamard transform is an invertible rotation (near-zero cosine similarity measures
+/// > high-dimensional angle, not information-theoretic secrecy; for public-weight models $W$, a host holding
+/// > $\tilde{W} = Q W Q^\top$ can solve for $Q$ via least-squares, and activation-inversion attacks exist).
+/// > Consequently, this transform is strictly a **casual wire-obfuscation & quantization-incoherence layer**
+/// > for non-regulated developer/prosumer tiers alongside **Zero Plaintext Egress** (`Layer 0` and `Layer N-1`
+/// > stay local). Regulated HIPAA / CMMC / ABA workloads (`Private Office Fabric`) **never** route activations
+/// > to anonymous community nodes and run in **100% Air-Gapped / On-Premise Office LAN Mode**.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlindOrthogonalActivationShieldReport {
     pub hidden_dim: usize,
@@ -381,7 +394,7 @@ impl ElasticLocalBoostPlanner {
         let deficit_gb = 8.0; // Only 20 middle layers (L56..L75 of 80 layers) spill over!
 
         let cpu_offload_tok_s = 5.8; // Bottlenecked by 20 layers running on 50 GB/s system DDR5
-        let full_cloud_usd = 1.19;   // Full 80GB A100 rental (wastes the user's $2,000 RTX 4090!)
+        let full_cloud_usd = indexed_retail_burst_usd_hr(WHOLESALE_VERIFIED_A100_80GB_USD_HR); // Full 80GB A100 indexed burst ($1.83/hr vs $1.46/hr wholesale)
 
         let options = vec![
             ElasticBoostOptionQuote {
@@ -399,7 +412,7 @@ impl ElasticLocalBoostPlanner {
             ElasticBoostOptionQuote {
                 mode: ElasticBoostMode::BaselineFullCloudGpuRental,
                 mode_label: "2. Standard Full Cloud GPU Rental (Leaves Local PC 100% Idle)".into(),
-                spill_target_description: "Rents full 80GB Cloud A100 ($1.19/hr); local RTX 4090 sits unused".into(),
+                spill_target_description: format!("Rents full 80GB Cloud A100 (${:.2}/hr indexed); local RTX 4090 sits unused", full_cloud_usd),
                 primary_desktop_layer_share_pct: 0.0,
                 overflow_vram_absorbed_gb: total_required_gb,
                 effective_decode_tok_s: 52.0,

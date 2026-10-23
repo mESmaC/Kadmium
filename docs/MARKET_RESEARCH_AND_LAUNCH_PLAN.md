@@ -1,5 +1,9 @@
 # Kadmium (`Cd-48`) & **Kadmium Reactor** — Deep-Dive Market Research, Buyer Positioning & Rapid-Revenue Launch Plan
 
+> [!NOTE]
+> **Canonical Numbers Source of Truth (`2026-10-20` R4 Audit):**
+> All wholesale GPU rates, serverless token benchmarks, electricity tariffs (`$0.182/kWh` EIA Oct 2026), Steam-derived GPU counts, hardware BOMs (`$275` BOM / `$379` retail for the 32 GB RK3588 node), deferred revenue accounting, and compliance boundaries in this document read from [`docs/NUMBERS_2026-10.md`](NUMBERS_2026-10.md), [`docs/BUSINESS_PLAN_AND_STANCE.md`](BUSINESS_PLAN_AND_STANCE.md), and [`crates/kadmium-core/src/canonical_numbers.rs`](../crates/kadmium-core/src/canonical_numbers.rs).
+
 > [!IMPORTANT]
 > **The Undefeated Core Thesis of `Kadmium Reactor`:**
 > *"If the AI companies and other companies want compute, then they can pay the people who would otherwise suffer from scaling operations for it."*
@@ -54,37 +58,33 @@ Most venture-backed AI clouds (`CoreWeave`, `Modal`, `Together`, `AWS`) must ext
 
 A noble mission rallies supply hosts, press, and universities—but **compute buyers write checks when we solve their hardest technical & budget bottlenecks better than anyone else.** Here is how [`BuyerSegmentPositioning`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/supply.rs) positions **Kadmium Reactor** to each of the four target buyer segments without ever looking like "a solution to a problem that doesn't exist":
 
-| Target Buyer Segment | Their Acute Pain Point Today | Why Hyperscalers / Existing Clouds Fail Them | **How `Kadmium Reactor` Wins the Contract** | Verified Buyer ROI |
+| Target Buyer Segment | Their Acute Pain Point Today | Why Hyperscalers / Existing Clouds Fail Them | **How `Kadmium Reactor` Wins the Contract** | Modelled Buyer ROI (`R4 §10` Capability Envelope) |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. Academic Research Institutions & University STEM Labs** | Priced out of AI research by `$4–$6.50/hr` H100s and 6-month `NAIRR` grant queues—while **50 to 500 campus lab PCs, Macs, and departmental servers sit 100% idle every night and summer**. | AWS/GCP charge full commercial rates + egress fees and cannot unify heterogeneous existing campus lab machines. | **Step 1 (`$0` CapEx):** Unifies existing CS/Engineering lab PCs + Macs (`<200ms` Polite auto-yield when a student logs in). **Step 2:** Overnight idle campus labs earn `1.25×` **Reactor Credits**, which researchers spend to burst `70B–671B` evals & `Sharded-Island DiLoCo` training on **Kadmium Reactor**. | **Stretches NSF / NIH / DoE grant compute budgets `3.2×–4.0×`** and directly funds student STEM labs. |
-| **2. Small & Mid-Sized Businesses (`Law`, `Medical`, `Engineering`, `Local Biz`)** | Want private AI coding, document extraction, and local models (`70B+`), but **cannot send HIPAA / privileged client data to OpenAI** and **cannot afford a `$25,000` server box or `$2,500/mo` dedicated cloud GPU**. | Public APIs violate data residency; Ollama/LM Studio Cloud send 100% of the plaintext prompt to the cloud as soon as a model exceeds local VRAM by even `4 GB`. | **`"Just-Enough-Boost"` + Private Office Fabric:** Pools existing office PCs/Macs and spills *only* the missing `25%` middle layers (`L56..L75`) to **Kadmium Reactor** wrapped in our **Orthogonal FWHT Blind-Activation Shield (`CosSim = 0.0489`)**. `Layer 0` (prompt) and `Layer N-1` (output) **never leave the office**. | **`$0.07/hr` fractional boost (`-94.1%` vs. `$1.19/hr` full GPU)**, `9.34×` faster than CPU RAM offload, **100% on-prem privacy**. |
-| **3. AI Companies & Agentic SaaS Startups** | Burning **65%–75% of seed/Series-A runway** on three non-latency-critical workloads: **(a) `GRPO` RL code/math verification rollouts**, **(b) massive batch document/embedding pipelines**, and **(c) `DiLoCo` fine-tuning**. | Renting `$4/hr` H100s that sit 60% idle waiting on CPU compiler/unit-test RL rewards, or paying `65%+` gross margins to Modal/Baseten for batch jobs. | **Disaggregated `GRPO + WasiMicroSandbox` & `kdm://pool-bucket/`:** Offloads `100,000` parallel compiler/test sandboxes to upcycled **Phone Farm Boxes (`$1.20/day` for 160 cores)** & consumer CPUs, streams `327.1 Gbps` wire-resident token carousels, and bursts GPU learner steps at Cost-Plus rates. | **Cuts RL post-training & batch inference bills by `55%–75%`** + gives AI companies a **"People-Powered Compute"** badge that eliminates anti-AI community backlash. |
-| **4. Government Facilities, Municipal Agencies & Public-Sector Labs** | Strict data sovereignty (`ITAR`, `CMMC`, `CJIS`), tight municipal budgets, **citizen outrage over hyperscaler utility bill spikes**, and warehouses full of decommissioned government PCs/servers. | Hyperscaler GovClouds cost `2–3×` commercial rates, lock agencies into proprietary cloud APIs, and require new datacenter power builds. | **100% Pure Rust Sovereign Fabric (`kadmium`):** Zero C/C++/Python supply-chain risk; runs 100% air-gapped across existing municipal desktops & retired servers, with cryptographic `Verde RepOps` audit logs and federal e-waste circularity reporting. | **`$0` new datacenter CapEx**, zero taxpayer utility rate spikes, and turns government e-waste into sovereign AI capacity. |
+| **1. Academic Research Institutions & University STEM Labs** | Priced out of AI research by `$5.49–$7.00/hr` dedicated H100 endpoints and 6-month `NAIRR` grant queues—while **50 to 500 campus lab PCs, Macs, and departmental servers sit 100% idle every night and summer**. | AWS/GCP charge full commercial rates + egress fees and cannot unify heterogeneous existing campus lab machines. | **Step 1 (`$0` CapEx):** Unifies existing CS/Engineering lab PCs + Macs (`<200ms` Polite auto-yield when a student logs in). **Step 2:** Overnight idle campus labs earn `1.25×` **Reactor Credits**, which researchers spend to burst `70B–671B` evals & `Sharded-Island DiLoCo` training on **Kadmium Reactor**. | **Modelled: Stretches NSF / NIH / DoE grant compute budgets `2.8×–3.8×`** and directly funds student STEM labs. |
+| **2. Regulated Small & Mid-Sized Businesses (`Law`, `Medical`, `Engineering`, `Local Biz`)** | Want private AI coding, document extraction, and local models (`70B+`), but **cannot send HIPAA / CMMC / privileged client data to public cloud APIs** and **cannot afford a `$25,000` server box or `$2,500/mo` dedicated cloud GPU**. | Public APIs violate data residency; Ollama/LM Studio Cloud send 100% of the plaintext prompt to the cloud as soon as a model exceeds local VRAM. | **`Private Office Fabric` (100% Air-Gapped / On-Premise Office LAN Mode):** Pools existing office PCs/Macs inside the office firewall (`Zero Egress`). Zero community grid nodes touch PHI/CUI; optional burst permitted solely over FIPS 140-3 TLS to customer's own direct BAA-signed cloud account. | **Modelled: `$499/mo` flat per office (`-80%` vs. `$2,500+/mo` dedicated enterprise VPC)**, **100% on-prem LAN data custody**. |
+| **3. AI Companies & Agentic SaaS Startups** | Burning **65%–75% of seed/Series-A runway** on three non-latency-critical workloads: **(a) `GRPO` RL code/math verification rollouts**, **(b) massive batch document/embedding pipelines**, and **(c) `DiLoCo` fine-tuning**. | Renting `$3.99–$7.00/hr` H100s that sit 60% idle waiting on CPU compiler/unit-test RL rewards, or paying `$0.28–$3.48/1M` tokens on serverless APIs. | **Output-Metered Supply Grid (`$0.22 / 1M` batch tokens; `$0.14 / 1k` WASI rollouts; `$0.008 / GiB` `.ktb` seed):** Offloads parallel compiler/test sandboxes to WASI CPU/NPU nodes and batch inference to high-bandwidth `24–128 GB` nodes at a 20–35% discount to serverless. | **Modelled: Cuts RL post-training & batch inference bills by `25%–65%`** + gives AI companies a **"People-Powered Compute"** badge. |
+| **4. Government Facilities, Municipal Agencies & Public-Sector Labs** | Strict data sovereignty (`ITAR`, `CMMC`, `CJIS`), tight municipal budgets, **citizen outrage over hyperscaler utility bill spikes**, and warehouses full of decommissioned government PCs/servers. | Hyperscaler GovClouds cost `2–3×` commercial rates, lock agencies into proprietary cloud APIs, and require new datacenter power builds. | **100% Pure Rust Air-Gapped Sovereign Fabric (`kadmium --airgap`):** Zero C/C++/Python supply-chain risk; runs 100% air-gapped across existing municipal desktops & retired servers, with cryptographic `Verde RepOps` audit logs and federal e-waste circularity reporting. | **Modelled: `$0` new datacenter CapEx**, zero taxpayer utility rate spikes, and turns government e-waste into sovereign AI capacity. |
 
 ---
 
-### 0.4 The Embedded Systems Hardware Wedge: The `$249` `Kadmium Cd-48 Reactor Box` vs. `$3,500` NVIDIA DGX Spark & `$1,999` AMD Strix Halo
+### 0.4 The Embedded Systems Hardware Wedge: The `$379` `Kadmium Cd-48 Coordinator & .ktb NAS Seed Node` vs. `$6,950` NVIDIA DGX Spark & `$2,459` Framework Strix Halo (`R4 §3.4, §6.6, §7.3`)
 
-With NVIDIA launching **DGX Spark (`Project DIGITS`)** at **`$3,000–$4,000`** (`128 GB LPDDR5x`) and AMD launching **Ryzen AI Max+ 395 (`Strix Halo`)** mini-PCs at **`$1,600–$2,400`**, the semiconductor giants have validated massive consumer and research demand for local AI boxes.
+With NVIDIA pricing **DGX Spark** at **`$6,950`** (`128 GB LPDDR5x`, after 2026 memory-supercycle increases, `R4 §7.3`) and **Framework Desktop (`AMD Ryzen AI Max+ 395 Strix Halo 128 GB`)** at **`$2,459`**, the semiconductor giants have validated massive prosumer and research demand for local AI hardware.
 
-However, both NVIDIA and AMD priced their boxes like luxury enterprise workstations (`$2,000–$4,000`) because they assume a single standalone box must replace your existing desktop PC and hold the entire model by itself.
+Per `R4 §3.4`, any external ARM box connected over `2.5GbE` (`0.28 GB/s`) or USB-C (`0.9–2.4 GB/s`) is `~100–200×` slower than a desktop's internal GPU VRAM and `~20×` slower than an internal PCIe Gen4 NVMe SSD—so an RK3588 SBC should **never** be marketed as a desktop memory execution sidecar for spilled 70B layers. Instead, we offer the **`Kadmium Cd-48 32 GB RK3588 Coordinator & .ktb NAS Seed Node`** ([`EmbeddedReactorBoxSpec`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/reactor_clearinghouse.rs)): an **honest Cost-Plus `$379` (`$275` Oct-2026 BOM, `9%` crowdfunding/payment fee assumption)** open-hardware, battery-free `32 GB LPDDR5` + `M.2 NVMe` + `Dual 2.5GbE` Linux appliance engineered for three roles where low-wattage ARM silicon genuinely wins:
 
-Because Kadmium's founder is an **Embedded Systems Engineer**—and because Kadmium (`Cd-48`) already shards models across whatever computers a user owns—we do **not** need to compete with `$3,500` monolithic boxes. Instead, we offer the **`Kadmium Cd-48 Reactor Box`** ([`EmbeddedReactorBoxSpec`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/reactor_clearinghouse.rs)): an **honest Cost-Plus `$249` (`~$185` BOM) open-hardware, battery-free `32 GB LPDDR5` + `M.2 NVMe` + `Dual 2.5GbE` embedded Linux box** designed around three everyday roles:
-
-1. **Role 1 — The `$0/hr` Local `"Just-Enough-Boost"` Sidecar for Desktop PCs:**
-   - Plugs directly into your desktop PC (or router) via `2.5GbE`.
-   - If you already own a `16–24 GB` GPU (`RTX 3080 / 4070 / 4080 / 4090`), you don't need a `$3,500` DGX Spark—you only need an extra `16–32 GB` of memory to hold the overflow middle layers (`L56..L75`), cold MoE experts on fast M.2 NVMe (`Colibri` DMA), or `0.6B` speculative draft verification (`Lookahead / Leviathan`) + `WasiMicroSandbox` tool execution!
+1. **Role 1 — 24/7 `libp2p` Cluster Coordinator, `.ktb` Merkle NAS Seed Vault & Speculative Draft/WASI Node:**
+   - Keeps the cluster's CRDT routing table, `CloudShield` failover watchdog, and `M.2 NVMe` `.ktb` shard cache online 24/7 at `6–15W` so `350W` gaming desktops can sleep when idle, while executing deterministic `WasiMicroSandbox` RL rollouts (`$0.14 / 1k`) and small speculative draft trees.
 2. **Role 2 — 100% Open General-Purpose Linux Home/Lab Server ("Use It for Whatever You Want"):**
-   - Unlike locked-down crypto appliances (`Helium` miners that become paperweights if you stop mining), the **`Cd-48` Reactor Box** runs standard mainline **Debian / Ubuntu / Armbian Linux** with full root access, Docker, M.2 NVMe, and a `40-pin GPIO / I2C / UART` header.
-   - Users can run **Home Assistant**, a **local NAS / `kdm://pool-bucket/` grounding anchor**, **Plex/Jellyfin**, **Pi-hole / WireGuard**, or embedded engineering projects—while `kadmium` politely uses only idle capacity.
-3. **Role 3 — Silent `16W` Battery-Free 24/7 `Kadmium Reactor` Earner (`~12.8 Month` Payback):**
-   - Powered by a stable `12V / USB-C PD` wall adapter (**zero lithium battery inside—100% immune to battery wear or swelling**), drawing only `16W` active (`~$1.61/mo` electricity at `$0.14/kWh`) while earning **`+$19.40/mo` net cash after power** (or **`$26.25/mo` in `1.25×` Reactor Credits**):
+   - Runs standard mainline **Debian / Ubuntu / Armbian Linux** with full root access, Docker, M.2 NVMe, and a `40-pin GPIO / I2C / UART` header (`Home Assistant`, `Samba/ZFS NAS`, `Plex/Jellyfin`, `WireGuard`).
+3. **Role 3 — Silent `15W` Battery-Free 24/7 `.ktb` Seeder & WASI Verifier:**
+   - Powered by a stable `12V / USB-C PD` wall adapter (**zero lithium battery inside**), drawing only `15W` active (`~$0.66/mo` incremental electricity at `$0.182/kWh` for 7.2h/day active duty) while earning **`~$6.80/mo` modelled net cash** (or **`~$11.90/mo` in `1.25×` Reactor Credits**):
 
-| Mini-ML System | Retail Price | Power Draw | Memory & Storage | Open General-Purpose Linux? | Net Monthly `Kadmium Reactor` Earnings (After Power) | Hardware Payback Period |
-| :--- | :---: | :---: | :--- | :---: | :---: | :---: |
-| **NVIDIA DGX Spark (`Project DIGITS`)** | `$3,500` | `170W` | `128 GB LPDDR5x` + `4 TB NVMe` | Yes (DGX OS) | `+$42.50 / mo` | `~82.4 months` (`6.8 yrs`) |
-| **AMD Ryzen AI Max+ 395 (`Strix Halo`)** | `$1,999` | `120W` | `128 GB LPDDR5x` + `2 TB NVMe` | Yes | `+$38.20 / mo` | `~52.3 months` (`4.3 yrs`) |
-| **Kadmium `Cd-48` Reactor Box (`Cost-Plus`)** | **`$249`** *(~$185 BOM)* | **`16W`** *(Battery-Free)* | **`32 GB LPDDR5` + `M.2 NVMe` + `Dual 2.5GbE`** | **100% Open Debian / Docker / GPIO / NAS** | **`+$19.40 / mo` Net Cash** *(or `$26.25/mo` Credits)* | **`~12.8 months` (`1.0 yr`)** |
+| Mini-ML System | Oct 2026 Retail Price (`R4 §7.3`) | Power Draw | Memory & Storage | Open General-Purpose Linux? | Modelled Monthly `Kadmium` Net Earnings (After `$0.182/kWh` Power) | Primary Cluster Role |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **NVIDIA DGX Spark (`128 GB`)** | `$6,950` | `170W` | `128 GB LPDDR5x` + `4 TB NVMe` | Yes (DGX OS) | `~$32.50 / mo` | Standalone 128 GB Inference / Training Workstation |
+| **Framework Desktop `Strix Halo` (`128 GB`)** | `$2,459` | `120W` | `128 GB LPDDR5x` + `2 TB NVMe` | Yes | `~$32.50 / mo` | High-Value 128 GB Unified Memory MoE Node |
+| **Kadmium `Cd-48` 32 GB RK3588 Node (`Cost-Plus`)** | **`$379`** *($275 BOM, 9% fees)* | **`15W`** *(Battery-Free)* | **`32 GB LPDDR5` + `M.2 NVMe` + `Dual 2.5GbE`** | **100% Open Debian / Docker / GPIO / NAS** | **`~$6.80 / mo` Cash** *(or `~$11.90/mo` Credits)* | **24/7 Coordinator, `.ktb` NAS Seed Vault & WASI Verifier** |
 
 ---
 
@@ -98,29 +98,29 @@ Most infrastructure startups in the local and decentralized AI space get stuck i
 ### Kadmium's Asymmetric Monetization Wedge
 Kadmium (`Cd-48`) bypasses all three traps on Day 1:
 - **Local-First Hook (`$0` CAC):** Users install `kadmium` for free to pool their PC + Mac + laptop + NAS (`--cadmium`) and point Claude Code, Cursor, or Cline to `http://127.0.0.1:7848/v1`.
-- **Day-1 Guaranteed Supply via Wholesale Spot Arbitrage:** When a user's local cluster is 20 GB short of running a 70B–671B model—or when they launch a game and their PC auto-yields (`< 200 ms`)—they click **"Attach Burst GPU"** (`--cherenkov`). On Day 1, [`SpotOrderbookBidEngine`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-sharding/src/spot_provisioner.rs) fulfills that burst request using wholesale RunPod / Vast.ai / Lambda spot APIs (`$0.29–$0.82/hr`) and bills the user's prepaid Kadmium balance at a **28–35% gross margin**.
-- **Margin Expansion via `1.25×` Credit Supply Flywheel:** As users enable **Supply Grid Hosting** (`kadmium lease --credits true`) to earn `1.25×` Kadmium Cloud credits overnight, Kadmium routes burst middle-layer shards onto community hosts instead of wholesale datacenter spot—raising gross margin from **~30% to >65%** while **$0 cash leaves the company** for credit-based hosts.
+- **Day-1 Guaranteed Supply via Indexed Wholesale Spot Arbitrage (`Index × 1.25`):** When a user's local cluster is 20 GB short of running a 70B–671B model—or when they launch a game and their PC auto-yields (`< 200 ms`)—they click **"Attach Burst GPU"** (`--cherenkov`). On Day 1, [`SpotOrderbookBidEngine`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-sharding/src/spot_provisioner.rs) fulfills that burst request using verified wholesale spot APIs (`$0.38–$2.20/hr` verified wholesale index) and bills at `WholesaleVerifiedIndex(class) × 1.25` (**`20.0%` gross margin on retail**).
+- **Supply Flywheel via `1.25×` Credit Reciprocity (with `70%` Redemption Liability Reserve):** As users enable **Supply Grid Hosting** (`kadmium lease --credits true`) to earn `1.25×` wholesale-indexed credits overnight (12-month expiry), Kadmium routes `24–32 GB` burst shards onto credit-paid community/studio hosts first while booking a `70%` expected redemption liability reserve (`R4 §6.3`).
 
 ```mermaid
 flowchart LR
     A["1. Free OSS Hook\nkadmium serve / probe\n(Local PC + Mac + NAS)"] --> B["2. Natural Bottleneck\nModel > Local VRAM or\nGaming Auto-Yield (<200ms)"]
-    B --> C["3. Instant Monetization\n$25-$100 Prepaid Burst Pack\n+ $25/$199/$499 Subscriptions"]
-    C --> D["4. Day-1 Fulfillment\nWholesale Spot API Bridge\n(~31% Gross Margin)"]
-    C --> E["5. Flywheel Fulfillment\nCommunity Supply Grid (1.25x Credits)\n(>65% Gross Margin)"]
+    B --> C["3. Instant Monetization\n$25-$100 Prepaid Burst Pack\n+ $29/$199/$499 Subscriptions"]
+    C --> D["4. Day-1 Fulfillment\nIndexed Spot Bridge (Index x 1.25)\n(20% Realized Spread)"]
+    C --> E["5. Flywheel Fulfillment\nOutput-Metered Supply Grid\n($0.22/1M Tok | 75% to Host)"]
 ```
 
 ---
 
 ## 2. Deep-Dive Competitive Landscape & Teardowns (2025–2026)
 
-### 2.1 Live GPU & Serverless Pricing Benchmarks (Q3/Q4 2026)
+### 2.1 Live 85-Provider Wholesale GPU Index & Indexed Burst Pricing (`2026-10-20`, `R4 §5.3, §6.2, §7.1`)
 
-| Hardware / Tier | Hyperscalers (AWS / GCP) | Managed Serverless (Modal / Baseten) | RunPod (Community / Spot) | Vast.ai (Spot Floor / Median) | **Kadmium Wholesale Cost** | **Kadmium Retail Burst Rate** | **Kadmium Gross Margin** |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **RTX 4090 (24 GB)** | N/A | N/A | `$0.34 – $0.89/hr` | `$0.18 – $0.45/hr` | **`$0.29/hr`** | **`$0.45/hr`** | **35.5%** |
-| **NVIDIA L40S (48 GB)** | `$2.70+/hr` | `$1.95 – $2.40/hr` | `$0.79 – $1.09/hr` | `$0.38 – $0.65/hr` | **`$0.52/hr`** | **`$0.75/hr`** | **30.7%** |
-| **NVIDIA A100 (80 GB)** | `$3.67 – $4.10/hr` | `$2.80 – $3.50/hr` | `$1.19 – $1.79/hr` | `$0.48 – $1.15/hr` | **`$0.82/hr`** | **`$1.19/hr`** | **31.1%** |
-| **NVIDIA H100 (80 GB)** | `$4.50 – $6.90/hr` | `$3.95 – $6.50/hr` | `$1.99 – $2.89/hr` | `$1.10 – $2.40/hr` | **`$1.65/hr`** | **`$2.29/hr`** | **27.9%** |
+| GPU Class | 85-Provider Floor (Unverified) | Realistic Verified Wholesale Index (`2026-10-20`) | 85-Provider Market Median | **Kadmium Indexed Burst (`Index × 1.25`)** | **Kadmium Gross Spread (`%` of Retail)** | Dedicated Endpoint Reference (Together / Baseten / Fireworks) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **RTX 4090 (`24 GB`)** | `$0.33/hr` (Salad) | **`$0.38/hr`** (`$0.34` RunPod – `$0.48` Spheron) | `$0.48/hr` | **`$0.48/hr`** | **`+$0.10/hr` (20.8%)** | N/A (Consumer/Prosumer Tier) |
+| **NVIDIA L40S (`48 GB`)** | `$0.55/hr` (Novita) | **`$0.96/hr`** (Spheron `$0.96`; Modal `$1.95`) | `$1.64/hr` | **`$1.20/hr`** | **`+$0.24/hr` (20.0%)** | `$1.95 – $2.80/hr` |
+| **NVIDIA A100 (`80 GB`)** | `$0.89/hr` | **`$1.46/hr`** (`$1.43` Spheron – `$1.49` RunPod) | `$1.80/hr` | **`$1.83/hr`** | **`+$0.37/hr` (20.2%)** | `$3.29 – $4.10/hr` |
+| **NVIDIA H100 (`80 GB`)** | `$1.80/hr` | **`$2.20/hr`** (`$1.87` Vast ver. – `$2.65` Spheron) | `$3.99/hr` | **`$2.75/hr`** | **`+$0.55/hr` (20.0%)** | `$5.49 – $7.00/hr` |
 
 ### 2.2 Competitor-by-Competitor Teardown: What Works & Where They Fail
 
@@ -177,60 +177,54 @@ We must be surgical about which customers we target. On `OpenRouter`, shared ser
 | Customer Scenario | Cheap Serverless API (`OpenRouter`) Cost | Dedicated Cloud Endpoint (`Together` / `Baseten`) | **Kadmium (`Local + Middle-Layer Burst`)** | **Winner & Why** |
 | :--- | :--- | :--- | :--- | :--- |
 | **Casual Solo Chat** (`30 prompts/day`, ~40k tokens/day, public weights, zero privacy need) | **`$1.50 / mo`** | `$2,160+ / mo` | `$0/mo` (if fits locally) or `$15/mo` burst | **OpenRouter** (unless model fits 100% on user's local PC+Mac for `$0`). **Do not pitch paid burst to casual chatters.** |
-| **Prosumer "Just-Enough-Boost" (`RTX 4090 / 3090 24GB` running `70B` + `32K` KV = `30.5 GB`, only `8 GB` short!)** | Uncensored / local custom models unavailable; CPU RAM offload (`-ngl`) drops speed to `5.8 tok/s` | `$856+ / mo` (`$1.19/hr` full 80GB GPU, wasting the user's `$2,000` local RTX 4090!) | **`$0.00/hr` (if spilling `8 GB` to a laptop/Mac on LAN $\to$ `54.2 tok/s`) OR `$0.07/hr` (`8 GB` Fractional Grid Micro-Boost $\to$ `49.6 tok/s`)** | **Kadmium wins (`9.3×` faster than CPU offload; `$0/hr` on LAN or `94.1%` cheaper than renting a full cloud GPU, with 100% blind privacy!).** |
-| **Custom Fine-Tuned / QLoRA 70B+ Model** (Custom weights not hosted on shared serverless APIs) | *Impossible* (Shared APIs only host stock public models) | **`$2,160 – $4,680 / mo`** (`$3.00–$6.50/hr` 24/7 dedicated GPU) | **`$29/mo` + `$0.45–$0.75/hr` active burst (`~$110/mo`)** | **Kadmium wins by 95%** (Base `.ktb` + LoRA adapter stays warm on local NAS/RAM at `$0/hr`; burst only on active requests). |
+| **Prosumer "Just-Enough-Boost" (`RTX 4090 / 3090 24GB` running `70B` + `32K` KV = `30.5 GB`, only `8 GB` short!)** | Uncensored / local custom models unavailable; CPU RAM offload (`-ngl`) drops speed to `5.8 tok/s` | `$1,318+ / mo` (`$1.83/hr` indexed 80GB A100, wasting the user's `$2,000` local RTX 4090!) | **`$0.00/hr` (if spilling `8 GB` to a laptop/Mac on LAN $\to$ `54.2 tok/s`) OR `$0.07/hr` (`8 GB` Fractional Grid Micro-Boost $\to$ `49.6 tok/s`)** | **Kadmium wins (`9.3×` faster than CPU offload; `$0/hr` on LAN or `96%` cheaper than renting a full cloud GPU, with Zero Plaintext Egress!).** |
+| **Custom Fine-Tuned / QLoRA 70B+ Model** (Custom weights not hosted on shared serverless APIs) | *Impossible* (Shared APIs only host stock public models) | **`$2,400 – $5,040 / mo`** (`$3.29–$7.00/hr` 24/7 dedicated endpoint) | **`$29/mo` + `$0.48–$1.20/hr` indexed burst (`~$135/mo`)** | **Kadmium wins by 94%** (Base `.ktb` + LoRA adapter stays warm on local NAS/RAM at `$0/hr`; burst only on active requests). |
 | **Heavy Multi-Agent Coding / Repo Indexing** (`Claude Code` / `Cursor` / `OpenCode` running 5–15M tokens/day across a 5-dev team) | **`$900 – $2,400 / mo`** (+ 429 rate limits) | `$2,500+ / mo` | **`$199/mo` Team Plan + `$120/mo` burst (`$319/mo`)** | **Kadmium wins by 70–85%** (Pools team's existing MacBooks + desktop GPUs on office LAN; bursts only peak overflow). |
-| **Regulated Legal / Medical / Defense Workflows** (HIPAA PHI, Attorney-Client Privilege, Classified IP) | *Disqualified* (Plaintext leaves building to 3rd-party routers) | Requires `$25k+/yr` Enterprise BAA + VPC | **`$499/mo` Private Office Fabric** (`Layer 0` & `Layer N-1` never leave building) | **Kadmium wins on both compliance and 80% lower TCO.** |
-| **GRPO RL Post-Training & Code Verification** (10,000+ compiler/test rollouts per epoch) | `$1.00 / 1M` training tokens + no custom WASI env | `$1,800+ / mo` (GPUs stall waiting on CPU tests) | **Free SBC/CPU WASI + `Dream-RSI` replay + `$0.75/hr` learner burst** | **Kadmium wins by 65–75%** by disaggregating CPU sandboxes from GPU learner steps. |
+| **Regulated Legal / Medical / Defense Workflows** (HIPAA PHI, Attorney-Client Privilege, CUI) | *Disqualified* (Plaintext leaves building to 3rd-party routers) | Requires `$25k+/yr` Enterprise BAA + VPC | **`$499/mo` Private Office Fabric (100% On-Premise LAN Mode)** (`Zero Egress` outside the building) | **Kadmium wins on both compliance and 80% lower TCO.** |
+| **GRPO RL Post-Training & Code Verification** (10,000+ compiler/test rollouts per epoch) | `$1.00 / 1M` training tokens + no custom WASI env | `$1,800+ / mo` (GPUs stall waiting on CPU tests) | **Output-metered WASI (`$0.14 / 1k` rollouts) + `Dream-RSI` replay + `$1.20/hr` L40S learner burst** | **Kadmium wins by 65–75%** by disaggregating CPU sandboxes from GPU learner steps. |
 
 ---
 
-### 3.3 Reality Check #3: Supply-Side Host Electricity Math (`kWh`) & The "Apple Silicon + Studio Fleet" Advantage
+### 3.3 Reality Check #3: Supply-Side Host Electricity Math (`$0.182/kWh` EIA Oct 2026) & Output-Delivered Clearing (`R4 §6.3, §7.9`)
 Why do residential RTX 4090/5090 hosts on `Salad.com` churn? **Electricity math:**
-- An **RTX 4090 rig** under 100% continuous load draws **`~500W` (`0.50 kW`)**; an **RTX 5090 rig** draws **`~650W` (`0.65 kW`)**.
-- At the US average of `$0.15/kWh`, power costs **`$0.075–$0.098/hr`**. In Europe, California, or the US Northeast (`$0.32–$0.42/kWh`), power costs **`$0.16–$0.27/hr`**—wiping out Salad's `$0.18–$0.25/hr` cash payout!
+- An **RTX 4090 rig** under continuous load draws **`~310–500W`** (`+265W` incremental above idle); an **RTX 5090 rig** draws **`~500–650W`**.
+- At the US EIA October 2026 residential average of **`$0.182/kWh` (`18.2¢/kWh`, projected `$0.187/kWh` in 2027, `R4 §7.9`)**, incremental power costs **`$0.048–$0.091/hr`**. In Europe, California, or the US Northeast (`$0.32–$0.42/kWh`), power costs **`$0.16–$0.27/hr`**—wiping out Salad's `$0.18–$0.25/hr` cash payout!
 
-#### How Kadmium Solves Supply-Side Economics & Guarantees Company Solvency (`SupplySettlementEngine`):
-To ensure Kadmium is **100% financially sustainable** and that hosts receive **honest, verifiable earnings breakdowns**, [`SupplySettlementEngine`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/supply.rs) enforces a strict **5-Factor Market-Clearing Formula** (`No-Demand = No-Compute-Payout`):
+#### How Kadmium Solves Both Buyer Parity and Host Solvency (`SupplySettlementEngine`, `R4 §6.3`):
+As proven in `R4 §6.3`, pricing hardware by *what it is* (raw GiB installed) overprices `25 GB/s` SBCs (`~$11/1M tokens`) and single-stream UMA nodes (`~$17/1M tokens`) by an order of magnitude above open-weight serverless APIs (`$0.28/$0.42` per 1M on `DeepSeek-V3.2`). Because **the buyer side is the binding constraint**, [`SupplySettlementEngine`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/supply.rs) prices Supply Grid capacity strictly per **delivered work unit** at a **20–35% discount to serverless**:
 
-$$\text{BuyerRate}_{\text{active}} = \eta_{\text{net}} \cdot \left( \$0.0065 \cdot M_{\text{VRAM}} + \$0.0048 \cdot M_{\text{UMA}} + \$0.000085 \cdot \text{BW}_{\text{GB/s}} + \$0.00055 \cdot \text{TFLOPS} + S_{\text{bucket}} \right)$$
+$$\text{BuyerClearing}_{\text{hr}} = \left(\$0.22 \times \frac{\text{Tokens}_{\text{batch,hr}}}{10^6}\right) + \left(\$0.14 \times \frac{\text{Rollouts}_{\text{wasi,hr}}}{10^3}\right) + \left(\$0.008 \times \text{GiB}_{\text{seeded,hr}}\right)$$
 
-- **Company Sustainability Rule (`25.0%` Platform Take-Rate on USD / `36.3%` Net Margin on Credits):**
-  - Hosts are **never** paid out of company cash for sitting idle without a buyer. Compute payouts occur **strictly when a paying renter's verified job executes on the host**, where Kadmium collects `100%` of $\text{BuyerRate}_{\text{active}}$, retains **`25.0%`** to cover `relay.kadmium.ai`, `Verde` referee checks, Stripe fees, and company profit, and pays **`75.0%`** to the host (plus a small bucket-funded storage retainer during standby hours).
-- **Transparent Per-Node Breakdown (12 hrs/day Lease Window, Deducting `$0.14/kWh` Electricity):**
+- **Memory-Bandwidth Routing Gate ($\text{BW}_{\text{eff}} < 60\text{ GB/s}$):** Boards with $<60\text{ GB/s}$ memory bandwidth (`RK3588`, laptops on DDR4, phone arrays) are gated out of dense LLM token decode and routed strictly to **deterministic `WASI` RL sandbox rollouts (`$0.14/1k`) and `.ktb` Merkle shard seeding (`$0.008/GiB`)**.
+- **Company Sustainability & Credit Liability Rule (`75%` Host Share / `70%` Credit Redemption Reserve):**
+  - Hosts are **never** paid cash for sitting idle without a buyer (`No-Demand = No-Cash-Payout`). When a buyer job clears, **`75.0%`** goes to the host, **`20.0%`** funds Cost-Plus operations, and **`5.0%`** funds the STEM Grant Pool.
+  - When overnight hosts choose **`1.25×` Compute Credits** (12-month expiry), Kadmium books a **Credit Redemption Liability** at a **`70%` expected redemption rate × `75%` fulfillment cost** (`R4 §6.3`).
+- **Modelled Output-Delivered Per-Node Breakdown (Deducting `$0.182/kWh` EIA Oct 2026 Electricity):**
 
-| Hardware Node | Buyer Active Rate | Host Active Rate (`-25%` Fee) | Realistic Demand Duty Cycle | Effective Hourly Rate | Monthly Gross (`360 hrs`) | Monthly Power (`@ $0.14/kWh`) | **Host Net Monthly Profit** | **`1.25×` Cloud Credits/Mo** |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`cameron-main-rig`** (`RTX 4090 24GB`, `290W`) | `$0.324/hr` | `$0.243/hr` | `62%` | `$0.152/hr` | `$54.60/mo` | `-$9.73/mo` | **`+$44.87/mo`** | **`$68.25/mo`** |
-| **`m4-mac-mini-pro`** (`48GB UMA`, `38W`) | `$0.252/hr` | `$0.189/hr` | `65%` | `$0.124/hr` | `$44.57/mo` | `-$1.37/mo` | **`+$43.20/mo`** | **`$55.71/mo`** |
-| **`zephyrus-g16-rtx4070`** (`8GB Laptop`, `95W`) | `$0.097/hr` | `$0.073/hr` | `48%` | `$0.036/hr` | `$12.89/mo` | `-$2.67/mo` | **`+$10.22/mo`** | **`$16.11/mo`** |
-| **`legion-5-rtx3070`** (`8GB Laptop`, `95W`) | `$0.103/hr` | `$0.077/hr` | `48%` | `$0.038/hr` | `$13.62/mo` | `-$2.67/mo` | **`+$10.95/mo`** | **`$17.03/mo`** |
-| **`rk3588-sbc-bramble`** (`16GB NPU`, `16W`) | `$0.073/hr` | `$0.055/hr` | `45%` | `$0.026/hr` | `$9.19/mo` | `-$0.47/mo` | **`+$8.72/mo`** | **`$11.49/mo`** |
-| **`truenas-core-vault`** (`4TB NVMe`, `55W`) | `$0.049/hr` | `$0.037/hr` | `55%` | `$0.025/hr` | `$8.85/mo` | `-$2.16/mo` | **`+$6.69/mo`** | **`$11.06/mo`** |
-| **`thinkpad-t480-linux`** (`CPU AVX2`, `28W`) | `$0.016/hr` | `$0.012/hr` | `32%` | `$0.005/hr` | `$1.74/mo` | `-$0.66/mo` | **`+$1.08/mo`** | **`$2.18/mo`** |
-| **7-Node Cluster Total** | — | — | — | **`$0.40/hr`** | **`$145.46/mo`** | **`-$19.72/mo`** | **`+$125.74/mo` Net** | **`$181.83/mo` Credits** |
+| Hardware Node | Assigned Workload | Modelled Output / Hr | Buyer Clearing (`$/hr`) | Host Gross (`75%`) | Power Cost (`@ $0.182/kWh`) | **Host Net / Hr** | **Modelled Monthly Net Cash (`Duty Cycle`)** | **`1.25×` Credits / Hr** |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`cameron-main-rig`** (`RTX 4090 24GB`, `+265W`) | Batch Inference / QLoRA / GRPO | `1.97M` tok/hr + `633` WASI | `$0.525/hr` (`$0.22/1M` tok) | `$0.394/hr` | `-$0.048/hr` | **`+$0.346/hr`** | **`~$20.75/mo`** (`2.0h/day` active demand) | **`$0.656/hr`** |
+| **`m4-mac-mini-pro`** (`64GB UMA`, `+30W`) | 64GB MoE / 70B Batch Shard | `583k` tok/hr + `380` WASI | `$0.189/hr` (`$0.22/1M` tok) | `$0.142/hr` | `-$0.005/hr` | **`+$0.137/hr`** | **`~$14.75/mo`** (`3.6h/day` active demand) | **`$0.236/hr`** |
+| **`mac-studio-m4-max`** (`128GB UMA`, `+68W`) | 128GB Frontier MoE Shard | `1.42M` tok/hr + `654` WASI | `$0.417/hr` (`$0.22/1M` tok) | `$0.313/hr` | `-$0.012/hr` | **`+$0.301/hr`** | **`~$32.50/mo`** (`3.6h/day` active demand) | **`$0.521/hr`** |
+| **`rk3588-32gb-nas`** (`32GB LPDDR5`, `+9W`) | WASI Verifier + `.ktb` Seed | `227` WASI/hr + `1.6 GiB/hr` | `$0.044/hr` *(WASI/Seed)* | `$0.033/hr` | `-$0.002/hr` | **`+$0.031/hr`** | **`~$6.80/mo`** (`7.2h/day` active demand) | **`$0.055/hr`** |
+| **`bramble-20-phone-box`** (`160GB Pool`, `+55W`) | 20× Parallel WASI Verifier | `642` WASI/hr + `1.6 GiB/hr` | `$0.103/hr` *(WASI/Seed)* | `$0.077/hr` | `-$0.010/hr` | **`+$0.067/hr`** | **`~$9.05/mo`** (`4.5h/day` active demand) | **`$0.129/hr`** |
 
-1. **The Apple Silicon Unified Memory Arbitrage (`38W` Draw = `97%` Power Profit Margin):**
-   - Look at `m4-mac-mini-pro` (`48 GB` UMA) vs. `cameron-main-rig` (`RTX 4090 24 GB`) in the table above: even though the RTX 4090 has a higher gross active rate (`$0.243/hr` vs. `$0.189/hr`), the M4 Mac Mini draws only **`38W` (`$1.37/mo` electricity)** compared to the RTX 4090's **`290W` (`$9.73/mo` electricity)**—so both machines deliver almost identical **net cash profit after power (`+$43.20/mo` vs. `+$44.87/mo`)**!
-2. **Rewarding Individual Hosts in `1.25×` Kadmium Cloud Credits (`36.3%` Net Margin for Kadmium):**
-   - When hosts choose `1.25×` Kadmium Cloud Credits instead of cash, `$0` upfront cash leaves Kadmium's bank account, and when those credits are redeemed against community/spot capacity (`~68%` wholesale fulfillment cost), Kadmium nets a **`36.3%` gross margin** (`31.8%` blended across cash + credit hosts).
-3. **Commercial Overnight Fleets (VFX Studios, Architecture Firms, Esports LAN Centers & University Labs):**
-   - Following the proven B2B supply playbook (`ParalonCloud` / `Hosted.ai`), a single VFX animation studio, architecture firm, or esports arena has **40 to 200 RTX 4080/4090/A6000 workstations on symmetrical 10GbE fiber and cheap commercial power (`$0.08/kWh`)** that sit 100% idle from 7:00 PM to 8:00 AM.
-   - Onboarding **just 5 regional VFX studios or LAN centers** adds **300–500 high-bandwidth, low-latency GPUs** with a single B2B agreement—eliminating retail host acquisition friction.
+1. **The Apple Silicon Unified Memory Efficiency Advantage (`+30–68W` Draw):**
+   - Because Apple Silicon unified memory (`273–546 GB/s`) draws only `30–68W` incremental wall power (`$0.005–$0.012/hr` at `$0.182/kWh`) compared to an RTX 4090's `+265W` (`$0.048/hr`), Mac Studios and M4 Pro Minis retain `96%+` of their gross payout after electricity.
+2. **Commercial Overnight Fleets (VFX Studios, Architecture Firms, Esports LAN Centers & University Labs):**
+   - Following the proven B2B supply playbook (`ParalonCloud` / `Hosted.ai`), a single VFX animation studio, architecture firm, or esports arena has **40 to 200 RTX 4080/4090/A6000 workstations on symmetrical 10GbE fiber and commercial power** that sit idle from 7:00 PM to 8:00 AM.
 
 ---
 
-## 4. Synthesized Pricing & Monetization Architecture (`Tailscale` + `Ollama Cloud` Model)
+## 4. Synthesized Pricing & Monetization Architecture (`2026-10-20` Audited Rates)
 
-Combining the best mechanics of **Ollama Cloud** (monthly subscription bundled with a generous cloud credit pool), **Tailscale** (free single-user local mesh $\to$ paid multi-user RBAC/governance), and **SF Compute** (wholesale-to-retail spot spread):
-
-| Tier | Price | Target Buyer | Included Compute & Features | Kadmium Gross Margin |
+| Tier | Price | Target Buyer | Included Compute & Features | Realized Accrual Gross Margin |
 | :--- | :--- | :--- | :--- | :--- |
 | **1. `Kadmium Local`** | **`$0` forever** | Solo devs & homelabbers | Unlimited local LAN nodes (`PC + Mac + NAS + SBC`), `<200ms` gaming auto-yield, OpenAI / Anthropic / MCP gateway. | **N/A ($0 CAC Funnel)** |
-| **2. `Burst Credit Packs`** | **`$25` / `$100` / `$500`** *(one-time prepaid)* | Devs needing instant overflow without a subscription | Pay-per-second middle-layer burst GPUs (`$0.45/hr` 4090, `$0.75/hr` L40S 48GB, `$1.19/hr` A100 80GB). Non-expiring; `+15%` bonus on `$100+`. | **31% (Wholesale Spot) $\to$ 68% (Community Supply)** |
-| **3. `CloudShield Pro`** | **`$29 / mo`** | Coding agent power users (`Claude Code` / `Cursor`) & custom LoRA builders | Includes **`$40/mo` in Burst Credits** (`~53 hrs` of L40S middle-layer burst), managed global WAN hole-punch + DERP relay, and `<400ms` `CloudShield` failover. | **62%–78%** *(blended utilization + credit breakage)* |
-| **4. `Kadmium Lab & Team`** | **`$199 / mo`** *(+$499 White-Glove Setup)* | University AI labs & seed/Series-A startups (up to 25 nodes) | Includes **`$250/mo` in Shared Team Burst Credits**, `SubClusterPartitioner` slices (`Prod`/`Train`/`RL`), `SubClusterRbacEngine` (`kdm_live_...` keys & spend caps), Prometheus/W&B. | **75%–85%** |
-| **5. `Private Office Fabric`** | **`$499 / mo`** *(+$990 Onboarding)* | Legal, Healthcare (HIPAA) & Defense SMBs (up to 50 office Macs/PCs) | Turns existing office Macs/PCs into a zero-CapEx private AI appliance; air-gapped or blind middle-layer burst (`L0` & `LN-1` pinned on-prem); audit logs & BAA. | **85%–92%** |
+| **2. `Burst Credit Packs`** | **`$25` / `$100` / `$500`** *(prepaid — Deferred Revenue)* | Devs needing instant overflow without a subscription | Indexed burst GPUs (`WholesaleVerifiedIndex × 1.25`: `$0.48/hr` 4090, `$1.20/hr` L40S 48GB, `$1.83/hr` A100 80GB, `$2.75/hr` H100) + `$0.22/1M` Supply Grid tokens. | **`20%–25%` Realized Spread** *(after `75–80%` fulfillment COGS)* |
+| **3. `CloudShield Pro`** | **`$29 / mo`** | Coding agent power users (`Claude Code` / `Cursor`) & custom LoRA builders | Includes **`$35/mo` in Indexed Burst & Supply Grid Credits** (24–32 GB routed to credit-paid community supply; 48–80 GB+ metered at `Index × 1.25`), WAN hole-punch + `<400ms` failover. | **`~45%–55%`** *(bounded by `$35` indexed credit cap)* |
+| **4. `Kadmium Lab & Team`** | **`$199 / mo`** *(+$499 White-Glove Setup)* | University AI labs & seed/Series-A startups (up to 15 seats) | Multi-user `SubClusterPartitioner` slices (`Prod`/`Train`/`RL`), `SubClusterRbacEngine` (`kdm_live_...` keys & spend caps), centralized `.ktb` registry, Prometheus/W&B. | **`~85%–90%`** *(SaaS control plane)* |
+| **5. `Private Office Fabric`** | **`$499 / mo`** *(+$990 Onboarding; `$299/mo` MSP wholesale)* | Legal, Healthcare (HIPAA) & Defense SMBs (up to 50 office Macs/PCs) | **100% Air-Gapped / On-Premise Office LAN Mode** (`Zero Egress` outside building); FIPS 140-3 LAN TLS + SHA-256 local audit logs. | **`~90%–92%`** *(On-Premise LAN software)* |
 
 ---
 
@@ -238,65 +232,67 @@ Combining the best mechanics of **Ollama Cloud** (monthly subscription bundled w
 
 ### Step 1 (Days 1–5): Ship Self-Serve Checkout & Prepaid Credit Ledger
 1. **Add Instant Checkout SKUs across `/site`, `/`, and `/companion`:**
-   - **`$25` Starter Burst Credit Pack** & **`$100` Builder Pack (`$115` credit value)**
-   - **`$29/mo` `CloudShield Pro`** (with `$40/mo` included burst credit allowance)
+   - **`$25` Starter Burst Credit Pack** & **`$100` Builder Pack** (booked as Deferred Revenue with `75%` fulfillment reserve)
+   - **`$29/mo` `CloudShield Pro`** (with `$35/mo` in Indexed Burst & Supply Grid Credits)
    - **`$199/mo` `Kadmium Lab & Team`** (`+$499` Founding Lab White-Glove Setup)
-   - **`$499/mo` `Kadmium Private Office Fabric`** (`+$990` Regulated SMB Setup)
-2. **Single-Hop Wholesale Spot Bridge:**
-   - Configure `SpotOrderbookBidEngine` to provision a single high-bandwidth datacenter spot GPU (RunPod / Vast.ai Tier-3 verified datacenter host) for contiguous middle layers (`L_a..L_b`) whenever a user triggers burst mode.
+   - **`$499/mo` `Kadmium Private Office Fabric` (100% On-Premise LAN Mode)** (`+$990` Regulated SMB Setup)
+2. **Single-Hop Indexed Spot Bridge:**
+   - Configure `SpotOrderbookBidEngine` to provision a single high-bandwidth datacenter spot GPU at `WholesaleVerifiedIndex(class) × 1.25` for contiguous middle layers (`L_a..L_b`) whenever a non-regulated user triggers burst mode.
 
 ### Step 2 (Days 6–12): High-Intent Direct Outbound (Target: First `$3,500–$6,000` Before Public Launch)
 Send 25 targeted messages/day across four high-converting segments:
 1. **Segment A — University AI / Robotics Labs (75 leads):** Pitch the **`$499` Founding Lab Setup + `$199/mo` Lab Plan** to pool their mismatched RTX 3090/4090s + Mac Studios and cap per-student cloud spend via `kdm_live_...` RBAC keys.
-2. **Segment B — Custom LoRA / Post-Training Builders on Together/Fireworks/RunPod (50 leads):** Pitch replacing their **`$3.50/hr` 24/7 dedicated endpoint bill** with local `.ktb` weight pinning (`$0/hr`) + `$0.75/hr` on-demand middle-layer burst.
-3. **Segment C — Boutique Law Firms & Healthcare IT Directors (25 leads):** Pitch the **`$499/mo` Zero-CapEx Private AI Appliance** running on their existing office Macs/PCs as an alternative to `$25,000` hardware boxes.
+2. **Segment B — Custom LoRA / Post-Training Builders on Together/Fireworks/RunPod (50 leads):** Pitch replacing their **`$3.29–$7.00/hr` 24/7 dedicated endpoint bill** with local `.ktb` weight pinning (`$0/hr`) + `$1.20–$1.83/hr` indexed middle-layer burst.
+3. **Segment C — Boutique Law Firms, Healthcare IT Directors & Regional MSPs (25 leads):** Pitch the **`$499/mo` (`$299/mo` MSP wholesale) 100% On-Premise LAN Private Office Fabric** running on their existing office Macs/PCs as an alternative to `$25,000` hardware boxes.
 4. **Segment D — Supply Partner Anchor Fleet (10 VFX Studios / Esports LAN Centers):** Sign 2–3 regional studios/LAN centers to provide **100+ overnight RTX 4090 / Mac Studio nodes** on 10GbE fiber from 7 PM to 8 AM.
 
 ### Step 3 (Days 13–20): Coordinated Viral Launch (`r/LocalLLaMA`, `Show HN`, MCP Hubs)
-1. **Wednesday 8:30 AM EST — `r/LocalLLaMA` Technical Video Post:** 90-second split-screen video showing a gaming PC + Mac Mini + NAS + RK3588 SBC running `DeepSeek-V3-671B-MoE`, `< 200 ms` gaming auto-yield, and 1-click single-hop middle-layer spot burst.
-2. **Thursday 9:00 AM EST — `Show HN: Kadmium (Cd-48)`:** Pure-Rust systems engineering deep dive (`.ktb` 64 KiB page-aligned mmap + Merkle proofs, FreeToken $q^*$, `Nous DeMo` DCT compression, `Verde` $O(\log_2 L)$ fraud proofs, and WAN activation physics).
+1. **Wednesday 8:30 AM EST — `r/LocalLLaMA` Technical Video Post:** 90-second split-screen video showing a gaming PC + Mac Mini + NAS + RK3588 Coordinator node running `DeepSeek-V3-671B-MoE`, `< 200 ms` gaming auto-yield, and 1-click single-hop middle-layer spot burst.
+2. **Thursday 9:00 AM EST — `Show HN: Kadmium (Cd-48)`:** Pure-Rust systems engineering deep dive (`.ktb` 64 KiB page-aligned mmap + Merkle proofs, FreeToken $q^*$, `Nous DeMo` `10×–85×` DCT compression, `Verde` $O(\log_2 L)$ fraud proofs, and WAN activation physics).
 3. **Friday — AI Coding Agent & MCP Directories:** List `kadmium-mcp` on Smithery.ai, Glama, and Cursor Directory.
 
 ---
 
-## 6. 90-Day Revenue, Margin & Cash-Flow Model
+## 6. Three-Scenario 90-Day Revenue, Deferred-Revenue COGS & Accrual Margin Model (`R4 §6.5`)
 
-| Metric | Day 14 (Outbound + Alpha) | Day 30 (Post-HN / Reddit Launch) | Day 60 (Supply Flywheel Active) | Day 90 (B2B Labs + Legal/Med SMBs) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Active Free Local Clusters** | 40 | 650 | 2,400 | 6,000 |
-| **Prepaid Burst Credit Packs Sold (`$25` / `$100`)** | 35 packs (`$1,625`) | 190 packs (`$8,550`) | 520 packs (`$23,400`) | 1,150 packs (`$51,750`) |
-| **`CloudShield Pro` Subscribers (`$29/mo`)** | 15 (`$435/mo`) | 85 (`$2,465/mo`) | 240 (`$6,960/mo`) | 520 (`$15,080/mo`) |
-| **`Lab / Team` Subscribers (`$199/mo` + `$499` setup)** | 5 (`$3,490` cash) | 15 (`$4,980`) | 40 (`$10,455`) | 95 (`$23,895`) |
-| **`Private Office Appliance` SMBs (`$499/mo` + `$990` setup)** | 1 (`$1,489` cash) | 4 (`$3,976`) | 12 (`$9,948`) | 28 (`$19,912`) |
-| **Total Monthly Cash Collected** | **`$7,039`** | **`$19,971`** | **`$50,763`** | **`$110,637`** |
-| **Wholesale Spot & DERP Relay COGS** | `$780` *(100% wholesale spot)* | `$3,900` *(80% wholesale spot)* | `$9,200` *(45% Mac/Studio supply)* | `$18,400` *(65% Mac/Studio supply)* |
-| **Net Gross Profit (Cash Basis)** | **`$6,259` (88.9%)** | **`$16,071` (80.5%)** | **`$41,563` (81.9%)** | **`$92,237` (83.4%)** |
+Per `R4 §6.5`, Kadmium budgets operating expenses strictly against the **Base Case (`$35,903/mo` Day-90 gross billings, `3.0%` Pro conversion)** and reserves a **`75%` fulfillment COGS liability** on all Prepaid Burst Packs and a **`70%` expected redemption rate** on overnight credits—yielding a realistic **`~43%` accrual gross margin** (never booking unredeemed prepaid packs as `83%` profit):
 
+| Metric at Day 90 (Month 3 Run-Rate) | **Bear Case** *(1.5% Pro Conv.)* | **Base Case — Budget Target** *(3.0% Pro Conv., `R4 §6.5`)* | **Stretch Case** *(8.7% Pro Conv.)* |
+| :--- | :--- | :--- | :--- |
+| **Active Free Local Clusters (`Tier 0`)** | `1,500` clusters | **`2,500` clusters** | `6,000` clusters |
+| **`CloudShield Pro` (`$29/mo`)** | `45` (`$1,305/mo`) | **`150` (`$4,350/mo`)** | `520` (`$15,080/mo`) |
+| **`Lab / Team` (`$199/mo`)** | `12` (`$2,388/mo`) | **`35` (`$6,965/mo`)** | `95` (`$18,905/mo`) |
+| **`Private Office Fabric` (`$499/mo` LAN) & MSP (`$299/mo`)** | `4` (`$1,596/mo`) | **`12` (`$4,788/mo`)** | `32` (`$12,768/mo`) |
+| **Indexed Cloud Burst & Supply Grid Gross Billings** | `$6,400/mo` | **`$11,800/mo`** | `$38,884/mo` |
+| **Prepaid Burst Pack Sales *(Deferred Revenue)*** | `$4,500/mo` | **`$8,000/mo`** | `$25,000/mo` |
+| **Total Monthly Gross Billings (Cash Inflow)** | **`$16,189 / mo`** | **`$35,903 / mo`** | **`$110,637 / mo`** |
+| **Less: Wholesale Spot COGS + `75%` Host Cash Payouts** | `-$5,610 / mo` | **`-$11,595 / mo`** | `-$37,020 / mo` |
+| **Less: Deferred Pack Fulfillment Reserve (`75%`) & Credit Liability** | `-$3,825 / mo` | **`-$6,850 / mo`** | `-$21,150 / mo` |
+| **Less: Stripe Fees (`3.2%`) + Discovery Relays (`$750/mo`)** | `-$968 / mo` | **`-$1,899 / mo`** | `-$4,990 / mo` |
+| **Realized Accrual Gross Profit (`%` Accrual Margin)** | **`+$5,786 / mo` (35.7%)** | **`+$15,559 / mo` (43.3%)** | **`+$47,477 / mo` (42.9%)** |
 
 ---
 
 ## 7. Deep-Dive: Enterprise & Regulated Vertical Buyer Research (Legal, Healthcare, Defense & MSP Channel)
 
-### 7.1 Regulatory & Compliance Mechanics (Why "Zero-Plaintext Egress" Wins Audits)
+### 7.1 Regulatory & Compliance Mechanics (Why `Private Office Fabric` Is Strictly 100% Air-Gapped / On-Premise LAN Mode)
 Small and mid-sized regulated organizations (10–250 employees) face an acute compliance wall with public AI APIs:
-- **Legal (`ABA Model Rule 1.6(c)` & State Bar Cloud Ethics Opinions):** Attorneys have a statutory duty to prevent unauthorized disclosure of client-privileged discovery documents, M&A contracts, and litigation strategy. Sending client PDFs to consumer or shared third-party LLM routers violates standard client engagement letters unless an expensive Enterprise Zero-Data-Retention (ZDR) agreement is in place.
-- **Healthcare (`HIPAA Security Rule 45 CFR § 164.312` & Business Associate Agreements):** Clinics, radiology groups, and medical billing companies cannot transmit Protected Health Information (PHI) to an external cloud without a signed **HIPAA BAA**, end-to-end encryption, and strict audit logging.
-- **Defense Subcontractors (`CMMC 2.0 Level 2`, `NIST SP 800-171`, `ITAR / EAR`):** Over **80,000 US defense subcontractors** handle Controlled Unclassified Information (CUI). Under `DFARS 252.204-7012`, transmitting plaintext CUI to non-FedRAMP commercial GPU clouds is strictly prohibited.
+- **Legal (`ABA Model Rule 1.6(c)` & State Bar Cloud Ethics Opinions):** Attorneys have a statutory duty to prevent unauthorized disclosure of client-privileged discovery documents, M&A contracts, and litigation strategy.
+- **Healthcare (`HIPAA Security Rule 45 CFR § 164.312` & Business Associate Agreements):** Clinics, radiology groups, and medical billing companies cannot transmit Protected Health Information (PHI)—or neural activations derived from PHI (`45 CFR § 164.514`)—to an external host without a signed **HIPAA BAA**, end-to-end encryption, and strict audit logging.
+- **Defense Subcontractors (`CMMC 2.0 Level 2`, `NIST SP 800-171`, `ITAR / EAR`):** Over **80,000 US defense subcontractors** handle Controlled Unclassified Information (CUI), which requires **FIPS 140-3 validated cryptographic modules** inside an assessed boundary (`DFARS 252.204-7012`).
 
-#### How Kadmium's Architecture Solves Compliance at 1/10th the Cost:
-1. **Mode A — 100% Air-Gapped Local Office Mesh (`Zero External Egress`):**
-   - `kadmium` pools the 5–20 Macs, Windows workstations, and NAS already inside the office firewall (`NodeTrustTier::LocalTrusted`). Zero packets leave the premises, bypassing external cloud vendor audits entirely.
-2. **Mode B — Cryptographically Blind Middle-Layer Burst (`L0` & `LN-1` Pinned On-Premise):**
-   - When the office needs extra capacity for a 70B–671B model, `ShardPlanner` pins the **Token Embedding (`Layer 0`), Vocabulary Projection (`Layer N-1`), and Tokenizer strictly inside the office LAN**.
-   - Only intermediate quantized activation tensors (`BlockwiseInt8Tensor` for `L1..N-2`) traverse an mTLS 1.3 tunnel to a SOC2-verified datacenter burst GPU. Because the remote GPU never receives token IDs, vocabulary tables, or plaintext strings—and Kadmium retains zero state after the forward pass—signing a standard **Zero-Storage Conduit BAA / DPA** carries minimal legal liability for Kadmium while satisfying the client's compliance officer.
+#### Audited Compliance Architecture (`R4 Security Review`):
+1. **Strictly 100% Air-Gapped / On-Premise Local Office LAN Mode (`Zero External Egress`):**
+   - For HIPAA, CMMC, and ABA deployments, `Private Office Fabric ($499/mo)` pools the 5–20 Macs, Windows workstations, and NAS already inside the office firewall (`NodeTrustTier::LocalTrusted`). Zero packets leave the premises, and **zero community grid nodes or blind rotations are ever used for regulated PHI/CUI** (since an orthogonal Walsh-Hadamard transform is an invertible rotation, not FIPS-validated encryption or HIPAA de-identification).
+2. **Self-Hosted Software Custody (No Uninsured Early-Stage Cloud BAAs):**
+   - Because `Private Office Fabric` executes 100% on the customer's own LAN hardware with zero PHI/CUI ever touching Kadmium servers, the customer retains complete data custody. Kadmium does not sign standalone cloud BAAs until a formal third-party SOC 2 Type II / HIPAA security program and cyber-liability insurance policy are in place. Optional cloud overflow in regulated offices is supported *only* when the customer connects their own direct BAA-signed AWS/Azure/GCP account over FIPS 140-3 TLS.
 
 ### 7.2 Bypassing SMB Procurement Friction via the MSP (Managed Service Provider) Channel
 Selling directly to 1,000 individual law firms or medical clinics one by one is slow. Instead, **85% of boutique law firms and clinics outsource their IT to regional Managed Service Providers (MSPs)** (`Clio` certified consultants, dental/medical IT integrators, CMMC registered practitioner organizations).
 - **The MSP Problem:** MSPs want to sell "Private AI" to their law/medical clients, but clients balk at buying a **`$25,000–$45,000` dedicated GPU server box** (`Zanus`, `Dell PowerEdge XE`).
-- **The Kadmium MSP Partner Program (`25% Recurring Revenue Share`):**
-  - The MSP deploys `Kadmium Private Office Fabric` (`$499/mo` + `$990` setup) remotely via their RMM tool (`NinjaOne`, `Datto`, `Jamf`) across the client's existing office Macs and PCs in 30 minutes.
-  - **MSP keeps 100% of the `$990` setup fee + `$125/mo` (25% recurring rev-share) per client.**
-  - Signing **just 10 regional Legal/Medical MSPs** who each deploy Kadmium to 5 clients = **50 Enterprise SMBs = `$18,700/mo` net recurring revenue to Kadmium with `$0` direct sales CAC**.
+- **The Kadmium MSP Partner Program (`$299/mo` Wholesale per Office):**
+  - The MSP deploys `Kadmium Private Office Fabric` in **100% On-Premise LAN Mode** remotely via their RMM tool (`NinjaOne`, `Datto`, `Jamf`) across the client's existing office Macs and PCs in 30 minutes.
+  - **MSP bills the client `$499–$799/mo` (`+$990` setup), retaining `$200–$500/mo` recurring service margin while remitting `$299/mo` wholesale to Kadmium.**
 
 ---
 
@@ -320,18 +316,17 @@ Interactive chat uses `~500` tokens per prompt. Autonomous coding agents (`Claud
 
 ---
 
-## 9. Deep-Dive: Cloud Spot & Wholesale GPU Aggregator Landscape
+## 9. Deep-Dive: Cloud Spot & Wholesale GPU Aggregator Landscape (`2026-10-20` Index)
 
-To guarantee 100% burst availability on Day 1 before our community Supply Grid reaches scale, `SpotOrderbookBidEngine` acts as a programmatic meta-broker across six wholesale GPU backbones:
+To guarantee 100% burst availability on Day 1 before our community Supply Grid reaches scale, `SpotOrderbookBidEngine` acts as a programmatic meta-broker across verified wholesale GPU backbones (`R4 §5.3, §6.2`):
 
-| Wholesale Provider | Primary Model | Typical Wholesale Cost (4090 / L40S / A100 / H100) | Billing Granularity | Cold-Start Latency | Best Kadmium Routing Role |
+| Wholesale Provider | Primary Model | Verified Wholesale Cost (`2026-10-20`: 4090 / L40S / A100 / H100) | Billing Granularity | Cold-Start Latency | Best Kadmium Routing Role |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`RunPod` (Secure & Community Spot)** | Container + Serverless GPU API | `$0.29` (4090) / `$0.59` (L40S) / `$1.39` (H100) | **Per-second** | `2–6 sec` (with FlashBoot / cached `.ktb` volume) | **Primary interactive single-hop middle-layer burst (`L_a..L_b`)** |
-| **`Modal`** | Serverless Function GPU | `$0.80` (L40S) / `$2.10` (A100) / `$3.95` (H100) | **Per-second (sub-second scale-to-zero)** | **`< 1.5 sec`** | **Instant `<400ms` `CloudShield` emergency failover bridge** during spot preemption |
-| **`Vast.ai` (Verified Datacenter Tier)** | Spot Host Orderbook API | `$0.18` (4090) / `$0.38` (L40S) / `$1.10` (H100) | Per-second | `8–25 sec` | **Multi-hour `DiLoCo` training islands, batch indexing, & sustained coding sessions** |
-| **`Prime Intellect`** | Decentralized Cluster & Spot | `$0.25` (4090) / `$0.35–$1.49` (H100 Spot/On-Demand) | Per-minute / Per-second | `15–45 sec` | **Async GRPO RL learner bursts & high-VRAM 671B middle blocks** |
-| **`SF Compute`** | 8×H100 Sub-Hour Orderbook | `$1.00 – $2.28 / hr` per H100 (in 8-GPU blocks) | Hour / Sub-hour blocks | `30–90 sec` | **Aggregated multi-tenant wholesale pool** once Kadmium exceeds 50 concurrent H100 burst users |
-| **`FluidStack` / `TensorDock`** | Wholesale Bare-Metal & VM API | `$0.22` (4090) / `$0.48` (L40S) / `$1.85` (H100) | Per-second / Per-minute | `10–20 sec` | **Secondary geo-distributed wholesale fallback (US-East / US-West / EU-Central)** |
+| **`Spheron` / `RunPod` (Verified Spot & Community)** | Container + Spot Pod API | `$0.34–$0.48` (4090) / `$0.96` (L40S) / `$1.43–$1.49` (A100) / `$2.65` (H100) | **Per-second / Per-minute** | `2–6 sec` (with cached `.ktb` volume) | **Primary interactive single-hop middle-layer burst (`L_a..L_b`)** |
+| **`Modal`** | Serverless Function GPU | `$1.95` (L40S) / `$2.50+` (A100) / `$3.95` (H100) | **Per-second (sub-second scale-to-zero)** | **`< 1.5 sec`** | **Instant `<400ms` `CloudShield` emergency failover bridge** during spot preemption |
+| **`Vast.ai` (Verified Datacenter Tier)** | Spot Host Orderbook API | `$0.38` (4090) / `$0.96+` (L40S) / `$1.87` (H100 Verified) | Per-second | `8–25 sec` | **Multi-hour `DiLoCo` training islands, batch indexing, & sustained coding sessions** |
+| **`Novita` / `Salad` (Spot Floor Tier)** | Container Spot Floor | `$0.33` (4090 Salad) / `$0.55` (L40S Novita) | Per-minute / Per-second | `15–45 sec` | **Preemptible batch & async GRPO RL learner bursts** |
+| **`SF Compute`** | 8×H100 Sub-Hour Orderbook | `$1.80 – $2.50 / hr` per H100 (in 8-GPU blocks) | Hour / Sub-hour blocks | `30–90 sec` | **Aggregated multi-tenant wholesale pool** once Kadmium exceeds 50 concurrent H100 burst users |
 
 ### Wholesale Arbitrage Routing Logic:
 1. **First 60 Seconds of a Burst (`Modal` / `RunPod Flash`):** When a user clicks "Attach Burst GPU", Kadmium immediately bridges onto a warm `RunPod` or `Modal` container (`< 2s` startup) so token generation begins instantaneously.
@@ -371,13 +366,13 @@ flowchart TD
 ```
 
 #### Channel 1: The "Anti-Datacenter / Grid-Zero AI" Cultural Narrative (Earned Media & Viral Manifesto)
-In 2025–2026, public anger against hyperscale AI datacenters is front-page news (`470–490 TWh` global consumption, PJM/ERCOT grid shortfalls, billions of gallons of watershed evaporation, and rising local electric bills).
+In 2025–2026, public anger against hyperscale AI datacenters is front-page news (IEA `~415 TWh` in 2024 projected to `~945 TWh` by 2030, PJM `$329.17/MW-day` capacity price spikes, billions of gallons of watershed evaporation, and rising `$0.182/kWh` residential electric bills).
 - **The Pitch to Tech, Sustainability & Mainstream Press (*Ars Technica*, *The Verge*, *Wired*, *IEEE Spectrum*, *404 Media*):**
-  > *"We don't need to restart coal plants or bulldoze farmland for 1-gigawatt AI datacenters. There are already 30 million high-end gaming GPUs, Apple Silicon Macs, and university workstations plugged into the wall sitting 85% idle. Kadmium is the open-source control rod that turns existing silicon into a planetary supercomputer—with zero new datacenters."*
+  > *"We don't need to restart coal plants or bulldoze farmland for 1-gigawatt AI datacenters. Scaling the Sep/Oct 2026 Steam Hardware Survey across 43.5M concurrent peak users shows ~2.40M 24 GB GPUs, ~0.56M 32 GB GPUs, and ~21.6M 12 GB+ GPUs—plus millions of Apple Silicon Macs and university workstations—already plugged into the wall. Kadmium is the open-source control rod that turns existing silicon into a planetary supercomputer—with zero new datacenters."*
 
 #### Channel 2: Visceral, Unfakeable Technical Video Demos (YouTube, `r/LocalLLaMA`, `r/homelab`, X)
 Developers ignore text claims; they share **unfakeable hardware stunts**. Produce three 90-second raw screen+camera videos:
-1. **Video #1 — *"The Kitchen-Sink 671B Cluster"*:** A Windows gaming PC (`RTX 4090`) + a MacBook Pro (`M3 Max`) + a Synology NAS + a `$120` RK3588 SBC running `DeepSeek-V3-671B` together over home Ethernet—then launching *Cyberpunk 2077* / *Doom* on the gaming PC and watching the HUD shift layers to a `$0.45/hr` burst node in **`140 milliseconds`** without dropping a single frame or token.
+1. **Video #1 — *"The Kitchen-Sink 671B Cluster"*:** A Windows gaming PC (`RTX 4090`) + a MacBook Pro (`M3 Max`) + a Synology NAS + a `$379` (`$275` BOM) RK3588 Coordinator node running `DeepSeek-V3-671B` together over home Ethernet—then launching *Cyberpunk 2077* / *Doom* on the gaming PC and watching the HUD shift layers to a `$0.48/hr` indexed burst node in **`140 milliseconds`** without dropping a single frame or token.
 2. **Video #2 — *"The Wireshark Privacy Challenge"*:** Running Wireshark live on the router while bursting middle layers (`L1..N-2`) to the cloud, proving on camera that **zero bytes of plaintext prompt or code ever leave the room**.
 3. **Creator Seeding (`$0` upfront via hardware/demo collabs):** Send pre-configured `kadmium.toml` multi-device scripts to homelab/AI YouTubers (**Jeff Geerling**, **NetworkChuck**, **Alex Ziskind**, **Matthew Berman**, **Dave's Garage**, **Hardware Haven**) who regularly get `200,000–1,500,000` views building heterogeneous Raspberry Pi / Mac / PC clusters.
 
@@ -410,14 +405,14 @@ You don't need a volatile crypto token to get users and hosts to **stake real mo
 
 #### 1. Demand-Side Staking: "Zero-Margin Compute Stake Vaults" (Prepaid Working Capital)
 - **How It Works:** Heavy AI builders, labs, or startups can lock a **refundable `$500` or `$2,500` Compute Reserve Deposit** (or pre-purchase a 12-month Founder Compute Vault).
-- **The Incentive:** While their deposit is staked with Kadmium, their retail burst markup drops from **`1.28×` (`28%` fee) down to `1.08×` (`8%` wholesale pass-through)**, and they get **Tier-1 Queue Priority** during peak hours.
+- **The Incentive:** While their deposit is staked with Kadmium, their retail burst markup drops from **`1.25×` (`25%` spread) down to `1.08×` (`8%` wholesale pass-through)**, and they get **Tier-1 Queue Priority** during peak hours.
 - **Why It Works for Kadmium:** Gives Kadmium immediate working capital and 100% customer retention lock-in without issuing securities.
 
 #### 2. Supply-Side Staking: "Verified Host SLA Bond" (Skin-in-the-Game for Cash Hosts)
 - **The Problem:** How do we ensure commercial studios and cash-payout hosts don't spoof tensors or unplug servers in the middle of a paid job?
 - **How the SLA Bond Works:**
   - Casual hosts earning `1.25×` closed-loop credits require `$0` upfront bond (their credits vest after passing `Verde` canary verification).
-  - Prosumer & Commercial Fleet hosts who want the **80% USD Cash Payout Track** and **Priority High-Utilization Job Routing** stake a **`$50–$250` SLA Reliability Bond** (either via a refundable Stripe security deposit or auto-staked from their first `$100` of GPU earnings).
+  - Prosumer & Commercial Fleet hosts who want the **75% USD Cash Payout Track** and **Priority High-Utilization Job Routing** stake a **`$50–$250` SLA Reliability Bond** (either via a refundable Stripe security deposit or auto-staked from their first `$100` of GPU earnings).
   - **Reward & Slashing:** As long as the host yields politely via `SIGTERM` (`< 200 ms` drain) and passes `Verde` $O(\log_2 L)$ canary checks, they earn a **+10% Reliability Bonus** and 100% of their bond remains theirs. If a host maliciously spoofs tensors (`Verde` fraud proof failure), their bond is slashed to pay for the affected customer's `CloudShield` failover!
 
 ---
@@ -426,9 +421,9 @@ You don't need a volatile crypto token to get users and hosts to **stake real mo
 
 ### 12.1 The Campaign Hook: "The Grid-Zero Manifesto — Stop Building Billion-Dollar Datacenters When the World's Largest Supercomputer Is Already on Our Desks"
 Crowdfunding campaigns go viral when they tap into a **righteous, urgent cultural movement**. Our campaign video and page center on three undeniable truths:
-1. **The Environmental & Utility Rate Crisis:** Hyperscale AI datacenters are projected to consume `470–490 TWh` of electricity, evaporate billions of gallons of local watershed water, keep fossil-fuel peaker plants online, and drive up residential electric bills for everyday families.
+1. **The Environmental & Utility Rate Crisis:** Hyperscale AI datacenters consumed `~415 TWh` in 2024 and are projected by the IEA to reach `~945 TWh` by 2030 (`R4 §8.1`), evaporating billions of gallons of local watershed water, keeping fossil-fuel peaker plants online, and driving up `$0.182/kWh` residential electric bills (`$329.17/MW-day` PJM capacity auction cap).
 2. **The Monopolization of Intelligence:** Big Tech wants a world where running frontier AI requires a `$10 billion` nuclear-powered datacenter owned by four corporations.
-3. **The Kadmium Solution:** Over **30 million high-end GPUs, Apple Silicon Macs, and campus computers** are *already manufactured, already paid for, and sitting 85% idle*. Kadmium (`Cd-48`) is the open-source control rod that links existing personal, studio, and university hardware into a private, community-owned AI fabric.
+3. **The Kadmium Solution:** Across Steam's `43.5M` concurrent peak alone, **`~2.40M` 24 GB GPUs, `~0.56M` 32 GB GPUs, and `~21.6M` 12 GB+ GPUs**—plus millions of Apple Silicon Macs and campus workstations—are *already manufactured, already paid for, and sitting underutilized* (`R4 §7.4`). Kadmium (`Cd-48`) is the open-source control rod that links existing personal, studio, and university hardware into a private, community-owned AI fabric.
 
 ### 12.2 Dual-Track Crowdfunding Architecture (Reward Pre-Sale + Community Equity)
 
@@ -673,8 +668,8 @@ How to deploy our first **`$0` $\to$ `$1,000` $\to$ `$5,000`** in advertising ca
 ---
 
 ### 17.2 Video Script #2: "The Grid-Zero Manifesto" (Crowdfunding & Mainstream PR Hero Video — 2 Minutes)
-- **`0:00 – 0:25` (The Problem):** News headlines of hyperscale datacenters consuming `490 TWh` of electricity, draining municipal watersheds, and hiking local residential electric bills by `15–30%`, while 4 trillion-dollar tech monopolies lock frontier AI behind rent-seeking paywalls.
-- **`0:25 – 0:55` (The Hidden Supercomputer):** *"The world doesn't have a silicon shortage. It has a utilization crisis. Over 30 million high-end gaming GPUs, Apple Silicon Macs, studio workstations, and university computer labs sit 85% idle every single day—already manufactured, already plugged in."*
+- **`0:00 – 0:25` (The Problem):** News headlines of hyperscale datacenters consuming `~415 TWh` of electricity in 2024 and projected by the IEA to hit `~945 TWh` by 2030, draining municipal watersheds, and hiking local residential electric bills (`$329.17/MW-day` PJM capacity cap, `$0.182/kWh` US residential average), while 4 trillion-dollar tech monopolies lock frontier AI behind rent-seeking paywalls.
+- **`0:25 – 0:55` (The Hidden Supercomputer):** *"The world doesn't have a silicon shortage. It has a utilization crisis. Across Steam's 43.5M concurrent peak alone, ~2.40M 24 GB GPUs, ~0.56M 32 GB GPUs, and ~21.6M 12 GB+ GPUs—plus millions of Apple Silicon Macs, studio workstations, and university computer labs—are already manufactured and already plugged in."*
 - **`0:55 – 1:35` (How Kadmium Works):** Show how Kadmium (`Cd-48` — the atomic control rod) connects personal hardware, overnight university labs, and studio fleets using **Zero-Plaintext Local Pinning**, **BitTorrent `.ktb` Seeding**, and **`RAID-5` Parity Tensor Striping**—turning 10 everyday residential connections into a straggler-immune supercomputer.
 - **`1:35 – 2:00` (The Mission & Rewards):** *"When you back Kadmium, you aren't funding another concrete datacenter in a cornfield. You're claiming compute independence—and helping us provide free AI compute grants to thousands of students and public university labs."*
 
@@ -692,7 +687,7 @@ How to deploy our first **`$0` $\to$ `$1,000` $\to$ `$5,000`** in advertising ca
 > So we built **Kadmium (`Cd-48`)** in pure Rust (`MIT/Apache-2.0`):
 > - **True Heterogeneous Sharding:** Combines discrete GPUs (`CUDA`/`Vulkan`) + Apple Silicon Unified Memory (`Metal`) + DDR5 RAM (`FreeToken` $q^*$ importance quantization) + NVMe (`.ktb` `64 KiB` page-aligned zero-copy `mmap`).
 > - **`< 200 ms` Polite Gaming / Battery Auto-Yield:** Watches `DXGI` / `IOKit` / `DRM` swapchains. Launch a game on your PC and Kadmium drains its layers in `< 200 ms` without killing your coding agent's stream.
-> - **Blind Middle-Layer Cloud Burst (`L0` & `LN-1` Stay Local):** If your local hardware is 30 GB short, you only rent the missing middle layers (`$0.45/hr` instead of `$2.60/hr`), and raw prompts/tokens never leave `127.0.0.1`.
+> - **Blind Middle-Layer Cloud Burst (`L0` & `LN-1` Stay Local):** If your local hardware is 30 GB short, you only rent the missing middle layers (`$0.48/hr` indexed 4090 or `$0.07/hr` fractional grid slice instead of `$3.29+/hr` dedicated), and raw prompts/tokens never leave `127.0.0.1`.
 > - **BitTorrent `.ktb` Swarming + `RAID-5` Tensor Striping:** Stripes prefill chunks across $k$ parallel seeders + $p$ linear-algebraic parity nodes ($Y_{\text{parity}} = \sum Y_j$), aggregating slow `25 Mbps` residential uploads into a `200+ Mbps` straggler-immune pipe.
 >
 > **Try it locally (100% free):** `cargo install --git https://github.com/mESmaC/Kadmium kadmium-cli`
@@ -708,16 +703,16 @@ A critical legal reality uncovered in our hardware compliance research: **buildi
   - Instead of designing a custom motherboard, we source **already FCC/CE-certified commercial industrial mini-PCs** (`Rockchip RK3588 32GB` and `AMD Strix Halo Ryzen AI Max+ 395 128GB`), keep their factory radio/shielding and `Contains FCC ID` compliance label intact, custom laser-etch the anodized aluminum top plate with **`KADMIUM Cd-48 // CONTROL ROD DEV KIT`**, and pre-install a **2TB PCIe 4.0 NVMe SSD** pre-loaded with the `kadmium-node` OS image and `1.5 TB` of pre-compiled `.ktb` Merkle-verified model banks (`DeepSeek-V3`, `Llama-3.3-70B`, `Qwen3-Coder`, `Dream-RSI` worlds).
   - **Result:** **$0 in FCC lab fees, zero manufacturing risk, and 2-week fulfillment turnaround!**
 
-### 18.2 Kickstarter Hardware & Compute Reward Tier Unit Economics (BOM vs. Pledge Margin)
+### 18.2 Kickstarter Hardware & Compute Reward Tier Unit Economics (`2026-10-20` BOM & `9%` Fee Assumption, `R4 §6.6`)
 
-| Reward Tier | Pledge Price | What the Backer Gets | Hard COGS / Wholesale BOM | Kickstarter + Stripe Fee (`8%`) | **Net Cash Profit per Backer** |
+| Reward Tier | Pledge Price | What the Backer Gets | Hard COGS / Wholesale BOM (`2026-10-20`) | Crowdfunding + Payment Fee (`9%`) | **Net Contribution per Backer** |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Tier 1: `Grid-Zero Starter`** | **`$29`** | `$50` Burst Credits (`1.25×` community grid routed) + Founder Badge | `~$6.00` *(blended spot/credit COGS)* | `$2.32` | **`+$20.68` (71%)** |
-| **Tier 2: `Homelab Pro Annual`** | **`$99`** | 1 Year `CloudShield Pro` + `$125` Burst Credits (`$473` retail value) | `~$18.00` | `$7.92` | **`+$73.08` (74%)** |
-| **Tier 3: `Lifetime Personal Pro`** *(Limited: 250)* | **`$299`** | **Lifetime `CloudShield Pro`** WAN mesh/failover + `$200` Burst Credits | `~$35.00` | `$23.92` | **`+$240.08` (80%)** |
-| **Tier 4: `Cd-48 Control Rod 32GB Node`** | **`$699`** | Pre-certified **RK3588 32GB RAM + 2TB NVMe** (`1.5TB` `.ktb` models preloaded) + `$200` Burst Credits | `$185` (RK3588 32GB) + `$95` (2TB NVMe + laser etch) + `$25` (credits) = **`$305`** | `$55.92` | **`+$338.08` (48%)** |
-| **Tier 5: `Founding University Lab / Studio`** | **`$1,999`** | 15-Seat `Kadmium Lab & Team` (1 Yr) + White-Glove Setup + `$1,000` Credits | `~$180.00` | `$159.92` | **`+$1,659.08` (83%)** |
-| **Tier 6: `Cd-48 Reactor Core 128GB (Strix Halo)`** | **`$4,499`** | Pre-certified **AMD Ryzen AI Max+ 395 (128GB Unified LPDDR5X + 2TB NVMe)** + 1 Yr Team Plan + `$500` Credits | `$3,150` (Wholesale 128GB unit) + `$90` (credits/shipping) = **`$3,240`** | `$359.92` | **`+$899.08` ($4.5k Top-Line Spike!)** |
+| **Tier 1: `Grid-Zero Starter`** | **`$29`** | `$35` Indexed Burst Credits + Founder Badge | `~$18.38` *(70% redemption × 75% COGS)* | `$2.61` | **`+$8.01` (27.6%)** |
+| **Tier 2: `Homelab Pro Annual`** | **`$299`** | 1 Year `CloudShield Pro` + `$125` Indexed Burst Credits | `~$125.00` *(annualized credit COGS)* | `$26.91` | **`+$147.09` (49.2%)** |
+| **Tier 3: `Cd-48 32GB Coordinator / NAS Node (Base)`** | **`$379`** | Pre-certified **RK3588 32GB LPDDR5 + Case + PSU** (Coordinator / `.ktb` NAS Seed / WASI Node) | **`$275.00`** (`$240–$300` Oct 2026 BOM) + `$15.16` warranty reserve = **`$290.16`** | `$34.11` | **`+$54.73` (14.4%)** |
+| **Tier 4: `Cd-48 Control Rod 32GB + 2TB NVMe Bundle`** | **`$699`** | Pre-certified **RK3588 32GB RAM + 2TB NVMe** (`1.5TB` `.ktb` models preloaded) + `$100` Burst Credits | `$275` (RK3588 32GB) + `$135` (2TB NVMe + laser etch) + `$52.50` (credit liability) = **`$462.50`** | `$62.91` | **`+$173.59` (24.8%)** |
+| **Tier 5: `Founding University Lab / Studio`** | **`$1,999`** | 15-Seat `Kadmium Lab & Team` (1 Yr) + White-Glove Setup + `$500` Indexed Credits | `~$440.00` *(credit liability + setup)* | `$179.91` | **`+$1,379.09` (69.0%)** |
+| **Tier 6: `Cd-48 Reactor Core 128GB (Strix Halo)`** | **`$3,499`** | Pre-certified **AMD Ryzen AI Max+ 395 (128GB Unified LPDDR5X + 2TB NVMe)** + 1 Yr Team Plan | `$2,459` (Oct 2026 Strix Halo 128GB) + `$150` (shipping/warranty) = **`$2,609`** | `$314.91` | **`+$575.09` (16.4%)** |
 
 ---
 
@@ -727,14 +722,14 @@ A critical legal reality uncovered in our hardware compliance research: **buildi
 The NSF SBIR/STTR portal requires a 4-part **Project Pitch** before inviting a full `$305,000` Phase I proposal (which then unlocks `$1,250,000` in Phase II). Under **STTR**, **30% to 40% (`$91,500–$122,000`) goes directly to our partner University CS Lab**, making university professors eager to co-author and validate the system!
 
 1. **Section 1 — The Technology Innovation *(Max 3,500 chars)*:**
-   - **Core R&D Breakthrough:** `Kadmium (Cd-48)` is a consolidated, heterogeneous distributed AI inference and post-training runtime written in pure Rust that unifies disparate edge, desktop, and campus architectures (`x86_64`, `ARM64`, discrete GPUs, Apple Unified Memory, DDR5 RAM, and NVMe storage) into a single fault-tolerant compute fabric. Unlike existing frameworks (`vLLM`, `DeepSpeed`, `Petals`) that require homogeneous datacenter GPUs or stall over asymmetric WAN links, Kadmium introduces four novel systems innovations: (1) **Zero-Copy `64 KiB` Page-Aligned `.ktb` Tensor Banks** with SHA-256 Merkle verification and BitTorrent-style multi-seeder swarming; (2) **`RAID-5` Linear-Algebraic Coded Tensor Striping** ($Y_{\text{parity}} = (\sum_{j=1}^k X_j)W$), which stripes activations across $k$ low-upload nodes plus $p$ parity workers to multiply effective uplink bandwidth by $k\times$ while eliminating `p99` straggler tail latency; (3) **FreeToken $q^*$ Activation-Sensitivity Mixed-Precision Sharding** combined with `< 200 ms` OS GPU swapchain hysteresis for non-disruptive daytime campus/office operation; and (4) **Disaggregated Zero-GPU Reinforcement Learning (`Dream-RSI` MCTS causal replay + deterministic `WASI` sandboxes + `DiLoCo/DeMo` `85×` DCT-compressed gradients)**.
+   - **Core R&D Breakthrough:** `Kadmium (Cd-48)` is a consolidated, heterogeneous distributed AI inference and post-training runtime written in pure Rust that unifies disparate edge, desktop, and campus architectures (`x86_64`, `ARM64`, discrete GPUs, Apple Unified Memory, DDR5 RAM, and NVMe storage) into a single fault-tolerant compute fabric. Unlike existing frameworks (`vLLM`, `DeepSpeed`, `Petals`) that require homogeneous datacenter GPUs or stall over asymmetric WAN links, Kadmium introduces four novel systems innovations: (1) **Zero-Copy `64 KiB` Page-Aligned `.ktb` Tensor Banks** with SHA-256 Merkle verification and BitTorrent-style multi-seeder swarming; (2) **`RAID-5` Linear-Algebraic Coded Tensor Striping** ($Y_{\text{parity}} = (\sum_{j=1}^k X_j)W$), which stripes activations across $k$ low-upload nodes plus $p$ parity workers to multiply effective uplink bandwidth by $k\times$ while eliminating `p99` straggler tail latency; (3) **FreeToken $q^*$ Activation-Sensitivity Mixed-Precision Sharding** combined with `< 200 ms` OS GPU swapchain hysteresis for non-disruptive daytime campus/office operation; and (4) **Disaggregated Zero-GPU Reinforcement Learning (`Dream-RSI` MCTS causal replay + deterministic `WASI` sandboxes + `DiLoCo/DeMo` `10×–85×` DCT-compressed gradients)**.
 2. **Section 2 — Technical Objectives and Challenges *(Max 3,500 chars)*:**
    - **Phase I R&D Objectives (with University STTR Partner Lab):**
      - *Objective 1:* Formalize and benchmark **`RAID-5` Coded Activation & Expert Striping** across 50+ heterogeneous campus workstations and residential WAN links (`20–50 Mbps` uplink), proving $\ge 6\times$ reduction in `p99` prefill latency and zero-stall recovery under 15% simulated node preemption.
      - *Objective 2:* Validate **`Verde` $O(\log_2 L)$ Referee Bisection** and **Zero-Plaintext Local Boundary Pinning (`L0` / `LN-1`)** against adversarial bit-flip and model-poisoning attacks across untrusted peer nodes.
      - *Objective 3:* Benchmark disaggregated **GRPO + `Dream-RSI` offline MCTS post-training** across 200 idle overnight university lab machines, demonstrating $\ge 65\%$ reduction in GPU-hour energy consumption (`tok/Joule`) compared to monolithic H100 clusters.
 3. **Section 3 — The Market Opportunity *(Max 1,750 chars)*:**
-   - Hyperscale AI datacenters face severe power-grid bottlenecks (`490 TWh`) and high hourly costs (`$3–$6/hr` per dedicated GPU), pricing out academic labs, students, and regulated SMBs (legal, healthcare, defense). Meanwhile, over 30 million prosumer GPUs, Apple Silicon Macs, and millions of university campus computers sit 85% idle. Kadmium monetizes via a Tailscale-style open-core SaaS model (`$199–$499/mo` Lab & Regulated SMB Fabrics) and a `1.28×` middle-layer burst marketplace paired with the **Kadmium Scholar `.edu` Program**.
+   - Hyperscale AI datacenters face severe power-grid bottlenecks (IEA `~415 TWh` in 2024 $\to$ `~945 TWh` by 2030) and high hourly costs (`$3.29–$7.00/hr` per dedicated GPU), pricing out academic labs, students, and regulated SMBs (legal, healthcare, defense). Meanwhile, Steam's `43.5M` concurrent peak alone reflects `~2.40M` 24 GB GPUs, `~0.56M` 32 GB GPUs, and `~21.6M` 12 GB+ GPUs, alongside millions of Apple Silicon Macs and university campus computers sitting underutilized. Kadmium monetizes via a Tailscale-style open-core SaaS model (`$199–$499/mo` Lab & Air-Gapped Regulated SMB Fabrics) and a `1.25×` indexed middle-layer burst marketplace paired with the **Kadmium Scholar `.edu` Program**.
 4. **Section 4 — The Company and Team *(Max 1,750 chars)*:**
    - Led by systems engineers behind the 8-crate pure-Rust `Kadmium (Cd-48)` workspace (`>15,000` LoC of verified sharding, `.ktb` transcoding, WASI RL, and QUIC mesh networking) in partnership with `[Partner University CS Systems/AI Lab, PI Name]`.
 
@@ -863,7 +858,7 @@ However, large companies rarely donate hardware directly to a standard for-profi
 >
 > When `[Company / Datacenter Name]` refreshes racks or clears out decommissioned `Dell / Supermicro / HPE` servers and GPU chassis, what happens to the retired units after you pull the hard drives?
 >
-> We run **Kadmium (`Cd-48`)** (`github.com/mESmaC/Kadmium`), an open-source pure-Rust distributed AI fabric that recycles existing and older heterogeneous hardware into high-speed AI clusters for **university research labs and `.edu` student scholars**—preventing e-waste and reducing the `490 TWh` hyperscale datacenter grid burden.
+> We run **Kadmium (`Cd-48`)** (`github.com/mESmaC/Kadmium`), an open-source pure-Rust distributed AI fabric that recycles existing and older heterogeneous hardware into high-speed AI clusters for **university research labs and `.edu` student scholars**—preventing e-waste and reducing the IEA `415 TWh -> 945 TWh` hyperscale datacenter grid burden.
 >
 > Because our engine uses `64 KiB` zero-copy `.ktb` memory mapping and `RAID-5` tensor striping, **retired 2-to-5-year-old dual-Xeon/EPYC servers, high-RAM blades, 10GbE switches, and older GPUs (`V100`/`T4`/`A4000`/`3090`) are prime workhorses for our Sentinel & Student Scholar Grid.**
 >
@@ -884,11 +879,11 @@ The six major engineering capabilities added overnight (`10b4329` $\to$ `6ee825e
 ### 22.1 The 20-Slot Phone Farm Box (`kadmium-core::phone_farm`) — The Ultimate Circular-Economy AI Appliance
 With [`phone_farm.rs`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/phone_farm.rs), Kadmium now natively profiles, orchestrates, and shards across **20-Slot Phone Farm Boxes** (`Snapdragon 845 / 865 / 8 Gen 2` motherboards with screens and lithium-ion batteries removed, running 24/7 on 5V BMS power supplies over multiplexed USB 3.0 ADB tunnels or OTG Ethernet) as well as **Pocket-Polite Standalone Mobile Phones**:
 
-| Phone Farm Box Tier | Aggregate Memory & Storage | Compute & NPU Throughput | Wall Power & Electricity Cost (`$0.15/kWh`) | Ideal Kadmium Role |
+| Phone Farm Box Tier | Aggregate Memory & Storage | Compute & NPU Throughput | Wall Power & Electricity Cost (`$0.182/kWh` EIA) | Ideal Kadmium Role |
 | :--- | :--- | :--- | :--- | :--- |
-| **`20× Snapdragon 845` (S9 Box)** | `120 GB LPDDR4X` + `1.28 TB UFS 2.1` | `160 ARM64 cores` · `120 INT4 TOPS` | **`~95W` (`$0.014 / hr`!)** | 20× parallel `WasiMicroSandbox` RL verifiers, `Dream-RSI` MCTS rollouts & `/v1/embeddings` |
-| **`20× Snapdragon 865` (S20 Box)** | `160 GB LPDDR5` + `2.56 TB UFS 3.0` | `160 Kryo 585 cores` · `300 INT4 TOPS` | **`~115W` (`$0.017 / hr`!)** | Coherent MoE expert striping (`12–13 experts/board`) + 2.5 TB `.ktb` BitTorrent Super-Seeder |
-| **`20× Snapdragon 8 Gen 2` (S23 Box)** | `240 GB LPDDR5X` + `5.12 TB UFS 4.0` | `160 ARMv9 cores` · `680 INT4 TOPS` | **`~145W` (`$0.022 / hr`!)** | Full `DeepSeek-V3-671B` (`EXL3 2.5bpw`) resident in `240 GB` LPDDR5X at `<150W` wall power! |
+| **`20× Snapdragon 845` (S9 Box)** | `120 GB LPDDR4X` + `1.28 TB UFS 2.1` | `160 ARM64 cores` · `120 INT4 TOPS` | **`~95W` (`$0.017 / hr`!)** | 20× parallel `WasiMicroSandbox` RL verifiers, `Dream-RSI` MCTS rollouts & `/v1/embeddings` |
+| **`20× Snapdragon 865` (S20 Box)** | `160 GB LPDDR5` + `2.56 TB UFS 3.0` | `160 Kryo 585 cores` · `300 INT4 TOPS` | **`~115W` (`$0.021 / hr`!)** | Parallel WASI RL verification + 2.5 TB `.ktb` BitTorrent Super-Seeder |
+| **`20× Snapdragon 8 Gen 2` (S23 Box)** | `240 GB LPDDR5X` + `5.12 TB UFS 4.0` | `160 ARMv9 cores` · `680 INT4 TOPS` | **`~145W` (`$0.026 / hr`!)** | High-capacity parallel WASI RL & speculative draft array at `<150W` wall power |
 
 #### Why This Is Marketing, Crowdfunding & Grant Rocket Fuel:
 1. **Unbeatable YouTube & Reddit Viral Stunt (*"Running DeepSeek-671B on 20 Recycled Cracked-Screen Smartphone Motherboards at 120 Watts"*):**
