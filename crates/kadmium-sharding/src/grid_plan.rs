@@ -526,7 +526,14 @@ impl ExpertPlacementPlanner {
         popularity: Option<&ExpertPopularity>,
         workload: WorkloadKind,
     ) -> ExpertPlacementPlan {
-        Self::plan_with_offers(model, nodes, strategy, popularity, workload, &BTreeMap::new())
+        Self::plan_with_offers(
+            model,
+            nodes,
+            strategy,
+            popularity,
+            workload,
+            &BTreeMap::new(),
+        )
     }
 
     /// The planner proper: places the model against each node's offer (the node's default offer
@@ -1010,6 +1017,11 @@ pub struct StrategyCostModel {
     /// system-RAM bandwidth times the efficiency factor for those nodes.
     #[serde(default)]
     pub measured_stream_gbps: BTreeMap<NodeId, f64>,
+    /// When enabled, warm (`ResidencyTier::SystemRam`) MoE experts are modelled using FreeToken's
+    /// closed-form $q^*$ co-execution policy (overlapping PCIe DMA to GPU with in-place Host
+    /// CPU + NPU execution over pre-merged `.ktb` RAM banks).
+    #[serde(default)]
+    pub freetoken_q_star_coexecution: bool,
 }
 
 impl Default for StrategyCostModel {
@@ -1020,6 +1032,7 @@ impl Default for StrategyCostModel {
             measured_rtt_ms: BTreeMap::new(),
             batch_expert_growth: 0.7,
             measured_stream_gbps: BTreeMap::new(),
+            freetoken_q_star_coexecution: false,
         }
     }
 }
@@ -1038,6 +1051,16 @@ impl StrategyCostModel {
     pub fn with_measured_stream(mut self, node: NodeId, gbps: f64) -> Self {
         if gbps.is_finite() && gbps > 0.0 {
             self.measured_stream_gbps.insert(node, gbps);
+        }
+        self
+    }
+
+    /// Enables or disables FreeToken $q^*$ bandwidth-adaptive co-execution modelling for warm
+    /// System RAM `.ktb` expert banks.
+    pub fn with_freetoken_q_star_coexecution(mut self, enabled: bool) -> Self {
+        if true {
+            self.freetoken_q_star_coexecution = enabled;
+        } else {
         }
         self
     }
@@ -1117,7 +1140,8 @@ impl StrategyCostModel {
                 })
                 .map(|r| r.preferred_tier)
                 .unwrap_or(ResidencyTier::SystemRam);
-            let trunk_bw = self.effective_bw_gbps(&range.owner, owner_budget, trunk_tier, eta) * 1e9;
+            let trunk_bw =
+                self.effective_bw_gbps(&range.owner, owner_budget, trunk_tier, eta) * 1e9;
             let trunk_ms = range.bytes as f64 / trunk_bw * 1000.0;
             weight_ms += trunk_ms;
             *per_node_ms.entry(range.owner.clone()).or_default() += trunk_ms;
@@ -1156,9 +1180,29 @@ impl StrategyCostModel {
                 let mut layer_node_ms: BTreeMap<NodeId, f64> = BTreeMap::new();
                 let mut layer_cold_ms: BTreeMap<NodeId, f64> = BTreeMap::new();
                 for ((node, tier), bytes) in &node_tier_bytes {
+                    let coexec_bw_override = if self.freetoken_q_star_coexecution
+                        && *tier == ResidencyTier::SystemRam
+                        && let Some(hw_node) = nodes.iter().find(|n| &n.id == node)
+                        && hw_node.memory.vram_gb > 0.0
+                        && hw_node.memory.interconnect_bw_gbps > 0.0
+                    {
+                        let plan = hw_node.compute_dynamic_q_star_plan(
+                            (expert_bytes.max(1024.0)) as u64,
+                            model.active_experts_per_token.max(2),
+                            0,
+                            self.measured_stream_gbps.get(node).copied(),
+                        );
+                        Some(plan.effective_coexecution_bw_gbps.max(0.1))
+                    } else {
+                        None
+                    };
+                    let _ = coexec_bw_override;
                     let bw = budgets
                         .get(node)
-                        .map(|b| self.effective_bw_gbps(node, b, *tier, eta))
+                        .map(|b| {
+                            coexec_bw_override
+                                .unwrap_or_else(|| self.effective_bw_gbps(node, b, *tier, eta))
+                        })
                         .unwrap_or(0.3 * eta)
                         * 1e9;
                     let ms = bytes / bw * 1000.0;
@@ -1780,7 +1824,10 @@ mod tests {
             ExecutionStrategy::ExpertParallel,
             Some(&heat),
         );
-        assert!(placement.replicated_experts > 0, "the toy mesh has room for replicas");
+        assert!(
+            placement.replicated_experts > 0,
+            "the toy mesh has room for replicas"
+        );
         let replicated = placement
             .experts
             .iter()
@@ -1790,9 +1837,8 @@ mod tests {
 
         // Unmeasured holders: the primary serves. Measured: the cheaper copy serves.
         assert!(placement.serving_assignment(|_| None).is_empty());
-        let serving = placement.serving_assignment(|node| {
-            Some(if *node == replica { 1.0 } else { 50.0 })
-        });
+        let serving =
+            placement.serving_assignment(|node| Some(if *node == replica { 1.0 } else { 50.0 }));
         assert_eq!(
             serving.get(&(replicated.layer, replicated.expert)),
             Some(&replica)
@@ -1903,7 +1949,8 @@ mod tests {
     fn offers_bound_the_plan_and_the_fit_report_names_what_is_missing() {
         let nodes = cluster();
         let model = toy_moe();
-        let plan = ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
+        let plan =
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
         assert!(plan.fit.fits, "{:?}", plan.fit.shortfalls);
         assert_eq!(plan.fit.per_node.len(), plan.fast_memory_used_gb.len());
         assert!(
@@ -1951,7 +1998,13 @@ mod tests {
         assert!(!starved.fit.shortfalls.is_empty());
         assert!(starved.fit.shortfalls[0].contains("cannot hold trunk"));
         assert!(starved.fit.per_node.iter().all(|n| n.requires_approval));
-        assert!(starved.fit.per_node.iter().all(|n| n.fast_offered_gb == 0.0));
+        assert!(
+            starved
+                .fit
+                .per_node
+                .iter()
+                .all(|n| n.fast_offered_gb == 0.0)
+        );
         assert!(starved.fit.summary().starts_with("does not fit"));
         assert_eq!(
             starved.digest(),
@@ -2059,19 +2112,15 @@ mod tests {
         assert!(choice.measured_chain.is_some());
 
         // Both measured: the faster shape wins whatever the model said.
-        let changed = choice.apply_measurements(
-            Some(record(&chain_plan, 9.0)),
-            Some(record(&ep_plan, 3.0)),
-        );
+        let changed =
+            choice.apply_measurements(Some(record(&chain_plan, 9.0)), Some(record(&ep_plan, 3.0)));
         assert_eq!(choice.chosen, ExecutionStrategy::ExpertParallel);
         assert_eq!(changed, modelled != ExecutionStrategy::ExpertParallel);
         assert_eq!(choice.decided_by, DECIDED_BY_MEASURED);
         assert!(choice.rationale.starts_with("measured 9.00 ms/token"));
 
-        let changed = choice.apply_measurements(
-            Some(record(&chain_plan, 2.0)),
-            Some(record(&ep_plan, 3.0)),
-        );
+        let changed =
+            choice.apply_measurements(Some(record(&chain_plan, 2.0)), Some(record(&ep_plan, 3.0)));
         assert!(changed);
         assert_eq!(choice.chosen, ExecutionStrategy::PipelineChain);
 
@@ -2083,8 +2132,7 @@ mod tests {
         assert_eq!(choice.chosen, ExecutionStrategy::PipelineChain);
 
         // A measured streaming rate replaces the nominal RAM bandwidth in the estimate.
-        let slow_ram = StrategyCostModel::default()
-            .with_measured_stream(nodes[0].id.clone(), 2.0);
+        let slow_ram = StrategyCostModel::default().with_measured_stream(nodes[0].id.clone(), 2.0);
         let nominal = cost.estimate(&model, &chain_plan, &nodes, None);
         let measured = slow_ram.estimate(&model, &chain_plan, &nodes, None);
         assert!(measured.modelled);
@@ -2517,5 +2565,35 @@ mod phase5_tests {
         );
         let ap: VerdeAuditParams = audit.params_json().unwrap();
         assert_eq!(ap.inject_fault_at_layer, Some(5));
+    }
+
+    #[test]
+    fn freetoken_q_star_coexecution_accelerates_warm_ram_experts_in_cost_model() {
+        let nodes = sample_personal_cluster();
+        let desktop_id = nodes[0].id.clone();
+        let model = ModelSpec::deepseek_v3_671b_moe();
+        let pop = ExpertPopularity::power_law(model.num_layers, model.experts_per_layer, 0.25);
+        let plan = ExpertPlacementPlanner::plan(
+            &model,
+            &nodes,
+            ExecutionStrategy::PipelineChain,
+            Some(&pop),
+        );
+
+        let serial_cost = StrategyCostModel::default()
+            .with_measured_stream(desktop_id.clone(), 54.0)
+            .estimate(&model, &plan, &nodes, Some(&pop));
+        let coexec_cost = StrategyCostModel::default()
+            .with_measured_stream(desktop_id, 54.0)
+            .with_freetoken_q_star_coexecution(true)
+            .estimate(&model, &plan, &nodes, Some(&pop));
+
+        assert!(
+            coexec_cost.ms_per_token < serial_cost.ms_per_token,
+            "FreeToken q* co-execution should reduce ms/token on warm RAM experts: coexec={} vs serial={}",
+            coexec_cost.ms_per_token,
+            serial_cost.ms_per_token
+        );
+        assert!(coexec_cost.tokens_per_sec > serial_cost.tokens_per_sec);
     }
 }

@@ -16,7 +16,11 @@ use crate::{
     BlockwiseInt8Tensor, FusedRmsNormRopeKernel, KvPageBlock, MoEGatingRouter,
     MoERoutedExpertSelection, PagedGqaAttentionKernel,
 };
-use kadmium_data::KtbBankReader;
+use kadmium_core::{
+    ExpertCoExecutionAssignment, ExpertExecutionEngine, FreeTokenInterconnectTelemetry,
+    FreeTokenQStarSolver, QStarCoExecutionPlan,
+};
+use kadmium_data::{KtbBankReader, KtbPreMergedBankPacker, KtbPreMergedBankReader, TensorEncoding};
 use serde::{Deserialize, Serialize};
 
 /// Block size of the INT8 quantization applied at every layer boundary.
@@ -181,6 +185,267 @@ impl LayerReference {
             })
             .collect();
         (Self::combine(&h, &partials), routing)
+    }
+
+    /// Evaluates one expert's contribution from a zero-copy pre-merged `.ktb` weight bank
+    /// ([`KtbPreMergedBankReader`]) when `(layer, expert)` is present in `bank`, falling back to
+    /// the deterministic reference weights ([`Self::expert_contribution`]) when `bank` has no
+    /// pre-merged entry for `(layer, expert)`.
+    pub fn expert_contribution_from_bank(
+        hidden: &[f32],
+        layer: u32,
+        expert: u32,
+        gate: f32,
+        bank: Option<&[u8]>,
+    ) -> Vec<f32> {
+        if let Some(ktb_buf) = bank
+            && let Ok(reader) = KtbPreMergedBankReader::from_slice(ktb_buf)
+            && let Ok(Some(slices)) = reader.get_premerged_expert(layer, expert)
+        {
+            return slices.evaluate_swiglu_f32(hidden, gate);
+        }
+        Self::expert_contribution(hidden, layer, expert, gate)
+    }
+
+    /// Trunk, every selected expert (reading zero-copy pre-merged `.ktb` banks when present), and
+    /// combine on one node.
+    pub fn layer_forward_with_bank(
+        hidden_in: &[f32],
+        layer: u32,
+        gamma: &[f32],
+        experts_per_layer: u32,
+        top_k: u32,
+        q_star: f64,
+        bank: Option<&[u8]>,
+    ) -> (Vec<f32>, Vec<MoERoutedExpertSelection>) {
+        let (h, routing) =
+            Self::trunk_forward(hidden_in, layer, gamma, experts_per_layer, top_k, q_star);
+        let partials: Vec<(u32, Vec<f32>)> = routing
+            .iter()
+            .map(|r| {
+                (
+                    r.expert_id,
+                    Self::expert_contribution_from_bank(
+                        &h,
+                        layer,
+                        r.expert_id,
+                        r.gating_weight,
+                        bank,
+                    ),
+                )
+            })
+            .collect();
+        (Self::combine(&h, &partials), routing)
+    }
+
+    /// Packs a 64 KiB page-aligned pre-merged `.ktb` bank for `start_layer..=end_layer` containing
+    /// `layer.rmsnorm.gamma` and pre-merged `FTWX` (`gate_proj`, `up_proj`, `down_proj`) banks for
+    /// all `0..experts_per_layer` whose fused SwiGLU evaluation reproduces
+    /// [`Self::expert_contribution`] bit for bit.
+    pub fn pack_premerged_reference_bank(
+        model_id: &str,
+        start_layer: u32,
+        end_layer: u32,
+        experts_per_layer: u32,
+        dim: usize,
+    ) -> Vec<u8> {
+        let mut packer = KtbPreMergedBankPacker::new(model_id);
+        let mut gamma_bytes = Vec::with_capacity(dim * 4);
+        for i in 0..dim {
+            let g = 1.0f32 + (i as f32) * 0.002;
+            gamma_bytes.extend_from_slice(&g.to_le_bytes());
+        }
+        packer.add_dense_trunk_tensor(
+            "layer.rmsnorm.gamma",
+            start_layer,
+            TensorEncoding::Fp16,
+            gamma_bytes,
+        );
+        let gate_ones = vec![1.0f32; dim];
+        let up_ones = vec![1.0f32; dim];
+        for layer in start_layer..=end_layer {
+            for expert in 0..experts_per_layer {
+                let down: Vec<f32> = (0..dim)
+                    .map(|idx| Self::expert_weight(layer, expert, idx))
+                    .collect();
+                packer.add_premerged_f32_expert(layer, expert, &gate_ones, &up_ones, &down);
+            }
+        }
+        packer.pack_to_bytes()
+    }
+}
+
+/// Telemetry from executing a transformer layer through [`FreeTokenLayerCoExecutor`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FreeTokenLayerCoExecutionReport {
+    pub layer: u32,
+    pub trunk_q_star_ratio: f64,
+    pub q_star_plan: QStarCoExecutionPlan,
+    pub assignments: Vec<ExpertCoExecutionAssignment>,
+    /// Number of routed experts served directly from zero-copy 64 KiB page-aligned pre-merged
+    /// `.ktb` banks.
+    pub premerged_bank_hits: usize,
+}
+
+/// Runtime co-executor implementing **FreeToken Bandwidth-Adaptive Execution ($q^*$ Policy)**
+/// backed by **Zero-Copy Pre-Merged `.ktb` Weight Banks**.
+///
+/// Splits routed experts across:
+/// - **GPU / Fast Accelerator Stream:** Hot VRAM-resident experts + $q^*_{\text{gpu\_dma}}$ of
+///   cache-missed experts streamed via PCIe DMA from 64 KiB page-aligned `.ktb` banks,
+/// - **Host CPU In-Place Stream:** $q^*_{\text{cpu\_ram}}$ of cache-missed experts executed
+///   directly in-place on host vector threads over memory-mapped System RAM `.ktb` banks, and
+/// - **Host NPU In-Place Stream:** $q^*_{\text{npu\_ram}}$ of cache-missed experts executed on
+///   the NPU over System RAM.
+pub struct FreeTokenLayerCoExecutor;
+
+impl FreeTokenLayerCoExecutor {
+    /// Executes one MoE layer using the dynamic $q^*$ co-execution policy and optional zero-copy
+    /// pre-merged `.ktb` weight bank.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_layer_coexecution(
+        telemetry: &FreeTokenInterconnectTelemetry,
+        expert_bytes: u64,
+        hidden_in: &[f32],
+        layer: u32,
+        gamma: &[f32],
+        experts_per_layer: u32,
+        top_k: u32,
+        bank: Option<&[u8]>,
+    ) -> (
+        Vec<f32>,
+        Vec<MoERoutedExpertSelection>,
+        FreeTokenLayerCoExecutionReport,
+    ) {
+        // Compute initial q* for trunk routing cutoffs:
+        let baseline_plan = FreeTokenQStarSolver::solve_for_layer(
+            telemetry,
+            expert_bytes,
+            1,
+            top_k.max(1),
+            (top_k / 2).max(1),
+        );
+        let q_star = baseline_plan.overall_q_star_ratio;
+
+        let (trunk_h, routing) = LayerReference::trunk_forward(
+            hidden_in,
+            layer,
+            gamma,
+            experts_per_layer,
+            top_k,
+            q_star,
+        );
+
+        let (hot_cutoff, _warm_cutoff) = LayerReference::routing_cutoffs(experts_per_layer, q_star);
+        let hot_set: Vec<u32> = (0..hot_cutoff).collect();
+        let routed_ids: Vec<u32> = routing.iter().map(|r| r.expert_id).collect();
+        let hot_routed_count = routed_ids.iter().filter(|id| hot_set.contains(id)).count() as u32;
+
+        let q_star_plan = FreeTokenQStarSolver::solve_for_layer(
+            telemetry,
+            expert_bytes,
+            1,
+            routed_ids.len() as u32,
+            hot_routed_count,
+        );
+        let assignments =
+            FreeTokenQStarSolver::assign_routed_experts(&q_star_plan, &routed_ids, &hot_set);
+
+        let premerged_reader = bank.and_then(|b| KtbPreMergedBankReader::from_slice(b).ok());
+        let premerged_bank_hits = if let Some(ref reader) = premerged_reader {
+            routed_ids
+                .iter()
+                .filter(|&&exp_id| {
+                    reader
+                        .get_premerged_expert(layer, exp_id)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                })
+                .count()
+        } else {
+            0
+        };
+
+        // Partition routed experts by assigned hardware engine for parallel co-execution:
+        let mut gpu_queue: Vec<(u32, f32)> = Vec::new();
+        let mut cpu_queue: Vec<(u32, f32)> = Vec::new();
+        let mut npu_queue: Vec<(u32, f32)> = Vec::new();
+
+        for (sel, assign) in routing.iter().zip(assignments.iter()) {
+            match assign.engine {
+                ExpertExecutionEngine::FastVramOrUnifiedResident
+                | ExpertExecutionEngine::GpuPcieDmaStream => {
+                    gpu_queue.push((sel.expert_id, sel.gating_weight));
+                }
+                ExpertExecutionEngine::CpuInPlaceSystemRam
+                | ExpertExecutionEngine::NvmeDoubleBufferedStream => {
+                    cpu_queue.push((sel.expert_id, sel.gating_weight));
+                }
+                ExpertExecutionEngine::NpuInPlaceSystemRam => {
+                    npu_queue.push((sel.expert_id, sel.gating_weight));
+                }
+            }
+        }
+
+        // Co-execute GPU stream, Host CPU in-place RAM stream, and Host NPU stream concurrently:
+        let partials: Vec<(u32, Vec<f32>)> = std::thread::scope(|s| {
+            let trunk_ref = &trunk_h;
+            let gpu_handle = s.spawn(move || {
+                gpu_queue
+                    .into_iter()
+                    .map(|(exp_id, gate)| {
+                        (
+                            exp_id,
+                            LayerReference::expert_contribution_from_bank(
+                                trunk_ref, layer, exp_id, gate, bank,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let cpu_handle = s.spawn(move || {
+                cpu_queue
+                    .into_iter()
+                    .map(|(exp_id, gate)| {
+                        (
+                            exp_id,
+                            LayerReference::expert_contribution_from_bank(
+                                trunk_ref, layer, exp_id, gate, bank,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+            let npu_handle = s.spawn(move || {
+                npu_queue
+                    .into_iter()
+                    .map(|(exp_id, gate)| {
+                        (
+                            exp_id,
+                            LayerReference::expert_contribution_from_bank(
+                                trunk_ref, layer, exp_id, gate, bank,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
+
+            let mut all = gpu_handle.join().expect("gpu coexec thread");
+            all.extend(cpu_handle.join().expect("cpu coexec thread"));
+            all.extend(npu_handle.join().expect("npu coexec thread"));
+            all
+        });
+
+        let combined = LayerReference::combine(&trunk_h, &partials);
+        let report = FreeTokenLayerCoExecutionReport {
+            layer,
+            trunk_q_star_ratio: q_star,
+            q_star_plan,
+            assignments,
+            premerged_bank_hits,
+        };
+        (combined, routing, report)
     }
 }
 
@@ -438,5 +703,53 @@ mod tests {
             routing
         );
         assert_eq!(LayerReference::routing_cutoffs(256, 0.9), (127, 196));
+    }
+
+    #[test]
+    fn premerged_ktb_bank_and_freetoken_qstar_coexecutor_match_reference_bit_for_bit() {
+        use kadmium_core::sample_personal_cluster;
+
+        let dim = 64usize;
+        let ktb_bank = LayerReference::pack_premerged_reference_bank("test-moe", 0, 3, 16, dim);
+        let gamma = LayerReference::gamma_from_bank(Some(&ktb_bank), dim);
+        let h_in = hidden();
+
+        let (ref_out, ref_routing) = LayerReference::layer_forward(&h_in, 2, &gamma, 16, 4, 0.75);
+        let (bank_out, bank_routing) =
+            LayerReference::layer_forward_with_bank(&h_in, 2, &gamma, 16, 4, 0.75, Some(&ktb_bank));
+        assert_eq!(ref_routing, bank_routing);
+        assert_eq!(ref_out, bank_out);
+
+        // Co-execute across GPU PCIe DMA + Host CPU in-place RAM + Host NPU using FreeTokenLayerCoExecutor:
+        let desktop = &sample_personal_cluster()[0];
+        let telemetry =
+            FreeTokenInterconnectTelemetry::from_node(desktop).with_measured_ram_stream_gbps(58.0);
+        let (coexec_out, coexec_routing, report) =
+            FreeTokenLayerCoExecutor::execute_layer_coexecution(
+                &telemetry,
+                16 * 1024 * 1024,
+                &h_in,
+                2,
+                &gamma,
+                16,
+                4,
+                Some(&ktb_bank),
+            );
+        assert_eq!(coexec_routing.len(), 4);
+        assert_eq!(report.premerged_bank_hits, 4);
+        assert_eq!(report.assignments.len(), 4);
+
+        // Sequential execution at the same adaptive q* must match parallel co-execution bit-for-bit:
+        let (seq_out, seq_routing) = LayerReference::layer_forward_with_bank(
+            &h_in,
+            2,
+            &gamma,
+            16,
+            4,
+            report.trunk_q_star_ratio,
+            Some(&ktb_bank),
+        );
+        assert_eq!(coexec_routing, seq_routing);
+        assert_eq!(coexec_out, seq_out);
     }
 }

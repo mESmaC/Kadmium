@@ -424,12 +424,14 @@ impl<'a> KtbBankReader<'a> {
 pub mod importer;
 pub mod integrations;
 pub mod merkle;
+pub mod premerged_bank;
 pub mod range_pull;
 pub mod transcoder;
 
 pub use importer::*;
 pub use integrations::*;
 pub use merkle::*;
+pub use premerged_bank::*;
 pub use range_pull::*;
 pub use transcoder::*;
 

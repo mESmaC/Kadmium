@@ -396,6 +396,56 @@ impl HardwareNode {
         }
     }
 
+    /// Computes a full FreeToken bandwidth-adaptive co-execution plan ([`QStarCoExecutionPlan`])
+    /// for a layer with `active_experts` routed experts (`hot_resident_experts` in fast VRAM/UMA
+    /// and the remainder in System RAM), optionally incorporating live measured RAM streaming
+    /// throughput (`measured_ram_stream_gbps`).
+    pub fn compute_dynamic_q_star_plan(
+        &self,
+        expert_bytes: u64,
+        active_experts: u32,
+        hot_resident_experts: u32,
+        measured_ram_stream_gbps: Option<f64>,
+    ) -> QStarCoExecutionPlan {
+        let mut telemetry = FreeTokenInterconnectTelemetry::from_node(self);
+        if let Some(bw) = measured_ram_stream_gbps {
+            telemetry = telemetry.with_measured_ram_stream_gbps(bw);
+        }
+        FreeTokenQStarSolver::solve_for_layer(
+            &telemetry,
+            expert_bytes,
+            1,
+            active_experts,
+            hot_resident_experts,
+        )
+    }
+
+    /// Computes the live bandwidth-adaptive $q^*$ ratio when real-time interconnect throughput
+    /// measurements (`measured_ram_stream_gbps`, `measured_pcie_bw_gbps`) are available.
+    pub fn compute_adaptive_q_star_ratio(
+        &self,
+        measured_ram_stream_gbps: Option<f64>,
+        measured_pcie_bw_gbps: Option<f64>,
+    ) -> f64 {
+        if self.memory.unified_mem_gb > 0.0 {
+            return 0.96;
+        }
+        if self.memory.vram_gb <= 0.0 {
+            return 0.0;
+        }
+        let mut telemetry = FreeTokenInterconnectTelemetry::from_node(self);
+        if let Some(ram_bw) = measured_ram_stream_gbps {
+            telemetry = telemetry.with_measured_ram_stream_gbps(ram_bw);
+        }
+        if let Some(pcie_bw) = measured_pcie_bw_gbps {
+            telemetry = telemetry.with_measured_pcie_bw_gbps(pcie_bw);
+        }
+        {
+            let plan = FreeTokenQStarSolver::solve_for_layer(&telemetry, 32 * 1024 * 1024, 1, 8, 4);
+            plan.overall_q_star_ratio
+        }
+    }
+
     /// Composite capacity score for a specific workload kind (`Inference`, `DistributedTraining`, `BatchPipeline`).
     pub fn capacity_score(&self, workload: WorkloadKind) -> f64 {
         if self.polite_state == PoliteState::Draining
@@ -1021,6 +1071,7 @@ pub fn sample_node_pool(total_nodes: usize) -> Vec<HardwareNode> {
 }
 
 pub mod canonical_numbers;
+pub mod freetoken;
 pub mod governance;
 pub mod k230_bridge;
 pub mod m4_mac_mini;
@@ -1034,6 +1085,7 @@ pub mod supply;
 pub mod tegra_switch;
 
 pub use canonical_numbers::*;
+pub use freetoken::*;
 pub use governance::*;
 pub use k230_bridge::*;
 pub use m4_mac_mini::*;

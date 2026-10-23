@@ -732,11 +732,12 @@ impl WorkExecutor for ExpertSliceExecutor {
                 partials.push(ExpertPartial {
                     row: row as u32,
                     expert: selection.expert_id,
-                    data: LayerReference::expert_contribution(
+                    data: LayerReference::expert_contribution_from_bank(
                         h,
                         params.layer,
                         selection.expert_id,
                         selection.gating_weight,
+                        Some(&_ctx.resident_ktb_bank.lock().expect("resident bank lock")),
                     ),
                 });
             }
@@ -1794,7 +1795,7 @@ mod fanout_tests {
         }
     }
 
-    fn toy_moe() -> ModelSpec {
+    pub(super) fn toy_moe() -> ModelSpec {
         ModelSpec {
             id: "toy-moe".into(),
             display_name: "Toy MoE".into(),
@@ -1811,7 +1812,7 @@ mod fanout_tests {
         }
     }
 
-    async fn run_shape(
+    pub(super) async fn run_shape(
         strategy: ExecutionStrategy,
         model: &ModelSpec,
         nodes: &[HardwareNode],
@@ -1869,9 +1870,8 @@ mod fanout_tests {
             registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
         );
         let model = toy_moe();
-        let seed =
-            TokenBatchInt8::quantize(&prompt_seed_hidden("replica serving", 64), 1, 64, 16)
-                .unwrap();
+        let seed = TokenBatchInt8::quantize(&prompt_seed_hidden("replica serving", 64), 1, 64, 16)
+            .unwrap();
         let (chain_report, chain_bytes) = run_shape(
             ExecutionStrategy::PipelineChain,
             &model,
@@ -1888,12 +1888,9 @@ mod fanout_tests {
             .filter(|a| a.app == "StageForward")
             .collect();
         assert!(!routed.is_empty());
-        assert!(
-            routed
-                .iter()
-                .all(|a| ModelContentNames::parse_expert(&a.content_id)
-                    .is_some_and(|(m, _, _)| m == model.id))
-        );
+        assert!(routed.iter().all(|a| {
+            ModelContentNames::parse_expert(&a.content_id).is_some_and(|(m, _, _)| m == model.id)
+        }));
         let routed_hits: u64 = routed.iter().map(|a| a.hits).sum();
         assert_eq!(
             routed_hits,
@@ -1917,8 +1914,7 @@ mod fanout_tests {
             .expect("a replicated expert")
             .clone();
         let replica = replicated.holders[1].clone();
-        let serving = placement
-            .serving_assignment(|n| Some(if *n == replica { 1.0 } else { 9.0 }));
+        let serving = placement.serving_assignment(|n| Some(if *n == replica { 1.0 } else { 9.0 }));
         assert!(serving.contains_key(&(replicated.layer, replicated.expert)));
         let graph = StepGraphBuilder::decode_step_served(
             &model,
@@ -1946,11 +1942,10 @@ mod fanout_tests {
             chain_bytes.as_slice(),
             "the replica serves the same bytes as the primary would"
         );
-        let leaf = WorkUnitId::new(format!(
-            "L{:03}-experts-{}",
-            replicated.layer, replica.0
-        ));
-        let trace = report.trace_for(&leaf).expect("the replica ran a slice unit");
+        let leaf = WorkUnitId::new(format!("L{:03}-experts-{}", replicated.layer, replica.0));
+        let trace = report
+            .trace_for(&leaf)
+            .expect("the replica ran a slice unit");
         assert!(trace.ok);
         assert_eq!(trace.node_id, replica);
         assert!(
@@ -2585,5 +2580,104 @@ mod phase5_tests {
         );
         assert_eq!(report.receipts.len(), 1);
         assert_eq!(report.receipts[0].provider_node_id, honest);
+    }
+
+    #[tokio::test]
+    async fn premerged_ktb_expert_banks_execute_identically_across_chain_and_expert_parallel_over_tcp()
+     {
+        use super::fanout_tests::{run_shape, toy_moe};
+        use crate::prompt_seed_hidden;
+        use kadmium_data::{KtbPreMergedBankPacker, TensorEncoding};
+
+        let cluster = sample_personal_cluster();
+        let nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        let w0 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[0].clone(), false)
+            .await
+            .expect("spawn worker 0");
+        let w1 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[1].clone(), false)
+            .await
+            .expect("spawn worker 1");
+
+        let mut live_workers = BTreeMap::new();
+        live_workers.insert(
+            nodes[0].id.0.clone(),
+            registration(&nodes[0], &w0.local_addr.to_string(), 0.3),
+        );
+        live_workers.insert(
+            nodes[1].id.0.clone(),
+            registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
+        );
+
+        let model = toy_moe();
+        let seed =
+            TokenBatchInt8::quantize(&prompt_seed_hidden("premerged ftwx bank", 64), 1, 64, 16)
+                .unwrap();
+
+        // First run without pre-merged expert banks (synthetic fallback):
+        let (_fallback_report, fallback_bytes) = run_shape(
+            ExecutionStrategy::PipelineChain,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed,
+            "fallback-chain",
+        )
+        .await;
+
+        // Now build a custom 64 KiB page-aligned pre-merged .ktb bank with custom SwiGLU weights:
+        let dim = 64usize;
+        let mut packer = KtbPreMergedBankPacker::new(&model.id);
+        let mut gamma_bytes = Vec::with_capacity(dim * 4);
+        for i in 0..dim {
+            let g = 1.0f32 + (i as f32) * 0.002;
+            gamma_bytes.extend_from_slice(&g.to_le_bytes());
+        }
+        packer.add_dense_trunk_tensor("layer.rmsnorm.gamma", 0, TensorEncoding::Fp16, gamma_bytes);
+
+        for layer in 0..model.num_layers {
+            for expert in 0..model.experts_per_layer {
+                let gate: Vec<f32> = (0..dim)
+                    .map(|i| 0.85 + ((layer as usize + i) % 11) as f32 * 0.03)
+                    .collect();
+                let up: Vec<f32> = (0..dim)
+                    .map(|i| 0.65 + ((expert as usize + i) % 13) as f32 * 0.04)
+                    .collect();
+                let down: Vec<f32> = (0..dim)
+                    .map(|i| {
+                        (((layer as usize * 31 + expert as usize * 17 + i * 5) % 47) as f32 - 23.0)
+                            * 0.009
+                    })
+                    .collect();
+                packer.add_premerged_f32_expert(layer, expert, &gate, &up, &down);
+            }
+        }
+        let custom_premerged_ktb = packer.pack_to_bytes();
+
+        *w0.resident_ktb_bank.lock().expect("w0 bank") = custom_premerged_ktb.clone();
+        *w1.resident_ktb_bank.lock().expect("w1 bank") = custom_premerged_ktb;
+
+        let (_chain_report, chain_bytes) = run_shape(
+            ExecutionStrategy::PipelineChain,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed,
+            "premerged-chain",
+        )
+        .await;
+        let (_ep_report, ep_bytes) = run_shape(
+            ExecutionStrategy::ExpertParallel,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed,
+            "premerged-ep",
+        )
+        .await;
+
+        // PipelineChain and ExpertParallel over TCP both read the custom pre-merged FTWX .ktb
+        // banks and produce byte-for-byte identical outputs, distinct from the synthetic fallback:
+        assert_eq!(chain_bytes, ep_bytes);
+        assert_ne!(chain_bytes, fallback_bytes);
     }
 }
