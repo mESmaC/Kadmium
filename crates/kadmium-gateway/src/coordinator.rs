@@ -63,6 +63,14 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         Ok(_) => {}
         Err(e) => println!("  [Grid] Saved worker telemetry could not be read: {e}"),
     }
+    match gw_state.load_grid_usage() {
+        Ok(n) if n > 0 => println!(
+            "  [Grid] Restored learned routing heat for {n} models from {}",
+            GatewayState::grid_usage_dir().display()
+        ),
+        Ok(_) => {}
+        Err(e) => println!("  [Grid] Saved usage ledgers could not be read: {e}"),
+    }
     // GatewayState::new() assumes the default port; point the self-hosted URL at the real one.
     if let crate::CompanionConnectionMode::SelfHostedOpenSource {
         local_coordinator_url,

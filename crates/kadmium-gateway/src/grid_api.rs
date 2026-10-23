@@ -16,7 +16,7 @@ use kadmium_core::{
 };
 use kadmium_grid::{
     AppKind, CreditEntry, PlanApproval, PoolInventory, Replica, ReplicaCatalog, ResidencyTier,
-    TelemetryStore, WorkGraph, WorkUnit, WorkerProfile,
+    SchedulerPolicy, StagingJob, TelemetryStore, WorkGraph, WorkUnit, WorkerProfile, fnv1a_64,
 };
 use kadmium_network::LiveWorkerRegistration;
 use kadmium_runtime::{
@@ -27,9 +27,9 @@ use kadmium_runtime::{
 };
 use kadmium_sharding::{
     ClusterShardPlan, CombineParams, ExecutionStrategy, ExpertPlacementPlan,
-    ExpertPlacementPlanner, ExpertSliceParams, PlacementFit, StageForwardParams,
-    StepGraphBuilder, StrategyChoice, StrategyCostModel, TrainStageParams, TrunkForwardParams,
-    TrunkRange,
+    ExpertPlacementPlanner, ExpertSliceParams, PlacementFit, RepinPlanner, RepinPolicy,
+    RepinProposal, RepinSwap, StageForwardParams, StepGraphBuilder, StrategyChoice,
+    StrategyCostModel, TrainStageParams, TrunkForwardParams, TrunkRange, UsageSummary,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,6 +54,29 @@ pub struct GridLastRun {
     /// Validated results that became measured compute samples on their workers.
     #[serde(default)]
     pub compute_samples: usize,
+}
+
+/// A placement the coordinator keeps between runs for a model, so the pins it learned stay put
+/// and the live re-pin adapts them a few swaps at a time instead of re-planning on every step.
+/// Re-planned when its key no longer matches the mesh.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedPlacement {
+    pub choice: StrategyChoice,
+    pub placement: ExpertPlacementPlan,
+    pub key: PlacementKey,
+    pub created_unix_ms: u64,
+    /// Re-pin boundaries applied to this placement, and the swaps they made in total.
+    pub repins_applied: usize,
+    pub swaps_applied: usize,
+}
+
+/// What a cached placement was planned against.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlacementKey {
+    pub epoch: u64,
+    pub node_ids: Vec<String>,
+    pub offers_digest: u64,
+    pub forced: Option<ExecutionStrategy>,
 }
 
 struct MeshSnapshot {
@@ -144,6 +167,120 @@ fn local_executor(local_node: &HardwareNode) -> LocalExecutor {
             Arc::new(Mutex::new(bank)),
         ),
     }
+}
+
+fn placement_key(snap: &MeshSnapshot, forced: Option<ExecutionStrategy>) -> PlacementKey {
+    let mut node_ids: Vec<String> = snap.nodes.iter().map(|n| n.id.0.clone()).collect();
+    node_ids.sort();
+    let offers_json = serde_json::to_vec(&snap.offers).unwrap_or_default();
+    PlacementKey {
+        epoch: snap.epoch,
+        node_ids,
+        offers_digest: fnv1a_64(&offers_json),
+        forced,
+    }
+}
+
+/// The placement in force for a model: the cached one while the mesh it was planned against is
+/// unchanged, else a fresh plan seeded from the model's learned routing heat and cached. The
+/// boolean says whether it came from the cache.
+fn current_placement(
+    state: &Arc<Mutex<GatewayState>>,
+    snap: &MeshSnapshot,
+    model: &ModelSpec,
+    forced: Option<ExecutionStrategy>,
+) -> (StrategyChoice, ExpertPlacementPlan, bool) {
+    let key = placement_key(snap, forced);
+    let popularity = {
+        let mut guard = state.lock().expect("gateway state lock");
+        if let Some(cached) = guard.grid_placements.get(&model.id)
+            && cached.key == key
+        {
+            return (cached.choice.clone(), cached.placement.clone(), true);
+        }
+        let ledger = guard.usage_for(&model.id);
+        (!ledger.is_empty()).then(|| ledger.popularity())
+    };
+    let (mut choice, mut placement) = cost_model(&snap.live_workers).choose_with_offers(
+        model,
+        &snap.nodes,
+        popularity.as_ref(),
+        &snap.offers,
+    );
+    if let Some(strategy) = forced
+        && strategy != choice.chosen
+    {
+        choice.chosen = strategy;
+        choice.rationale = format!("shape forced to {strategy:?}; {}", choice.rationale);
+        placement = ExpertPlacementPlanner::plan_with_offers(
+            model,
+            &snap.nodes,
+            strategy,
+            popularity.as_ref(),
+            WorkloadKind::Inference,
+            &snap.offers,
+        );
+    }
+    let mut guard = state.lock().expect("gateway state lock");
+    guard.grid_placements.insert(
+        model.id.clone(),
+        CachedPlacement {
+            choice: choice.clone(),
+            placement: placement.clone(),
+            key,
+            created_unix_ms: now_unix_ms(),
+            repins_applied: 0,
+            swaps_applied: 0,
+        },
+    );
+    (choice, placement, false)
+}
+
+/// One re-pin boundary on the model's cached placement: the proposal from the learned heat, and
+/// (with `apply`) the swaps made and the transfers they imply.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GridRepinOutcome {
+    pub model_id: String,
+    pub proposal: RepinProposal,
+    pub applied: bool,
+    pub staging_jobs: Vec<StagingJob>,
+    pub placement_digest: u64,
+    pub repins_applied: usize,
+    pub swaps_applied: usize,
+}
+
+fn repin_now(
+    state: &Arc<Mutex<GatewayState>>,
+    model: &ModelSpec,
+    policy: &RepinPolicy,
+    apply: bool,
+) -> Result<GridRepinOutcome, String> {
+    let mut guard = state.lock().expect("gateway state lock");
+    let heat = guard.usage_for(&model.id).popularity();
+    let Some(cached) = guard.grid_placements.get_mut(&model.id) else {
+        return Err(format!(
+            "no placement in force for `{}`: ask for the plan or run a step first",
+            model.id
+        ));
+    };
+    let proposal = RepinPlanner::propose(&cached.placement, &heat, policy);
+    let staging_jobs = if apply && !proposal.swaps.is_empty() {
+        let expert_bytes = (model.single_expert_size_gb * 1_073_741_824.0) as u64;
+        cached.repins_applied += 1;
+        cached.swaps_applied += proposal.swaps.len();
+        RepinPlanner::apply(&mut cached.placement, &proposal, expert_bytes)
+    } else {
+        Vec::new()
+    };
+    Ok(GridRepinOutcome {
+        model_id: model.id.clone(),
+        applied: apply && !proposal.swaps.is_empty(),
+        placement_digest: cached.placement.digest(),
+        repins_applied: cached.repins_applied,
+        swaps_applied: cached.swaps_applied,
+        proposal,
+        staging_jobs,
+    })
 }
 
 fn cost_model(live_workers: &BTreeMap<String, LiveWorkerRegistration>) -> StrategyCostModel {
@@ -249,6 +386,12 @@ pub struct GridStepOutcome {
     pub hops: Vec<LiveHopTelemetry>,
     pub modelled_ms_per_token: f64,
     pub final_digest_fnv1a: u64,
+    /// Whether the step ran on the placement already in force rather than a fresh plan.
+    pub placement_cached: bool,
+    /// Routing accesses folded into the model's usage ledger.
+    pub routing_recorded: usize,
+    /// The re-pin boundary applied after the step, when one was asked for.
+    pub repin: Option<GridRepinOutcome>,
 }
 
 /// Books a finished run: credits and receipts, the last-run record, and the measured telemetry
@@ -305,26 +448,22 @@ pub async fn run_grid_decode_step(
     rows: u32,
     forced: Option<ExecutionStrategy>,
 ) -> Result<GridStepOutcome, String> {
+    run_grid_decode_step_with(state, prompt, rows, forced, None).await
+}
+
+/// [`run_grid_decode_step`] with an optional re-pin boundary applied to the placement in force
+/// once the step has been recorded.
+pub async fn run_grid_decode_step_with(
+    state: &Arc<Mutex<GatewayState>>,
+    prompt: &str,
+    rows: u32,
+    forced: Option<ExecutionStrategy>,
+    repin: Option<RepinPolicy>,
+) -> Result<GridStepOutcome, String> {
     let snap = snapshot(state);
     let rows = rows.clamp(1, 64);
     let model = snap.inference_model.clone();
-    let cost = cost_model(&snap.live_workers);
-    let (mut choice, placement) = cost.choose_with_offers(&model, &snap.nodes, None, &snap.offers);
-    let placement = match forced {
-        Some(strategy) if strategy != choice.chosen => {
-            choice.chosen = strategy;
-            choice.rationale = format!("shape forced to {strategy:?}; {}", choice.rationale);
-            ExpertPlacementPlanner::plan_with_offers(
-                &model,
-                &snap.nodes,
-                strategy,
-                None,
-                WorkloadKind::Inference,
-                &snap.offers,
-            )
-        }
-        _ => placement,
-    };
+    let (choice, placement, placement_cached) = current_placement(state, &snap, &model, forced);
     if placement.trunk_ranges.is_empty() {
         return Err("no node in the mesh can hold the model's trunk".to_string());
     }
@@ -335,15 +474,32 @@ pub async fn run_grid_decode_step(
     };
 
     let session = format!("gateway-e{}", snap.epoch);
-    let graph =
-        StepGraphBuilder::decode_step(&model, &placement, &snap.nodes, snap.epoch, &session, rows);
-    let catalog = ReplicaCatalog::assume_placed(&placement.rules, now_unix_ms());
     let mut workers = mesh_workers(
         &snap.nodes,
         &snap.live_workers,
         &snap.telemetry,
         &snap.offers,
     );
+    // Replicated experts are served by the copy with the lowest measured completion estimate,
+    // the primary until the holders are measured.
+    let policy = SchedulerPolicy::default();
+    let now = now_unix_ms();
+    let serving = placement.serving_assignment(|node| {
+        workers
+            .iter()
+            .find(|w| w.id() == node)
+            .and_then(|w| w.completion_estimate_for("ExpertSlice", rows as f64, &policy, now))
+    });
+    let graph = StepGraphBuilder::decode_step_served(
+        &model,
+        &placement,
+        &snap.nodes,
+        snap.epoch,
+        &session,
+        rows,
+        &serving,
+    );
+    let catalog = ReplicaCatalog::assume_placed(&placement.rules, now_unix_ms());
     let seed_row = prompt_seed_hidden(prompt, 64);
     let seed_values: Vec<f32> = (0..rows).flat_map(|_| seed_row.iter().copied()).collect();
     let seed = TokenBatchInt8::quantize(&seed_values, rows, 64, 16)?;
@@ -380,12 +536,20 @@ pub async fn run_grid_decode_step(
         snap.epoch,
         &workers,
     );
+    let routing_recorded = state
+        .lock()
+        .expect("gateway state lock")
+        .record_grid_access(&model.id, &report.accesses);
     if !report.success {
         return Err(format!(
             "grid step `{}` validated {} of {} units",
             graph.id, report.units_validated, report.units_total
         ));
     }
+    let repin = match repin {
+        Some(policy) => repin_now(state, &model, &policy, true).ok(),
+        None => None,
+    };
     Ok(GridStepOutcome {
         strategy,
         choice,
@@ -395,6 +559,9 @@ pub async fn run_grid_decode_step(
         hops,
         modelled_ms_per_token,
         final_digest_fnv1a,
+        placement_cached,
+        routing_recorded,
+        repin,
     })
 }
 
@@ -609,31 +776,34 @@ pub struct GridPlanResponse {
     /// The offer in force on every node.
     pub offers: BTreeMap<String, ResourceOffer>,
     pub staging: GridStagingPreview,
+    /// What the planner learned from live routing for this model; `learned` is false until any
+    /// step has run, and then the placement's expert order and replicas come from it.
+    pub usage: UsageSummary,
+    /// Whether this is the placement already in force rather than a fresh plan.
+    pub placement_cached: bool,
+    pub repins_applied: usize,
+    pub swaps_applied: usize,
     /// Always true: the cost model's figures are projections until a run is measured.
     pub modelled: bool,
 }
 
 fn plan_response(
+    state: &Arc<Mutex<GatewayState>>,
     snap: &MeshSnapshot,
     model: ModelSpec,
     forced: Option<ExecutionStrategy>,
 ) -> GridPlanResponse {
-    let (mut choice, mut placement) =
-        cost_model(&snap.live_workers).choose_with_offers(&model, &snap.nodes, None, &snap.offers);
-    if let Some(strategy) = forced
-        && strategy != choice.chosen
-    {
-        choice.chosen = strategy;
-        choice.rationale = format!("shape forced to {strategy:?}; {}", choice.rationale);
-        placement = ExpertPlacementPlanner::plan_with_offers(
-            &model,
-            &snap.nodes,
-            strategy,
-            None,
-            WorkloadKind::Inference,
-            &snap.offers,
-        );
-    }
+    let (choice, placement, placement_cached) = current_placement(state, snap, &model, forced);
+    let (usage, repins_applied, swaps_applied) = {
+        let mut guard = state.lock().expect("gateway state lock");
+        let usage = guard.usage_for(&model.id).summary();
+        let cached = guard.grid_placements.get(&model.id);
+        (
+            usage,
+            cached.map_or(0, |c| c.repins_applied),
+            cached.map_or(0, |c| c.swaps_applied),
+        )
+    };
     let staging = staging_preview(
         &placement,
         &snap.nodes,
@@ -653,6 +823,10 @@ fn plan_response(
             .collect(),
         staging,
         placement: GridPlacementSummary::from_placement(&placement),
+        usage,
+        placement_cached,
+        repins_applied,
+        swaps_applied,
         modelled: true,
     }
 }
@@ -671,7 +845,70 @@ pub async fn get_grid_plan(
     let snap = snapshot(&state);
     let model = resolve_model(&snap, query.model.as_deref());
     let forced = parse_strategy(query.strategy.as_deref());
-    Json(plan_response(&snap, model, forced))
+    Json(plan_response(&state, &snap, model, forced))
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GridRepinRequest {
+    pub model: Option<String>,
+    /// Swaps at most for this boundary; default 4.
+    pub max_swaps: Option<usize>,
+    /// Apply the swaps to the placement in force (default) or only propose them.
+    pub apply: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GridRepinResponse {
+    pub model_id: String,
+    pub swaps: Vec<RepinSwap>,
+    pub rationale: String,
+    pub applied: bool,
+    pub staging_jobs: Vec<StagingJob>,
+    pub placement_digest: u64,
+    pub repins_applied: usize,
+    pub swaps_applied: usize,
+    pub error: Option<String>,
+}
+
+/// One live re-pin boundary (colibri's balanced policy): at most a few swaps between the hottest
+/// streamed experts and the coldest pinned ones, when the learned heat clears the hysteresis.
+pub async fn post_grid_repin(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    maybe_req: Option<Json<GridRepinRequest>>,
+) -> Json<GridRepinResponse> {
+    let req = maybe_req.map(|j| j.0).unwrap_or_default();
+    let snap = snapshot(&state);
+    let model = resolve_model(&snap, req.model.as_deref());
+    // Make sure a placement is in force for the model before adapting it.
+    let _ = current_placement(&state, &snap, &model, None);
+    let policy = RepinPolicy {
+        max_swaps: req.max_swaps.unwrap_or(4).clamp(1, 64),
+        ..RepinPolicy::default()
+    };
+    match repin_now(&state, &model, &policy, req.apply.unwrap_or(true)) {
+        Ok(outcome) => Json(GridRepinResponse {
+            model_id: outcome.model_id,
+            swaps: outcome.proposal.swaps,
+            rationale: outcome.proposal.rationale,
+            applied: outcome.applied,
+            staging_jobs: outcome.staging_jobs,
+            placement_digest: outcome.placement_digest,
+            repins_applied: outcome.repins_applied,
+            swaps_applied: outcome.swaps_applied,
+            error: None,
+        }),
+        Err(error) => Json(GridRepinResponse {
+            model_id: model.id,
+            swaps: Vec::new(),
+            rationale: String::new(),
+            applied: false,
+            staging_jobs: Vec::new(),
+            placement_digest: 0,
+            repins_applied: 0,
+            swaps_applied: 0,
+            error: Some(error),
+        }),
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -710,7 +947,7 @@ pub async fn post_grid_plan_approve(
         }
     }
     let snap = snapshot(&state);
-    Json(plan_response(&snap, model, None))
+    Json(plan_response(&state, &snap, model, None))
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -718,6 +955,8 @@ pub struct GridRunRequest {
     pub prompt: Option<String>,
     pub rows: Option<u32>,
     pub strategy: Option<String>,
+    /// Apply one re-pin boundary to the placement in force after the step.
+    pub repin: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -734,6 +973,9 @@ pub struct GridRunApiResponse {
     pub credits_granted: f64,
     pub receipts: usize,
     pub rationale: String,
+    pub placement_cached: bool,
+    pub routing_recorded: usize,
+    pub repin_swaps: usize,
     pub error: Option<String>,
 }
 
@@ -747,7 +989,8 @@ pub async fn post_grid_run(
         .filter(|p| !p.trim().is_empty())
         .unwrap_or_else(|| "Run one decode step as a work graph across the mesh.".to_string());
     let forced = parse_strategy(req.strategy.as_deref());
-    match run_grid_decode_step(&state, &prompt, req.rows.unwrap_or(1), forced).await {
+    let repin = req.repin.unwrap_or(false).then(RepinPolicy::default);
+    match run_grid_decode_step_with(&state, &prompt, req.rows.unwrap_or(1), forced, repin).await {
         Ok(outcome) => Json(GridRunApiResponse {
             strategy: Some(outcome.strategy),
             graph_id: outcome.graph_id,
@@ -761,6 +1004,12 @@ pub async fn post_grid_run(
             credits_granted: outcome.report.credits.iter().map(|c| c.credits).sum(),
             receipts: outcome.report.receipts.len(),
             rationale: outcome.choice.rationale,
+            placement_cached: outcome.placement_cached,
+            routing_recorded: outcome.routing_recorded,
+            repin_swaps: outcome
+                .repin
+                .as_ref()
+                .map_or(0, |r| r.proposal.swaps.len()),
             error: None,
         }),
         Err(error) => {
@@ -785,6 +1034,9 @@ pub async fn post_grid_run(
                 credits_granted: 0.0,
                 receipts: 0,
                 rationale: String::new(),
+                placement_cached: false,
+                routing_recorded: 0,
+                repin_swaps: 0,
                 error: Some(error),
             })
         }
@@ -1182,6 +1434,85 @@ mod tests {
             auto.staging.nodes_awaiting_approval.is_empty()
         );
         assert!(auto.staging.ready_jobs + auto.staging.awaiting_jobs > 0);
+    }
+
+    #[tokio::test]
+    async fn decode_steps_learn_routing_and_the_placement_in_force_adapts_by_repin() {
+        let state = demo_state();
+        let before = get_grid_plan(State(state.clone()), Query(GridPlanQuery::default()))
+            .await
+            .0;
+        assert!(!before.usage.learned);
+        assert!(!before.placement_cached, "the first plan is fresh");
+        let again = get_grid_plan(State(state.clone()), Query(GridPlanQuery::default()))
+            .await
+            .0;
+        assert!(again.placement_cached, "the plan in force is reused");
+        assert_eq!(again.placement_digest, before.placement_digest);
+
+        let outcome = run_grid_decode_step(&state, "learn from this step", 1, None)
+            .await
+            .expect("step runs");
+        assert!(outcome.placement_cached);
+        assert!(outcome.routing_recorded > 0, "stage units reported routing");
+        let model_id = outcome.placement.model_id.clone();
+        {
+            let mut guard = state.lock().unwrap();
+            let ledger = guard.usage_for(&model_id);
+            assert_eq!(ledger.turns, 1);
+            assert!(ledger.routed_hits > 0);
+            assert!(ledger.sidecar_matches(&model_id));
+        }
+        let learned = get_grid_plan(State(state.clone()), Query(GridPlanQuery::default()))
+            .await
+            .0;
+        assert!(learned.usage.learned);
+        assert_eq!(learned.usage.turns, 1);
+        assert!(!learned.usage.hottest.is_empty());
+
+        // A re-pin boundary on the placement in force: proposals never error, and whatever it
+        // swaps stays swapped in the cached placement.
+        let repin = post_grid_repin(
+            State(state.clone()),
+            Some(Json(GridRepinRequest {
+                model: None,
+                max_swaps: Some(2),
+                apply: Some(true),
+            })),
+        )
+        .await
+        .0;
+        assert!(repin.error.is_none(), "{:?}", repin.error);
+        assert_eq!(repin.model_id, model_id);
+        assert!(repin.swaps.len() <= 2);
+        assert_eq!(repin.staging_jobs.len(), 2 * repin.swaps.len());
+        let after = get_grid_plan(State(state.clone()), Query(GridPlanQuery::default()))
+            .await
+            .0;
+        assert_eq!(after.swaps_applied, repin.swaps.len());
+        assert_eq!(after.repins_applied, usize::from(!repin.swaps.is_empty()));
+
+        // The expert-parallel shape records routing from its trunk units as well, and a run can
+        // ask for a re-pin boundary at its end.
+        let ep = run_grid_decode_step_with(
+            &state,
+            "learn from this step",
+            1,
+            Some(ExecutionStrategy::ExpertParallel),
+            Some(RepinPolicy::default()),
+        )
+        .await
+        .expect("expert-parallel step runs");
+        assert_eq!(ep.final_digest_fnv1a, outcome.final_digest_fnv1a);
+        assert!(ep.routing_recorded > 0);
+        assert!(ep.repin.is_some());
+        assert!(
+            ep.report
+                .accesses
+                .iter()
+                .any(|a| a.app == "TrunkForward")
+        );
+        assert_eq!(state.lock().unwrap().usage_for(&model_id).turns, 2);
     }
 
     #[tokio::test]

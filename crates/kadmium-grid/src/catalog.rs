@@ -61,6 +61,9 @@ pub struct Replica {
     pub pinned: bool,
     pub verified_unix_ms: u64,
     pub last_access_unix_ms: u64,
+    /// Times the replica was read, for frequency-aware eviction.
+    #[serde(default)]
+    pub hits: u64,
 }
 
 impl Replica {
@@ -77,6 +80,7 @@ impl Replica {
             pinned: false,
             verified_unix_ms: now_unix_ms,
             last_access_unix_ms: now_unix_ms,
+            hits: 0,
         }
     }
 
@@ -276,22 +280,38 @@ impl ReplicaCatalog {
     }
 
     pub fn touch(&mut self, node_id: &NodeId, content_id: &str, now_unix_ms: u64) {
+        self.touch_hits(node_id, content_id, 1, now_unix_ms);
+    }
+
+    /// Records `hits` reads of a replica, as a result's access report says.
+    pub fn touch_hits(&mut self, node_id: &NodeId, content_id: &str, hits: u64, now_unix_ms: u64) {
         if let Some(entries) = self.by_content.get_mut(content_id)
             && let Some(r) = entries.iter_mut().find(|r| &r.node_id == node_id)
         {
-            r.last_access_unix_ms = now_unix_ms;
+            r.last_access_unix_ms = r.last_access_unix_ms.max(now_unix_ms);
+            r.hits = r.hits.saturating_add(hits);
         }
     }
 
-    /// Least recently used, unpinned replicas on a node whose bytes add up to at least
-    /// `bytes_needed`, for a worker that must make room.
+    /// Halves every replica's hit count on a node, so old popularity fades (colibri's decaying
+    /// session heat behind its per-layer LFRU replacement).
+    pub fn decay_hits(&mut self, node_id: &NodeId) {
+        for entries in self.by_content.values_mut() {
+            for r in entries.iter_mut().filter(|r| &r.node_id == node_id) {
+                r.hits /= 2;
+            }
+        }
+    }
+
+    /// Unpinned replicas on a node whose bytes add up to at least `bytes_needed`, least valuable
+    /// first: fewest reads, then least recently read (LFRU), for a worker that must make room.
     pub fn evict_candidates(&self, node_id: &NodeId, bytes_needed: u64) -> Vec<ContentRef> {
         let mut candidates: Vec<&Replica> = self
             .resident_on(node_id)
             .into_iter()
             .filter(|r| !r.pinned)
             .collect();
-        candidates.sort_by_key(|r| r.last_access_unix_ms);
+        candidates.sort_by_key(|r| (r.hits, r.last_access_unix_ms));
         let mut freed = 0u64;
         let mut out = Vec::new();
         for r in candidates {
@@ -626,5 +646,32 @@ mod tests {
         let names: Vec<_> = victims.iter().map(|c| c.content_id.as_str()).collect();
         assert_eq!(names, vec!["new", "old"]);
         assert_eq!(cat.bytes_resident_on(&node("pc")), 300);
+
+        // Frequency counts before recency: the replica read most often goes last, and decay lets
+        // a once-popular replica fall back down.
+        cat.record(Replica::new(
+            expert("hot", 100),
+            node("pc"),
+            ResidencyTier::Vram,
+            0,
+        ));
+        cat.touch_hits(&node("pc"), "hot", 40, 4);
+        cat.touch_hits(&node("pc"), "new", 2, 20);
+        let names: Vec<_> = cat
+            .evict_candidates(&node("pc"), 1_000)
+            .iter()
+            .map(|c| c.content_id.clone())
+            .collect();
+        assert_eq!(names, vec!["old", "new", "hot"]);
+        for _ in 0..6 {
+            cat.decay_hits(&node("pc"));
+        }
+        assert_eq!(
+            cat.holders("hot")
+                .iter()
+                .find(|r| r.node_id == node("pc"))
+                .map(|r| r.hits),
+            Some(0)
+        );
     }
 }

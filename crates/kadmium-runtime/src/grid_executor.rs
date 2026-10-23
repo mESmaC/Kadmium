@@ -15,17 +15,19 @@
 use crate::{
     BlockwiseInt8Tensor, DistributedLanExecutor, ExpertPartial, ExpertPartialsBatch,
     LAYER_BOUNDARY_BLOCK, LayerReference, LayerRouting, LiveStageForwardRequest,
-    MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8, execute_stage_layers_with_ktb,
+    MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8, execute_stage_layers_with_ktb_routed,
 };
 use kadmium_core::{NodeId, VerifiedComputeReceipt};
 use kadmium_grid::{
-    AppKind, ContentKind, ContentRef, CreditEntry, CreditLedger, CreditPolicy, InstanceId,
-    ReplicaCatalog, SchedulerEvent, SchedulerEventRecord, SchedulerPolicy, ValidationOutcome,
-    WorkGraph, WorkQueue, WorkResultRecord, WorkUnit, WorkUnitId, WorkerProfile, fnv1a_64,
+    AppKind, ContentAccess, ContentKind, ContentRef, CreditEntry, CreditLedger, CreditPolicy,
+    InstanceId, RecordedAccess, ReplicaCatalog, SchedulerEvent, SchedulerEventRecord,
+    SchedulerPolicy, ValidationOutcome, WorkGraph, WorkQueue, WorkResultRecord, WorkUnit,
+    WorkUnitId, WorkerProfile, fnv1a_64,
 };
 use kadmium_network::{LiveWorkerRegistration, WireFrameKind};
 use kadmium_sharding::{
-    CombineParams, ExpertSliceParams, StageForwardParams, StepGraphBuilder, TrunkForwardParams,
+    CombineParams, ExpertSliceParams, ModelContentNames, StageForwardParams, StepGraphBuilder,
+    TrunkForwardParams,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -106,6 +108,19 @@ pub struct WorkOutput {
     pub check_value: f64,
     /// Rows, rollouts or simulations the unit covered, for credit and receipts.
     pub units_processed: u64,
+    /// Content the unit touched, with hit counts: the experts a layer routed to, for the usage
+    /// ledger and frequency-aware eviction.
+    pub accessed: Vec<ContentAccess>,
+}
+
+/// Content accesses as `(layer, expert) -> hits`, turned into the content ids of a model.
+fn expert_accesses(model_id: &str, hits: &BTreeMap<(u32, u32), u64>) -> Vec<ContentAccess> {
+    hits.iter()
+        .map(|((layer, expert), n)| ContentAccess {
+            content_id: ModelContentNames::expert_id(model_id, *layer, *expert),
+            hits: *n,
+        })
+        .collect()
 }
 
 /// Worker-local state an executor may use.
@@ -414,7 +429,8 @@ pub fn execute_dispatch(
             .with_payload(output.payload)
             .with_outputs(output.outputs.iter().map(|(r, _)| r.clone()).collect())
             .with_bytes_moved(bytes_in + bytes_out)
-            .with_units_processed(output.units_processed);
+            .with_units_processed(output.units_processed)
+            .with_accessed(output.accessed);
             let blobs = output
                 .outputs
                 .into_iter()
@@ -455,6 +471,7 @@ impl WorkExecutor for StageForwardExecutor {
         let mut digests: Vec<u64> = Vec::with_capacity(rows.len());
         let mut l2_sum = 0.0f64;
         let mut last_response = None;
+        let mut routed_hits: BTreeMap<(u32, u32), u64> = BTreeMap::new();
 
         for row in &rows {
             // A single-row batch keeps the exact tensor it was sent, so the digest matches the
@@ -474,7 +491,7 @@ impl WorkExecutor for StageForwardExecutor {
                 boundary_input,
                 run_speculative_draft: false,
             };
-            let response = execute_stage_layers_with_ktb(
+            let (response, routed) = execute_stage_layers_with_ktb_routed(
                 &ctx.node_id,
                 &ctx.hostname,
                 &request,
@@ -482,6 +499,11 @@ impl WorkExecutor for StageForwardExecutor {
                 params.experts_per_layer,
                 params.active_experts_per_token,
             );
+            for (layer, experts) in routed {
+                for expert in experts {
+                    *routed_hits.entry((layer, expert)).or_default() += 1;
+                }
+            }
             out_values.extend(response.boundary_output.dequantize());
             digests.push(response.repops_digest_fnv1a);
             l2_sum += response.output_activation_l2_norm as f64;
@@ -518,6 +540,7 @@ impl WorkExecutor for StageForwardExecutor {
             digest_fnv1a: digest,
             check_value: l2_sum / rows.len().max(1) as f64,
             units_processed: rows.len() as u64,
+            accessed: expert_accesses(&params.model_id, &routed_hits),
         })
     }
 }
@@ -631,10 +654,19 @@ impl WorkExecutor for TrunkForwardExecutor {
                 digest_fnv1a: fnv1a_64(&bytes),
                 check_value: l2_norm(&combined.concat()),
                 units_processed: rows.len() as u64,
+                accessed: Vec::new(),
             });
         }
 
         let out = TokenBatchF32::from_rows(&trunk_rows)?;
+        let mut routed_hits: BTreeMap<(u32, u32), u64> = BTreeMap::new();
+        for row in &routing_rows {
+            for selection in row {
+                *routed_hits
+                    .entry((params.layer, selection.expert_id))
+                    .or_default() += 1;
+            }
+        }
         let routing = LayerRouting {
             layer: params.layer,
             rows: routing_rows,
@@ -655,6 +687,7 @@ impl WorkExecutor for TrunkForwardExecutor {
             digest_fnv1a: fnv1a_64(&bytes),
             check_value: l2_norm(&out.data),
             units_processed: rows.len() as u64,
+            accessed: expert_accesses(&params.model_id, &routed_hits),
         })
     }
 }
@@ -709,6 +742,12 @@ impl WorkExecutor for ExpertSliceExecutor {
             }
         }
         let applied = partials.len();
+        let mut served_hits: BTreeMap<(u32, u32), u64> = BTreeMap::new();
+        for partial in &partials {
+            *served_hits
+                .entry((params.layer, partial.expert))
+                .or_default() += 1;
+        }
         let batch = ExpertPartialsBatch {
             layer: params.layer,
             rows: trunk.rows,
@@ -731,6 +770,7 @@ impl WorkExecutor for ExpertSliceExecutor {
             digest_fnv1a: fnv1a_64(&bytes),
             check_value: applied as f64,
             units_processed: trunk.rows as u64,
+            accessed: expert_accesses(&params.model_id, &served_hits),
         })
     }
 }
@@ -793,6 +833,7 @@ impl WorkExecutor for CombineExecutor {
             digest_fnv1a: fnv1a_64(&bytes),
             check_value: l2_norm(&out_rows.concat()),
             units_processed: trunk.rows as u64,
+            accessed: Vec::new(),
         })
     }
 }
@@ -863,6 +904,10 @@ pub struct GridRunReport {
     /// Validated results folded into the workers' measured compute estimates during the run.
     #[serde(default)]
     pub compute_samples: usize,
+    /// Content the validated units touched, summed per node, kind of work and content id: the
+    /// experts each layer routed to and each holder served.
+    #[serde(default)]
+    pub accesses: Vec<RecordedAccess>,
     /// Outputs of the graph's sink units, by content id.
     pub outputs: Vec<(String, Vec<u8>)>,
     /// Credit granted for validated units, one entry per unit.
@@ -954,6 +999,7 @@ impl GridDispatcher {
                 traces,
                 events: vec![],
                 compute_samples: 0,
+                accesses: vec![],
                 outputs: vec![],
                 credits: vec![],
                 receipts: vec![],
@@ -1205,6 +1251,31 @@ impl GridDispatcher {
             }
         }
 
+        // What the validated units touched, summed per node, kind of work and content.
+        let mut access_sums: BTreeMap<(NodeId, String, String), u64> = BTreeMap::new();
+        for status in queue.units() {
+            if let Some(record) = &status.validated {
+                for access in &record.accessed {
+                    *access_sums
+                        .entry((
+                            record.node_id.clone(),
+                            status.unit.app.label(),
+                            access.content_id.clone(),
+                        ))
+                        .or_default() += access.hits;
+                }
+            }
+        }
+        let accesses: Vec<RecordedAccess> = access_sums
+            .into_iter()
+            .map(|((node, app, content_id), hits)| RecordedAccess {
+                node,
+                app,
+                content_id,
+                hits,
+            })
+            .collect();
+
         // Books: credit for every validated unit, a penalty for every invalidated instance.
         let mut ledger = CreditLedger::new(config.credit_policy.clone().unwrap_or_default());
         if config.credit_policy.is_some() {
@@ -1231,6 +1302,7 @@ impl GridDispatcher {
             traces,
             events: queue.drain_events(),
             compute_samples,
+            accesses,
             outputs,
             credits: ledger.entries().to_vec(),
             receipts: ledger.receipts(),
@@ -1439,6 +1511,7 @@ mod tests {
                 digest_fnv1a: fnv1a_64(&reversed),
                 check_value: reversed.len() as f64,
                 units_processed: 1,
+                accessed: Vec::new(),
             })
         }
     }
@@ -1691,7 +1764,9 @@ mod fanout_tests {
     use super::*;
     use crate::{DEFAULT_INITIAL_KTB_MERKLE_ROOT, LiveNodeWorkerServer, prompt_seed_hidden};
     use kadmium_core::{HardwareNode, ModelSpec, sample_personal_cluster};
-    use kadmium_sharding::{ExecutionStrategy, ExpertPlacementPlanner, StepGraphBuilder};
+    use kadmium_sharding::{
+        ExecutionStrategy, ExpertPlacementPlanner, ExpertPopularity, StepGraphBuilder,
+    };
 
     fn registration(node: &HardwareNode, addr: &str, rtt_ms: f64) -> LiveWorkerRegistration {
         LiveWorkerRegistration {
@@ -1772,6 +1847,138 @@ mod fanout_tests {
             .expect("final output present")
             .to_vec();
         (report, bytes)
+    }
+
+    #[tokio::test]
+    async fn replica_served_fan_out_matches_the_chain_bytes_and_reports_routing() {
+        let cluster = sample_personal_cluster();
+        let nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        let w0 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[0].clone(), false)
+            .await
+            .expect("spawn worker 0");
+        let w1 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[1].clone(), false)
+            .await
+            .expect("spawn worker 1");
+        let mut live_workers = BTreeMap::new();
+        live_workers.insert(
+            nodes[0].id.0.clone(),
+            registration(&nodes[0], &w0.local_addr.to_string(), 0.3),
+        );
+        live_workers.insert(
+            nodes[1].id.0.clone(),
+            registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
+        );
+        let model = toy_moe();
+        let seed =
+            TokenBatchInt8::quantize(&prompt_seed_hidden("replica serving", 64), 1, 64, 16)
+                .unwrap();
+        let (chain_report, chain_bytes) = run_shape(
+            ExecutionStrategy::PipelineChain,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed,
+            "replica-chain",
+        )
+        .await;
+        // The chain's stage units report which experts every layer routed to.
+        let routed: Vec<&RecordedAccess> = chain_report
+            .accesses
+            .iter()
+            .filter(|a| a.app == "StageForward")
+            .collect();
+        assert!(!routed.is_empty());
+        assert!(
+            routed
+                .iter()
+                .all(|a| ModelContentNames::parse_expert(&a.content_id)
+                    .is_some_and(|(m, _, _)| m == model.id))
+        );
+        let routed_hits: u64 = routed.iter().map(|a| a.hits).sum();
+        assert_eq!(
+            routed_hits,
+            (model.num_layers * model.active_experts_per_token) as u64,
+            "one row routes top-k experts on every layer"
+        );
+
+        // A placement with replicated hot experts, served from the replica rather than the
+        // primary: the same bytes come out of the last combine.
+        let heat = ExpertPopularity::power_law(model.num_layers, model.experts_per_layer, 0.5);
+        let placement = ExpertPlacementPlanner::plan(
+            &model,
+            &nodes,
+            ExecutionStrategy::ExpertParallel,
+            Some(&heat),
+        );
+        let replicated = placement
+            .experts
+            .iter()
+            .find(|h| h.holders.len() > 1)
+            .expect("a replicated expert")
+            .clone();
+        let replica = replicated.holders[1].clone();
+        let serving = placement
+            .serving_assignment(|n| Some(if *n == replica { 1.0 } else { 9.0 }));
+        assert!(serving.contains_key(&(replicated.layer, replicated.expert)));
+        let graph = StepGraphBuilder::decode_step_served(
+            &model,
+            &placement,
+            &nodes,
+            1,
+            "replica-ep",
+            1,
+            &serving,
+        );
+        let catalog = ReplicaCatalog::assume_placed(&placement.rules, 1);
+        let mut workers = GridDispatcher::workers_from_registrations(&live_workers);
+        let config = GridRunConfig::default()
+            .with_seed(StepGraphBuilder::prompt_ref(&graph.id), seed.to_le_bytes());
+        let report =
+            GridDispatcher::run_graph(&graph, &mut workers, &catalog, &live_workers, None, &config)
+                .await;
+        assert!(report.success, "{:?}", report.traces);
+        let out_ref = StepGraphBuilder::output_ref(
+            &graph.id,
+            &WorkUnitId::new(format!("L{:03}-combine", model.num_layers - 1)),
+        );
+        assert_eq!(
+            report.output(&out_ref.content_id).expect("final output"),
+            chain_bytes.as_slice(),
+            "the replica serves the same bytes as the primary would"
+        );
+        let leaf = WorkUnitId::new(format!(
+            "L{:03}-experts-{}",
+            replicated.layer, replica.0
+        ));
+        let trace = report.trace_for(&leaf).expect("the replica ran a slice unit");
+        assert!(trace.ok);
+        assert_eq!(trace.node_id, replica);
+        assert!(
+            report
+                .accesses
+                .iter()
+                .any(|a| a.app == "TrunkForward" && a.hits > 0)
+        );
+        // Every expert the trunks routed to was served by exactly one holder.
+        let routed_total: u64 = report
+            .accesses
+            .iter()
+            .filter(|a| a.app == "TrunkForward")
+            .map(|a| a.hits)
+            .sum();
+        let served_total: u64 = report
+            .accesses
+            .iter()
+            .filter(|a| a.app == "ExpertSlice")
+            .map(|a| a.hits)
+            .sum();
+        assert_eq!(served_total, routed_total);
+        assert!(
+            report
+                .accesses
+                .iter()
+                .all(|a| ModelContentNames::parse_expert(&a.content_id).is_some())
+        );
     }
 
     #[tokio::test]
@@ -1936,6 +2143,7 @@ impl WorkExecutor for TrainForwardBackwardExecutor {
             digest_fnv1a: response.repops_digest_fnv1a,
             check_value: response.loss_after as f64,
             units_processed: input.rows.max(1) as u64,
+            accessed: Vec::new(),
         })
     }
 }
@@ -2018,6 +2226,7 @@ impl WorkExecutor for DeMoReduceExecutor {
             digest_fnv1a: report.master_weight_digest_fnv1a,
             check_value: consensus_norm as f64,
             units_processed: responses.len() as u64,
+            accessed: Vec::new(),
         })
     }
 }
@@ -2062,6 +2271,7 @@ impl WorkExecutor for DreamReplayExecutor {
             digest_fnv1a: response.evolved_policy_hash_fnv64,
             check_value: response.evolved_peak_speedup,
             units_processed: response.mcts_simulations_run as u64,
+            accessed: Vec::new(),
         })
     }
 }
@@ -2108,6 +2318,7 @@ impl WorkExecutor for VerdeAuditExecutor {
             digest_fnv1a: response.repops_digest_fnv1a,
             check_value: response.repops_tree_sum,
             units_processed: (params.target_layer.saturating_sub(params.start_layer) + 1) as u64,
+            accessed: Vec::new(),
         })
     }
 }

@@ -1,0 +1,597 @@
+//! Learned usage and live re-pin: the planner's memory of what the mesh actually routes to.
+//!
+//! colibri keeps a usage file beside the model, updated every turn, and seeds its pinned hot set
+//! from it at start-up; under its balanced policy it then re-pins at safe boundaries from a
+//! decaying session heat map, with hysteresis and a cap on swaps per boundary, so placement
+//! follows what the last few turns routed to without churning. The same two signals live here:
+//! a [`UsageLedger`] per model with a long-term count that is never decayed and a session count
+//! that halves every half-life, persisted as a sidecar; and a [`RepinPlanner`] that proposes at
+//! most a few swaps between the hottest streamed experts and the coldest pinned ones when the
+//! heat difference clears the hysteresis. Placement changes speed, never bytes: the reference
+//! math is the same wherever an expert lives.
+
+use kadmium_core::NodeId;
+use kadmium_grid::{ContentAccess, ResidencyTier, StagingJob};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+use crate::{ExpertPlacementPlan, ExpertPopularity, ModelContentNames};
+
+/// A session hit counts this many long-term hits while it lasts.
+pub const SESSION_HEAT_WEIGHT: f64 = 3.0;
+/// Session heat halves this often.
+pub const DEFAULT_SESSION_HALF_LIFE_MS: u64 = 10 * 60 * 1000;
+
+/// One expert's heat, for summaries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HotExpert {
+    pub layer: u32,
+    pub expert: u32,
+    pub hits: u64,
+}
+
+/// What the ledger knows, for a status line or an API response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageSummary {
+    pub model_id: String,
+    pub turns: u64,
+    pub routed_hits: u64,
+    pub experts_seen: usize,
+    pub session_hits: u64,
+    pub hottest: Vec<HotExpert>,
+    /// False until any routing has been recorded; then the planner's popularity comes from here.
+    pub learned: bool,
+}
+
+/// Routing heat learned from live use, kept beside the model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageLedger {
+    pub model_id: String,
+    /// Every routed hit since the ledger was created; never decayed.
+    pub long_term: ExpertPopularity,
+    /// Recent hits, halved every half-life.
+    pub session: ExpertPopularity,
+    pub session_half_life_ms: u64,
+    pub turns: u64,
+    pub routed_hits: u64,
+    pub last_decay_unix_ms: u64,
+    pub updated_unix_ms: u64,
+}
+
+impl UsageLedger {
+    pub fn new(model_id: &str) -> Self {
+        Self {
+            model_id: model_id.to_string(),
+            long_term: ExpertPopularity::default(),
+            session: ExpertPopularity::default(),
+            session_half_life_ms: DEFAULT_SESSION_HALF_LIFE_MS,
+            turns: 0,
+            routed_hits: 0,
+            last_decay_unix_ms: 0,
+            updated_unix_ms: 0,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.routed_hits == 0
+    }
+
+    /// Records one content access when it names an expert of this model; other content is not
+    /// the ledger's business.
+    pub fn record_content(&mut self, content_id: &str, hits: u64, now: u64) -> bool {
+        let Some((model, layer, expert)) = ModelContentNames::parse_expert(content_id) else {
+            return false;
+        };
+        if model != self.model_id || hits == 0 {
+            return false;
+        }
+        self.long_term.record(layer, expert, hits);
+        self.session.record(layer, expert, hits);
+        self.routed_hits += hits;
+        self.updated_unix_ms = self.updated_unix_ms.max(now);
+        true
+    }
+
+    /// Records the accesses of one turn (one decode step's validated results), decaying the
+    /// session heat first. Returns how many accesses named experts of this model.
+    pub fn record_turn<'a>(
+        &mut self,
+        accesses: impl IntoIterator<Item = &'a ContentAccess>,
+        now: u64,
+    ) -> usize {
+        self.decay(now);
+        let mut recorded = 0;
+        for access in accesses {
+            if self.record_content(&access.content_id, access.hits, now) {
+                recorded += 1;
+            }
+        }
+        if recorded > 0 {
+            self.turns += 1;
+        }
+        recorded
+    }
+
+    /// Halves the session heat once per elapsed half-life.
+    pub fn decay(&mut self, now: u64) {
+        if self.last_decay_unix_ms == 0 {
+            self.last_decay_unix_ms = now;
+            return;
+        }
+        let half_life = self.session_half_life_ms.max(1);
+        let elapsed = now.saturating_sub(self.last_decay_unix_ms);
+        let halvings = (elapsed / half_life).min(64);
+        for _ in 0..halvings {
+            self.session.halve();
+        }
+        if halvings > 0 {
+            self.last_decay_unix_ms += halvings * half_life;
+        }
+    }
+
+    /// The planner's popularity: long-term hits plus the weighted session heat.
+    pub fn popularity(&self) -> ExpertPopularity {
+        self.long_term
+            .merged_with(&self.session, SESSION_HEAT_WEIGHT)
+    }
+
+    pub fn hottest(&self, n: usize) -> Vec<HotExpert> {
+        self.popularity()
+            .hottest(n)
+            .into_iter()
+            .map(|(layer, expert, hits)| HotExpert {
+                layer,
+                expert,
+                hits,
+            })
+            .collect()
+    }
+
+    pub fn summary(&self) -> UsageSummary {
+        UsageSummary {
+            model_id: self.model_id.clone(),
+            turns: self.turns,
+            routed_hits: self.routed_hits,
+            experts_seen: self.long_term.iter().count(),
+            session_hits: self.session.total_hits(),
+            hottest: self.hottest(8),
+            learned: !self.is_empty(),
+        }
+    }
+
+    /// Whether this ledger belongs to the model.
+    pub fn sidecar_matches(&self, model_id: &str) -> bool {
+        self.model_id == model_id
+    }
+
+    /// Where the ledger lives beside a model: `<dir>/<model id>.usage.json`, with the id made
+    /// safe for a file name.
+    pub fn sidecar_path(dir: &Path, model_id: &str) -> PathBuf {
+        let safe: String = model_id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        dir.join(format!("{safe}.usage.json"))
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp = path.with_extension(format!("{}.{nanos}.tmp", std::process::id()));
+        std::fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+
+    pub fn load(path: &Path) -> Result<Option<Self>, String> {
+        match std::fs::read_to_string(path) {
+            Ok(json) => serde_json::from_str(&json)
+                .map(Some)
+                .map_err(|e| e.to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// The saved ledger for a model, or a new one.
+    pub fn load_or_new(dir: &Path, model_id: &str) -> Self {
+        Self::load(&Self::sidecar_path(dir, model_id))
+            .ok()
+            .flatten()
+            .filter(|l| l.model_id == model_id)
+            .unwrap_or_else(|| Self::new(model_id))
+    }
+}
+
+/// When and how much the live re-pin may move.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepinPolicy {
+    /// Swaps per boundary at most.
+    pub max_swaps: usize,
+    /// A streamed expert must be this much hotter than the pinned one it would replace.
+    pub hysteresis: f64,
+    /// Heat a streamed expert needs before it is considered at all.
+    pub min_hits: u64,
+}
+
+impl Default for RepinPolicy {
+    fn default() -> Self {
+        Self {
+            max_swaps: 4,
+            hysteresis: 0.25,
+            min_hits: 1,
+        }
+    }
+}
+
+/// One proposed swap: a hot streamed expert takes the fast-tier place of a cold pinned one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RepinSwap {
+    pub layer: u32,
+    pub promote: u32,
+    pub promote_hits: u64,
+    pub demote: u32,
+    pub demote_hits: u64,
+    /// The node whose fast tier changes hands.
+    pub node: NodeId,
+    pub fast_tier: ResidencyTier,
+    /// Where the promoted expert came from, and the tier the demoted one goes to.
+    pub from_node: NodeId,
+    pub from_tier: ResidencyTier,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RepinProposal {
+    pub swaps: Vec<RepinSwap>,
+    pub layers_considered: usize,
+    pub rationale: String,
+}
+
+pub struct RepinPlanner;
+
+impl RepinPlanner {
+    /// Proposes at most `policy.max_swaps` swaps: per layer, the hottest streamed expert against
+    /// the coldest pinned one on a node with a fast tier, taken only when the streamed expert is
+    /// hotter by more than the hysteresis. Experts that already have a fast replica are never
+    /// promoted again.
+    pub fn propose(
+        placement: &ExpertPlacementPlan,
+        heat: &ExpertPopularity,
+        policy: &RepinPolicy,
+    ) -> RepinProposal {
+        let mut layers: Vec<u32> = placement.experts.iter().map(|h| h.layer).collect();
+        layers.sort_unstable();
+        layers.dedup();
+        let mut candidates: Vec<(u64, RepinSwap)> = Vec::new();
+
+        for layer in &layers {
+            let homes: Vec<_> = placement
+                .experts
+                .iter()
+                .filter(|h| h.layer == *layer && !h.holders.is_empty())
+                .collect();
+            let hottest_streamed = homes
+                .iter()
+                .filter(|h| !h.tier.is_fast() && h.holders.len() == 1)
+                .map(|h| (heat.hits(h.layer, h.expert), *h))
+                .filter(|(hits, _)| *hits >= policy.min_hits)
+                .max_by_key(|(hits, h)| (*hits, std::cmp::Reverse(h.expert)));
+            let coldest_pinned = homes
+                .iter()
+                .filter(|h| h.tier.is_fast())
+                .map(|h| (heat.hits(h.layer, h.expert), *h))
+                .min_by_key(|(hits, h)| (*hits, h.expert));
+            let (Some((hot_hits, hot)), Some((cold_hits, cold))) =
+                (hottest_streamed, coldest_pinned)
+            else {
+                continue;
+            };
+            let threshold = cold_hits as f64 * (1.0 + policy.hysteresis.max(0.0));
+            if hot_hits <= cold_hits || (hot_hits as f64) <= threshold {
+                continue;
+            }
+            candidates.push((
+                hot_hits - cold_hits,
+                RepinSwap {
+                    layer: *layer,
+                    promote: hot.expert,
+                    promote_hits: hot_hits,
+                    demote: cold.expert,
+                    demote_hits: cold_hits,
+                    node: cold.holders[0].clone(),
+                    fast_tier: cold.tier,
+                    from_node: hot.holders[0].clone(),
+                    from_tier: hot.tier,
+                },
+            ));
+        }
+
+        candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.layer.cmp(&b.1.layer)));
+        let swaps: Vec<RepinSwap> = candidates
+            .into_iter()
+            .take(policy.max_swaps)
+            .map(|(_, s)| s)
+            .collect();
+        let rationale = if swaps.is_empty() {
+            format!(
+                "no streamed expert is more than {:.0}% hotter than the coldest pinned expert of its layer",
+                policy.hysteresis * 100.0
+            )
+        } else {
+            format!(
+                "{} swap{} (at most {} per boundary): streamed experts hotter than the coldest pinned expert of their layer by more than {:.0}%",
+                swaps.len(),
+                if swaps.len() == 1 { "" } else { "s" },
+                policy.max_swaps,
+                policy.hysteresis * 100.0
+            )
+        };
+        RepinProposal {
+            swaps,
+            layers_considered: layers.len(),
+            rationale,
+        }
+    }
+
+    /// Applies a proposal to the placement and returns the transfers it implies: the promoted
+    /// expert into the node's fast tier, pinned, and the demoted expert out to where the promoted
+    /// one came from. Fast memory accounting is unchanged, because the two experts are the same
+    /// size and trade places.
+    pub fn apply(
+        placement: &mut ExpertPlacementPlan,
+        proposal: &RepinProposal,
+        expert_bytes: u64,
+    ) -> Vec<StagingJob> {
+        let mut jobs = Vec::new();
+        for swap in &proposal.swaps {
+            let Some(hot_idx) = placement
+                .experts
+                .iter()
+                .position(|h| h.layer == swap.layer && h.expert == swap.promote)
+            else {
+                continue;
+            };
+            let Some(cold_idx) = placement
+                .experts
+                .iter()
+                .position(|h| h.layer == swap.layer && h.expert == swap.demote)
+            else {
+                continue;
+            };
+            placement.experts[hot_idx].holders = vec![swap.node.clone()];
+            placement.experts[hot_idx].tier = swap.fast_tier;
+            placement.experts[cold_idx].holders = vec![swap.from_node.clone()];
+            placement.experts[cold_idx].tier = swap.from_tier;
+
+            let hot_ref = ModelContentNames::expert(
+                &placement.model_id,
+                swap.layer,
+                swap.promote,
+                expert_bytes,
+            );
+            let cold_ref = ModelContentNames::expert(
+                &placement.model_id,
+                swap.layer,
+                swap.demote,
+                expert_bytes,
+            );
+            for rule in placement.rules.iter_mut() {
+                if rule.content.content_id == hot_ref.content_id {
+                    rule.candidate_nodes = vec![swap.node.clone()];
+                    rule.min_replicas = 1;
+                    rule.preferred_tier = swap.fast_tier;
+                    rule.pin = true;
+                } else if rule.content.content_id == cold_ref.content_id {
+                    rule.candidate_nodes = vec![swap.from_node.clone()];
+                    rule.min_replicas = 1;
+                    rule.preferred_tier = swap.from_tier;
+                    rule.pin = false;
+                }
+            }
+            jobs.push(StagingJob {
+                content: hot_ref,
+                source_node: swap.from_node.clone(),
+                destination_node: swap.node.clone(),
+                target_tier: swap.fast_tier,
+                bytes: expert_bytes,
+                pin: true,
+            });
+            jobs.push(StagingJob {
+                content: cold_ref,
+                source_node: swap.node.clone(),
+                destination_node: swap.from_node.clone(),
+                target_tier: swap.from_tier,
+                bytes: expert_bytes,
+                pin: false,
+            });
+        }
+        jobs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ExecutionStrategy, ExpertPlacementPlanner};
+    use kadmium_core::{ModelSpec, ResourceOffer, WorkloadKind, sample_personal_cluster};
+    use std::collections::BTreeMap;
+
+    fn toy_moe() -> ModelSpec {
+        ModelSpec {
+            id: "toy-moe".into(),
+            display_name: "Toy MoE".into(),
+            total_params_billions: 4.0,
+            num_layers: 4,
+            is_moe: true,
+            dense_layer_size_gb: 0.05,
+            experts_per_layer: 8,
+            active_experts_per_token: 2,
+            single_expert_size_gb: 0.01,
+            kv_cache_per_layer_gb: 0.01,
+            training_activation_per_layer_gb: 0.02,
+            lora_state_per_layer_gb: 0.01,
+        }
+    }
+
+    #[test]
+    fn ledger_records_this_models_experts_decays_the_session_and_roundtrips() {
+        let mut ledger = UsageLedger::new("toy-moe");
+        assert!(ledger.is_empty());
+        let accesses = vec![
+            ContentAccess {
+                content_id: ModelContentNames::expert_id("toy-moe", 2, 5),
+                hits: 3,
+            },
+            ContentAccess {
+                content_id: ModelContentNames::expert_id("toy-moe", 2, 1),
+                hits: 1,
+            },
+            ContentAccess {
+                content_id: ModelContentNames::expert_id("other-model", 2, 1),
+                hits: 9,
+            },
+            ContentAccess {
+                content_id: "graph/stage-00/out".into(),
+                hits: 1,
+            },
+        ];
+        assert_eq!(ledger.record_turn(&accesses, 1_000), 2);
+        assert_eq!(ledger.turns, 1);
+        assert_eq!(ledger.routed_hits, 4);
+        assert_eq!(ledger.long_term.hits(2, 5), 3);
+        assert_eq!(ledger.session.hits(2, 5), 3);
+        let summary = ledger.summary();
+        assert!(summary.learned);
+        assert_eq!(summary.hottest[0].expert, 5);
+
+        // Session heat halves per half-life; the long-term count never moves.
+        ledger.decay(1_000 + 2 * ledger.session_half_life_ms);
+        assert_eq!(ledger.session.hits(2, 5), 0);
+        assert_eq!(ledger.session.hits(2, 1), 0);
+        assert_eq!(ledger.long_term.hits(2, 5), 3);
+        let pop = ledger.popularity();
+        assert_eq!(pop.ranked(2, 8)[0], 5);
+
+        let dir = std::env::temp_dir().join(format!("kadmium-usage-{}", std::process::id()));
+        let path = UsageLedger::sidecar_path(&dir, "toy-moe");
+        assert!(path.ends_with("toy-moe.usage.json"));
+        ledger.save(&path).unwrap();
+        assert_eq!(UsageLedger::load(&path).unwrap(), Some(ledger.clone()));
+        assert_eq!(UsageLedger::load_or_new(&dir, "toy-moe"), ledger);
+        assert!(UsageLedger::load_or_new(&dir, "unknown").is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repin_swaps_hot_streamed_experts_for_cold_pinned_ones_under_hysteresis_and_a_cap() {
+        let nodes = sample_personal_cluster();
+        let model = toy_moe();
+        // Starve fast memory so that only a few experts per layer are pinned; the rest sit warm.
+        let offers: BTreeMap<_, ResourceOffer> = nodes
+            .iter()
+            .map(|n| {
+                let mut offer = n.default_offer();
+                offer.fast_memory_gb = 0.0;
+                (n.id.clone(), offer)
+            })
+            .collect();
+        let mut placement = ExpertPlacementPlanner::plan_with_offers(
+            &model,
+            &nodes,
+            ExecutionStrategy::PipelineChain,
+            None,
+            WorkloadKind::Inference,
+            &offers,
+        );
+        // Pin the first two experts of every layer by hand, as a loaded plan would have.
+        for home in placement.experts.iter_mut() {
+            if home.expert < 2 {
+                home.tier = ResidencyTier::Vram;
+            } else {
+                home.tier = ResidencyTier::SystemRam;
+            }
+        }
+        let expert_bytes = (model.single_expert_size_gb * 1_073_741_824.0) as u64;
+
+        let mut heat = ExpertPopularity::default();
+        for layer in 0..4 {
+            heat.record(layer, 0, 10);
+            heat.record(layer, 1, 10);
+        }
+        // Layer 0: expert 7 is far hotter than the pinned ones; layer 1: expert 6 barely hotter;
+        // layer 2: expert 5 within the hysteresis; layer 3: nothing streamed is hot.
+        heat.record(0, 7, 40);
+        heat.record(1, 6, 13);
+        heat.record(2, 5, 12);
+
+        let policy = RepinPolicy::default();
+        let proposal = RepinPlanner::propose(&placement, &heat, &policy);
+        assert_eq!(proposal.layers_considered, 4);
+        assert_eq!(proposal.swaps.len(), 2, "{:?}", proposal.swaps);
+        assert_eq!(
+            proposal.swaps[0].layer, 0,
+            "the largest heat gap comes first"
+        );
+        assert_eq!(proposal.swaps[0].promote, 7);
+        assert!(proposal.swaps[0].demote < 2);
+        assert_eq!(proposal.swaps[1].layer, 1);
+        assert_eq!(proposal.swaps[1].promote, 6);
+        assert!(proposal.rationale.contains("25%"));
+
+        let capped = RepinPlanner::propose(
+            &placement,
+            &heat,
+            &RepinPolicy {
+                max_swaps: 1,
+                ..RepinPolicy::default()
+            },
+        );
+        assert_eq!(capped.swaps.len(), 1);
+        assert_eq!(capped.swaps[0].layer, 0);
+
+        let digest_before = placement.digest();
+        let jobs = RepinPlanner::apply(&mut placement, &proposal, expert_bytes);
+        assert_eq!(jobs.len(), 4, "a promotion and a demotion per swap");
+        assert!(jobs[0].pin && !jobs[1].pin);
+        assert_eq!(jobs[0].target_tier, ResidencyTier::Vram);
+        let promoted = placement
+            .experts
+            .iter()
+            .find(|h| h.layer == 0 && h.expert == 7)
+            .unwrap();
+        assert_eq!(promoted.tier, ResidencyTier::Vram);
+        let demoted = placement
+            .experts
+            .iter()
+            .find(|h| h.layer == 0 && h.expert == proposal.swaps[0].demote)
+            .unwrap();
+        assert_eq!(demoted.tier, ResidencyTier::SystemRam);
+        let rule = placement
+            .rules
+            .iter()
+            .find(|r| r.content.content_id == ModelContentNames::expert_id("toy-moe", 0, 7))
+            .unwrap();
+        assert!(rule.pin);
+        assert_eq!(rule.preferred_tier, ResidencyTier::Vram);
+        assert_eq!(
+            placement.digest(),
+            digest_before,
+            "a tier swap on the same node keeps the placement's identity"
+        );
+
+        // Nothing left to swap at this heat.
+        let again = RepinPlanner::propose(&placement, &heat, &policy);
+        assert!(again.swaps.is_empty());
+    }
+}

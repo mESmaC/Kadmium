@@ -517,6 +517,28 @@ pub fn execute_stage_layers_with_ktb(
     experts_per_layer: u32,
     top_k: u32,
 ) -> LiveStageForwardResponse {
+    execute_stage_layers_with_ktb_routed(
+        node_id,
+        hostname,
+        req,
+        resident_ktb_bytes,
+        experts_per_layer,
+        top_k,
+    )
+    .0
+}
+
+/// [`execute_stage_layers_with_ktb`] plus the experts the router selected on every layer the
+/// stage ran in software, `(layer, expert ids)` per layer, for the usage ledger. A hardware
+/// bridge reports only the first layer's routing, which is all it computes locally.
+pub fn execute_stage_layers_with_ktb_routed(
+    node_id: &str,
+    hostname: &str,
+    req: &LiveStageForwardRequest,
+    resident_ktb_bytes: Option<&[u8]>,
+    experts_per_layer: u32,
+    top_k: u32,
+) -> (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>) {
     let t0 = Instant::now();
     let mut hidden = req.boundary_input.dequantize();
     let dim = hidden.len().max(16);
@@ -599,9 +621,10 @@ pub fn execute_stage_layers_with_ktb(
             k230_hw_exec_ms = Some(hw_ms);
         }
     }
+    let mut routed_per_layer: Vec<(u32, Vec<u32>)> = Vec::new();
     if k230_hw_exec_ms.is_none() {
         for layer in req.start_layer..=req.end_layer {
-            let (out, _) = LayerReference::layer_forward(
+            let (out, routing) = LayerReference::layer_forward(
                 &hidden,
                 layer,
                 &gamma,
@@ -609,10 +632,16 @@ pub fn execute_stage_layers_with_ktb(
                 top_k,
                 req.q_star_ratio,
             );
+            routed_per_layer.push((layer, routing.iter().map(|r| r.expert_id).collect()));
             let boundary = LayerReference::boundary_quantize(&out);
             hidden = boundary.dequantize();
             last_boundary = Some(boundary);
         }
+    } else {
+        routed_per_layer.push((
+            req.start_layer,
+            routed.iter().map(|r| r.expert_id).collect(),
+        ));
     }
 
     let q_boundary =
@@ -643,7 +672,7 @@ pub fn execute_stage_layers_with_ktb(
     let compute_exec_ms = k230_hw_exec_ms
         .unwrap_or_else(|| (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0);
 
-    LiveStageForwardResponse {
+    let response = LiveStageForwardResponse {
         node_id: node_id.to_string(),
         hostname: hostname.to_string(),
         start_layer: req.start_layer,
@@ -657,7 +686,8 @@ pub fn execute_stage_layers_with_ktb(
         compute_exec_ms: compute_exec_ms.max(0.05),
         draft_tokens,
         draft_probs,
-    }
+    };
+    (response, routed_per_layer)
 }
 
 /// Executes a single training stage's QLoRA forward/backward step and Nous `DeMo` DCT momentum

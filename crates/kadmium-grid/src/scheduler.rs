@@ -168,9 +168,21 @@ impl WorkerProfile {
         policy: &SchedulerPolicy,
         now: u64,
     ) -> Option<f64> {
-        let ewma = self.compute_estimate(&unit.app.label(), policy, now)?;
+        self.completion_estimate_for(&unit.app.label(), unit.cost.work(), policy, now)
+    }
+
+    /// [`WorkerProfile::completion_estimate_ms`] for `work` units of a kind of work, for callers
+    /// choosing between holders before a unit exists.
+    pub fn completion_estimate_for(
+        &self,
+        app: &str,
+        work: f64,
+        policy: &SchedulerPolicy,
+        now: u64,
+    ) -> Option<f64> {
+        let ewma = self.compute_estimate(app, policy, now)?;
         let queued = self.in_flight as f64 + 1.0;
-        Some(self.hop_latency_ms() + ewma.predict_ms(unit.cost.work()) * queued)
+        Some(self.hop_latency_ms() + ewma.predict_ms(work) * queued)
     }
 }
 

@@ -734,9 +734,35 @@ fn run_plan(model_name: &str, workload_name: &str) {
     print_hardware_table(&nodes);
     print_shard_plan(&plan);
 
-    let (choice, placement) =
-        kadmium_sharding::StrategyCostModel::default().choose(&model, &nodes, None);
+    let usage = kadmium_sharding::UsageLedger::load_or_new(
+        std::path::Path::new("target/kadmium-state/usage"),
+        &model.id,
+    );
+    let popularity = (!usage.is_empty()).then(|| usage.popularity());
+    let (choice, placement) = kadmium_sharding::StrategyCostModel::default().choose(
+        &model,
+        &nodes,
+        popularity.as_ref(),
+    );
     println!("\n--- Grid Execution Shape (modelled from the capability vectors, not measured) ---");
+    if usage.is_empty() {
+        println!("  * Learned usage: none recorded for this model; experts assumed equally likely");
+    } else {
+        let summary = usage.summary();
+        println!(
+            "  * Learned usage: {} turns, {} routed hits, {} experts seen; hottest {}",
+            summary.turns,
+            summary.routed_hits,
+            summary.experts_seen,
+            summary
+                .hottest
+                .iter()
+                .take(4)
+                .map(|h| format!("L{:03}/E{:03} x{}", h.layer, h.expert, h.hits))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     println!("  * Chosen shape: {:?}", choice.chosen);
     println!(
         "  * Pipeline chain:  {:>8.2} ms/token | {:>3} hops | {:>8.2} ms cold streaming",

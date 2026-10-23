@@ -49,6 +49,16 @@ impl ModelContentNames {
         )
     }
 
+    /// The `(model, layer, expert)` an expert content id names, if it is one.
+    pub fn parse_expert(content_id: &str) -> Option<(String, u32, u32)> {
+        let (rest, expert) = content_id.rsplit_once("/E")?;
+        let (model, layer) = rest.rsplit_once("/L")?;
+        if model.is_empty() || expert.len() < 3 || layer.len() < 3 {
+            return None;
+        }
+        Some((model.to_string(), layer.parse().ok()?, expert.parse().ok()?))
+    }
+
     pub fn expert_id(model_id: &str, layer: u32, expert: u32) -> String {
         format!("{model_id}/L{layer:03}/E{expert:03}")
     }
@@ -119,6 +129,46 @@ impl ExpertPopularity {
 
     pub fn is_empty(&self) -> bool {
         self.hits.is_empty()
+    }
+
+    /// Every `(layer, expert, hits)` with a non-zero count.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, u32, u64)> + '_ {
+        self.hits
+            .iter()
+            .filter(|(_, hits)| **hits > 0)
+            .map(|(key, hits)| ((key >> 32) as u32, (key & 0xffff_ffff) as u32, *hits))
+    }
+
+    pub fn total_hits(&self) -> u64 {
+        self.hits.values().sum()
+    }
+
+    /// Halves every count and forgets the ones that reach zero.
+    pub fn halve(&mut self) {
+        for hits in self.hits.values_mut() {
+            *hits /= 2;
+        }
+        self.hits.retain(|_, hits| *hits > 0);
+    }
+
+    /// This popularity plus `other` scaled by `weight`.
+    pub fn merged_with(&self, other: &Self, weight: f64) -> Self {
+        let mut merged = self.clone();
+        for (layer, expert, hits) in other.iter() {
+            let scaled = (hits as f64 * weight.max(0.0)).round() as u64;
+            if scaled > 0 {
+                merged.record(layer, expert, scaled);
+            }
+        }
+        merged
+    }
+
+    /// The `n` hottest experts over all layers, hottest first, layer then id as tie-breaks.
+    pub fn hottest(&self, n: usize) -> Vec<(u32, u32, u64)> {
+        let mut all: Vec<(u32, u32, u64)> = self.iter().collect();
+        all.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)).then(a.1.cmp(&b.1)));
+        all.truncate(n);
+        all
     }
 
     /// Experts of a layer, most popular first, ids as the tie-break.
@@ -240,13 +290,41 @@ impl ExpertPlacementPlan {
                 r.start_layer, r.end_layer, r.owner, r.bytes
             ));
         }
+        // Tiers are left out: moving an expert between tiers on the same node changes speed,
+        // not which node holds it, so it needs neither a new approval nor a new calibration.
         for h in &self.experts {
-            text.push_str(&format!(
-                "|E{}/{}@{:?}:{:?}",
-                h.layer, h.expert, h.holders, h.tier
-            ));
+            text.push_str(&format!("|E{}/{}@{:?}", h.layer, h.expert, h.holders));
         }
         fnv1a_64(text.as_bytes())
+    }
+
+    /// For every replicated expert, the holder that should serve it this step: the one with the
+    /// lowest `cost` among holders that have one, the primary when none has. Lumabri ranks a
+    /// segment's replicas by measured completion cost; this is that choice for an expert's copies.
+    pub fn serving_assignment(
+        &self,
+        cost: impl Fn(&NodeId) -> Option<f64>,
+    ) -> BTreeMap<(u32, u32), NodeId> {
+        let mut serving = BTreeMap::new();
+        for home in self.experts.iter().filter(|h| h.holders.len() > 1) {
+            let primary = &home.holders[0];
+            let best = home
+                .holders
+                .iter()
+                .filter_map(|n| cost(n).map(|c| (c, n)))
+                .min_by(|a, b| {
+                    a.0.partial_cmp(&b.0)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| (a.1 != primary).cmp(&(b.1 != primary)))
+                })
+                .map(|(_, n)| n.clone());
+            if let Some(node) = best
+                && &node != primary
+            {
+                serving.insert((home.layer, home.expert), node);
+            }
+        }
+        serving
     }
 
     pub fn trunk_owner(&self, layer: u32) -> Option<&NodeId> {
@@ -1248,7 +1326,8 @@ impl StepGraphBuilder {
         .with_work_units(rows.max(1) as u64)
     }
 
-    /// The work graph of one decode step for the placement's shape.
+    /// The work graph of one decode step for the placement's shape, every expert served by its
+    /// primary holder.
     pub fn decode_step(
         model: &ModelSpec,
         placement: &ExpertPlacementPlan,
@@ -1256,6 +1335,29 @@ impl StepGraphBuilder {
         epoch: u64,
         session_id: &str,
         rows: u32,
+    ) -> WorkGraph {
+        Self::decode_step_served(
+            model,
+            placement,
+            nodes,
+            epoch,
+            session_id,
+            rows,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// [`StepGraphBuilder::decode_step`] with replicated experts served by the holders `serving`
+    /// names (see [`ExpertPlacementPlan::serving_assignment`]); experts it does not name are
+    /// served by their primary holder. The bytes out are the same whichever copy serves.
+    pub fn decode_step_served(
+        model: &ModelSpec,
+        placement: &ExpertPlacementPlan,
+        nodes: &[HardwareNode],
+        epoch: u64,
+        session_id: &str,
+        rows: u32,
+        serving: &BTreeMap<(u32, u32), NodeId>,
     ) -> WorkGraph {
         let rows = rows.max(1);
         let budgets: BTreeMap<NodeId, NodeBudget> = nodes
@@ -1397,10 +1499,23 @@ impl StepGraphBuilder {
                             continue;
                         }
 
-                        let holders = placement.holder_nodes(layer);
+                        // Which holder serves each expert of the layer this step.
+                        let mut by_node: BTreeMap<NodeId, Vec<u32>> = BTreeMap::new();
+                        for home in placement.experts.iter().filter(|h| h.layer == layer) {
+                            let Some(primary) = home.holders.first() else {
+                                continue;
+                            };
+                            let node = serving
+                                .get(&(layer, home.expert))
+                                .filter(|n| home.holders.contains(n))
+                                .unwrap_or(primary);
+                            by_node.entry(node.clone()).or_default().push(home.expert);
+                        }
+                        let holders: Vec<NodeId> = by_node.keys().cloned().collect();
                         let mut leaf_ids = Vec::new();
                         for holder in &holders {
-                            let resident = placement.experts_on(holder, layer);
+                            let mut resident = by_node.get(holder).cloned().unwrap_or_default();
+                            resident.sort_unstable();
                             let refs: Vec<ContentRef> = resident
                                 .iter()
                                 .map(|e| {
@@ -1531,6 +1646,65 @@ mod tests {
             training_activation_per_layer_gb: 0.02,
             lora_state_per_layer_gb: 0.01,
         }
+    }
+
+    #[test]
+    fn expert_ids_parse_back_and_replicas_can_serve() {
+        let id = ModelContentNames::expert_id("deepseek-v3-671b-moe-q4k", 25, 45);
+        assert_eq!(
+            ModelContentNames::parse_expert(&id),
+            Some(("deepseek-v3-671b-moe-q4k".to_string(), 25, 45))
+        );
+        assert_eq!(ModelContentNames::parse_expert("graph/stage-00/out"), None);
+        assert_eq!(
+            ModelContentNames::parse_expert(&ModelContentNames::trunk_id("m", 0, 3)),
+            None
+        );
+
+        let nodes = cluster();
+        let model = toy_moe();
+        let heat = ExpertPopularity::power_law(model.num_layers, model.experts_per_layer, 0.5);
+        let placement = ExpertPlacementPlanner::plan(
+            &model,
+            &nodes,
+            ExecutionStrategy::ExpertParallel,
+            Some(&heat),
+        );
+        assert!(placement.replicated_experts > 0, "the toy mesh has room for replicas");
+        let replicated = placement
+            .experts
+            .iter()
+            .find(|h| h.holders.len() > 1)
+            .expect("a replicated expert");
+        let replica = replicated.holders[1].clone();
+
+        // Unmeasured holders: the primary serves. Measured: the cheaper copy serves.
+        assert!(placement.serving_assignment(|_| None).is_empty());
+        let serving = placement.serving_assignment(|node| {
+            Some(if *node == replica { 1.0 } else { 50.0 })
+        });
+        assert_eq!(
+            serving.get(&(replicated.layer, replicated.expert)),
+            Some(&replica)
+        );
+
+        let default_graph = StepGraphBuilder::decode_step(&model, &placement, &nodes, 1, "s", 1);
+        let served_graph =
+            StepGraphBuilder::decode_step_served(&model, &placement, &nodes, 1, "s", 1, &serving);
+        let leaf = |g: &WorkGraph, node: &NodeId| {
+            g.unit(&WorkUnitId::new(format!(
+                "L{:03}-experts-{}",
+                replicated.layer, node.0
+            )))
+            .and_then(|u| u.params_json::<ExpertSliceParams>().ok())
+            .map(|p| p.resident_experts)
+            .unwrap_or_default()
+        };
+        assert!(leaf(&default_graph, &replicated.holders[0]).contains(&replicated.expert));
+        assert!(!leaf(&default_graph, &replica).contains(&replicated.expert));
+        assert!(leaf(&served_graph, &replica).contains(&replicated.expert));
+        assert!(!leaf(&served_graph, &replicated.holders[0]).contains(&replicated.expert));
+        assert_eq!(default_graph.len() <= served_graph.len() + 1, true);
     }
 
     #[test]
@@ -1669,7 +1843,11 @@ mod tests {
         assert!(starved.fit.per_node.iter().all(|n| n.requires_approval));
         assert!(starved.fit.per_node.iter().all(|n| n.fast_offered_gb == 0.0));
         assert!(starved.fit.summary().starts_with("does not fit"));
-        assert_ne!(starved.digest(), digest, "a different placement, a different digest");
+        assert_eq!(
+            starved.digest(),
+            digest,
+            "the same experts on the same owners: tiers do not change the placement's identity"
+        );
 
         // A generous explicit offer is clamped to the machine.
         let node = &nodes[0];

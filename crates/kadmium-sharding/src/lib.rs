@@ -530,8 +530,10 @@ pub mod hierarchical_pool;
 pub mod optimizer;
 pub mod slices;
 pub mod spot_provisioner;
+pub mod usage;
 
 pub use arbitrage::*;
+pub use usage::*;
 pub use cloud_shield_watcher::*;
 pub use grid_plan::*;
 pub use hierarchical_pool::*;

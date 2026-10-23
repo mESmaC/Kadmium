@@ -494,6 +494,26 @@ impl WorkUnit {
     }
 }
 
+/// Content a unit touched while it ran, with how often: the raw signal behind learned placement
+/// (colibri's usage file) and frequency-aware eviction. For a MoE layer the content ids are the
+/// experts the router selected.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContentAccess {
+    pub content_id: String,
+    pub hits: u64,
+}
+
+/// A content access as a run reports it: which node, running which kind of work, touched which
+/// content how often. Summed over a run's validated results.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecordedAccess {
+    pub node: NodeId,
+    /// The unit's app kind label.
+    pub app: String,
+    pub content_id: String,
+    pub hits: u64,
+}
+
 /// What a worker returns for one instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkResultRecord {
@@ -513,6 +533,9 @@ pub struct WorkResultRecord {
     pub returned_unix_ms: u64,
     /// Rows, rollouts or simulations the result covered, for credit and receipts.
     pub units_processed: u64,
+    /// Content the unit touched while it ran, with hit counts.
+    #[serde(default)]
+    pub accessed: Vec<ContentAccess>,
 }
 
 impl WorkResultRecord {
@@ -536,7 +559,13 @@ impl WorkResultRecord {
             payload: Vec::new(),
             returned_unix_ms,
             units_processed: 0,
+            accessed: Vec::new(),
         }
+    }
+
+    pub fn with_accessed(mut self, accessed: Vec<ContentAccess>) -> Self {
+        self.accessed = accessed;
+        self
     }
 
     pub fn with_units_processed(mut self, units_processed: u64) -> Self {

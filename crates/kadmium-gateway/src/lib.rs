@@ -153,6 +153,12 @@ pub struct GatewayState {
     pub grid_offers: BTreeMap<String, kadmium_core::ResourceOffer>,
     /// Owners' approvals of the current placement plan, by node id.
     pub grid_plan_approvals: BTreeMap<String, kadmium_grid::PlanApproval>,
+    /// Routing heat learned from live decode steps, one ledger per model, persisted beside the
+    /// cluster state as `target/kadmium-state/usage/<model>.usage.json`.
+    pub grid_usage: BTreeMap<String, kadmium_sharding::UsageLedger>,
+    /// The placement in force per model, kept between runs so learned pins stay put and the live
+    /// re-pin adapts them a few swaps at a time; re-planned when the mesh or the offers change.
+    pub grid_placements: BTreeMap<String, crate::grid_api::CachedPlacement>,
     pub coordinator_lan_ip: String,
     pub coordinator_http_port: u16,
     pub training_step_counter: u64,
@@ -281,7 +287,74 @@ impl GatewayState {
             grid_telemetry: kadmium_grid::TelemetryStore::new(),
             grid_offers: BTreeMap::new(),
             grid_plan_approvals: BTreeMap::new(),
+            grid_usage: BTreeMap::new(),
+            grid_placements: BTreeMap::new(),
         }
+    }
+
+    /// Where the per-model usage ledgers live between restarts.
+    pub fn grid_usage_dir() -> std::path::PathBuf {
+        std::path::Path::new("target/kadmium-state").join("usage")
+    }
+
+    /// The usage ledger of a model, created empty when the coordinator has none in memory.
+    pub fn usage_for(&mut self, model_id: &str) -> &mut kadmium_sharding::UsageLedger {
+        self.grid_usage
+            .entry(model_id.to_string())
+            .or_insert_with(|| kadmium_sharding::UsageLedger::new(model_id))
+    }
+
+    /// Restores every saved usage ledger, returning how many models they cover.
+    pub fn load_grid_usage(&mut self) -> Result<usize, String> {
+        let dir = Self::grid_usage_dir();
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.to_string()),
+        };
+        let mut loaded = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".usage.json"))
+                && let Ok(Some(ledger)) = kadmium_sharding::UsageLedger::load(&path)
+            {
+                self.grid_usage.insert(ledger.model_id.clone(), ledger);
+                loaded += 1;
+            }
+        }
+        Ok(loaded)
+    }
+
+    /// Folds a run's routing accesses into the model's usage ledger and saves it. Only the units
+    /// that route (stage and trunk units) count; a holder serving an expert is the same routing
+    /// seen again.
+    pub fn record_grid_access(
+        &mut self,
+        model_id: &str,
+        accesses: &[kadmium_grid::RecordedAccess],
+    ) -> usize {
+        let routed: Vec<kadmium_grid::ContentAccess> = accesses
+            .iter()
+            .filter(|a| a.app == "StageForward" || a.app == "TrunkForward")
+            .map(|a| kadmium_grid::ContentAccess {
+                content_id: a.content_id.clone(),
+                hits: a.hits,
+            })
+            .collect();
+        if routed.is_empty() {
+            return 0;
+        }
+        let now = LiveWorkerRegistration::now_unix_ms();
+        let path = kadmium_sharding::UsageLedger::sidecar_path(&Self::grid_usage_dir(), model_id);
+        let ledger = self.usage_for(model_id);
+        let recorded = ledger.record_turn(&routed, now);
+        if recorded > 0 {
+            let _ = ledger.save(&path);
+        }
+        recorded
     }
 
     /// Records what a worker's owner offers and what the worker measured about itself. An offer

@@ -468,6 +468,7 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             "/api/v1/grid/plan/approve",
             post(crate::grid_api::post_grid_plan_approve),
         )
+        .route("/api/v1/grid/repin", post(crate::grid_api::post_grid_repin))
         .route("/api/v1/grid/run", post(crate::grid_api::post_grid_run))
         .route("/api/v1/grid/train", post(crate::grid_api::post_grid_train))
         .route("/api/v1/grid/replay", post(crate::grid_api::post_grid_replay))
