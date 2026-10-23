@@ -17,11 +17,11 @@ use crate::{
     LAYER_BOUNDARY_BLOCK, LayerReference, LayerRouting, LiveStageForwardRequest,
     MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8, execute_stage_layers_with_ktb,
 };
-use kadmium_core::NodeId;
+use kadmium_core::{NodeId, VerifiedComputeReceipt};
 use kadmium_grid::{
-    AppKind, ContentKind, ContentRef, InstanceId, ReplicaCatalog, SchedulerEventRecord,
-    SchedulerPolicy, WorkGraph, WorkQueue, WorkResultRecord, WorkUnit, WorkUnitId, WorkerProfile,
-    fnv1a_64,
+    AppKind, ContentKind, ContentRef, CreditEntry, CreditLedger, CreditPolicy, InstanceId,
+    ReplicaCatalog, SchedulerEvent, SchedulerEventRecord, SchedulerPolicy, ValidationOutcome,
+    WorkGraph, WorkQueue, WorkResultRecord, WorkUnit, WorkUnitId, WorkerProfile, fnv1a_64,
 };
 use kadmium_network::{LiveWorkerRegistration, WireFrameKind};
 use kadmium_sharding::{
@@ -104,6 +104,8 @@ pub struct WorkOutput {
     pub payload: Vec<u8>,
     pub digest_fnv1a: u64,
     pub check_value: f64,
+    /// Rows, rollouts or simulations the unit covered, for credit and receipts.
+    pub units_processed: u64,
 }
 
 /// Worker-local state an executor may use.
@@ -161,6 +163,10 @@ impl ExecutorRegistry {
         registry.register(Arc::new(TrunkForwardExecutor));
         registry.register(Arc::new(ExpertSliceExecutor));
         registry.register(Arc::new(CombineExecutor));
+        registry.register(Arc::new(TrainForwardBackwardExecutor));
+        registry.register(Arc::new(DeMoReduceExecutor));
+        registry.register(Arc::new(DreamReplayExecutor));
+        registry.register(Arc::new(VerdeAuditExecutor));
         registry
     }
 
@@ -407,7 +413,8 @@ pub fn execute_dispatch(
             .with_check_value(output.check_value)
             .with_payload(output.payload)
             .with_outputs(output.outputs.iter().map(|(r, _)| r.clone()).collect())
-            .with_bytes_moved(bytes_in + bytes_out);
+            .with_bytes_moved(bytes_in + bytes_out)
+            .with_units_processed(output.units_processed);
             let blobs = output
                 .outputs
                 .into_iter()
@@ -510,6 +517,7 @@ impl WorkExecutor for StageForwardExecutor {
             payload: serde_json::to_vec(&last).unwrap_or_default(),
             digest_fnv1a: digest,
             check_value: l2_sum / rows.len().max(1) as f64,
+            units_processed: rows.len() as u64,
         })
     }
 }
@@ -622,6 +630,7 @@ impl WorkExecutor for TrunkForwardExecutor {
                 payload: Vec::new(),
                 digest_fnv1a: fnv1a_64(&bytes),
                 check_value: l2_norm(&combined.concat()),
+                units_processed: rows.len() as u64,
             });
         }
 
@@ -645,6 +654,7 @@ impl WorkExecutor for TrunkForwardExecutor {
             payload: routing.to_json_bytes(),
             digest_fnv1a: fnv1a_64(&bytes),
             check_value: l2_norm(&out.data),
+            units_processed: rows.len() as u64,
         })
     }
 }
@@ -720,6 +730,7 @@ impl WorkExecutor for ExpertSliceExecutor {
             .unwrap_or_default(),
             digest_fnv1a: fnv1a_64(&bytes),
             check_value: applied as f64,
+            units_processed: trunk.rows as u64,
         })
     }
 }
@@ -781,6 +792,7 @@ impl WorkExecutor for CombineExecutor {
             .unwrap_or_default(),
             digest_fnv1a: fnv1a_64(&bytes),
             check_value: l2_norm(&out_rows.concat()),
+            units_processed: trunk.rows as u64,
         })
     }
 }
@@ -798,6 +810,8 @@ pub struct GridRunConfig {
     pub call_timeout: Duration,
     /// Activation blobs available before any unit runs, such as the prompt batch.
     pub seed_blobs: Vec<(ContentRef, Vec<u8>)>,
+    /// Credit policy for the run's ledger; `None` keeps no books.
+    pub credit_policy: Option<CreditPolicy>,
 }
 
 impl Default for GridRunConfig {
@@ -807,6 +821,7 @@ impl Default for GridRunConfig {
             policy: SchedulerPolicy::default(),
             call_timeout: Duration::from_secs(30),
             seed_blobs: Vec::new(),
+            credit_policy: Some(CreditPolicy::default()),
         }
     }
 }
@@ -847,6 +862,10 @@ pub struct GridRunReport {
     pub events: Vec<SchedulerEventRecord>,
     /// Outputs of the graph's sink units, by content id.
     pub outputs: Vec<(String, Vec<u8>)>,
+    /// Credit granted for validated units, one entry per unit.
+    pub credits: Vec<CreditEntry>,
+    /// The credits as supply-grid receipts at the canonical clearing rates.
+    pub receipts: Vec<VerifiedComputeReceipt>,
 }
 
 impl GridRunReport {
@@ -931,6 +950,8 @@ impl GridDispatcher {
                 traces,
                 events: vec![],
                 outputs: vec![],
+                credits: vec![],
+                receipts: vec![],
             }
             .with_error_trace(e.to_string());
         }
@@ -1100,7 +1121,22 @@ impl GridDispatcher {
                         ok: true,
                         error: None,
                     });
-                    let _ = queue.report_result(&outcome.instance_id, record, now_unix_ms());
+                    let validation =
+                        queue.report_result(&outcome.instance_id, record, now_unix_ms());
+                    if let Ok(ValidationOutcome::DisputeOpened { nodes }) = validation {
+                        Self::referee_dispute(
+                            &mut queue,
+                            &mut traces,
+                            &blobs,
+                            &outcome.unit_id,
+                            &nodes,
+                            workers,
+                            live_workers,
+                            local,
+                            config,
+                        )
+                        .await;
+                    }
                 }
                 Ok(payload) => {
                     let error = payload
@@ -1161,6 +1197,22 @@ impl GridDispatcher {
             }
         }
 
+        // Books: credit for every validated unit, a penalty for every invalidated instance.
+        let mut ledger = CreditLedger::new(config.credit_policy.clone().unwrap_or_default());
+        if config.credit_policy.is_some() {
+            let now = now_unix_ms();
+            for status in queue.units() {
+                if let Some(record) = &status.validated {
+                    ledger.credit_validated(&status.unit, record, now);
+                }
+            }
+            for event in queue.events() {
+                if let SchedulerEvent::Invalidated { node, .. } = &event.event {
+                    ledger.penalize_invalid(node, now);
+                }
+            }
+        }
+
         GridRunReport {
             graph_id: graph.id.clone(),
             units_total: graph.len(),
@@ -1171,6 +1223,115 @@ impl GridDispatcher {
             traces,
             events: queue.drain_events(),
             outputs,
+            credits: ledger.entries().to_vec(),
+            receipts: ledger.receipts(),
+        }
+    }
+
+    /// Settles a Verde dispute: the disputed unit is re-run by a trusted referee (a TrustedCore
+    /// worker that was not a disputant, else the in-process executor), and the disputant whose
+    /// digest the referee reproduces wins. With no referee or no match, the unit is cancelled.
+    #[allow(clippy::too_many_arguments)]
+    async fn referee_dispute(
+        queue: &mut WorkQueue,
+        traces: &mut Vec<GridDispatchTrace>,
+        blobs: &BTreeMap<String, Vec<u8>>,
+        unit_id: &WorkUnitId,
+        disputants: &[NodeId],
+        workers: &[WorkerProfile],
+        live_workers: &BTreeMap<String, LiveWorkerRegistration>,
+        local: Option<&LocalExecutor>,
+        config: &GridRunConfig,
+    ) {
+        let Some(unit) = queue.status(unit_id).map(|s| s.unit.clone()) else {
+            return;
+        };
+        let attach: Vec<(String, Vec<u8>)> = unit
+            .inputs
+            .iter()
+            .filter(|c| c.kind == ContentKind::Activation)
+            .filter_map(|c| {
+                blobs
+                    .get(&c.content_id)
+                    .map(|b| (c.content_id.clone(), b.clone()))
+            })
+            .collect();
+        let instance_id = InstanceId(format!("{unit_id}#referee"));
+        let payload =
+            WorkDispatchPayload::new(unit.clone(), instance_id.clone(), config.epoch, attach);
+
+        let referee_worker = workers.iter().find(|w| {
+            w.online
+                && w.node.trust_tier.can_host_boundary_ingress_egress()
+                && !disputants.contains(w.id())
+                && live_workers.get(&w.id().0).is_some_and(|r| r.online)
+        });
+        let t0 = Instant::now();
+        let (referee_node, transport, result) = if let Some(worker) = referee_worker {
+            let addr = live_workers[&worker.id().0].worker_tcp_addr.clone();
+            let result = DistributedLanExecutor::channel_pool()
+                .call(
+                    &addr,
+                    WireFrameKind::WorkDispatch,
+                    config.epoch as u32,
+                    payload.to_le_bytes(),
+                    config.call_timeout,
+                )
+                .await
+                .and_then(|frame| WorkResultPayload::from_le_bytes(&frame.payload));
+            (worker.id().clone(), format!("referee {addr}"), result)
+        } else if let Some(local) = local {
+            let registry = local.registry.clone();
+            let ctx = local.ctx.clone();
+            let node = NodeId(ctx.node_id.clone());
+            let result =
+                tokio::task::spawn_blocking(move || execute_dispatch(payload, &registry, &ctx))
+                    .await
+                    .map_err(|e| format!("referee task failed: {e}"));
+            (node, "referee in-process".to_string(), result)
+        } else {
+            let _ = queue.cancel(unit_id, now_unix_ms());
+            return;
+        };
+        let wall_ms = (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
+
+        let referee_digest = match &result {
+            Ok(payload) if payload.header.ok => {
+                payload.header.result.as_ref().map(|r| r.digest_fnv1a)
+            }
+            _ => None,
+        };
+        traces.push(GridDispatchTrace {
+            unit_id: unit_id.clone(),
+            instance_id,
+            node_id: referee_node,
+            app: unit.app.label(),
+            transport,
+            wall_ms,
+            exec_ms: result
+                .as_ref()
+                .ok()
+                .and_then(|p| p.header.result.as_ref().map(|r| r.exec_ms))
+                .unwrap_or(0.0),
+            digest_fnv1a: referee_digest.unwrap_or(0),
+            check_value: 0.0,
+            ok: referee_digest.is_some(),
+            error: result.as_ref().err().cloned(),
+        });
+
+        let winner = referee_digest.and_then(|digest| {
+            queue
+                .status(unit_id)
+                .and_then(|s| s.returned.iter().find(|r| r.digest_fnv1a == digest))
+                .map(|r| r.node_id.clone())
+        });
+        match winner {
+            Some(node) => {
+                let _ = queue.resolve_dispute(unit_id, &node, now_unix_ms());
+            }
+            None => {
+                let _ = queue.cancel(unit_id, now_unix_ms());
+            }
         }
     }
 
@@ -1268,6 +1429,7 @@ mod tests {
                 payload: Vec::new(),
                 digest_fnv1a: fnv1a_64(&reversed),
                 check_value: reversed.len() as f64,
+                units_processed: 1,
             })
         }
     }
@@ -1322,7 +1484,7 @@ mod tests {
     fn registry_runs_registered_kinds_and_reports_missing_ones() {
         let local = local_executor("node-a");
         assert!(local.registry.get(&AppKind::StageForward).is_some());
-        assert_eq!(local.registry.kinds().len(), 5);
+        assert_eq!(local.registry.kinds().len(), 9);
 
         let input = ContentRef::named(ContentKind::Activation, "g/in", 3);
         let mut unit = WorkUnit::new("rev", AppKind::Custom("echo-reverse".into()));
@@ -1344,7 +1506,7 @@ mod tests {
         assert_eq!(record.bytes_moved, 6);
 
         let unknown = WorkDispatchPayload::new(
-            WorkUnit::new("x", AppKind::DreamReplay),
+            WorkUnit::new("x", AppKind::Checksum),
             InstanceId("x#1".into()),
             1,
             vec![],
@@ -1697,5 +1859,496 @@ mod fanout_tests {
         assert_eq!(chain2, fan_out2, "two-row batch differs between shapes");
         assert_eq!(TokenBatchInt8::from_le_bytes(&fan_out2).unwrap().rows, 2);
         assert_ne!(chain2, chain_bytes);
+    }
+}
+
+// ================================================================================================
+// Training, replay and audit executors
+// ================================================================================================
+
+/// The DiLoCo outer step's summary, the output of a [`AppKind::DeMoReduce`] unit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeMoReduceReport {
+    pub step_index: u64,
+    pub contributors: usize,
+    pub mean_loss_before: f32,
+    pub mean_loss_after: f32,
+    pub mean_wire_compression_ratio: f64,
+    pub diloco_outer_consensus_norm: f32,
+    pub master_weight_digest_fnv1a: u64,
+}
+
+/// Runs a [`AppKind::TrainForwardBackward`] unit through the same stage training kernel the
+/// legacy step uses, on the micro-batch delivered as the unit's input and target blobs.
+pub struct TrainForwardBackwardExecutor;
+
+impl WorkExecutor for TrainForwardBackwardExecutor {
+    fn app_kind(&self) -> AppKind {
+        AppKind::TrainForwardBackward
+    }
+
+    fn execute(
+        &self,
+        unit: &WorkUnit,
+        inputs: &WorkInputs,
+        ctx: &ExecutorContext,
+    ) -> Result<WorkOutput, String> {
+        let params: kadmium_sharding::TrainStageParams =
+            unit.params_json().map_err(|e| e.to_string())?;
+        let (_, input_bytes) = activation_input(unit, inputs, |id| id.ends_with("/train-input"))?;
+        let (_, target_bytes) = activation_input(unit, inputs, |id| id.ends_with("/train-target"))?;
+        let input = TokenBatchInt8::from_le_bytes(input_bytes)?;
+        let target = TokenBatchInt8::from_le_bytes(target_bytes)?;
+        let request = crate::LiveStageTrainingRequest {
+            epoch: params.epoch,
+            model_id: params.model_id.clone(),
+            stage_index: params.stage_index,
+            start_layer: params.start_layer,
+            end_layer: params.end_layer,
+            step_index: params.step_index,
+            micro_batch_id: params.micro_batch_id,
+            learning_rate: params.learning_rate,
+            boundary_input: input.tensor,
+            target_signal: target.tensor,
+        };
+        let response = crate::execute_stage_training_local(&ctx.node_id, &ctx.hostname, &request);
+        let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
+        Ok(WorkOutput {
+            outputs: vec![(
+                StepGraphBuilder::output_ref(graph_id, &unit.id),
+                serde_json::to_vec(&response).map_err(|e| e.to_string())?,
+            )],
+            payload: serde_json::to_vec(&serde_json::json!({
+                "loss_before": response.loss_before,
+                "loss_after": response.loss_after,
+                "wire_compression_ratio": response.wire_compression_ratio,
+            }))
+            .unwrap_or_default(),
+            digest_fnv1a: response.repops_digest_fnv1a,
+            check_value: response.loss_after as f64,
+            units_processed: input.rows.max(1) as u64,
+        })
+    }
+}
+
+/// Runs a [`AppKind::DeMoReduce`] unit: decompresses every island's DeMo packet and applies the
+/// DiLoCo outer Nesterov step to the master weights.
+pub struct DeMoReduceExecutor;
+
+impl WorkExecutor for DeMoReduceExecutor {
+    fn app_kind(&self) -> AppKind {
+        AppKind::DeMoReduce
+    }
+
+    fn execute(
+        &self,
+        unit: &WorkUnit,
+        inputs: &WorkInputs,
+        _ctx: &ExecutorContext,
+    ) -> Result<WorkOutput, String> {
+        let params: kadmium_sharding::DeMoReduceParams =
+            unit.params_json().map_err(|e| e.to_string())?;
+        let mut responses: Vec<crate::LiveStageTrainingResponse> = Vec::new();
+        for input in unit
+            .inputs
+            .iter()
+            .filter(|c| c.kind == ContentKind::Activation)
+        {
+            let bytes = inputs
+                .blob(&input.content_id)
+                .ok_or_else(|| format!("reduce `{}` is missing `{}`", unit.id, input.content_id))?;
+            responses.push(serde_json::from_slice(bytes).map_err(|e| e.to_string())?);
+        }
+        if responses.is_empty() {
+            return Err("reduce received no island packets".to_string());
+        }
+        let island_updates: Vec<Vec<f32>> = responses
+            .iter()
+            .map(|r| crate::DeMoDctCompressor::decompress_packet(&r.demo_dct_packet))
+            .collect();
+        let param_len = island_updates.first().map_or(16, Vec::len);
+        let mut master_weights = vec![0.5f32; param_len];
+        let mut diloco =
+            crate::DiLoCoOuterOptimizer::new(param_len, params.outer_lr, params.outer_momentum);
+        diloco.step_outer_nesterov(&mut master_weights, &island_updates);
+        let consensus_norm = master_weights.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let count = responses.len() as f32;
+        let mut weight_bytes = Vec::with_capacity(param_len * 4);
+        for w in &master_weights {
+            weight_bytes.extend_from_slice(&w.to_le_bytes());
+        }
+        let report = DeMoReduceReport {
+            step_index: params.step_index,
+            contributors: responses.len(),
+            mean_loss_before: ((responses.iter().map(|r| r.loss_before).sum::<f32>() / count)
+                * 10_000.0)
+                .round()
+                / 10_000.0,
+            mean_loss_after: ((responses.iter().map(|r| r.loss_after).sum::<f32>() / count)
+                * 10_000.0)
+                .round()
+                / 10_000.0,
+            mean_wire_compression_ratio: ((responses
+                .iter()
+                .map(|r| r.wire_compression_ratio)
+                .sum::<f64>()
+                / count as f64)
+                * 10.0)
+                .round()
+                / 10.0,
+            diloco_outer_consensus_norm: (consensus_norm * 1000.0).round() / 1000.0,
+            master_weight_digest_fnv1a: fnv1a_64(&weight_bytes),
+        };
+        let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
+        Ok(WorkOutput {
+            outputs: vec![(
+                StepGraphBuilder::output_ref(graph_id, &unit.id),
+                serde_json::to_vec(&report).map_err(|e| e.to_string())?,
+            )],
+            payload: serde_json::to_vec(&report).unwrap_or_default(),
+            digest_fnv1a: report.master_weight_digest_fnv1a,
+            check_value: consensus_norm as f64,
+            units_processed: responses.len() as u64,
+        })
+    }
+}
+
+/// Runs a [`AppKind::DreamReplay`] unit: one offline Dream-RSI replay on this node.
+pub struct DreamReplayExecutor;
+
+impl WorkExecutor for DreamReplayExecutor {
+    fn app_kind(&self) -> AppKind {
+        AppKind::DreamReplay
+    }
+
+    fn execute(
+        &self,
+        unit: &WorkUnit,
+        _inputs: &WorkInputs,
+        ctx: &ExecutorContext,
+    ) -> Result<WorkOutput, String> {
+        let params: kadmium_sharding::DreamReplayParams =
+            unit.params_json().map_err(|e| e.to_string())?;
+        let request = crate::LiveDreamRsiReplayRequest {
+            replay_id: params.replay_id.clone(),
+            epoch: params.epoch,
+            world_id: params.world_id.clone(),
+            mcts_simulations: params.mcts_simulations,
+            puct_exploration_c: params.puct_exploration_c,
+            archive_trajectories_count: params.archive_trajectories_count,
+        };
+        let response = crate::execute_dream_rsi_replay_local(&ctx.node_id, &ctx.hostname, &request);
+        let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
+        Ok(WorkOutput {
+            outputs: vec![(
+                StepGraphBuilder::output_ref(graph_id, &unit.id),
+                serde_json::to_vec(&response).map_err(|e| e.to_string())?,
+            )],
+            payload: serde_json::to_vec(&serde_json::json!({
+                "world_id": response.world_id,
+                "evolved_peak_speedup": response.evolved_peak_speedup,
+                "mcts_simulations_run": response.mcts_simulations_run,
+            }))
+            .unwrap_or_default(),
+            digest_fnv1a: response.evolved_policy_hash_fnv64,
+            check_value: response.evolved_peak_speedup,
+            units_processed: response.mcts_simulations_run as u64,
+        })
+    }
+}
+
+/// Runs a [`AppKind::VerdeAudit`] unit: a layer-bisection challenge on this node, whose RepOps
+/// digest is what redundant copies are compared on.
+pub struct VerdeAuditExecutor;
+
+impl WorkExecutor for VerdeAuditExecutor {
+    fn app_kind(&self) -> AppKind {
+        AppKind::VerdeAudit
+    }
+
+    fn execute(
+        &self,
+        unit: &WorkUnit,
+        _inputs: &WorkInputs,
+        ctx: &ExecutorContext,
+    ) -> Result<WorkOutput, String> {
+        let params: kadmium_sharding::VerdeAuditParams =
+            unit.params_json().map_err(|e| e.to_string())?;
+        let request = crate::LiveVerdeBisectionRequest {
+            audit_id: params.audit_id.clone(),
+            epoch: params.epoch,
+            start_layer: params.start_layer,
+            target_layer: params.target_layer,
+            initial_activation: Vec::new(),
+            inject_fault_at_layer: params.inject_fault_at_layer,
+        };
+        let response =
+            crate::execute_verde_layer_challenge_local(&ctx.node_id, &ctx.hostname, &request);
+        let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
+        Ok(WorkOutput {
+            outputs: vec![(
+                StepGraphBuilder::output_ref(graph_id, &unit.id),
+                serde_json::to_vec(&response).map_err(|e| e.to_string())?,
+            )],
+            payload: serde_json::to_vec(&serde_json::json!({
+                "audit_id": response.audit_id,
+                "queried_layer": response.queried_layer,
+                "repops_tree_sum": response.repops_tree_sum,
+            }))
+            .unwrap_or_default(),
+            digest_fnv1a: response.repops_digest_fnv1a,
+            check_value: response.repops_tree_sum,
+            units_processed: (params.target_layer.saturating_sub(params.start_layer) + 1) as u64,
+        })
+    }
+}
+
+#[cfg(test)]
+mod phase5_tests {
+    use super::*;
+    use crate::{DEFAULT_INITIAL_KTB_MERKLE_ROOT, LiveNodeWorkerServer};
+    use kadmium_core::{
+        HardwareNode, ModelSpec, NodeTrustTier, WorkloadKind, sample_personal_cluster,
+    };
+    use kadmium_sharding::{
+        ExecutionStrategy, ExpertPlacementPlanner, ShardPlanner, StepGraphBuilder,
+    };
+
+    fn registration(node: &HardwareNode, addr: &str, rtt_ms: f64) -> LiveWorkerRegistration {
+        LiveWorkerRegistration {
+            node: node.clone(),
+            worker_tcp_addr: addr.to_string(),
+            worker_lan_ip: "127.0.0.1".into(),
+            worker_tcp_port: addr
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(0),
+            os_name: "test".into(),
+            cpu_arch: "x86_64".into(),
+            board_or_model: "test".into(),
+            network_channel: "LocalLAN".into(),
+            installed_version: "v0.1.0-cd48".into(),
+            ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+            heartbeat_count: 1,
+            registered_at_unix_ms: 1000,
+            last_heartbeat_unix_ms: 1000,
+            last_measured_rtt_ms: rtt_ms,
+            executed_forward_stages: 0,
+            executed_training_steps: 0,
+            online: true,
+        }
+    }
+
+    async fn two_workers(
+        nodes: &[HardwareNode],
+    ) -> (
+        LiveNodeWorkerServer,
+        LiveNodeWorkerServer,
+        BTreeMap<String, LiveWorkerRegistration>,
+    ) {
+        let w0 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[0].clone(), false)
+            .await
+            .expect("spawn worker 0");
+        let w1 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[1].clone(), false)
+            .await
+            .expect("spawn worker 1");
+        let mut live = BTreeMap::new();
+        live.insert(
+            nodes[0].id.0.clone(),
+            registration(&nodes[0], &w0.local_addr.to_string(), 0.3),
+        );
+        live.insert(
+            nodes[1].id.0.clone(),
+            registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
+        );
+        (w0, w1, live)
+    }
+
+    #[tokio::test]
+    async fn training_step_graph_matches_the_legacy_islands_and_reduces() {
+        let cluster = sample_personal_cluster();
+        let nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        let (_w0, _w1, live_workers) = two_workers(&nodes).await;
+        let model = ModelSpec::llama_3_70b_lora();
+
+        let legacy_plan =
+            ShardPlanner::compute_plan(1, &model, WorkloadKind::DistributedTraining, &nodes);
+        let legacy = DistributedLanExecutor::execute_live_training_step(
+            &legacy_plan,
+            7,
+            1e-4,
+            &live_workers,
+        )
+        .await;
+        assert_eq!(legacy.stages.len(), 2);
+
+        let placement = ExpertPlacementPlanner::plan_for_workload(
+            &model,
+            &nodes,
+            ExecutionStrategy::PipelineChain,
+            None,
+            WorkloadKind::DistributedTraining,
+        );
+        let graph =
+            StepGraphBuilder::training_step(&model, &placement, &nodes, 1, "train", 7, 1e-4);
+        let catalog = ReplicaCatalog::assume_placed(&placement.rules, 1);
+        let mut workers = GridDispatcher::workers_from_registrations(&live_workers);
+        // The same micro-batch the legacy loop synthesizes for step 7.
+        let input: Vec<f32> = (0..32)
+            .map(|i| (((i as u64 + 7) as f32) * 0.11).cos() * 0.6)
+            .collect();
+        let target: Vec<f32> = (0..16)
+            .map(|j| (((j * 3 + 1) as f32) * 0.17).sin() * 0.5)
+            .collect();
+        let config = GridRunConfig::default()
+            .with_seed(
+                StepGraphBuilder::training_input_ref(&graph.id),
+                TokenBatchInt8::quantize(&input, 1, 32, 16)
+                    .unwrap()
+                    .to_le_bytes(),
+            )
+            .with_seed(
+                StepGraphBuilder::training_target_ref(&graph.id),
+                TokenBatchInt8::quantize(&target, 1, 16, 16)
+                    .unwrap()
+                    .to_le_bytes(),
+            );
+        let report =
+            GridDispatcher::run_graph(&graph, &mut workers, &catalog, &live_workers, None, &config)
+                .await;
+        assert!(report.success, "{:?}", report.traces);
+
+        for (i, stage) in legacy.stages.iter().enumerate() {
+            let trace = report
+                .trace_for(&WorkUnitId::new(format!("stage-{i:02}")))
+                .expect("stage trace");
+            assert_eq!(trace.node_id.0, stage.node_id);
+            assert_eq!(
+                trace.digest_fnv1a, stage.repops_digest_fnv1a,
+                "island {i} digest"
+            );
+        }
+        let reduce_ref = StepGraphBuilder::output_ref(&graph.id, &WorkUnitId::new("demo-reduce"));
+        let reduce: DeMoReduceReport =
+            serde_json::from_slice(report.output(&reduce_ref.content_id).unwrap()).unwrap();
+        assert_eq!(reduce.contributors, 2);
+        assert_eq!(reduce.mean_loss_after, legacy.mean_loss_after);
+        assert_eq!(
+            reduce.diloco_outer_consensus_norm,
+            legacy.diloco_outer_consensus_norm
+        );
+        assert_eq!(report.credits.len(), 3);
+        assert!(report.receipts.iter().all(|r| r.earned_usd >= 0.0));
+    }
+
+    #[tokio::test]
+    async fn replay_batch_spreads_across_workers_and_earns_credit() {
+        let cluster = sample_personal_cluster();
+        let nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        let (_w0, _w1, live_workers) = two_workers(&nodes).await;
+        let graph = StepGraphBuilder::replay_batch("dream", 3, "gpu-kernel-world", 6, 32, &nodes);
+        let catalog = ReplicaCatalog::new();
+        let mut workers = GridDispatcher::workers_from_registrations(&live_workers);
+        let report = GridDispatcher::run_graph(
+            &graph,
+            &mut workers,
+            &catalog,
+            &live_workers,
+            None,
+            &GridRunConfig::default(),
+        )
+        .await;
+        assert!(report.success, "{:?}", report.traces);
+        assert_eq!(report.units_validated, 6);
+        let nodes_used: std::collections::BTreeSet<_> =
+            report.traces.iter().map(|t| t.node_id.clone()).collect();
+        assert_eq!(nodes_used.len(), 2, "both workers took replay units");
+        assert_eq!(report.credits.len(), 6);
+        assert_eq!(report.receipts.len(), 6);
+        assert!(report.receipts.iter().all(|r| r.earned_usd > 0.0));
+        assert!(
+            report
+                .receipts
+                .iter()
+                .all(|r| r.tokens_or_rollouts_processed >= 8)
+        );
+        assert!(report.credits.iter().all(|c| c.credits > 0.0));
+    }
+
+    struct TamperingAudit;
+
+    impl WorkExecutor for TamperingAudit {
+        fn app_kind(&self) -> AppKind {
+            AppKind::VerdeAudit
+        }
+
+        fn execute(
+            &self,
+            unit: &WorkUnit,
+            inputs: &WorkInputs,
+            ctx: &ExecutorContext,
+        ) -> Result<WorkOutput, String> {
+            let mut honest = VerdeAuditExecutor.execute(unit, inputs, ctx)?;
+            honest.digest_fnv1a = honest.digest_fnv1a.wrapping_add(1);
+            honest.check_value += 1.0;
+            Ok(honest)
+        }
+    }
+
+    #[tokio::test]
+    async fn untrusted_disagreement_is_refereed_and_only_the_honest_node_is_credited() {
+        let cluster = sample_personal_cluster();
+        let mut nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        nodes[1].trust_tier = NodeTrustTier::UntrustedAuditedMiddleLayersOnly;
+        let (_w0, w1, live_workers) = two_workers(&nodes).await;
+        w1.executors.register(Arc::new(TamperingAudit));
+
+        let unit = StepGraphBuilder::audit_unit("audit", 1, "a1", 0, 7, None);
+        let mut graph = WorkGraph::new("audit/a1");
+        graph.add_unit(unit);
+        let catalog = ReplicaCatalog::new();
+        let mut workers = GridDispatcher::workers_from_registrations(&live_workers);
+        let (bank, _) = crate::build_initial_resident_ktb_bank("deepseek-v3-671b-moe-q4k", 1);
+        let referee = LocalExecutor {
+            registry: ExecutorRegistry::with_defaults(),
+            ctx: ExecutorContext::new(
+                "node-coordinator",
+                "coordinator",
+                Arc::new(Mutex::new(bank)),
+            ),
+        };
+        let report = GridDispatcher::run_graph(
+            &graph,
+            &mut workers,
+            &catalog,
+            &live_workers,
+            Some(&referee),
+            &GridRunConfig::default(),
+        )
+        .await;
+        assert!(report.success, "{:?}", report.traces);
+        assert!(
+            report
+                .traces
+                .iter()
+                .any(|t| t.transport.starts_with("referee"))
+        );
+        let honest = nodes[0].id.clone();
+        let tamperer = nodes[1].id.clone();
+        assert_eq!(report.credits.len(), 1);
+        assert_eq!(report.credits[0].node_id, honest);
+        assert!(report.events.iter().any(|e| matches!(
+            &e.event,
+            kadmium_grid::SchedulerEvent::Invalidated { node, .. } if *node == tamperer
+        )));
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|e| matches!(&e.event, kadmium_grid::SchedulerEvent::DisputeOpened { .. }))
+        );
+        assert_eq!(report.receipts.len(), 1);
+        assert_eq!(report.receipts[0].provider_node_id, honest);
     }
 }

@@ -494,6 +494,8 @@ pub struct WorkResultRecord {
     /// Opaque result payload for the consumer.
     pub payload: Vec<u8>,
     pub returned_unix_ms: u64,
+    /// Rows, rollouts or simulations the result covered, for credit and receipts.
+    pub units_processed: u64,
 }
 
 impl WorkResultRecord {
@@ -516,7 +518,13 @@ impl WorkResultRecord {
             bytes_moved: 0,
             payload: Vec::new(),
             returned_unix_ms,
+            units_processed: 0,
         }
+    }
+
+    pub fn with_units_processed(mut self, units_processed: u64) -> Self {
+        self.units_processed = units_processed;
+        self
     }
 
     pub fn with_outputs(mut self, outputs: Vec<ContentRef>) -> Self {

@@ -18,7 +18,9 @@
 //!    slice per holder, and a combine. Token streaming is therefore one schedule of the same
 //!    units that expert parallelism schedules differently.
 
-use kadmium_core::{HardwareNode, ModelSpec, NodeId, NodeRole, NodeTrustTier, WorkloadKind};
+use kadmium_core::{
+    ComputeBackend, HardwareNode, ModelSpec, NodeId, NodeRole, NodeTrustTier, WorkloadKind,
+};
 use kadmium_grid::{
     AppKind, ContentKind, ContentRef, CostEstimate, PlacementConstraints, PlacementRule,
     RedundancyPolicy, ResidencyTier, WorkGraph, WorkUnit, WorkUnitId,
@@ -332,15 +334,27 @@ impl NodeBudget {
 pub struct ExpertPlacementPlanner;
 
 impl ExpertPlacementPlanner {
-    /// Places a model on the mesh in the given shape. With `popularity`, hot experts are
-    /// replicated into leftover fast memory under the expert-parallel shape.
+    /// Places a model on the mesh in the given shape for inference. With `popularity`, hot
+    /// experts are replicated into leftover fast memory under the expert-parallel shape.
     pub fn plan(
         model: &ModelSpec,
         nodes: &[HardwareNode],
         strategy: ExecutionStrategy,
         popularity: Option<&ExpertPopularity>,
     ) -> ExpertPlacementPlan {
-        let shard_plan = ShardPlanner::compute_plan(0, model, WorkloadKind::Inference, nodes);
+        Self::plan_for_workload(model, nodes, strategy, popularity, WorkloadKind::Inference)
+    }
+
+    /// Like [`ExpertPlacementPlanner::plan`], with the trunk ranges sized for the given workload,
+    /// so a training step's islands match the training planner's layer split.
+    pub fn plan_for_workload(
+        model: &ModelSpec,
+        nodes: &[HardwareNode],
+        strategy: ExecutionStrategy,
+        popularity: Option<&ExpertPopularity>,
+        workload: WorkloadKind,
+    ) -> ExpertPlacementPlan {
+        let shard_plan = ShardPlanner::compute_plan(0, model, workload, nodes);
         let mut trunk_ranges: Vec<TrunkRange> = shard_plan
             .assignments
             .iter()
@@ -1530,5 +1544,312 @@ mod tests {
         assert!(!cparams.contributors.is_empty());
         assert!(graph.critical_path_ms() < graph.total_est_wall_ms());
         assert!(nodes.iter().any(|n| n.device_kind == DeviceKind::HomeNas));
+    }
+}
+
+// ================================================================================================
+// Training, replay and audit graphs
+// ================================================================================================
+
+/// Parameters of a [`AppKind::TrainForwardBackward`] unit: one island's forward and backward
+/// pass over its layer range for one micro-batch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrainStageParams {
+    pub model_id: String,
+    pub epoch: u64,
+    pub session_id: String,
+    pub stage_index: usize,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub step_index: u64,
+    pub micro_batch_id: u32,
+    pub learning_rate: f32,
+}
+
+/// Parameters of a [`AppKind::DeMoReduce`] unit: the DiLoCo outer step over every island's
+/// DeMo packet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeMoReduceParams {
+    pub model_id: String,
+    pub epoch: u64,
+    pub session_id: String,
+    pub step_index: u64,
+    pub outer_lr: f32,
+    pub outer_momentum: f32,
+    pub contributors: Vec<NodeId>,
+}
+
+/// Parameters of a [`AppKind::DreamReplay`] unit: one offline replay over a recorded world.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DreamReplayParams {
+    pub replay_id: String,
+    pub epoch: u64,
+    pub session_id: String,
+    pub world_id: String,
+    pub mcts_simulations: u32,
+    pub puct_exploration_c: f64,
+    pub archive_trajectories_count: usize,
+}
+
+/// Parameters of a [`AppKind::VerdeAudit`] unit: a refereed layer-bisection audit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VerdeAuditParams {
+    pub audit_id: String,
+    pub epoch: u64,
+    pub session_id: String,
+    pub start_layer: u32,
+    pub target_layer: u32,
+    pub inject_fault_at_layer: Option<u32>,
+}
+
+impl StepGraphBuilder {
+    pub fn training_input_ref(graph_id: &str) -> ContentRef {
+        ContentRef::named(
+            ContentKind::Activation,
+            &format!("{graph_id}/train-input"),
+            0,
+        )
+    }
+
+    pub fn training_target_ref(graph_id: &str) -> ContentRef {
+        ContentRef::named(
+            ContentKind::Activation,
+            &format!("{graph_id}/train-target"),
+            0,
+        )
+    }
+
+    /// One distributed training step: every trunk range trains as an independent island on the
+    /// same micro-batch (a bag of units), and one reduce unit fans their DeMo packets in for the
+    /// DiLoCo outer step.
+    pub fn training_step(
+        model: &ModelSpec,
+        placement: &ExpertPlacementPlan,
+        nodes: &[HardwareNode],
+        epoch: u64,
+        session_id: &str,
+        step_index: u64,
+        learning_rate: f32,
+    ) -> WorkGraph {
+        let graph_id = format!("{session_id}/train-{step_index}");
+        let mut graph = WorkGraph::new(graph_id.clone());
+        let last_layer = model.num_layers.saturating_sub(1);
+        let input = Self::training_input_ref(&graph_id);
+        let target = Self::training_target_ref(&graph_id);
+        let budgets: BTreeMap<NodeId, NodeBudget> = nodes
+            .iter()
+            .map(|n| (n.id.clone(), NodeBudget::from_node(n)))
+            .collect();
+        let mut stage_ids = Vec::new();
+
+        for (stage_index, range) in placement.trunk_ranges.iter().enumerate() {
+            let trunk = ModelContentNames::trunk(
+                &model.id,
+                range.start_layer,
+                range.end_layer,
+                range.bytes,
+            );
+            let boundary = range.start_layer == 0 || range.end_layer == last_layer;
+            let bw = budgets
+                .get(&range.owner)
+                .map(|b| {
+                    if b.fast_tier.is_some() {
+                        b.fast_bw_gbps
+                    } else {
+                        b.warm_bw_gbps
+                    }
+                })
+                .unwrap_or(1.0);
+            let unit_id = WorkUnitId::new(format!("stage-{stage_index:02}"));
+            let mut unit = WorkUnit::new(unit_id.clone(), AppKind::TrainForwardBackward)
+                .with_params_json(&TrainStageParams {
+                    model_id: model.id.clone(),
+                    epoch,
+                    session_id: session_id.to_string(),
+                    stage_index,
+                    start_layer: range.start_layer,
+                    end_layer: range.end_layer,
+                    step_index,
+                    micro_batch_id: (step_index % 12) as u32,
+                    learning_rate,
+                })
+                .expect("params serialize")
+                .with_placement(Self::placement_for(
+                    &range.owner,
+                    vec![trunk.clone()],
+                    boundary,
+                ))
+                .with_cost(Self::cost(range.bytes as f64 * 3.0, bw, 0.0, 1))
+                .with_redundancy(RedundancyPolicy::trusted());
+            unit.inputs = vec![trunk, input.clone(), target.clone()];
+            graph.add_unit(unit);
+            stage_ids.push(unit_id);
+        }
+
+        let owners: Vec<NodeId> = placement
+            .trunk_ranges
+            .iter()
+            .map(|r| r.owner.clone())
+            .collect();
+        let reduce_owner = owners
+            .first()
+            .cloned()
+            .unwrap_or_else(|| NodeId("coordinator".into()));
+        let reduce_id = WorkUnitId::new("demo-reduce");
+        let mut reduce = WorkUnit::new(reduce_id.clone(), AppKind::DeMoReduce)
+            .with_params_json(&DeMoReduceParams {
+                model_id: model.id.clone(),
+                epoch,
+                session_id: session_id.to_string(),
+                step_index,
+                outer_lr: 0.7,
+                outer_momentum: 0.9,
+                contributors: owners,
+            })
+            .expect("params serialize")
+            .with_placement(Self::placement_for(&reduce_owner, Vec::new(), true))
+            .with_cost(CostEstimate::new(1e6, 0, 64 * 1024, 0.5))
+            .with_redundancy(RedundancyPolicy::trusted());
+        reduce.inputs = stage_ids
+            .iter()
+            .map(|s| Self::output_ref(&graph_id, s))
+            .collect();
+        graph.add_unit(reduce);
+        for stage in &stage_ids {
+            graph
+                .add_dependency(&reduce_id, stage)
+                .expect("training graphs are acyclic");
+        }
+        graph
+    }
+
+    /// A batch of independent Dream-RSI replays: the BOINC shape, a bag with no edges, steered
+    /// towards CPU nodes when the mesh has any.
+    pub fn replay_batch(
+        session_id: &str,
+        epoch: u64,
+        world_id: &str,
+        rollouts: u32,
+        mcts_simulations: u32,
+        nodes: &[HardwareNode],
+    ) -> WorkGraph {
+        let graph_id = format!("{session_id}/replay-{epoch}");
+        let mut graph = WorkGraph::new(graph_id);
+        let cpu_backends: Vec<ComputeBackend> = [
+            ComputeBackend::CpuAvx512OrAvx2,
+            ComputeBackend::CpuArmNeonNpu,
+        ]
+        .into_iter()
+        .filter(|b| nodes.iter().any(|n| &n.backend == b))
+        .collect();
+        for i in 0..rollouts.max(1) {
+            let placement = PlacementConstraints {
+                allowed_backends: cpu_backends.clone(),
+                ..PlacementConstraints::default()
+            };
+            let unit = WorkUnit::new(format!("replay-{i:03}"), AppKind::DreamReplay)
+                .with_params_json(&DreamReplayParams {
+                    replay_id: format!("{session_id}-{epoch}-{i:03}"),
+                    epoch,
+                    session_id: session_id.to_string(),
+                    world_id: world_id.to_string(),
+                    mcts_simulations,
+                    puct_exploration_c: 1.4,
+                    archive_trajectories_count: 256,
+                })
+                .expect("params serialize")
+                .with_placement(placement)
+                .with_cost(CostEstimate::new(
+                    1e9 * mcts_simulations as f64,
+                    0,
+                    4096,
+                    0.2 * mcts_simulations as f64,
+                ))
+                .with_priority(1)
+                .with_redundancy(RedundancyPolicy::trusted());
+            graph.add_unit(unit);
+        }
+        graph
+    }
+
+    /// A refereed audit of a layer range, run redundantly on untrusted nodes: disagreement opens
+    /// a dispute the dispatcher settles with a trusted referee.
+    pub fn audit_unit(
+        session_id: &str,
+        epoch: u64,
+        audit_id: &str,
+        start_layer: u32,
+        target_layer: u32,
+        inject_fault_at_layer: Option<u32>,
+    ) -> WorkUnit {
+        WorkUnit::new(format!("audit-{audit_id}"), AppKind::VerdeAudit)
+            .with_params_json(&VerdeAuditParams {
+                audit_id: audit_id.to_string(),
+                epoch,
+                session_id: session_id.to_string(),
+                start_layer,
+                target_layer,
+                inject_fault_at_layer,
+            })
+            .expect("params serialize")
+            .with_cost(CostEstimate::new(
+                1e8 * (target_layer.saturating_sub(start_layer) + 1) as f64,
+                0,
+                2048,
+                2.0,
+            ))
+            .with_redundancy(RedundancyPolicy::untrusted())
+    }
+}
+
+#[cfg(test)]
+mod phase5_tests {
+    use super::*;
+    use kadmium_core::sample_personal_cluster;
+
+    #[test]
+    fn training_step_is_a_bag_of_islands_fanning_into_one_reduce() {
+        let nodes = sample_personal_cluster();
+        let model = ModelSpec::llama_3_70b_lora();
+        let placement =
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
+        let graph = StepGraphBuilder::training_step(&model, &placement, &nodes, 2, "lab", 17, 1e-4);
+        let stages = placement.trunk_ranges.len();
+        assert_eq!(graph.len(), stages + 1);
+        let levels = graph.wavefronts().unwrap();
+        assert_eq!(levels.len(), 2);
+        assert_eq!(levels[0].len(), stages);
+        assert_eq!(levels[1], vec![WorkUnitId::new("demo-reduce")]);
+        let reduce = graph.unit(&"demo-reduce".into()).unwrap();
+        assert_eq!(reduce.inputs.len(), stages);
+        let params: DeMoReduceParams = reduce.params_json().unwrap();
+        assert_eq!(params.contributors.len(), stages);
+        let first = graph.unit(&"stage-00".into()).unwrap();
+        let sp: TrainStageParams = first.params_json().unwrap();
+        assert_eq!((sp.step_index, sp.micro_batch_id), (17, 5));
+        assert_eq!(first.inputs.len(), 3);
+        assert!(first.placement.boundary_layer_access);
+    }
+
+    #[test]
+    fn replay_batch_is_a_bag_steered_to_cpu_nodes_and_audits_are_redundant() {
+        let nodes = sample_personal_cluster();
+        let graph = StepGraphBuilder::replay_batch("lab", 1, "gpu-kernel-world", 6, 32, &nodes);
+        assert_eq!(graph.len(), 6);
+        assert_eq!(graph.wavefronts().unwrap().len(), 1);
+        let unit = graph.unit(&"replay-003".into()).unwrap();
+        assert!(!unit.placement.allowed_backends.is_empty());
+        assert_eq!(unit.priority, 1);
+        let params: DreamReplayParams = unit.params_json().unwrap();
+        assert_eq!(params.replay_id, "lab-1-003");
+
+        let audit = StepGraphBuilder::audit_unit("lab", 1, "a1", 0, 7, Some(5));
+        assert_eq!(audit.redundancy.min_quorum, 2);
+        assert_eq!(
+            audit.redundancy.validation,
+            kadmium_grid::ValidationRule::VerdeBisection
+        );
+        let ap: VerdeAuditParams = audit.params_json().unwrap();
+        assert_eq!(ap.inject_fault_at_layer, Some(5));
     }
 }

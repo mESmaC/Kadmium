@@ -5,11 +5,40 @@
 //! the same work and an invalid result earns nothing. The supply engine in `kadmium-core` turns
 //! credit into money or cloud credits; this ledger only keeps the books.
 
-use kadmium_core::NodeId;
+use kadmium_core::{
+    NodeId, OVERNIGHT_CREDIT_MULTIPLIER, STEWARD_HOST_SHARE_FRAC,
+    SUPPLY_GRID_BATCH_CLEARING_USD_PER_1M_TOKENS, SUPPLY_GRID_KTB_SEED_CLEARING_USD_PER_GIB,
+    SUPPLY_GRID_WASI_CLEARING_USD_PER_1K_ROLLOUTS, VerifiedComputeReceipt,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::{AppKind, WorkResultRecord, WorkUnit, WorkUnitId};
+
+const GIB: f64 = 1_073_741_824.0;
+
+/// Which canonical clearing rate a kind of work settles at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ClearingClass {
+    /// Inference and training work, per million tokens (rows) processed.
+    Tokens,
+    /// Sandbox, replay and audit work, per thousand rollouts or simulations.
+    Rollouts,
+    /// Staging and packing, per GiB moved.
+    Seeding,
+}
+
+pub fn clearing_class(app: &AppKind) -> ClearingClass {
+    match app {
+        AppKind::Fts3Stage | AppKind::TokenizePack => ClearingClass::Seeding,
+        AppKind::WasiSandbox
+        | AppKind::DreamReplay
+        | AppKind::VerdeAudit
+        | AppKind::Checksum
+        | AppKind::Custom(_) => ClearingClass::Rollouts,
+        _ => ClearingClass::Tokens,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreditPolicy {
@@ -41,6 +70,10 @@ pub struct CreditEntry {
     pub app: AppKind,
     pub credits: f64,
     pub validated_unix_ms: u64,
+    /// Rows, rollouts or simulations the validated result covered, as the executor reported.
+    pub units_processed: u64,
+    pub bytes_moved: u64,
+    pub digest_fnv1a: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -139,8 +172,54 @@ impl CreditLedger {
             app: unit.app.clone(),
             credits,
             validated_unix_ms: now,
+            units_processed: result.units_processed,
+            bytes_moved: result.bytes_moved.max(unit.cost.bytes_moved),
+            digest_fnv1a: result.digest_fnv1a,
         });
         credits
+    }
+
+    /// The ledger as the supply engine's receipts, at the canonical clearing rates: token-shaped
+    /// work at the batch token rate, sandbox and replay work at the rollout rate, staging at the
+    /// seeding rate per GiB. A host earns the steward share of the clearing in USD, or the
+    /// overnight multiple of that in cloud credits.
+    pub fn receipts(&self) -> Vec<VerifiedComputeReceipt> {
+        let round4 = |v: f64| (v * 10_000.0).round() / 10_000.0;
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let (units, gross, what) = match clearing_class(&e.app) {
+                    ClearingClass::Tokens => (
+                        e.units_processed,
+                        e.units_processed as f64 / 1e6
+                            * SUPPLY_GRID_BATCH_CLEARING_USD_PER_1M_TOKENS,
+                        "tokens",
+                    ),
+                    ClearingClass::Rollouts => (
+                        e.units_processed,
+                        e.units_processed as f64 / 1e3
+                            * SUPPLY_GRID_WASI_CLEARING_USD_PER_1K_ROLLOUTS,
+                        "rollouts",
+                    ),
+                    ClearingClass::Seeding => (
+                        e.bytes_moved,
+                        e.bytes_moved as f64 / GIB * SUPPLY_GRID_KTB_SEED_CLEARING_USD_PER_GIB,
+                        "bytes seeded",
+                    ),
+                };
+                let earned_usd = round4(gross * STEWARD_HOST_SHARE_FRAC);
+                VerifiedComputeReceipt {
+                    receipt_id: format!("rcpt-{:06}-{}", i + 1, e.unit_id),
+                    provider_node_id: e.node_id.clone(),
+                    workload_summary: format!("{} ({units} {what})", e.app.label()),
+                    tokens_or_rollouts_processed: units,
+                    verde_repops_digest_fnv1a: e.digest_fnv1a,
+                    earned_usd,
+                    earned_cloud_credits_usd: round4(earned_usd * OVERNIGHT_CREDIT_MULTIPLIER),
+                }
+            })
+            .collect()
     }
 
     /// Records an invalidated result: no credit, and the node's recent average takes the penalty.
@@ -259,6 +338,39 @@ mod tests {
                 - 140.0)
                 .abs()
                 < 1e-9
+        );
+    }
+
+    #[test]
+    fn receipts_settle_at_the_canonical_clearing_rates() {
+        let mut ledger = CreditLedger::new(CreditPolicy::default());
+        let tokens = WorkUnit::new("decode", AppKind::StageForward);
+        let tokens_result = result(&tokens, "pc", 1).with_units_processed(2_000_000);
+        ledger.credit_validated(&tokens, &tokens_result, 1);
+        let replay = WorkUnit::new("replay", AppKind::DreamReplay);
+        let replay_result = result(&replay, "sbc", 2).with_units_processed(3_000);
+        ledger.credit_validated(&replay, &replay_result, 2);
+        let seed = WorkUnit::new("seed", AppKind::Fts3Stage);
+        let seed_result = result(&seed, "nas", 3).with_bytes_moved(2 * 1_073_741_824);
+        ledger.credit_validated(&seed, &seed_result, 3);
+
+        let receipts = ledger.receipts();
+        assert_eq!(receipts.len(), 3);
+        assert_eq!(receipts[0].provider_node_id, NodeId("pc".into()));
+        assert_eq!(receipts[0].tokens_or_rollouts_processed, 2_000_000);
+        assert!((receipts[0].earned_usd - 0.33).abs() < 1e-9);
+        assert!((receipts[0].earned_cloud_credits_usd - 0.4125).abs() < 1e-9);
+        assert!((receipts[1].earned_usd - 0.315).abs() < 1e-9);
+        assert_eq!(receipts[1].tokens_or_rollouts_processed, 3_000);
+        assert!((receipts[2].earned_usd - 0.012).abs() < 1e-9);
+        assert!(receipts[2].workload_summary.contains("bytes seeded"));
+        assert_eq!(
+            clearing_class(&AppKind::Custom("x".into())),
+            ClearingClass::Rollouts
+        );
+        assert_eq!(
+            clearing_class(&AppKind::TrainForwardBackward),
+            ClearingClass::Tokens
         );
     }
 }
