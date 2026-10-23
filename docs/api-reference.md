@@ -342,7 +342,7 @@ Returns the complete `v1.0 GA` governance bundle:
 
 ## 7. Grid Substrate Endpoints (`/api/v1/grid/*`)
 
-The grid substrate (`kadmium-grid`) runs every workload as a graph of work units scheduled across the mesh. These endpoints expose the mesh as one machine, the planner's shape choice, graph runs, and the credit ledger. Every throughput figure a planner endpoint returns is modelled; every wall time a run endpoint returns is measured on the synthetic reference kernels.
+The grid substrate (`kadmium-grid`) runs every workload as a graph of work units scheduled across the mesh. These endpoints expose the mesh as one machine, the planner's shape choice and its load balancer, graph runs and multi-step decode loops, the sessions and their KV tiers, the sweep harness, and the credit ledger. Every throughput figure a planner endpoint returns is modelled; every wall time a run endpoint returns is measured on the synthetic reference kernels, and every response that carries a measured figure names the kernels (`reference-synthetic` today). Where a figure rests on a modelled quantity (the load balancer's expected bytes, a drafter's acceptance, a KV page's size) the response says `modelled`.
 
 ### `GET /api/v1/grid/inventory`
 The mesh summed as one machine: online nodes, FP16 TFLOPS (total and polite-availability-weighted), fast memory, system RAM, NVMe, CPU threads, free slots, hop latency range, backends, how many workers are measured and how many compute samples they hold, plus a one-line summary, the number of grid runs, the last run's record (with the samples it added and the Verde disputes it settled) and `telemetry`: per worker, the measured compute cost per kind of work (ms per unit of work, samples, last sample), the memory streaming rate it measured on itself and the RAM it last reported free.
@@ -366,13 +366,49 @@ Runs one decode step as a work graph over live workers, with simulated nodes exe
 ```json
 { "model": "deepseek-v3-671b-moe-q4k", "max_swaps": 4, "apply": true }
 ```
-One re-pin boundary on the placement in force: per layer, the hottest streamed expert against the coldest pinned one, swapped when the learned heat clears a 25% hysteresis, at most `max_swaps` per boundary. Returns the swaps, the staging transfers they imply (the promoted expert into the node's fast tier, pinned, and the demoted one out), the placement digest afterwards and the running totals. With `apply: false` it only proposes.
+One re-pin boundary on the placement in force, with the load balancer in its incremental mode (ARCHITECTURE 9.9): per layer, the hottest streamed expert against the coldest pinned one, swapped when the learned heat clears a 25% hysteresis; then, within whatever of `max_swaps` is left, copies of hot experts onto nodes with free fast memory where a copy lowers the layer's busiest node by more than the same hysteresis. Returns the `swaps`, the `replica_changes` (each with the layer's busiest node before and after, in bytes and modelled ms), the `balance` report for the expert-parallel shape, the staging transfers they imply (a promoted expert into the node's fast tier, pinned, the demoted one out, and each copy from its primary), the placement digest afterwards, the running totals, and `expert_read_ms_before` and `_after`: the cost model's expert reads on the step's critical path at one row, modelled. With `apply: false` it only proposes.
+
+The plan response carries the same balancer's account when it ran at planning time: `placement.balance` (per layer) and `choice.balance` (a summary with the cost model's figures at its batch width, where at one row every expert's rows go to its primary and a copy changes nothing yet).
 
 ### `POST /api/v1/grid/calibrate`
 ```json
 { "strategy": "expert-parallel", "steps": 8, "rows": 1, "prompt": "text" }
 ```
 Measures the placement in force: at most eight decode steps of one shape within a twenty second budget, recorded as ms per token bound to the placement digest, the node set, the versions that ran and the batch width. A fan-out calibration also runs one chain step on the same prompt and reports `digest_matches_chain`; a record that fails that gate is kept but never steers the choice. Returns the record (with per-node compute time per step from the workers' own clocks and the kernels it measured, today `reference-synthetic`), whether it applies to the plan in force, and what now decides the shape.
+
+### `POST /api/v1/grid/decode`
+```json
+{ "prompt": "text", "rows": 1, "steps": 4, "sessions": 1, "strategy": "chain", "pipelined": true }
+```
+Several decode steps of one or several sessions through one runner (ARCHITECTURE 9.10). Pipelined (the default), each session's next step is planned and queued behind its current one while that one runs on the workers, so its first unit leaves in the loop turn that validates the previous sink, and the sessions' graphs interleave in one queue; `pipelined: false` runs one graph at a time, the shape of `/api/v1/grid/run` repeated. Each session starts from the prompt with its index appended. Returns per session the steps, tokens, wall, mean step time, every inter-step gap (the next step's first dispatch minus this step's last return, on the coordinator's clock), the final output and digest; in all, `wall_ms`, `measured_tokens_per_sec` (tokens over the wall), `measured_per_user_tokens_per_sec` (one session's tokens over its own wall, averaged), the mean and maximum gap, `interleaved` (units of two sessions in flight at once), the modelled ms per token for the shape, `kernels` (the kernels the measured figures ran on, `reference-synthetic` today), units, credits, routing recorded and disputes. Steps are at most 64 and sessions at most 8.
+
+```json
+{ "prompt": "text", "steps": 4, "sessions": 2, "speculative": true, "max_draft": 5, "draft_profile": "code", "early_stop": true, "confidence_lag": 1 }
+```
+With `speculative: true` every session decodes one row and drafts (ARCHITECTURE 9.11): `draft_profile` picks the modelled drafter (`code`, `chat` or `none`), `max_draft` its positions per step (at most 16), and the verification scheduler sizes every session's verify batch per step by DSpark's rule from the steps-per-second profile and the confidences `confidence_lag` steps behind, with DSpark's causal early stop unless `early_stop: false` asks for DeepInfer's search of every pair. The response adds `verification`: the profile's source (`measured` from calibration records of this placement at two or more batch widths, else `modelled` from the cost model) and widths, the mean verify batch, expected accepted tokens and expected gain over verifying nothing, the positions `proposed` and `accepted`, the `acceptance_rate`, `tokens_full_acceptance` and `tokens_accepted` with each over the wall as tokens per second, `tau`, and `modelled_acceptance: true` with a note: the acceptance is a modelled coin, no drafter exists, and `tokens_total` and `measured_tokens_per_sec` count accepted tokens.
+
+With `session: "<id>"` the loop continues one named session (ARCHITECTURE 9.12): its tokens accumulate in the session registry, its KV pages are recorded resident on the trunk owners, and when its pages have sunk the loop replays its bounded suffix first and reports it as `resumed`. Every response carries `session_states`: the sessions as the registry holds them afterwards, with tokens and KV tier.
+
+### `POST /api/v1/grid/sweep`
+```json
+{ "rows": [1, 2, 4, 8], "node_counts": [7, 2], "steps": 4, "sessions": 1, "strategy": "chain", "pipelined": true, "tag": "chain-2026-10", "write_ledger": true, "record_calibrations": true }
+```
+The sweep harness (ARCHITECTURE 9.13): one pipelined decode loop per batch width and per node count (the first `n` nodes of the mesh, placed afresh), every point a row of a Pareto table of throughput against per-user speed that carries its full configuration (model, shape, rows, sessions, steps, node count and node set, placement digest, version per node, kernels, mode, drafter, repository state). Points compare only within a curve, every field but the batch width equal; each node set is its own curve; `pareto` marks the frontier within each. A plain single-session point is also recorded as a calibration of its placement at its width, so the verification scheduler's profile becomes measured at those widths. `speculative`, `max_draft` and `draft_profile` make every point draft one row and report the full-acceptance throughput beside the accepted one. Returns the points, their curve ids and frontier flags, the table as markdown, the ledger file it was appended to (`target/kadmium-state/sweeps/<tag>.md`), the calibration records added and the points skipped with why. At most 8 widths of at most 64 rows, 8 node counts, 16 steps and 8 sessions.
+
+### `GET /api/v1/grid/sessions`
+The decode sessions the grid has run: each with its state (tokens, last activity, KV tier, replays), its page count, its modelled page bytes by tier and whether a decode would replay first; the tier policy in force; and the modelled bytes across every session by tier. `modelled` is always `true`: every byte figure comes from the model spec's reference KV size at an assumed window.
+
+### `POST /api/v1/grid/sessions/tier`
+```json
+{ "at_unix_ms": 1761200000000, "idle_to_nvme_ms": 60000, "idle_to_vault_ms": 600000 }
+```
+One tiering pass, judged at `at_unix_ms` (now when absent; a later time shows what the policy would do after that much idleness): every session idle past `idle_to_nvme_ms` has its pages moved to the owner's NVMe (the vault when the owner offers none), past `idle_to_vault_ms` to the vault node, and a session active again comes back up. The thresholds given replace the policy's. Returns the plan (every page's move with its modelled bytes, the sessions sunk and raised, bytes per tier afterwards) and the sessions.
+
+### `POST /api/v1/grid/sessions/replay`
+```json
+{ "session": "alpha" }
+```
+Replays the session's bounded suffix (the window plus the backtrack, 140 tokens by default, or the whole context when shorter) as one `KvReplay` unit per trunk range on its owner, through the dispatcher, and records the pages resident in fast memory again. Returns the suffix and context sizes, the tier the pages came back from, units, the measured wall on the kernels the workers run (`reference-synthetic` today), the pages rebuilt with their modelled bytes, and the digest of the last boundary. An unknown session is an error.
 
 ### `POST /api/v1/grid/train`
 ```json

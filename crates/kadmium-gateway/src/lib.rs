@@ -163,6 +163,13 @@ pub struct GatewayState {
     /// Measured speeds of placements, bound to the placement, node set and versions that ran;
     /// persisted as `target/kadmium-state/grid_calibrations.json`.
     pub grid_calibrations: kadmium_sharding::CalibrationStore,
+    /// Decode sessions the grid has run, with the tier their KV pages sit in (ARCHITECTURE
+    /// 9.12); in memory only.
+    pub grid_sessions: BTreeMap<String, kadmium_sharding::KvSessionState>,
+    /// Where every session's KV pages are, by node and tier, with modelled bytes.
+    pub grid_kv_catalog: kadmium_grid::ReplicaCatalog,
+    /// When an idle session's pages sink, and how much a resume replays.
+    pub grid_kv_policy: kadmium_sharding::KvTierPolicy,
     pub coordinator_lan_ip: String,
     pub coordinator_http_port: u16,
     pub training_step_counter: u64,
@@ -294,6 +301,9 @@ impl GatewayState {
             grid_usage: BTreeMap::new(),
             grid_placements: BTreeMap::new(),
             grid_calibrations: kadmium_sharding::CalibrationStore::new(),
+            grid_sessions: BTreeMap::new(),
+            grid_kv_catalog: kadmium_grid::ReplicaCatalog::new(),
+            grid_kv_policy: kadmium_sharding::KvTierPolicy::default(),
         }
     }
 

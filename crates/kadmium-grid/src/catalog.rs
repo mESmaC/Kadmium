@@ -242,6 +242,11 @@ impl ReplicaCatalog {
             .collect()
     }
 
+    /// Every replica the catalog holds, on any node.
+    pub fn resident_on_any(&self) -> impl Iterator<Item = &Replica> {
+        self.by_content.values().flatten()
+    }
+
     pub fn bytes_resident_on(&self, node_id: &NodeId) -> u64 {
         self.resident_on(node_id)
             .iter()

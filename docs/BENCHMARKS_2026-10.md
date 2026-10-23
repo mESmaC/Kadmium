@@ -139,6 +139,81 @@ The order is by expected payoff. Every figure in this table is a projection and 
 
 ---
 
+## Run 2: inter-step gap of the decode loop on the reference kernels, two loopback TCP workers (`2026-10-23`)
+
+**Status: Measured on the reference kernels. Not a model run.** The figures measure the coordinator's scheduling gap between decode steps before and after step pipelining (ARCHITECTURE 9.10). The kernels are the synthetic 64-float references, so every number here is about orchestration; nothing in this run says anything about model execution or replaces the modelled envelope.
+
+### 2.1 What was run
+
+- **Date and repository state:** `2026-10-23`, branch `claude/deepinfer-scheduling-7c30d3` over `main` at `e0ad4df`, uncommitted at the time of the run. The harness is in the repository: the test `pipelined_steps_match_sequential_bytes_and_close_the_inter_step_gap` in [`crates/kadmium-runtime/src/decode_loop.rs`](../crates/kadmium-runtime/src/decode_loop.rs), run as `cargo test -p kadmium-runtime --lib pipelined_steps_match_sequential`; it writes `target/kadmium-state/benchmarks/inter_step_gap.json`.
+- **Model:** `toy-moe` (4 layers, 8 routed experts per layer, 2 active per token, 64-float hidden rows, INT8 layer boundaries in 16-wide blocks), the reference kernels of `kadmium-runtime::moe_layer`. No weights are read.
+- **Hardware and configuration:** one machine, AMD Ryzen 5 7535HS, 32 GB RAM, Windows 11 Pro. Two worker servers on loopback TCP with the `node-main-pc` and `node-m4-mac-mini` capability profiles (the profiles steer placement; the arithmetic runs on the host CPU); `KDM2` frames over the persistent channel pool; the coordinator in the test process on a tokio multi-thread runtime with 4 worker threads. Per shape: 2 sessions, 6 steps each, 2 rows per step; a warm-up loop first; then the sequential loop (one graph per step through its own queue, sessions one after another) and the pipelined loop (one runner, the next step queued behind the current sink, sessions interleaved). Three runs, the whole test re-run each time.
+- **What is measured:** per session, the inter-step gap: the next step's first dispatch minus this step's last return, both on the coordinator's clock (`GridDispatchTrace::dispatched_at_ms`, `returned_at_ms`); the wall from the first dispatch to the last return over both sessions.
+
+### 2.2 Inter-step gap (Measured)
+
+| Shape | Mode | Mean gap, ms (run 1 / 2 / 3) | Max gap, ms | Wall of 2 sessions x 6 steps, ms |
+| :--- | :--- | ---: | ---: | ---: |
+| Pipeline chain, 2 stages | Sequential | `0.390 / 0.502 / 0.568` | `0.68 / 0.72 / 0.90` | `44.0 / 54.7 / 62.4` |
+| Pipeline chain, 2 stages | Pipelined | `0.173 / 0.260 / 0.247` | `0.24 / 0.38 / 0.44` | `21.6 / 28.3 / 28.2` |
+| Expert parallel, 4 layers | Sequential | `1.957 / 1.594 / 1.842` | `3.23 / 2.00 / 2.45` | `162.1 / 134.0 / 157.5` |
+| Expert parallel, 4 layers | Pipelined | `0.952 / 0.909 / 1.057` | `2.39 / 2.48 / 2.50` | `122.4 / 98.9 / 100.8` |
+
+The sessions' bytes were identical between the two modes at every step, and identical to the one-graph dispatcher's, in every run (the test asserts it).
+
+### 2.3 Reading (Derived)
+
+- **Chain:** the gap falls by about half, from `0.39 to 0.57 ms` to `0.17 to 0.26 ms`, and the wall roughly halves, because the two sessions' stages overlap on the two nodes once they share a queue.
+- **Expert parallel:** the gap falls from `1.6 to 2.0 ms` to `0.9 to 1.1 ms`. In the pipelined runs one session's gaps sit near `0.2 ms` and the other's near `1.5 to 2.5 ms`: a fan-out step is dozens of units of about a millisecond each, settled one at a time by the coordinator, so a session's next step waits behind the other session's returns in the coordinator's loop. The remaining gap is the coordinator, not the planning.
+- A step on these kernels takes a few milliseconds end to end; a real model's step would be tens to hundreds, and the same gap would be a smaller share of it.
+
+### 2.4 Caveats
+
+1. One machine, loopback, and the coordinator in the same process as the workers; nothing crossed a wire.
+2. Three runs with other processes on the machine and no control of cache or CPU state; treat the spread between runs as the noise floor. The test asserts only that the best pipelined mean gap of three pairs is at or below the best sequential one.
+3. The gap excludes the time a dispatched frame spends before the worker reads it, since `dispatched_at_ms` is taken when the call is spawned.
+
+---
+
+## Run 3: sweep harness over batch widths and node counts on the reference kernels, two loopback TCP workers (`2026-10-23`)
+
+**Status: Measured on the reference kernels. Not a model run.** The sweep harness (ARCHITECTURE 9.13) run once on the same machine and workers as Run 2: a pipelined decode loop per batch width on one node and on two, each point a row of the Pareto table with its full configuration. The figures describe the orchestration of the synthetic references and say nothing about model execution.
+
+### 3.1 What was run
+
+- **Date and repository state:** `2026-10-23`, branch `claude/deepinfer-scheduling-7c30d3` over `main` at `e0ad4df`, uncommitted at the time of the run. The harness is in the repository: the test `sweep_over_batch_widths_and_node_counts_writes_a_pareto_table` in [`crates/kadmium-runtime/src/decode_loop.rs`](../crates/kadmium-runtime/src/decode_loop.rs), run as `cargo test -p kadmium-runtime --lib sweep_over`; it writes `target/kadmium-state/benchmarks/sweep_loopback.md` and `.jsonl`. The gateway's `POST /api/v1/grid/sweep` produces the same table for a live mesh.
+- **Model, hardware, configuration:** as Run 2 (`toy-moe`, AMD Ryzen 5 7535HS, two loopback TCP workers with the `node-main-pc` and `node-m4-mac-mini` profiles, `KDM2` frames). Per point: 1 session, 4 steps, pipelined, the pipeline chain shape; batch widths 1, 2, 4 and 8 rows; node sets of one node (one trunk range, no hop) and two (two trunk ranges, one hop per step). One run, after a warm-up loop per node set.
+- **Figures:** `tok/s` is the point's tokens over the loop's wall (first dispatch to last return); `per-user tok/s` is one row's tokens over the session's wall, a user being one row of the batch, as DeepInfer plots it; `gap ms` the mean inter-step gap. Points compare only within a curve.
+
+### 3.2 Pareto table (Measured)
+
+| curve | shape | nodes | node set | rows | step ms (mean) | steps/s | tok/s | per-user tok/s | gap ms | pareto |
+| :--- | :--- | ---: | :--- | ---: | ---: | ---: | ---: | ---: | ---: | :--- |
+| `9836d442` | Pipeline chain | 1 | `node-main-pc` | 1 | `1.80` | `555.4` | `488.4` | `488.4` | `0.329` | yes |
+| `9836d442` | Pipeline chain | 1 | `node-main-pc` | 2 | `2.38` | `420.4` | `774.8` | `387.4` | `0.270` | yes |
+| `9836d442` | Pipeline chain | 1 | `node-main-pc` | 4 | `3.90` | `256.4` | `952.6` | `238.2` | `0.399` | yes |
+| `9836d442` | Pipeline chain | 1 | `node-main-pc` | 8 | `6.23` | `160.5` | `1244.0` | `155.5` | `0.268` | yes |
+| `25bfc213` | Pipeline chain | 2 | `node-m4-mac-mini`, `node-main-pc` | 1 | `2.83` | `353.4` | `335.6` | `335.6` | `0.199` | yes |
+| `25bfc213` | Pipeline chain | 2 | `node-m4-mac-mini`, `node-main-pc` | 2 | `3.80` | `263.0` | `504.2` | `252.1` | `0.218` | yes |
+| `25bfc213` | Pipeline chain | 2 | `node-m4-mac-mini`, `node-main-pc` | 4 | `6.08` | `164.5` | `641.8` | `160.4` | `0.203` | yes |
+| `25bfc213` | Pipeline chain | 2 | `node-m4-mac-mini`, `node-main-pc` | 8 | `11.64` | `85.9` | `671.9` | `84.0` | `0.353` | yes |
+
+Full configuration of both curves: `toy-moe` (4 layers, 8 experts per layer, 2 active), placement digests `626c8e02e12221f3` (one node) and `e99a4db5565bea14` (two nodes), every node at `v0.1.0-cd48`, kernels `reference-synthetic`, 1 session, 4 steps, pipelined, no drafting, repository `claude/deepinfer-scheduling-7c30d3` over `e0ad4df`, uncommitted.
+
+### 3.3 Reading (Derived)
+
+- Within each curve the trade-off is the one the table exists to show: from 1 to 8 rows the throughput rises `2.5x` on one node and `2.0x` on two, while the per-user speed falls `3.1x` and `4.0x`. Every point is on its curve's frontier, so the width is a choice between the two axes, not a free improvement.
+- The two-node curve sits below the one-node curve at every width: on these kernels a step's compute is a few milliseconds and the hop between the two stages costs more than the second node saves. On a model whose layers take longer than the hop, the second node would pay; the table cannot say so, which is the point of comparing only within a curve.
+- The step time grows less than linearly with the rows (`1.80 ms` to `6.23 ms` for `8x` the rows on one node), which is the batching the throughput axis counts.
+
+### 3.4 Caveats
+
+1. One run per point, no repetitions; Run 2's three-run spread is the noise floor to read these against.
+2. One machine, loopback, coordinator in the test process; nothing crossed a wire.
+3. The one-node curve has no hop at all and the two-node curve one hop of loopback TCP; neither says anything about a LAN or a WAN.
+
+---
+
 ## How to add a run
 
 Copy the Run 1 structure and fill every field; leave nothing implied.

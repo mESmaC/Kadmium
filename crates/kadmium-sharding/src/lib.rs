@@ -526,22 +526,30 @@ impl ShardPlanner {
 pub mod arbitrage;
 pub mod calibration;
 pub mod cloud_shield_watcher;
+pub mod expert_balance;
 pub mod grid_plan;
 pub mod hierarchical_pool;
+pub mod kv_tiers;
 pub mod optimizer;
 pub mod slices;
 pub mod spot_provisioner;
+pub mod sweep;
 pub mod usage;
+pub mod verification;
 
 pub use arbitrage::*;
 pub use calibration::*;
 pub use usage::*;
+pub use verification::*;
 pub use cloud_shield_watcher::*;
+pub use expert_balance::*;
 pub use grid_plan::*;
 pub use hierarchical_pool::*;
+pub use kv_tiers::*;
 pub use optimizer::*;
 pub use slices::*;
 pub use spot_provisioner::*;
+pub use sweep::*;
 
 #[cfg(test)]
 mod tests {

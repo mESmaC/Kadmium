@@ -241,6 +241,8 @@ impl ExecutorRegistry {
         registry.register(Arc::new(DeMoReduceExecutor));
         registry.register(Arc::new(DreamReplayExecutor));
         registry.register(Arc::new(VerdeAuditExecutor::default()));
+        registry.register(Arc::new(crate::DraftVerifyExecutor));
+        registry.register(Arc::new(crate::KvReplayExecutor));
         registry
     }
 
@@ -597,11 +599,16 @@ impl StageForwardExecutor {
     }
 
     /// The per-row input tensors of a batch as the stage consumes them: a single-row batch
-    /// keeps the exact tensor it was sent, so the digest matches the legacy path bit for bit;
-    /// wider batches re-quantize each row.
+    /// keeps the exact tensor it was sent, so the digest matches the legacy path bit for bit,
+    /// and a wider batch whose rows are whole blocks is split into its rows' exact codes and
+    /// scales, so a row reads the same bits alone or beside any neighbours (batch invariance).
+    /// Only a batch whose rows straddle blocks re-quantizes each row.
     fn row_inputs(batch: &TokenBatchInt8) -> Vec<BlockwiseInt8Tensor> {
         if batch.rows == 1 {
             return vec![batch.tensor.clone()];
+        }
+        if let Some(rows) = batch.row_tensors() {
+            return rows;
         }
         let block_size = batch.tensor.block_size.max(1);
         batch
@@ -609,6 +616,24 @@ impl StageForwardExecutor {
             .iter()
             .map(|row| BlockwiseInt8Tensor::quantize(row, block_size))
             .collect()
+    }
+
+    /// The stage's output batch from the rows' boundary tensors: the exact codes and scales
+    /// each row produced, concatenated, when rows are whole blocks; a flat re-quantization of
+    /// the dequantized rows otherwise.
+    fn output_batch(batch: &TokenBatchInt8, runs: &[StageRowRun]) -> Result<TokenBatchInt8, String> {
+        let boundaries: Vec<BlockwiseInt8Tensor> =
+            runs.iter().map(|(r, _)| r.boundary_output.clone()).collect();
+        if batch.rows == 1 || (batch.dim as usize).is_multiple_of(LAYER_BOUNDARY_BLOCK) {
+            return TokenBatchInt8::from_row_tensors(batch.dim, &boundaries);
+        }
+        let out_values: Vec<f32> = boundaries.iter().flat_map(|b| b.dequantize()).collect();
+        TokenBatchInt8::quantize(
+            &out_values,
+            batch.rows,
+            batch.dim,
+            batch.tensor.block_size.max(1),
+        )
     }
 
     /// Runs layers `start..=end` for every row, each from its own INT8 tensor, through the
@@ -667,7 +692,7 @@ type StageRowRun = (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>);
 
 /// Folds per-row layer chains into one chain for the batch: per layer, the rows' digests in
 /// row order, as [`LayerReference::batch_boundary_digest`] folds a batch.
-fn fold_layer_chains<'a>(rows: impl Iterator<Item = &'a [LayerDigest]>) -> Vec<LayerDigest> {
+pub(crate) fn fold_layer_chains<'a>(rows: impl Iterator<Item = &'a [LayerDigest]>) -> Vec<LayerDigest> {
     let rows: Vec<&[LayerDigest]> = rows.collect();
     let Some(first) = rows.first() else {
         return Vec::new();
@@ -697,7 +722,6 @@ impl WorkExecutor for StageForwardExecutor {
     ) -> Result<WorkOutput, String> {
         let params: StageForwardParams = unit.params_json().map_err(|e| e.to_string())?;
         let batch = inputs.activation_batch(unit)?;
-        let block_size = batch.tensor.block_size.max(1);
         let runs = self.run_rows(
             &params,
             Self::row_inputs(&batch),
@@ -706,7 +730,6 @@ impl WorkExecutor for StageForwardExecutor {
             ctx,
         );
 
-        let mut out_values: Vec<f32> = Vec::with_capacity(runs.len() * batch.dim as usize);
         let mut l2_sum = 0.0f64;
         let mut routed_hits: BTreeMap<(u32, u32), u64> = BTreeMap::new();
         for (response, routed) in &runs {
@@ -715,21 +738,12 @@ impl WorkExecutor for StageForwardExecutor {
                     *routed_hits.entry((*layer, *expert)).or_default() += 1;
                 }
             }
-            out_values.extend(response.boundary_output.dequantize());
             l2_sum += response.output_activation_l2_norm as f64;
         }
         let (last, _) = runs
             .last()
             .ok_or_else(|| "stage unit received an empty batch".to_string())?;
-        let out_batch = if batch.rows == 1 {
-            TokenBatchInt8 {
-                rows: 1,
-                dim: batch.dim,
-                tensor: last.boundary_output.clone(),
-            }
-        } else {
-            TokenBatchInt8::quantize(&out_values, batch.rows, batch.dim, block_size)?
-        };
+        let out_batch = Self::output_batch(&batch, &runs)?;
         // One digest per layer for the batch, then the unit's digest from the chain: for a
         // single row this is the legacy stage digest, bit for bit.
         let layer_digests = fold_layer_chains(runs.iter().map(|(r, _)| r.layer_digests.as_slice()));
@@ -988,9 +1002,11 @@ impl WorkExecutor for ExpertSliceExecutor {
         let mut partials = Vec::new();
         for (row, selections) in routing.rows.iter().enumerate() {
             let h = trunk.row(row);
+            // The experts this holder serves for this row: its resident experts, minus the rows
+            // of a replicated expert that another copy takes (EPLB's even split).
             let mut mine: Vec<&MoERoutedExpertSelection> = selections
                 .iter()
-                .filter(|s| params.resident_experts.contains(&s.expert_id))
+                .filter(|s| params.serves(s.expert_id, row as u32))
                 .collect();
             mine.sort_by_key(|s| s.expert_id);
             for selection in mine {
@@ -1121,6 +1137,9 @@ pub struct GridRunConfig {
     pub seed_blobs: Vec<(ContentRef, Vec<u8>)>,
     /// Credit policy for the run's ledger; `None` keeps no books.
     pub credit_policy: Option<CreditPolicy>,
+    /// The instant every trace's `dispatched_at_ms` and `returned_at_ms` count from, so the
+    /// traces of several runs under one config compare on one clock.
+    pub clock_origin: Instant,
 }
 
 impl Default for GridRunConfig {
@@ -1131,6 +1150,7 @@ impl Default for GridRunConfig {
             call_timeout: Duration::from_secs(30),
             seed_blobs: Vec::new(),
             credit_policy: Some(CreditPolicy::default()),
+            clock_origin: Instant::now(),
         }
     }
 }
@@ -1159,6 +1179,13 @@ pub struct GridDispatchTrace {
     pub check_value: f64,
     pub ok: bool,
     pub error: Option<String>,
+    /// When the unit left the coordinator and when its answer arrived, in ms on the run
+    /// config's clock: the inter-step gap is the next step's first `dispatched_at_ms` minus
+    /// this step's last `returned_at_ms`. Measured on the coordinator.
+    #[serde(default)]
+    pub dispatched_at_ms: f64,
+    #[serde(default)]
+    pub returned_at_ms: f64,
 }
 
 /// One Verde dispute and how the referee settled it.
@@ -1249,7 +1276,13 @@ struct DispatchOutcome {
     app: String,
     transport: String,
     wall_ms: f64,
+    dispatched_at_ms: f64,
+    returned_at_ms: f64,
     result: Result<WorkResultPayload, String>,
+}
+
+fn ms_since(origin: Instant) -> f64 {
+    (origin.elapsed().as_secs_f64() * 1000.0 * 1000.0).round() / 1000.0
 }
 
 /// Where a referee action runs: a trusted worker over its channel, or the in-process executor.
@@ -1298,6 +1331,7 @@ fn elapsed_ms(t0: Instant) -> f64 {
 }
 
 /// The trace of one referee action: a probe, an opening or a whole-unit re-run.
+#[allow(clippy::too_many_arguments)]
 fn referee_trace(
     unit_id: &WorkUnitId,
     instance_id: InstanceId,
@@ -1306,6 +1340,7 @@ fn referee_trace(
     transport: String,
     wall_ms: f64,
     outcome: &Result<WorkResultPayload, String>,
+    returned_at_ms: f64,
 ) -> GridDispatchTrace {
     let record = outcome
         .as_ref()
@@ -1333,8 +1368,608 @@ fn referee_trace(
             ),
             Err(e) => Some(e.clone()),
         },
+        dispatched_at_ms: ((returned_at_ms - wall_ms).max(0.0) * 1000.0).round() / 1000.0,
+        returned_at_ms,
     }
 }
+
+/// Which unit a scheduler event is about.
+fn event_unit_id(event: &SchedulerEvent) -> Option<WorkUnitId> {
+    let from_instance = |i: &InstanceId| {
+        WorkUnitId::new(i.0.rsplit_once('#').map_or(i.0.as_str(), |(u, _)| u))
+    };
+    Some(match event {
+        SchedulerEvent::Submitted { unit }
+        | SchedulerEvent::Released { unit }
+        | SchedulerEvent::Assigned { unit, .. }
+        | SchedulerEvent::Validated { unit, .. }
+        | SchedulerEvent::DisputeOpened { unit }
+        | SchedulerEvent::DisputeSettled { unit, .. }
+        | SchedulerEvent::Duplicated { unit, .. }
+        | SchedulerEvent::Retried { unit, .. }
+        | SchedulerEvent::Failed { unit, .. }
+        | SchedulerEvent::Expired { unit }
+        | SchedulerEvent::Assimilated { unit }
+        | SchedulerEvent::Cancelled { unit } => unit.clone(),
+        SchedulerEvent::Started { instance }
+        | SchedulerEvent::Returned { instance, .. }
+        | SchedulerEvent::Invalidated { instance, .. } => from_instance(instance),
+    })
+}
+
+/// The dispatcher's loop kept open across graphs: one queue, one blob store and one set of
+/// in-flight calls, into which graphs are submitted while others run. The successive steps of
+/// a session chain through it (step `t + 1` waits on the sink of step `t` and is dispatched the
+/// moment that sink validates, with nothing planned in between), and the graphs of several
+/// sessions interleave in its queue, so the stages of different sessions run on different
+/// nodes at the same time. DeepInfer's asynchronous scheduling overlaps the CPU's scheduling
+/// of step `N + 1` with the GPU's forward of step `N`; this is that overlap for a mesh, with
+/// the coordinator's planning of the next graph overlapping the workers' execution of the
+/// current one.
+pub struct GridRunner<'a> {
+    queue: WorkQueue,
+    workers: &'a mut [WorkerProfile],
+    catalog: &'a ReplicaCatalog,
+    live_workers: &'a BTreeMap<String, LiveWorkerRegistration>,
+    local: Option<&'a LocalExecutor>,
+    config: &'a GridRunConfig,
+    blobs: BTreeMap<String, Vec<u8>>,
+    /// Every returned instance's outputs, so a dispute can put the winner's back in
+    /// circulation whichever disputant returned last.
+    returned_blobs: BTreeMap<InstanceId, WorkBlobs>,
+    in_flight: JoinSet<DispatchOutcome>,
+    traces: Vec<GridDispatchTrace>,
+    disputes: Vec<VerdeDisputeReport>,
+    compute_samples: usize,
+    graphs: Vec<WorkGraph>,
+}
+
+impl<'a> GridRunner<'a> {
+    pub fn new(
+        workers: &'a mut [WorkerProfile],
+        catalog: &'a ReplicaCatalog,
+        live_workers: &'a BTreeMap<String, LiveWorkerRegistration>,
+        local: Option<&'a LocalExecutor>,
+        config: &'a GridRunConfig,
+    ) -> Self {
+        Self {
+            queue: WorkQueue::new(config.policy.clone()),
+            workers,
+            catalog,
+            live_workers,
+            local,
+            config,
+            blobs: config
+                .seed_blobs
+                .iter()
+                .map(|(r, b)| (r.content_id.clone(), b.clone()))
+                .collect(),
+            returned_blobs: BTreeMap::new(),
+            in_flight: JoinSet::new(),
+            traces: Vec::new(),
+            disputes: Vec::new(),
+            compute_samples: 0,
+            graphs: Vec::new(),
+        }
+    }
+
+    /// Milliseconds on the run config's clock.
+    pub fn now_ms(&self) -> f64 {
+        ms_since(self.config.clock_origin)
+    }
+
+    /// Submits a graph into the queue, with `external` prerequisites on units already there
+    /// (the sink of the previous step) and `seeds` the graph's units read. Nothing is sent
+    /// until [`GridRunner::dispatch_ready`].
+    pub fn submit(
+        &mut self,
+        graph: &WorkGraph,
+        external: &[(WorkUnitId, WorkUnitId)],
+        seeds: Vec<(ContentRef, Vec<u8>)>,
+    ) -> Result<(), kadmium_grid::GridError> {
+        self.queue
+            .submit_graph_after(graph, external, now_unix_ms())?;
+        for (content, bytes) in seeds {
+            self.blobs.insert(content.content_id, bytes);
+        }
+        self.graphs.push(graph.clone());
+        Ok(())
+    }
+
+    /// A blob the runner holds, such as a step's sink output.
+    pub fn blob(&self, content_id: &str) -> Option<&[u8]> {
+        self.blobs.get(content_id).map(Vec::as_slice)
+    }
+
+    /// The validated result's payload of a unit, such as a verify unit's acceptance report.
+    pub fn payload_of(&self, unit_id: &WorkUnitId) -> Option<&[u8]> {
+        self.queue
+            .status(unit_id)
+            .and_then(|s| s.validated.as_ref())
+            .map(|r| r.payload.as_slice())
+    }
+
+    pub fn graph_settled(&self, graph: &WorkGraph) -> bool {
+        self.queue.graph_settled(graph)
+    }
+
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.len()
+    }
+
+    pub fn traces(&self) -> &[GridDispatchTrace] {
+        &self.traces
+    }
+
+    /// Compute samples the runner fed to its workers so far.
+    pub fn compute_samples(&self) -> usize {
+        self.compute_samples
+    }
+
+    fn failed_trace(
+        instance: &kadmium_grid::WorkInstance,
+        app: String,
+        error: String,
+        now_ms: f64,
+    ) -> GridDispatchTrace {
+        GridDispatchTrace {
+            unit_id: instance.unit_id.clone(),
+            instance_id: instance.instance_id.clone(),
+            node_id: instance.node_id.clone(),
+            app,
+            transport: "not dispatched".into(),
+            wall_ms: 0.0,
+            exec_ms: 0.0,
+            digest_fnv1a: 0,
+            layer_digests: Vec::new(),
+            check_value: 0.0,
+            ok: false,
+            error: Some(error),
+            dispatched_at_ms: now_ms,
+            returned_at_ms: now_ms,
+        }
+    }
+
+    /// Assigns every ready unit to its best worker and sends it: over the channel pool to a
+    /// live worker, in-process through the local executor otherwise. Returns how many
+    /// instances the queue assigned, dispatched or not.
+    pub fn dispatch_ready(&mut self) -> usize {
+        let assigned = self
+            .queue
+            .dispatch_push(self.workers, self.catalog, now_unix_ms());
+        let count = assigned.len();
+        for instance in assigned {
+            let unit = match self.queue.status(&instance.unit_id) {
+                Some(status) => status.unit.clone(),
+                None => continue,
+            };
+            let mut attach = Vec::new();
+            let mut missing: Option<String> = None;
+            for input in unit
+                .inputs
+                .iter()
+                .filter(|c| c.kind == ContentKind::Activation)
+            {
+                match self.blobs.get(&input.content_id) {
+                    Some(bytes) => attach.push((input.content_id.clone(), bytes.clone())),
+                    None => {
+                        missing = Some(input.content_id.clone());
+                        break;
+                    }
+                }
+            }
+            let app = unit.app.label();
+            if let Some(id) = missing {
+                let error = format!("activation input `{id}` is not available");
+                GridDispatcher::release_slot(self.workers, &instance.node_id);
+                let _ = self
+                    .queue
+                    .report_failure(&instance.instance_id, &error, now_unix_ms());
+                let now_ms = self.now_ms();
+                self.traces
+                    .push(Self::failed_trace(&instance, app, error, now_ms));
+                continue;
+            }
+
+            let payload = WorkDispatchPayload::new(
+                unit,
+                instance.instance_id.clone(),
+                self.config.epoch,
+                attach,
+            );
+            let (instance_id, unit_id, node_id) = (
+                instance.instance_id.clone(),
+                instance.unit_id.clone(),
+                instance.node_id.clone(),
+            );
+            let origin = self.config.clock_origin;
+
+            if let Some(reg) = self.live_workers.get(&node_id.0).filter(|w| w.online) {
+                let addr = reg.worker_tcp_addr.clone();
+                let bytes = payload.to_le_bytes();
+                let timeout = self.config.call_timeout;
+                let epoch = self.config.epoch as u32;
+                let dispatched_at_ms = ms_since(origin);
+                self.in_flight.spawn(async move {
+                    let t0 = Instant::now();
+                    let result = DistributedLanExecutor::channel_pool()
+                        .call(&addr, WireFrameKind::WorkDispatch, epoch, bytes, timeout)
+                        .await
+                        .and_then(|frame| WorkResultPayload::from_le_bytes(&frame.payload));
+                    DispatchOutcome {
+                        instance_id,
+                        unit_id,
+                        node_id,
+                        app,
+                        transport: format!("pooled channel {addr}"),
+                        wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
+                        dispatched_at_ms,
+                        returned_at_ms: ms_since(origin),
+                        result,
+                    }
+                });
+            } else if let Some(local) = self.local {
+                let registry = local.registry.clone();
+                let ctx = local.ctx.clone();
+                let dispatched_at_ms = ms_since(origin);
+                self.in_flight.spawn(async move {
+                    let t0 = Instant::now();
+                    let result = tokio::task::spawn_blocking(move || {
+                        execute_dispatch(payload, &registry, &ctx)
+                    })
+                    .await
+                    .map_err(|e| format!("in-process executor task failed: {e}"));
+                    DispatchOutcome {
+                        instance_id,
+                        unit_id,
+                        node_id,
+                        app,
+                        transport: "in-process".into(),
+                        wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
+                        dispatched_at_ms,
+                        returned_at_ms: ms_since(origin),
+                        result,
+                    }
+                });
+            } else {
+                let error = format!("node `{node_id}` has no live worker and no local executor");
+                GridDispatcher::release_slot(self.workers, &node_id);
+                let _ = self
+                    .queue
+                    .report_failure(&instance_id, &error, now_unix_ms());
+                let now_ms = self.now_ms();
+                self.traces
+                    .push(Self::failed_trace(&instance, app, error, now_ms));
+            }
+        }
+        count
+    }
+
+    /// Waits for one in-flight unit and settles it: the result is validated (a disagreement
+    /// is refereed), its outputs join the blob store, its measured cost feeds its worker, and
+    /// the queue is ticked. False when nothing is in flight.
+    pub async fn settle_one(&mut self) -> bool {
+        let Some(joined) = self.in_flight.join_next().await else {
+            return false;
+        };
+        let outcome = match joined {
+            Ok(outcome) => outcome,
+            Err(_) => return false,
+        };
+        GridDispatcher::release_slot(self.workers, &outcome.node_id);
+
+        match outcome.result {
+            Ok(payload) if payload.header.ok => {
+                let record = payload.header.result.clone().unwrap_or_else(|| {
+                    WorkResultRecord::new(
+                        outcome.unit_id.clone(),
+                        outcome.instance_id.clone(),
+                        outcome.node_id.clone(),
+                        0,
+                        outcome.wall_ms,
+                        now_unix_ms(),
+                    )
+                });
+                for (id, bytes) in &payload.blobs {
+                    self.blobs.insert(id.clone(), bytes.clone());
+                }
+                self.returned_blobs
+                    .insert(outcome.instance_id.clone(), payload.blobs);
+                self.traces.push(GridDispatchTrace {
+                    unit_id: outcome.unit_id.clone(),
+                    instance_id: outcome.instance_id.clone(),
+                    node_id: outcome.node_id.clone(),
+                    app: outcome.app,
+                    transport: outcome.transport,
+                    wall_ms: outcome.wall_ms,
+                    exec_ms: record.exec_ms,
+                    digest_fnv1a: record.digest_fnv1a,
+                    layer_digests: record.layer_digests.clone(),
+                    check_value: record.check_value,
+                    ok: true,
+                    error: None,
+                    dispatched_at_ms: outcome.dispatched_at_ms,
+                    returned_at_ms: outcome.returned_at_ms,
+                });
+                let validation = self
+                    .queue
+                    .report_result(&outcome.instance_id, record, now_unix_ms());
+                if let Ok(ValidationOutcome::DisputeOpened { nodes }) = validation {
+                    GridDispatcher::referee_dispute(
+                        &mut self.queue,
+                        &mut self.traces,
+                        &mut self.disputes,
+                        &self.blobs,
+                        &outcome.unit_id,
+                        &nodes,
+                        self.workers,
+                        self.live_workers,
+                        self.local,
+                        self.config,
+                    )
+                    .await;
+                    // The outputs in circulation are the winner's, not whichever disputant
+                    // returned last.
+                    if let Some(record) = self
+                        .queue
+                        .status(&outcome.unit_id)
+                        .and_then(|s| s.validated.as_ref())
+                        && let Some(winner_blobs) = self.returned_blobs.get(&record.instance_id)
+                    {
+                        for (id, bytes) in winner_blobs {
+                            self.blobs.insert(id.clone(), bytes.clone());
+                        }
+                    }
+                }
+            }
+            Ok(payload) => {
+                let error = payload
+                    .error_message()
+                    .unwrap_or("worker reported failure without a message")
+                    .to_string();
+                self.traces.push(GridDispatchTrace {
+                    unit_id: outcome.unit_id.clone(),
+                    instance_id: outcome.instance_id.clone(),
+                    node_id: outcome.node_id.clone(),
+                    app: outcome.app,
+                    transport: outcome.transport,
+                    wall_ms: outcome.wall_ms,
+                    exec_ms: 0.0,
+                    digest_fnv1a: 0,
+                    layer_digests: Vec::new(),
+                    check_value: 0.0,
+                    ok: false,
+                    error: Some(error.clone()),
+                    dispatched_at_ms: outcome.dispatched_at_ms,
+                    returned_at_ms: outcome.returned_at_ms,
+                });
+                let _ = self
+                    .queue
+                    .report_failure(&outcome.instance_id, &error, now_unix_ms());
+            }
+            Err(error) => {
+                self.traces.push(GridDispatchTrace {
+                    unit_id: outcome.unit_id.clone(),
+                    instance_id: outcome.instance_id.clone(),
+                    node_id: outcome.node_id.clone(),
+                    app: outcome.app,
+                    transport: outcome.transport,
+                    wall_ms: outcome.wall_ms,
+                    exec_ms: 0.0,
+                    digest_fnv1a: 0,
+                    layer_digests: Vec::new(),
+                    check_value: 0.0,
+                    ok: false,
+                    error: Some(error.clone()),
+                    dispatched_at_ms: outcome.dispatched_at_ms,
+                    returned_at_ms: outcome.returned_at_ms,
+                });
+                let _ = self
+                    .queue
+                    .report_failure(&outcome.instance_id, &error, now_unix_ms());
+            }
+        }
+        // Validated results become compute samples on their workers, so the next dispatch
+        // in this run and every later run rank by measured completion.
+        self.compute_samples += self.queue.feed_workers(self.workers, now_unix_ms());
+        self.queue.tick(now_unix_ms(), self.workers);
+        true
+    }
+
+    /// Dispatches and settles until nothing is in flight and nothing can be assigned.
+    pub async fn run_until_settled(&mut self) {
+        loop {
+            let progressed = self.dispatch_ready() > 0;
+            if self.in_flight.is_empty() {
+                // Nothing is running. Failures handled inline may have queued retries, so go
+                // round again; when nothing could be assigned either, the run is finished or
+                // stuck.
+                if progressed {
+                    continue;
+                }
+                break;
+            }
+            if !self.settle_one().await {
+                break;
+            }
+        }
+    }
+
+    /// Dispatches and settles until every unit of `graph` has validated or failed, keeping
+    /// every other graph in the queue moving meanwhile. Returns false when the graph cannot
+    /// settle because nothing is running and nothing can be assigned.
+    pub async fn run_until_graph_settled(&mut self, graph: &WorkGraph) -> bool {
+        loop {
+            let progressed = self.dispatch_ready() > 0;
+            if self.graph_settled(graph) {
+                return true;
+            }
+            if self.in_flight.is_empty() {
+                if progressed {
+                    continue;
+                }
+                return false;
+            }
+            if !self.settle_one().await {
+                return self.graph_settled(graph);
+            }
+        }
+    }
+
+    /// The report for one graph in the runner: its traces, events, disputes, outputs, accesses
+    /// and credits, and a wall time from its first dispatch to its last return.
+    pub fn report_for(&self, graph: &WorkGraph) -> GridRunReport {
+        self.report_over(
+            &graph.id,
+            graph.units().map(|u| u.id.clone()).collect(),
+            graph.len(),
+        )
+    }
+
+    /// One report over every graph the runner ran, under `graph_id`.
+    pub fn report_all(&self, graph_id: &str) -> GridRunReport {
+        let ids: Vec<WorkUnitId> = self
+            .graphs
+            .iter()
+            .flat_map(|g| g.units().map(|u| u.id.clone()))
+            .collect();
+        let total = ids.len();
+        self.report_over(graph_id, ids, total)
+    }
+
+    fn report_over(
+        &self,
+        graph_id: &str,
+        ids: Vec<WorkUnitId>,
+        units_total: usize,
+    ) -> GridRunReport {
+        let id_set: std::collections::BTreeSet<&WorkUnitId> = ids.iter().collect();
+        let in_set = |id: &WorkUnitId| id_set.contains(id);
+        let statuses: Vec<&kadmium_grid::UnitStatus> =
+            ids.iter().filter_map(|id| self.queue.status(id)).collect();
+        let units_validated = statuses.iter().filter(|s| s.validated.is_some()).count();
+        let units_failed = statuses
+            .iter()
+            .filter(|s| s.validated.is_none() && s.state.is_terminal())
+            .count();
+        let traces: Vec<GridDispatchTrace> = self
+            .traces
+            .iter()
+            .filter(|t| in_set(&t.unit_id))
+            .cloned()
+            .collect();
+        let events: Vec<SchedulerEventRecord> = self
+            .queue
+            .events()
+            .iter()
+            .filter(|e| event_unit_id(&e.event).is_some_and(|u| in_set(&u)))
+            .cloned()
+            .collect();
+        let disputes: Vec<VerdeDisputeReport> = self
+            .disputes
+            .iter()
+            .filter(|d| in_set(&d.unit_id))
+            .cloned()
+            .collect();
+
+        // Outputs of the sink units: the units nothing in their graph depends on.
+        let mut outputs = Vec::new();
+        for graph in &self.graphs {
+            for unit in graph.sinks() {
+                if !in_set(&unit.id) {
+                    continue;
+                }
+                if let Some(status) = self.queue.status(&unit.id)
+                    && let Some(record) = &status.validated
+                {
+                    for out in &record.outputs {
+                        if let Some(bytes) = self.blobs.get(&out.content_id) {
+                            outputs.push((out.content_id.clone(), bytes.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        // What the validated units touched, summed per node, kind of work and content.
+        let mut access_sums: BTreeMap<(NodeId, String, String), u64> = BTreeMap::new();
+        let mut compute_samples = 0usize;
+        for status in &statuses {
+            if let Some(record) = &status.validated {
+                if record.exec_ms > 0.0 && record.exec_ms.is_finite() {
+                    compute_samples += 1;
+                }
+                for access in &record.accessed {
+                    *access_sums
+                        .entry((
+                            record.node_id.clone(),
+                            status.unit.app.label(),
+                            access.content_id.clone(),
+                        ))
+                        .or_default() += access.hits;
+                }
+            }
+        }
+        let accesses: Vec<RecordedAccess> = access_sums
+            .into_iter()
+            .map(|((node, app, content_id), hits)| RecordedAccess {
+                node,
+                app,
+                content_id,
+                hits,
+            })
+            .collect();
+
+        // Books: credit for every validated unit, a penalty for every invalidated instance.
+        let mut ledger =
+            CreditLedger::new(self.config.credit_policy.clone().unwrap_or_default());
+        if self.config.credit_policy.is_some() {
+            let now = now_unix_ms();
+            for status in &statuses {
+                if let Some(record) = &status.validated {
+                    ledger.credit_validated(&status.unit, record, now);
+                }
+            }
+            for event in &events {
+                if let SchedulerEvent::Invalidated { node, .. } = &event.event {
+                    ledger.penalize_invalid(node, now);
+                }
+            }
+        }
+
+        let first = traces
+            .iter()
+            .map(|t| t.dispatched_at_ms)
+            .fold(f64::INFINITY, f64::min);
+        let last = traces
+            .iter()
+            .map(|t| t.returned_at_ms)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let wall_ms = if first.is_finite() && last.is_finite() && last >= first {
+            ((last - first) * 1000.0).round() / 1000.0
+        } else {
+            0.0
+        };
+
+        GridRunReport {
+            graph_id: graph_id.to_string(),
+            units_total,
+            units_validated,
+            units_failed,
+            success: units_total > 0 && units_validated == units_total,
+            wall_ms,
+            traces,
+            events,
+            disputes,
+            compute_samples,
+            accesses,
+            outputs,
+            credits: ledger.entries().to_vec(),
+            receipts: ledger.receipts(),
+        }
+    }
+}
+
 
 pub struct GridDispatcher;
 
@@ -1358,7 +1993,8 @@ impl GridDispatcher {
     /// Runs every unit of `graph` to validation: ready units are matched to workers by the
     /// queue, dispatched over the channel pool to their live worker (or run in-process through
     /// `local` when the node has none), and their activation outputs are handed to the units
-    /// that depend on them.
+    /// that depend on them. One graph, run to the end: [`GridRunner`] is the same loop kept open
+    /// across several graphs.
     pub async fn run_graph(
         graph: &WorkGraph,
         workers: &mut [WorkerProfile],
@@ -1367,359 +2003,12 @@ impl GridDispatcher {
         local: Option<&LocalExecutor>,
         config: &GridRunConfig,
     ) -> GridRunReport {
-        let t_start = Instant::now();
-        let mut queue = WorkQueue::new(config.policy.clone());
-        let mut traces = Vec::new();
-        let mut disputes: Vec<VerdeDisputeReport> = Vec::new();
-        let mut compute_samples = 0usize;
-        let mut blobs: BTreeMap<String, Vec<u8>> = config
-            .seed_blobs
-            .iter()
-            .map(|(r, b)| (r.content_id.clone(), b.clone()))
-            .collect();
-        // Every returned instance's outputs, so a dispute can put the winner's back in
-        // circulation whichever disputant returned last.
-        let mut returned_blobs: BTreeMap<InstanceId, WorkBlobs> = BTreeMap::new();
-
-        if let Err(e) = queue.submit_graph(graph, now_unix_ms()) {
-            return GridRunReport {
-                graph_id: graph.id.clone(),
-                units_total: graph.len(),
-                units_validated: 0,
-                units_failed: graph.len(),
-                success: false,
-                wall_ms: 0.0,
-                traces,
-                events: vec![],
-                disputes,
-                compute_samples: 0,
-                accesses: vec![],
-                outputs: vec![],
-                credits: vec![],
-                receipts: vec![],
-            }
-            .with_error_trace(e.to_string());
+        let mut runner = GridRunner::new(workers, catalog, live_workers, local, config);
+        if let Err(e) = runner.submit(graph, &[], Vec::new()) {
+            return runner.report_for(graph).with_error_trace(e.to_string());
         }
-
-        let mut in_flight: JoinSet<DispatchOutcome> = JoinSet::new();
-
-        loop {
-            let assigned = queue.dispatch_push(workers, catalog, now_unix_ms());
-            let progressed = !assigned.is_empty();
-            for instance in assigned {
-                let unit = match queue.status(&instance.unit_id) {
-                    Some(status) => status.unit.clone(),
-                    None => continue,
-                };
-                let mut attach = Vec::new();
-                let mut missing: Option<String> = None;
-                for input in unit
-                    .inputs
-                    .iter()
-                    .filter(|c| c.kind == ContentKind::Activation)
-                {
-                    match blobs.get(&input.content_id) {
-                        Some(bytes) => attach.push((input.content_id.clone(), bytes.clone())),
-                        None => {
-                            missing = Some(input.content_id.clone());
-                            break;
-                        }
-                    }
-                }
-                let app = unit.app.label();
-                if let Some(id) = missing {
-                    let error = format!("activation input `{id}` is not available");
-                    Self::release_slot(workers, &instance.node_id);
-                    let _ = queue.report_failure(&instance.instance_id, &error, now_unix_ms());
-                    traces.push(GridDispatchTrace {
-                        unit_id: instance.unit_id.clone(),
-                        instance_id: instance.instance_id.clone(),
-                        node_id: instance.node_id.clone(),
-                        app,
-                        transport: "not dispatched".into(),
-                        wall_ms: 0.0,
-                        exec_ms: 0.0,
-                        digest_fnv1a: 0,
-                        layer_digests: Vec::new(),
-                        check_value: 0.0,
-                        ok: false,
-                        error: Some(error),
-                    });
-                    continue;
-                }
-
-                let payload = WorkDispatchPayload::new(
-                    unit,
-                    instance.instance_id.clone(),
-                    config.epoch,
-                    attach,
-                );
-                let (instance_id, unit_id, node_id) = (
-                    instance.instance_id.clone(),
-                    instance.unit_id.clone(),
-                    instance.node_id.clone(),
-                );
-
-                if let Some(reg) = live_workers.get(&node_id.0).filter(|w| w.online) {
-                    let addr = reg.worker_tcp_addr.clone();
-                    let bytes = payload.to_le_bytes();
-                    let timeout = config.call_timeout;
-                    let epoch = config.epoch as u32;
-                    in_flight.spawn(async move {
-                        let t0 = Instant::now();
-                        let result = DistributedLanExecutor::channel_pool()
-                            .call(&addr, WireFrameKind::WorkDispatch, epoch, bytes, timeout)
-                            .await
-                            .and_then(|frame| WorkResultPayload::from_le_bytes(&frame.payload));
-                        DispatchOutcome {
-                            instance_id,
-                            unit_id,
-                            node_id,
-                            app,
-                            transport: format!("pooled channel {addr}"),
-                            wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
-                            result,
-                        }
-                    });
-                } else if let Some(local) = local {
-                    let registry = local.registry.clone();
-                    let ctx = local.ctx.clone();
-                    in_flight.spawn(async move {
-                        let t0 = Instant::now();
-                        let result = tokio::task::spawn_blocking(move || {
-                            execute_dispatch(payload, &registry, &ctx)
-                        })
-                        .await
-                        .map_err(|e| format!("in-process executor task failed: {e}"));
-                        DispatchOutcome {
-                            instance_id,
-                            unit_id,
-                            node_id,
-                            app,
-                            transport: "in-process".into(),
-                            wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
-                            result,
-                        }
-                    });
-                } else {
-                    let error =
-                        format!("node `{node_id}` has no live worker and no local executor");
-                    Self::release_slot(workers, &node_id);
-                    let _ = queue.report_failure(&instance_id, &error, now_unix_ms());
-                    traces.push(GridDispatchTrace {
-                        unit_id,
-                        instance_id,
-                        node_id,
-                        app,
-                        transport: "not dispatched".into(),
-                        wall_ms: 0.0,
-                        exec_ms: 0.0,
-                        digest_fnv1a: 0,
-                        layer_digests: Vec::new(),
-                        check_value: 0.0,
-                        ok: false,
-                        error: Some(error),
-                    });
-                }
-            }
-
-            if in_flight.is_empty() {
-                // Nothing is running. Failures handled inline may have queued retries, so go
-                // round again; when nothing could be assigned either, the run is finished or stuck.
-                if progressed {
-                    continue;
-                }
-                break;
-            }
-            let Some(joined) = in_flight.join_next().await else {
-                break;
-            };
-            let outcome = match joined {
-                Ok(outcome) => outcome,
-                Err(_) => break,
-            };
-            Self::release_slot(workers, &outcome.node_id);
-
-            match outcome.result {
-                Ok(payload) if payload.header.ok => {
-                    let record = payload.header.result.clone().unwrap_or_else(|| {
-                        WorkResultRecord::new(
-                            outcome.unit_id.clone(),
-                            outcome.instance_id.clone(),
-                            outcome.node_id.clone(),
-                            0,
-                            outcome.wall_ms,
-                            now_unix_ms(),
-                        )
-                    });
-                    for (id, bytes) in &payload.blobs {
-                        blobs.insert(id.clone(), bytes.clone());
-                    }
-                    returned_blobs.insert(outcome.instance_id.clone(), payload.blobs);
-                    traces.push(GridDispatchTrace {
-                        unit_id: outcome.unit_id.clone(),
-                        instance_id: outcome.instance_id.clone(),
-                        node_id: outcome.node_id.clone(),
-                        app: outcome.app,
-                        transport: outcome.transport,
-                        wall_ms: outcome.wall_ms,
-                        exec_ms: record.exec_ms,
-                        digest_fnv1a: record.digest_fnv1a,
-                        layer_digests: record.layer_digests.clone(),
-                        check_value: record.check_value,
-                        ok: true,
-                        error: None,
-                    });
-                    let validation =
-                        queue.report_result(&outcome.instance_id, record, now_unix_ms());
-                    if let Ok(ValidationOutcome::DisputeOpened { nodes }) = validation {
-                        Self::referee_dispute(
-                            &mut queue,
-                            &mut traces,
-                            &mut disputes,
-                            &blobs,
-                            &outcome.unit_id,
-                            &nodes,
-                            workers,
-                            live_workers,
-                            local,
-                            config,
-                        )
-                        .await;
-                        // The outputs in circulation are the winner's, not whichever
-                        // disputant returned last.
-                        if let Some(record) = queue
-                            .status(&outcome.unit_id)
-                            .and_then(|s| s.validated.as_ref())
-                            && let Some(winner_blobs) = returned_blobs.get(&record.instance_id)
-                        {
-                            for (id, bytes) in winner_blobs {
-                                blobs.insert(id.clone(), bytes.clone());
-                            }
-                        }
-                    }
-                }
-                Ok(payload) => {
-                    let error = payload
-                        .error_message()
-                        .unwrap_or("worker reported failure without a message")
-                        .to_string();
-                    traces.push(GridDispatchTrace {
-                        unit_id: outcome.unit_id.clone(),
-                        instance_id: outcome.instance_id.clone(),
-                        node_id: outcome.node_id.clone(),
-                        app: outcome.app,
-                        transport: outcome.transport,
-                        wall_ms: outcome.wall_ms,
-                        exec_ms: 0.0,
-                        digest_fnv1a: 0,
-                        layer_digests: Vec::new(),
-                        check_value: 0.0,
-                        ok: false,
-                        error: Some(error.clone()),
-                    });
-                    let _ = queue.report_failure(&outcome.instance_id, &error, now_unix_ms());
-                }
-                Err(error) => {
-                    traces.push(GridDispatchTrace {
-                        unit_id: outcome.unit_id.clone(),
-                        instance_id: outcome.instance_id.clone(),
-                        node_id: outcome.node_id.clone(),
-                        app: outcome.app,
-                        transport: outcome.transport,
-                        wall_ms: outcome.wall_ms,
-                        exec_ms: 0.0,
-                        digest_fnv1a: 0,
-                        layer_digests: Vec::new(),
-                        check_value: 0.0,
-                        ok: false,
-                        error: Some(error.clone()),
-                    });
-                    let _ = queue.report_failure(&outcome.instance_id, &error, now_unix_ms());
-                }
-            }
-            // Validated results become compute samples on their workers, so the next dispatch
-            // in this run and every later run rank by measured completion.
-            compute_samples += queue.feed_workers(workers, now_unix_ms());
-            queue.tick(now_unix_ms(), workers);
-        }
-
-        let stats = queue.stats();
-        let units_validated = stats.validated + stats.assimilated;
-        let units_failed = stats.failed + stats.invalid + stats.expired;
-        let mut outputs = Vec::new();
-        for unit in graph.units() {
-            if !graph.dependents(&unit.id).is_empty() {
-                continue;
-            }
-            if let Some(status) = queue.status(&unit.id)
-                && let Some(record) = &status.validated
-            {
-                for out in &record.outputs {
-                    if let Some(bytes) = blobs.get(&out.content_id) {
-                        outputs.push((out.content_id.clone(), bytes.clone()));
-                    }
-                }
-            }
-        }
-
-        // What the validated units touched, summed per node, kind of work and content.
-        let mut access_sums: BTreeMap<(NodeId, String, String), u64> = BTreeMap::new();
-        for status in queue.units() {
-            if let Some(record) = &status.validated {
-                for access in &record.accessed {
-                    *access_sums
-                        .entry((
-                            record.node_id.clone(),
-                            status.unit.app.label(),
-                            access.content_id.clone(),
-                        ))
-                        .or_default() += access.hits;
-                }
-            }
-        }
-        let accesses: Vec<RecordedAccess> = access_sums
-            .into_iter()
-            .map(|((node, app, content_id), hits)| RecordedAccess {
-                node,
-                app,
-                content_id,
-                hits,
-            })
-            .collect();
-
-        // Books: credit for every validated unit, a penalty for every invalidated instance.
-        let mut ledger = CreditLedger::new(config.credit_policy.clone().unwrap_or_default());
-        if config.credit_policy.is_some() {
-            let now = now_unix_ms();
-            for status in queue.units() {
-                if let Some(record) = &status.validated {
-                    ledger.credit_validated(&status.unit, record, now);
-                }
-            }
-            for event in queue.events() {
-                if let SchedulerEvent::Invalidated { node, .. } = &event.event {
-                    ledger.penalize_invalid(node, now);
-                }
-            }
-        }
-
-        GridRunReport {
-            graph_id: graph.id.clone(),
-            units_total: graph.len(),
-            units_validated,
-            units_failed,
-            success: units_validated == graph.len(),
-            wall_ms: (t_start.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
-            traces,
-            events: queue.drain_events(),
-            disputes,
-            compute_samples,
-            accesses,
-            outputs,
-            credits: ledger.entries().to_vec(),
-            receipts: ledger.receipts(),
-        }
+        runner.run_until_settled().await;
+        runner.report_for(graph)
     }
 
     /// Where an action for `node` runs: its live worker, else the in-process executor.
@@ -1962,6 +2251,7 @@ impl GridDispatcher {
                         transport,
                         wall_ms,
                         &outcome,
+                    ms_since(config.clock_origin),
                     ));
                     if let Ok(payload) = &outcome
                         && payload.header.ok
@@ -2006,6 +2296,7 @@ impl GridDispatcher {
                         transport,
                         wall_ms,
                         &outcome,
+                    ms_since(config.clock_origin),
                     ));
                     match outcome {
                         Ok(payload) if payload.header.ok => {
@@ -2050,6 +2341,7 @@ impl GridDispatcher {
                     transport,
                     wall_ms,
                     &outcome,
+                ms_since(config.clock_origin),
                 ));
                 verdict = match outcome {
                     Ok(payload) if payload.header.ok => {
@@ -2107,6 +2399,7 @@ impl GridDispatcher {
                 transport,
                 wall_ms,
                 &outcome,
+            ms_since(config.clock_origin),
             ));
             verdict = match outcome {
                 Ok(payload) if payload.header.ok => {
@@ -2183,6 +2476,8 @@ impl GridRunReport {
             check_value: 0.0,
             ok: false,
             error: Some(error),
+            dispatched_at_ms: 0.0,
+            returned_at_ms: 0.0,
         });
         self
     }
@@ -2313,7 +2608,7 @@ mod tests {
     fn registry_runs_registered_kinds_and_reports_missing_ones() {
         let local = local_executor("node-a");
         assert!(local.registry.get(&AppKind::StageForward).is_some());
-        assert_eq!(local.registry.kinds().len(), 9);
+        assert_eq!(local.registry.kinds().len(), 11);
 
         let input = ContentRef::named(ContentKind::Activation, "g/in", 3);
         let mut unit = WorkUnit::new("rev", AppKind::Custom("echo-reverse".into()));
@@ -2408,7 +2703,7 @@ mod tests {
         );
 
         for (i, hop) in hops.iter().enumerate() {
-            let unit_id = WorkUnitId::new(format!("stage-{i:02}"));
+            let unit_id = WorkUnitId::qualified(&graph.id, &format!("stage-{i:02}"));
             let trace = report.trace_for(&unit_id).expect("trace per stage");
             assert_eq!(
                 trace.node_id.0, hop.node_id,
@@ -2567,7 +2862,21 @@ mod fanout_tests {
         seed: &TokenBatchInt8,
         session: &str,
     ) -> (GridRunReport, Vec<u8>) {
-        let placement = ExpertPlacementPlanner::plan(model, nodes, strategy, None);
+        run_shape_with_heat(strategy, model, nodes, live_workers, seed, session, None).await
+    }
+
+    /// [`run_shape`] on a placement planned from `heat`, so the expert-parallel shape carries
+    /// the balancer's copies and a wide batch deals rows across them.
+    async fn run_shape_with_heat(
+        strategy: ExecutionStrategy,
+        model: &ModelSpec,
+        nodes: &[HardwareNode],
+        live_workers: &BTreeMap<String, LiveWorkerRegistration>,
+        seed: &TokenBatchInt8,
+        session: &str,
+        heat: Option<&ExpertPopularity>,
+    ) -> (GridRunReport, Vec<u8>) {
+        let placement = ExpertPlacementPlanner::plan(model, nodes, strategy, heat);
         let graph = StepGraphBuilder::decode_step(model, &placement, nodes, 1, session, seed.rows);
         let catalog = ReplicaCatalog::assume_placed(&placement.rules, 1);
         let mut workers = GridDispatcher::workers_from_registrations(live_workers);
@@ -2694,10 +3003,10 @@ mod fanout_tests {
             chain_bytes.as_slice(),
             "the replica serves the same bytes as the primary would"
         );
-        let leaf = WorkUnitId::new(format!(
-            "L{:03}-experts-{}",
-            replicated.layer, replica.0
-        ));
+        let leaf = WorkUnitId::qualified(
+            &graph.id,
+            &format!("L{:03}-experts-{}", replicated.layer, replica.0),
+        );
         let trace = report.trace_for(&leaf).expect("the replica ran a slice unit");
         assert!(trace.ok);
         assert_eq!(trace.node_id, replica);
@@ -2874,7 +3183,8 @@ mod fanout_tests {
             // The chain's stage results carry one digest per layer, in layer order.
             let mut chain_layers: Vec<LayerDigest> = Vec::new();
             for stage in 0..8 {
-                match chain.trace_for(&WorkUnitId::new(format!("stage-{stage:02}"))) {
+                let id = WorkUnitId::qualified(&chain.graph_id, &format!("stage-{stage:02}"));
+                match chain.trace_for(&id) {
                     Some(trace) => chain_layers.extend(trace.layer_digests.iter().copied()),
                     None => break,
                 }
@@ -2886,7 +3196,10 @@ mod fanout_tests {
             // The fan-out's combine unit for each layer produced the same boundary digest.
             for d in &chain_layers {
                 let combine = fan_out
-                    .trace_for(&WorkUnitId::new(format!("L{:03}-combine", d.layer)))
+                    .trace_for(&WorkUnitId::qualified(
+                        &fan_out.graph_id,
+                        &format!("L{:03}-combine", d.layer),
+                    ))
                     .expect("combine trace");
                 assert_eq!(
                     combine.digest_fnv1a, d.digest,
@@ -2896,12 +3209,135 @@ mod fanout_tests {
                 assert_eq!(combine.layer_digests, vec![*d]);
             }
             // A stage's digest is the fold of its layer digests under the manifest.
-            let stage = chain.trace_for(&WorkUnitId::new("stage-00")).unwrap();
+            let stage = chain
+                .trace_for(&WorkUnitId::qualified(&chain.graph_id, "stage-00"))
+                .unwrap();
             assert_eq!(
                 stage.digest_fnv1a,
                 LayerReference::unit_digest(&stage.layer_digests)
             );
             assert_ne!(stage.digest_fnv1a, LayerReference::unit_digest(&[]));
+        }
+    }
+
+    /// DeepInfer's batch invariance as a property over real TCP workers: a row decoded alone
+    /// produces the same bytes as the same row inside any batch of other rows, at any position,
+    /// in both shapes. The reference math runs rows independently; what the property checks is
+    /// that nothing on the way in, between units or on the way out re-quantizes a row because
+    /// of its neighbours.
+    #[tokio::test]
+    async fn a_row_decodes_to_the_same_bytes_alone_and_inside_any_batch() {
+        let cluster = sample_personal_cluster();
+        let nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        let w0 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[0].clone(), false)
+            .await
+            .expect("spawn worker 0");
+        let w1 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[1].clone(), false)
+            .await
+            .expect("spawn worker 1");
+        let mut live_workers = BTreeMap::new();
+        live_workers.insert(
+            nodes[0].id.0.clone(),
+            registration(&nodes[0], &w0.local_addr.to_string(), 0.3),
+        );
+        live_workers.insert(
+            nodes[1].id.0.clone(),
+            registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
+        );
+        let model = toy_moe();
+        let rows: Vec<Vec<f32>> = ["row a", "row b", "row c", "row d"]
+            .iter()
+            .map(|p| prompt_seed_hidden(p, 64))
+            .collect();
+        let batches: [&[usize]; 6] = [
+            &[0, 1],
+            &[1, 0],
+            &[0, 1, 2],
+            &[2, 1, 0],
+            &[1, 0, 2, 3],
+            &[3, 3, 0, 2],
+        ];
+
+        // The third shape is the fan-out over a placement with the balancer's copies, so a
+        // batch deals a replicated expert's rows across its holders: the bytes must still be
+        // the row's own.
+        let heat = ExpertPopularity::power_law(model.num_layers, model.experts_per_layer, 1.0);
+        let balanced = ExpertPlacementPlanner::plan(
+            &model,
+            &nodes,
+            ExecutionStrategy::ExpertParallel,
+            Some(&heat),
+        );
+        assert!(balanced.replicated_experts > 0, "the toy mesh has room for copies");
+        for (strategy, heat) in [
+            (ExecutionStrategy::PipelineChain, None),
+            (ExecutionStrategy::ExpertParallel, None),
+            (ExecutionStrategy::ExpertParallel, Some(&heat)),
+        ] {
+            let mut alone: Vec<Vec<u8>> = Vec::new();
+            for (i, row) in rows.iter().enumerate() {
+                let seed = TokenBatchInt8::quantize(row, 1, 64, 16).unwrap();
+                let (_, bytes) = run_shape_with_heat(
+                    strategy,
+                    &model,
+                    &nodes,
+                    &live_workers,
+                    &seed,
+                    &format!("alone-{i}"),
+                    heat,
+                )
+                .await;
+                let out = TokenBatchInt8::from_le_bytes(&bytes).unwrap();
+                assert_eq!(out.rows, 1);
+                alone.push(out.tensor.to_le_bytes());
+            }
+            assert!(alone.windows(2).all(|w| w[0] != w[1]), "distinct rows decode differently");
+
+            for (b, batch) in batches.iter().enumerate() {
+                let values: Vec<f32> = batch
+                    .iter()
+                    .flat_map(|&i| rows[i].iter().copied())
+                    .collect();
+                let seed =
+                    TokenBatchInt8::quantize(&values, batch.len() as u32, 64, 16).unwrap();
+                let (report, bytes) = run_shape_with_heat(
+                    strategy,
+                    &model,
+                    &nodes,
+                    &live_workers,
+                    &seed,
+                    &format!("batch-{b}"),
+                    heat,
+                )
+                .await;
+                if heat.is_some() {
+                    // Both holders of a replicated expert served some of its rows.
+                    let served: u64 = report
+                        .accesses
+                        .iter()
+                        .filter(|a| a.app == "ExpertSlice")
+                        .map(|a| a.hits)
+                        .sum();
+                    let routed: u64 = report
+                        .accesses
+                        .iter()
+                        .filter(|a| a.app == "TrunkForward")
+                        .map(|a| a.hits)
+                        .sum();
+                    assert_eq!(served, routed, "every routed row was served exactly once");
+                }
+                let out = TokenBatchInt8::from_le_bytes(&bytes).unwrap();
+                let per_row = out.row_tensors().expect("rows are whole blocks");
+                assert_eq!(per_row.len(), batch.len());
+                for (pos, &i) in batch.iter().enumerate() {
+                    assert_eq!(
+                        per_row[pos].to_le_bytes(),
+                        alone[i],
+                        "{strategy:?} (heat {}): row {i} at position {pos} of batch {batch:?} differs from the row decoded alone",
+                        heat.is_some()
+                    );
+                }
+            }
         }
     }
 }
@@ -3337,7 +3773,7 @@ mod phase5_tests {
 
         for (i, stage) in legacy.stages.iter().enumerate() {
             let trace = report
-                .trace_for(&WorkUnitId::new(format!("stage-{i:02}")))
+                .trace_for(&WorkUnitId::qualified(&graph.id, &format!("stage-{i:02}")))
                 .expect("stage trace");
             assert_eq!(trace.node_id.0, stage.node_id);
             assert_eq!(

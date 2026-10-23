@@ -475,6 +475,17 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             post(crate::grid_api::post_grid_calibrate),
         )
         .route("/api/v1/grid/run", post(crate::grid_api::post_grid_run))
+        .route("/api/v1/grid/decode", post(crate::grid_api::post_grid_decode))
+        .route("/api/v1/grid/sweep", post(crate::grid_api::post_grid_sweep))
+        .route("/api/v1/grid/sessions", get(crate::grid_api::get_grid_sessions))
+        .route(
+            "/api/v1/grid/sessions/tier",
+            post(crate::grid_api::post_grid_sessions_tier),
+        )
+        .route(
+            "/api/v1/grid/sessions/replay",
+            post(crate::grid_api::post_grid_sessions_replay),
+        )
         .route("/api/v1/grid/train", post(crate::grid_api::post_grid_train))
         .route("/api/v1/grid/replay", post(crate::grid_api::post_grid_replay))
         .route("/api/v1/grid/credits", get(crate::grid_api::get_grid_credits))

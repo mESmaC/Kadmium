@@ -30,12 +30,48 @@ pub fn fnv1a_64(data: &[u8]) -> u64 {
 }
 
 /// Identifier of a work unit, unique within a queue.
+///
+/// A unit that belongs to a graph carries a graph-qualified id, `<graph id>/<name>`, so several
+/// graphs (the steps of one session, the sessions of one mesh) can sit in one queue without
+/// their `stage-00`s colliding. The name is the part after the last `/`; names never contain
+/// one. [`crate::WorkGraph::add_unit`] qualifies a bare name on the way in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct WorkUnitId(pub String);
 
 impl WorkUnitId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    /// The id of the unit called `name` inside `graph_id`.
+    pub fn qualified(graph_id: &str, name: &str) -> Self {
+        Self(format!("{graph_id}/{name}"))
+    }
+
+    /// The unit's name inside its graph: the part after the last `/`, or the whole id when it
+    /// is not qualified.
+    pub fn name(&self) -> &str {
+        self.0.rsplit('/').next().unwrap_or(&self.0)
+    }
+
+    /// The graph the id is qualified by, if any.
+    pub fn graph_id(&self) -> Option<&str> {
+        self.0.rsplit_once('/').map(|(graph, _)| graph)
+    }
+
+    /// Whether the id is qualified by exactly `graph_id`.
+    pub fn belongs_to(&self, graph_id: &str) -> bool {
+        self.graph_id() == Some(graph_id)
+    }
+
+    /// This id as it reads inside `graph_id`: unchanged when it already belongs to the graph,
+    /// else qualified by it.
+    pub fn in_graph(&self, graph_id: &str) -> Self {
+        if self.belongs_to(graph_id) {
+            self.clone()
+        } else {
+            Self::qualified(graph_id, &self.0)
+        }
     }
 }
 
@@ -87,6 +123,8 @@ pub enum AppKind {
     Combine,
     /// Speculative draft generation or verification.
     DraftVerify,
+    /// Rebuild a session's KV pages for a layer range from a bounded suffix of its context.
+    KvReplay,
     /// Training forward and backward for one stage and micro-batch.
     TrainForwardBackward,
     /// DeMo DCT-compressed gradient reduce.
@@ -112,6 +150,7 @@ impl AppKind {
                 | Self::ExpertSlice
                 | Self::Combine
                 | Self::DraftVerify
+                | Self::KvReplay
                 | Self::TrainForwardBackward
                 | Self::DeMoReduce
         )
@@ -134,8 +173,10 @@ pub enum ContentKind {
     ExpertBank,
     Dataset,
     Checkpoint,
-    /// Boundary activations or KV pages produced by one unit and consumed by another.
+    /// Boundary activations produced by one unit and consumed by another.
     Activation,
+    /// A session's KV page for one layer: decoder state the catalog places by tier.
+    KvPage,
     /// Any other artifact.
     Artifact,
 }
@@ -668,6 +709,29 @@ mod tests {
     fn fnv1a_matches_reference_vectors() {
         assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a_64(b"a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    #[test]
+    fn unit_ids_qualify_by_graph_and_keep_their_name() {
+        let id = WorkUnitId::qualified("sess-a/step-7", "stage-00");
+        assert_eq!(id.0, "sess-a/step-7/stage-00");
+        assert_eq!(id.name(), "stage-00");
+        assert_eq!(id.graph_id(), Some("sess-a/step-7"));
+        assert!(id.belongs_to("sess-a/step-7"));
+        assert!(!id.belongs_to("sess-a"), "only the exact graph counts");
+        assert_eq!(id.in_graph("sess-a/step-7"), id);
+        let bare = WorkUnitId::new("L010-experts-node-m4-mac-mini");
+        assert_eq!(bare.name(), "L010-experts-node-m4-mac-mini");
+        assert_eq!(bare.graph_id(), None);
+        assert_eq!(
+            bare.in_graph("g").0,
+            "g/L010-experts-node-m4-mac-mini"
+        );
+        assert_ne!(
+            WorkUnitId::qualified("sess-a/step-7", "stage-00"),
+            WorkUnitId::qualified("sess-a/step-8", "stage-00"),
+            "the same name in two graphs is two units"
+        );
     }
 
     #[test]

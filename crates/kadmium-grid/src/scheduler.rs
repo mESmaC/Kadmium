@@ -640,16 +640,59 @@ impl WorkQueue {
     }
 
     /// Submits every unit of a graph; units with prerequisites stay blocked until those validate.
+    /// Unit ids are graph-qualified, so the graphs of several sessions, or the successive steps
+    /// of one, sit in the queue together.
     pub fn submit_graph(&mut self, graph: &WorkGraph, now: u64) -> Result<(), GridError> {
+        self.submit_graph_after(graph, &[], now)
+    }
+
+    /// [`WorkQueue::submit_graph`] with prerequisites outside the graph: each `(unit, prereq)`
+    /// pair blocks the graph's `unit` on a unit already in the queue, which is how step `t + 1`
+    /// of a session waits for the sink of step `t` while both sit in the queue. A prerequisite
+    /// that has validated blocks nothing; one that has failed, expired or been cancelled is an
+    /// error, because the dependent could never run; an unknown one is an error too.
+    pub fn submit_graph_after(
+        &mut self,
+        graph: &WorkGraph,
+        external: &[(WorkUnitId, WorkUnitId)],
+        now: u64,
+    ) -> Result<(), GridError> {
         if let Some(existing) = graph.units().find(|u| self.units.contains_key(&u.id)) {
             return Err(GridError::DuplicateUnit(existing.id.clone()));
         }
+        let mut external_blocks: BTreeMap<WorkUnitId, BTreeSet<WorkUnitId>> = BTreeMap::new();
+        for (unit, prereq) in external {
+            let unit = graph.qualify(unit);
+            if graph.unit(&unit).is_none() {
+                return Err(GridError::UnknownUnit(unit));
+            }
+            let Some(status) = self.units.get(prereq) else {
+                return Err(GridError::UnknownUnit(prereq.clone()));
+            };
+            if status.validated.is_some() {
+                continue;
+            }
+            if status.state.is_terminal() {
+                return Err(GridError::PrerequisiteFailed {
+                    unit,
+                    prereq: prereq.clone(),
+                    state: status.state,
+                });
+            }
+            external_blocks
+                .entry(unit)
+                .or_default()
+                .insert(prereq.clone());
+        }
         for unit in graph.units() {
-            let prereqs: BTreeSet<WorkUnitId> = graph
+            let mut prereqs: BTreeSet<WorkUnitId> = graph
                 .prerequisites(&unit.id)
                 .into_iter()
                 .filter(|p| !graph.is_completed(p))
                 .collect();
+            if let Some(blocks) = external_blocks.remove(&unit.id) {
+                prereqs.extend(blocks);
+            }
             for p in &prereqs {
                 self.dependents
                     .entry(p.clone())
@@ -662,6 +705,16 @@ impl WorkQueue {
             }
         }
         Ok(())
+    }
+
+    /// Whether every unit of `graph` has reached a terminal state or validated: nothing of it
+    /// is still queued, running or awaiting a verdict.
+    pub fn graph_settled(&self, graph: &WorkGraph) -> bool {
+        graph.units().all(|u| {
+            self.units
+                .get(&u.id)
+                .is_some_and(|s| s.validated.is_some() || s.state.is_terminal())
+        })
     }
 
     fn live_instances(&self, status: &UnitStatus) -> usize {
@@ -2198,7 +2251,7 @@ mod tests {
         assert!(queue.submit_graph(&graph, 0).is_err());
         assert_eq!(queue.stats().blocked, 1);
         let ready: Vec<_> = queue.ready_units().iter().map(|u| u.id.0.clone()).collect();
-        assert_eq!(ready, vec!["s0"]);
+        assert_eq!(ready, vec!["decode/s0"]);
 
         let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
         let assigned = queue.dispatch_push(&mut workers, &catalog, 1);
@@ -2208,13 +2261,98 @@ mod tests {
             .unwrap();
         assert!(queue.events().iter().any(|e| matches!(
             e.event,
-            SchedulerEvent::Released { ref unit } if unit.0 == "s1"
+            SchedulerEvent::Released { ref unit } if unit.name() == "s1"
         )));
         let ready: Vec<_> = queue.ready_units().iter().map(|u| u.id.0.clone()).collect();
-        assert_eq!(ready, vec!["s1"]);
+        assert_eq!(ready, vec!["decode/s1"]);
         assert_eq!(queue.stats().blocked, 0);
-        assert!(queue.cancel(&"s1".into(), 3).is_ok());
-        assert_eq!(queue.status(&"s1".into()).unwrap().state, WorkState::Failed);
+        assert!(!queue.graph_settled(&graph));
+        let s1 = graph.qualify(&"s1".into());
+        assert!(queue.cancel(&s1, 3).is_ok());
+        assert_eq!(queue.status(&s1).unwrap().state, WorkState::Failed);
+        assert!(queue.graph_settled(&graph));
+    }
+
+    #[test]
+    fn graphs_with_the_same_unit_names_share_a_queue_and_chain_across_graphs() {
+        let catalog = ReplicaCatalog::new();
+        let step = |t: u64| {
+            WorkGraph::chain(
+                format!("sess/step-{t}"),
+                vec![
+                    WorkUnit::new("stage-00", AppKind::StageForward),
+                    WorkUnit::new("stage-01", AppKind::StageForward),
+                ],
+            )
+        };
+        let first = step(1);
+        let second = step(2);
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+        queue.submit_graph(&first, 0).unwrap();
+        // The same names again in another graph are other units.
+        queue
+            .submit_graph_after(
+                &second,
+                &[("stage-00".into(), first.qualify(&"stage-01".into()))],
+                0,
+            )
+            .unwrap();
+        assert_eq!(queue.stats().total, 4);
+        let ready: Vec<_> = queue.ready_units().iter().map(|u| u.id.0.clone()).collect();
+        assert_eq!(ready, vec!["sess/step-1/stage-00"], "step 2 waits for step 1's sink");
+
+        let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
+        let finish = |queue: &mut WorkQueue, workers: &mut Vec<WorkerProfile>, now: u64| {
+            let assigned = queue.dispatch_push(workers, &catalog, now);
+            assert_eq!(assigned.len(), 1, "one unit ready at a time along the chain");
+            queue
+                .report_result(
+                    &assigned[0].instance_id,
+                    result(&assigned[0], 1, 0.0, now),
+                    now,
+                )
+                .unwrap();
+            workers[0].in_flight = 0;
+            assigned[0].unit_id.clone()
+        };
+        assert_eq!(finish(&mut queue, &mut workers, 1).0, "sess/step-1/stage-00");
+        assert!(!queue.graph_settled(&first));
+        assert_eq!(finish(&mut queue, &mut workers, 2).0, "sess/step-1/stage-01");
+        assert!(queue.graph_settled(&first));
+        assert!(queue.events().iter().any(|e| matches!(
+            e.event,
+            SchedulerEvent::Released { ref unit } if unit.0 == "sess/step-2/stage-00"
+        )));
+        assert_eq!(finish(&mut queue, &mut workers, 3).0, "sess/step-2/stage-00");
+        assert_eq!(finish(&mut queue, &mut workers, 4).0, "sess/step-2/stage-01");
+        assert!(queue.graph_settled(&second));
+
+        // A prerequisite that already validated blocks nothing; a failed one is refused, and so
+        // is an unknown one.
+        let third = step(3);
+        queue
+            .submit_graph_after(
+                &third,
+                &[("stage-00".into(), second.qualify(&"stage-01".into()))],
+                5,
+            )
+            .unwrap();
+        assert!(queue.ready_units().iter().any(|u| u.id.0 == "sess/step-3/stage-00"));
+        queue.cancel(&third.qualify(&"stage-01".into()), 6).unwrap();
+        let fourth = step(4);
+        assert!(matches!(
+            queue.submit_graph_after(
+                &fourth,
+                &[("stage-00".into(), third.qualify(&"stage-01".into()))],
+                7,
+            ),
+            Err(GridError::PrerequisiteFailed { .. })
+        ));
+        let fifth = step(5);
+        assert!(matches!(
+            queue.submit_graph_after(&fifth, &[("stage-00".into(), "nowhere".into())], 8),
+            Err(GridError::UnknownUnit(_))
+        ));
     }
 
     #[test]

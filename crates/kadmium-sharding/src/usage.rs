@@ -10,12 +10,15 @@
 //! heat difference clears the hysteresis. Placement changes speed, never bytes: the reference
 //! math is the same wherever an expert lives.
 
-use kadmium_core::NodeId;
+use kadmium_core::{HardwareNode, ModelSpec, NodeId};
 use kadmium_grid::{ContentAccess, ResidencyTier, StagingJob};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::{ExpertPlacementPlan, ExpertPopularity, ModelContentNames};
+use crate::{
+    BalanceMode, BalanceReport, ExpertLoadBalancer, ExpertPlacementPlan, ExpertPopularity,
+    LinkSegments, ModelContentNames, ReplicaBudget, ReplicaChange,
+};
 
 /// A session hit counts this many long-term hits while it lasts.
 pub const SESSION_HEAT_WEIGHT: f64 = 3.0;
@@ -256,11 +259,72 @@ pub struct RepinProposal {
     pub swaps: Vec<RepinSwap>,
     pub layers_considered: usize,
     pub rationale: String,
+    /// Copies the load balancer adds or drops at this boundary (its incremental mode), each
+    /// one change against the same cap as the swaps.
+    #[serde(default)]
+    pub replica_changes: Vec<ReplicaChange>,
+    /// The balancer's account of the boundary: the busiest node per layer before and after.
+    #[serde(default)]
+    pub balance: Option<BalanceReport>,
+}
+
+impl RepinProposal {
+    /// Swaps plus copies added or dropped.
+    pub fn change_count(&self) -> usize {
+        self.swaps.len() + self.replica_changes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.change_count() == 0
+    }
 }
 
 pub struct RepinPlanner;
 
 impl RepinPlanner {
+    /// One re-pin boundary with the load balancer in its incremental mode: first the tier
+    /// swaps of [`RepinPlanner::propose`] (a hot streamed expert takes a cold pinned one's fast
+    /// slot on the same node), then, within whatever of `policy.max_swaps` is left, copies
+    /// added where they lower a layer's busiest node by more than the same hysteresis, packed
+    /// across `segments` first. Both kinds of change are bounded by the one cap.
+    pub fn propose_balanced(
+        placement: &ExpertPlacementPlan,
+        model: &ModelSpec,
+        nodes: &[HardwareNode],
+        heat: &ExpertPopularity,
+        segments: &LinkSegments,
+        policy: &RepinPolicy,
+    ) -> RepinProposal {
+        let mut proposal = Self::propose(placement, heat, policy);
+        let remaining = policy.max_swaps.saturating_sub(proposal.swaps.len());
+        if remaining == 0 || placement.strategy != crate::ExecutionStrategy::ExpertParallel {
+            return proposal;
+        }
+        let mut trial = placement.clone();
+        let budget = ReplicaBudget::from_plan(&trial, model);
+        let report = ExpertLoadBalancer::balance(
+            &mut trial,
+            model,
+            nodes,
+            heat,
+            &budget,
+            segments,
+            true,
+            BalanceMode::Incremental {
+                max_changes: remaining,
+                hysteresis: policy.hysteresis,
+            },
+        );
+        proposal.replica_changes = report.changes.clone();
+        if !report.changes.is_empty() {
+            proposal.rationale = format!(
+                "{}; {}",
+                proposal.rationale, report.rationale
+            );
+        }
+        proposal.balance = Some(report);
+        proposal
+    }
     /// Proposes at most `policy.max_swaps` swaps: per layer, the hottest streamed expert against
     /// the coldest pinned one on a node with a fast tier, taken only when the streamed expert is
     /// hotter by more than the hysteresis. Experts that already have a fast replica are never
@@ -341,14 +405,86 @@ impl RepinPlanner {
             swaps,
             layers_considered: layers.len(),
             rationale,
+            replica_changes: Vec::new(),
+            balance: None,
         }
     }
 
     /// Applies a proposal to the placement and returns the transfers it implies: the promoted
     /// expert into the node's fast tier, pinned, and the demoted expert out to where the promoted
-    /// one came from. Fast memory accounting is unchanged, because the two experts are the same
-    /// size and trade places.
+    /// one came from (fast memory accounting is unchanged, because the two experts are the same
+    /// size and trade places); then every copy the balancer added, from the expert's primary
+    /// into the node's fast tier, pinned, with dropped copies taken off their holders.
     pub fn apply(
+        placement: &mut ExpertPlacementPlan,
+        proposal: &RepinProposal,
+        expert_bytes: u64,
+    ) -> Vec<StagingJob> {
+        let mut jobs = Self::apply_swaps(placement, proposal, expert_bytes);
+        if proposal.replica_changes.is_empty() {
+            return jobs;
+        }
+        jobs.extend(ExpertLoadBalancer::staging_for(
+            placement,
+            &proposal.replica_changes,
+            expert_bytes,
+        ));
+        let gib = expert_bytes as f64 / 1_073_741_824.0;
+        for change in &proposal.replica_changes {
+            let Some(home) = placement
+                .experts
+                .iter_mut()
+                .find(|h| h.layer == change.layer && h.expert == change.expert)
+            else {
+                continue;
+            };
+            if change.add {
+                if !home.holders.contains(&change.node) {
+                    home.holders.push(change.node.clone());
+                }
+            } else {
+                home.holders.retain(|n| n != &change.node);
+            }
+            let content_id =
+                ModelContentNames::expert_id(&placement.model_id, change.layer, change.expert);
+            if let Some(rule) = placement
+                .rules
+                .iter_mut()
+                .find(|r| r.content.content_id == content_id)
+            {
+                if change.add {
+                    if !rule.candidate_nodes.contains(&change.node) {
+                        rule.candidate_nodes.push(change.node.clone());
+                    }
+                } else {
+                    rule.candidate_nodes.retain(|n| n != &change.node);
+                }
+                rule.min_replicas = rule.candidate_nodes.len().max(1) as u32;
+            }
+            if let Some(fit) = placement
+                .fit
+                .per_node
+                .iter_mut()
+                .find(|f| f.node == change.node)
+            {
+                if change.add {
+                    fit.fast_used_gb = ((fit.fast_used_gb + gib) * 100.0).round() / 100.0;
+                    fit.fast_free_bytes = fit.fast_free_bytes.saturating_sub(expert_bytes);
+                } else {
+                    fit.fast_used_gb = ((fit.fast_used_gb - gib).max(0.0) * 100.0).round() / 100.0;
+                    fit.fast_free_bytes = fit.fast_free_bytes.saturating_add(expert_bytes);
+                }
+            }
+        }
+        placement.replicated_experts = placement
+            .experts
+            .iter()
+            .map(|h| h.holders.len().saturating_sub(1))
+            .sum();
+        jobs
+    }
+
+    fn apply_swaps(
         placement: &mut ExpertPlacementPlan,
         proposal: &RepinProposal,
         expert_bytes: u64,
@@ -593,5 +729,56 @@ mod tests {
         // Nothing left to swap at this heat.
         let again = RepinPlanner::propose(&placement, &heat, &policy);
         assert!(again.swaps.is_empty());
+    }
+
+    #[test]
+    fn a_balanced_boundary_adds_copies_under_the_same_cap_and_applies_them() {
+        let nodes = sample_personal_cluster();
+        let model = toy_moe();
+        let heat = ExpertPopularity::power_law(model.num_layers, model.experts_per_layer, 1.0);
+        let mut placement = ExpertPlacementPlanner::plan(
+            &model,
+            &nodes,
+            ExecutionStrategy::ExpertParallel,
+            None,
+        );
+        assert_eq!(placement.replicated_experts, 0);
+        let segments = LinkSegments::derive(&nodes);
+        let policy = RepinPolicy::default();
+        let proposal =
+            RepinPlanner::propose_balanced(&placement, &model, &nodes, &heat, &segments, &policy);
+        assert!(proposal.change_count() <= policy.max_swaps);
+        assert!(!proposal.replica_changes.is_empty(), "{}", proposal.rationale);
+        assert!(proposal.replica_changes.iter().all(|c| c.add));
+        let balance = proposal.balance.as_ref().unwrap();
+        assert!(matches!(balance.mode, BalanceMode::Incremental { .. }));
+        assert!(balance.busiest_bytes_after < balance.busiest_bytes_before);
+
+        let expert_bytes = (model.single_expert_size_gb * 1_073_741_824.0) as u64;
+        let digest_before = placement.digest();
+        let jobs = RepinPlanner::apply(&mut placement, &proposal, expert_bytes);
+        assert_eq!(jobs.len(), proposal.replica_changes.len());
+        assert!(jobs.iter().all(|j| j.pin && j.target_tier.is_fast()));
+        assert_eq!(placement.replicated_experts, proposal.replica_changes.len());
+        assert_ne!(placement.digest(), digest_before, "a copy on another node is a new placement");
+        for change in &proposal.replica_changes {
+            assert!(placement.holders_of(change.layer, change.expert).contains(&change.node));
+            let rule = placement
+                .rules
+                .iter()
+                .find(|r| {
+                    r.content.content_id
+                        == ModelContentNames::expert_id(&model.id, change.layer, change.expert)
+                })
+                .unwrap();
+            assert!(rule.candidate_nodes.contains(&change.node));
+        }
+
+        // The chain shape has no copies to balance: the boundary is the swaps alone.
+        let chain = ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
+        let chain_proposal =
+            RepinPlanner::propose_balanced(&chain, &model, &nodes, &heat, &segments, &policy);
+        assert!(chain_proposal.replica_changes.is_empty());
+        assert!(chain_proposal.balance.is_none());
     }
 }

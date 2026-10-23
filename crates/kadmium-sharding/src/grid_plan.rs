@@ -29,7 +29,10 @@ use kadmium_grid::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::{CalibrationRecord, ShardPlanner};
+use crate::{
+    BalanceMode, BalanceReport, CalibrationRecord, ExpertLoadBalancer, LinkSegments,
+    ReplicaBudget, ShardPlanner,
+};
 
 const GIB: f64 = 1_073_741_824.0;
 
@@ -217,6 +220,9 @@ pub struct NodeFit {
     pub cold_used_gb: f64,
     /// The owner reviews the plan before anything is staged here.
     pub requires_approval: bool,
+    /// Offered fast memory the plan left free, in bytes: the replica budget's raw material.
+    #[serde(default)]
+    pub fast_free_bytes: u64,
 }
 
 /// Whether the plan fits the offers, and what is missing where. colibri refuses to start when
@@ -276,9 +282,42 @@ pub struct ExpertPlacementPlan {
     /// How the plan fits the offers it was placed against.
     #[serde(default)]
     pub fit: PlacementFit,
+    /// What the load balancer did with the free fast memory, when it ran: the busiest node of
+    /// every layer before and after its copies, modelled.
+    #[serde(default)]
+    pub balance: Option<BalanceReport>,
 }
 
 impl ExpertPlacementPlan {
+    /// This placement with every extra copy removed: what the balancer started from, for a
+    /// before-and-after estimate.
+    pub fn primaries_only(&self) -> Self {
+        let mut plan = self.clone();
+        for home in plan.experts.iter_mut() {
+            home.holders.truncate(1);
+        }
+        for rule in plan.rules.iter_mut() {
+            if ModelContentNames::parse_expert(&rule.content.content_id).is_some() {
+                rule.candidate_nodes.truncate(1);
+                rule.min_replicas = rule.min_replicas.min(1);
+            }
+        }
+        plan.replicated_experts = 0;
+        plan.balance = None;
+        plan
+    }
+
+    /// The share of a step's rows each copy of an expert serves when the rows are dealt round
+    /// robin across `copies` holders: holder `index` gets rows `index, index + copies, ...`.
+    pub fn row_share(rows: u32, copies: usize, index: usize) -> f64 {
+        let rows = rows.max(1);
+        let copies = copies.max(1) as u32;
+        if index as u32 >= rows {
+            return 0.0;
+        }
+        let mine = (rows - index as u32).div_ceil(copies);
+        mine as f64 / rows as f64
+    }
     /// Content-addressed identity of the placement: the shape, every trunk range with its owner,
     /// every expert with its holders and tier. Approvals and calibration records bind to it, so
     /// a changed placement asks again and measures again.
@@ -530,7 +569,8 @@ impl ExpertPlacementPlanner {
     }
 
     /// The planner proper: places the model against each node's offer (the node's default offer
-    /// where `offers` has none) and reports how the plan fits them.
+    /// where `offers` has none) and reports how the plan fits them. Link segments for the
+    /// balancer are derived from the nodes' round trips.
     pub fn plan_with_offers(
         model: &ModelSpec,
         nodes: &[HardwareNode],
@@ -538,6 +578,22 @@ impl ExpertPlacementPlanner {
         popularity: Option<&ExpertPopularity>,
         workload: WorkloadKind,
         offers: &BTreeMap<NodeId, ResourceOffer>,
+    ) -> ExpertPlacementPlan {
+        let segments = LinkSegments::derive(nodes);
+        Self::plan_with_offers_segmented(model, nodes, strategy, popularity, workload, offers, &segments)
+    }
+
+    /// [`ExpertPlacementPlanner::plan_with_offers`] with the link segments the balancer packs
+    /// across first.
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_with_offers_segmented(
+        model: &ModelSpec,
+        nodes: &[HardwareNode],
+        strategy: ExecutionStrategy,
+        popularity: Option<&ExpertPopularity>,
+        workload: WorkloadKind,
+        offers: &BTreeMap<NodeId, ResourceOffer>,
+        segments: &LinkSegments,
     ) -> ExpertPlacementPlan {
         let shard_plan = ShardPlanner::compute_plan(0, model, workload, nodes);
         let mut trunk_ranges: Vec<TrunkRange> = shard_plan
@@ -719,49 +775,8 @@ impl ExpertPlacementPlanner {
             ));
         }
 
-        // 3. Hot-expert replication into leftover fast memory.
-        let mut replicated = 0usize;
-        if strategy == ExecutionStrategy::ExpertParallel
-            && let Some(pop) = popularity
-            && !pop.is_empty()
-        {
-            let mut by_heat: Vec<usize> = (0..experts.len()).collect();
-            by_heat
-                .sort_by_key(|&i| std::cmp::Reverse(pop.hits(experts[i].layer, experts[i].expert)));
-            for i in by_heat {
-                let (layer, expert) = (experts[i].layer, experts[i].expert);
-                let mean = {
-                    let total: u64 = (0..model.experts_per_layer)
-                        .map(|e| pop.hits(layer, e))
-                        .sum();
-                    total as f64 / model.experts_per_layer.max(1) as f64
-                };
-                if (pop.hits(layer, expert) as f64) <= mean || experts[i].holders.len() >= 2 {
-                    continue;
-                }
-                let boundary = layer == 0 || layer + 1 == model.num_layers;
-                let holders = experts[i].holders.clone();
-                let candidate = budgets
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, b)| !holders.contains(&b.node_id))
-                    .filter(|(_, b)| !boundary || b.trust_tier.can_host_boundary_ingress_egress())
-                    .filter(|(_, b)| b.fast_tier.is_some() && b.fast_left >= expert_bytes)
-                    .min_by(|(_, a), (_, b)| {
-                        a.fast_cost_ms(expert_bytes)
-                            .partial_cmp(&b.fast_cost_ms(expert_bytes))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .map(|(idx, _)| idx);
-                if let Some(idx) = candidate
-                    && budgets[idx].take_fast(expert_bytes)
-                {
-                    experts[i].holders.push(budgets[idx].node_id.clone());
-                    replicated += 1;
-                }
-            }
-        }
-
+        // 3. Rules for the primary copies; the balancer adds its copies below, into whatever
+        // fast memory the offers leave free.
         for home in &experts {
             rules.push(PlacementRule {
                 content: ModelContentNames::expert(
@@ -794,11 +809,16 @@ impl ExpertPlacementPlanner {
                     cold_offered_gb: round(b.cold_offered / GIB),
                     cold_used_gb: round(b.cold_used / GIB),
                     requires_approval: b.requires_approval,
+                    fast_free_bytes: if b.fast_tier.is_some() {
+                        b.fast_left.max(0.0) as u64
+                    } else {
+                        0
+                    },
                 })
                 .collect(),
             shortfalls,
         };
-        ExpertPlacementPlan {
+        let mut plan = ExpertPlacementPlan {
             model_id: model.id.clone(),
             strategy,
             trunk_ranges,
@@ -813,9 +833,32 @@ impl ExpertPlacementPlanner {
                 .map(|b| (b.node_id.clone(), round(b.warm_used / GIB)))
                 .collect(),
             cold_gb: round(cold_bytes / GIB),
-            replicated_experts: replicated,
+            replicated_experts: 0,
             fit,
+            balance: None,
+        };
+
+        // 4. Load-proportional replication (EPLB) under the expert-parallel shape, from the
+        // learned heat, into the slots the offers leave free, packed across link segments and
+        // then nodes so the busiest node of every layer reads the least.
+        if strategy == ExecutionStrategy::ExpertParallel
+            && let Some(pop) = popularity
+            && !pop.is_empty()
+        {
+            let budget = ReplicaBudget::from_plan(&plan, model);
+            let report = ExpertLoadBalancer::balance(
+                &mut plan,
+                model,
+                nodes,
+                pop,
+                &budget,
+                segments,
+                true,
+                BalanceMode::Full,
+            );
+            plan.balance = Some(report);
         }
+        plan
     }
 
     /// Chain shape: the expert goes to its layer's trunk owner, fast then warm then cold.
@@ -923,8 +966,41 @@ pub struct StepCostEstimate {
     pub hops_per_step: u32,
     pub cold_stream_ms: f64,
     pub busiest_node: Option<NodeId>,
+    /// Weight reads summed on the busiest node over the step, in ms.
+    #[serde(default)]
+    pub busiest_node_ms: f64,
+    /// Expert reads on the critical path: per layer the slowest holder, summed over layers.
+    /// This is the figure the load balancer lowers.
+    #[serde(default)]
+    pub expert_read_ms: f64,
     /// Always true: these figures come from a model, never from a measurement.
     pub modelled: bool,
+}
+
+/// The load balancer's effect on the expert-parallel shape, before and after its copies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BalanceSummary {
+    pub replicas_added: usize,
+    pub replicas_dropped: usize,
+    pub segments: usize,
+    pub hierarchical: bool,
+    /// The balancer's own account, under its even-split assumption: per layer the busiest
+    /// node's expected expert bytes and read time, summed over layers.
+    pub busiest_bytes_before: f64,
+    pub busiest_bytes_after: f64,
+    pub busiest_ms_before: f64,
+    pub busiest_ms_after: f64,
+    /// The cost model's account at `rows`: expert reads on the critical path and the whole
+    /// step. At one row every expert's rows go to its primary, so a copy changes nothing
+    /// until the batch is wider.
+    pub expert_read_ms_before: f64,
+    pub expert_read_ms_after: f64,
+    pub step_ms_before: f64,
+    pub step_ms_after: f64,
+    pub rows: u32,
+    /// Always true.
+    pub modelled: bool,
+    pub rationale: String,
 }
 
 /// What settled a [`StrategyChoice`].
@@ -952,6 +1028,10 @@ pub struct StrategyChoice {
     /// `dense` when the model has no routed experts; else `modelled`.
     #[serde(default = "default_decided_by")]
     pub decided_by: String,
+    /// What the load balancer did to the expert-parallel placement, when learned heat let it
+    /// run: the busiest node before and after, modelled.
+    #[serde(default)]
+    pub balance: Option<BalanceSummary>,
 }
 
 impl StrategyChoice {
@@ -1010,6 +1090,9 @@ pub struct StrategyCostModel {
     /// system-RAM bandwidth times the efficiency factor for those nodes.
     #[serde(default)]
     pub measured_stream_gbps: BTreeMap<NodeId, f64>,
+    /// Link segments the load balancer packs across first; derived from the nodes when absent.
+    #[serde(default)]
+    pub segments: Option<LinkSegments>,
 }
 
 impl Default for StrategyCostModel {
@@ -1020,6 +1103,7 @@ impl Default for StrategyCostModel {
             measured_rtt_ms: BTreeMap::new(),
             batch_expert_growth: 0.7,
             measured_stream_gbps: BTreeMap::new(),
+            segments: None,
         }
     }
 }
@@ -1027,6 +1111,11 @@ impl Default for StrategyCostModel {
 impl StrategyCostModel {
     pub fn with_rows(mut self, rows: u32) -> Self {
         self.rows = rows.max(1);
+        self
+    }
+
+    pub fn with_segments(mut self, segments: LinkSegments) -> Self {
+        self.segments = Some(segments);
         self
     }
 
@@ -1095,6 +1184,7 @@ impl StrategyCostModel {
         let distinct_scale = rows.powf(self.batch_expert_growth);
 
         let mut weight_ms = 0.0f64;
+        let mut expert_ms = 0.0f64;
         let mut cold_ms = 0.0f64;
         let mut hop_ms = 0.0f64;
         let mut hops = 0u32;
@@ -1134,24 +1224,28 @@ impl StrategyCostModel {
                     .unwrap_or_else(|| {
                         vec![1.0 / model.experts_per_layer as f64; model.experts_per_layer as usize]
                     });
-                // Expected bytes each node reads for this layer, by tier.
+                // Expected bytes each node reads for this layer, by tier. An expert's copies
+                // share its rows round robin, as the step graph deals them: one row goes to the
+                // primary alone, a wide batch is spread evenly (EPLB's assumption).
                 let mut node_tier_bytes: BTreeMap<(NodeId, ResidencyTier), f64> = BTreeMap::new();
                 for home in placement.experts.iter().filter(|h| h.layer == layer) {
                     let p = probs.get(home.expert as usize).copied().unwrap_or(0.0);
                     let expected = (k * p * distinct_scale).min(1.0) * expert_bytes;
-                    // The fastest holder serves the expert.
-                    let serving = home
-                        .holders
-                        .iter()
-                        .max_by(|a, b| {
-                            let bw = |n: &NodeId| budgets.get(n).map_or(0.0, |x| x.fast_bw_gbps);
-                            bw(a)
-                                .partial_cmp(&bw(b))
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .cloned()
-                        .unwrap_or_else(|| range.owner.clone());
-                    *node_tier_bytes.entry((serving, home.tier)).or_default() += expected;
+                    if home.holders.is_empty() {
+                        *node_tier_bytes
+                            .entry((range.owner.clone(), home.tier))
+                            .or_default() += expected;
+                        continue;
+                    }
+                    for (index, holder) in home.holders.iter().enumerate() {
+                        let share =
+                            ExpertPlacementPlan::row_share(self.rows, home.holders.len(), index);
+                        if share > 0.0 {
+                            *node_tier_bytes
+                                .entry((holder.clone(), home.tier))
+                                .or_default() += expected * share;
+                        }
+                    }
                 }
                 let mut layer_node_ms: BTreeMap<NodeId, f64> = BTreeMap::new();
                 let mut layer_cold_ms: BTreeMap<NodeId, f64> = BTreeMap::new();
@@ -1171,6 +1265,7 @@ impl StrategyCostModel {
                 // streaming on the critical path is the slowest drive, not the sum of drives.
                 let layer_ms = layer_node_ms.values().copied().fold(0.0, f64::max);
                 weight_ms += layer_ms;
+                expert_ms += layer_ms;
                 cold_ms += layer_cold_ms.values().copied().fold(0.0, f64::max);
                 for (node, ms) in &layer_node_ms {
                     *per_node_ms.entry(node.clone()).or_default() += ms;
@@ -1206,6 +1301,10 @@ impl StrategyCostModel {
         let step_ms = weight_ms + hop_ms;
         let ms_per_token = step_ms / rows;
         let round = |v: f64| (v * 100.0).round() / 100.0;
+        let busiest = per_node_ms
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(n, ms)| (n.clone(), *ms));
         StepCostEstimate {
             strategy: placement.strategy,
             rows: self.rows.max(1),
@@ -1220,12 +1319,43 @@ impl StrategyCostModel {
             hop_ms: round(hop_ms),
             hops_per_step: hops,
             cold_stream_ms: round(cold_ms),
-            busiest_node: per_node_ms
-                .iter()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(n, _)| n.clone()),
+            busiest_node: busiest.as_ref().map(|(n, _)| n.clone()),
+            busiest_node_ms: round(busiest.map_or(0.0, |(_, ms)| ms)),
+            expert_read_ms: (expert_ms * 10_000.0).round() / 10_000.0,
             modelled: true,
         }
+    }
+
+    /// The balancer's effect on an expert-parallel placement: the placement with its copies
+    /// against the same placement with primaries only, in the balancer's own figures and in
+    /// this model's at its batch width. `None` when the balancer did not run on the placement.
+    pub fn balance_summary(
+        &self,
+        model: &ModelSpec,
+        placement: &ExpertPlacementPlan,
+        nodes: &[HardwareNode],
+        popularity: Option<&ExpertPopularity>,
+    ) -> Option<BalanceSummary> {
+        let report = placement.balance.as_ref()?;
+        let after = self.estimate(model, placement, nodes, popularity);
+        let before = self.estimate(model, &placement.primaries_only(), nodes, popularity);
+        Some(BalanceSummary {
+            replicas_added: report.replicas_added,
+            replicas_dropped: report.replicas_dropped,
+            segments: report.segments,
+            hierarchical: report.hierarchical,
+            busiest_bytes_before: report.busiest_bytes_before,
+            busiest_bytes_after: report.busiest_bytes_after,
+            busiest_ms_before: report.busiest_ms_before,
+            busiest_ms_after: report.busiest_ms_after,
+            expert_read_ms_before: before.expert_read_ms,
+            expert_read_ms_after: after.expert_read_ms,
+            step_ms_before: before.step_ms,
+            step_ms_after: after.step_ms,
+            rows: self.rows.max(1),
+            modelled: true,
+            rationale: report.rationale.clone(),
+        })
     }
 
     /// Places the model both ways, estimates both, and returns the faster shape with its placement.
@@ -1265,24 +1395,31 @@ impl StrategyCostModel {
         popularity: Option<&ExpertPopularity>,
         offers: &BTreeMap<NodeId, ResourceOffer>,
     ) -> (StrategyChoice, ExpertPlacementPlan, ExpertPlacementPlan) {
-        let chain_plan = ExpertPlacementPlanner::plan_with_offers(
+        let segments = self
+            .segments
+            .clone()
+            .unwrap_or_else(|| LinkSegments::derive(nodes));
+        let chain_plan = ExpertPlacementPlanner::plan_with_offers_segmented(
             model,
             nodes,
             ExecutionStrategy::PipelineChain,
             popularity,
             WorkloadKind::Inference,
             offers,
+            &segments,
         );
-        let ep_plan = ExpertPlacementPlanner::plan_with_offers(
+        let ep_plan = ExpertPlacementPlanner::plan_with_offers_segmented(
             model,
             nodes,
             ExecutionStrategy::ExpertParallel,
             popularity,
             WorkloadKind::Inference,
             offers,
+            &segments,
         );
         let chain = self.estimate(model, &chain_plan, nodes, popularity);
         let ep = self.estimate(model, &ep_plan, nodes, popularity);
+        let balance = self.balance_summary(model, &ep_plan, nodes, popularity);
 
         let dense = !model.is_moe || model.experts_per_layer == 0;
         let chosen = if dense || chain.ms_per_token <= ep.ms_per_token {
@@ -1319,6 +1456,7 @@ impl StrategyCostModel {
                 } else {
                     DECIDED_BY_MODELLED.to_string()
                 },
+                balance,
             },
             chain_plan,
             ep_plan,
@@ -1356,6 +1494,22 @@ pub struct TrunkForwardParams {
     pub q_star_ratio: f64,
 }
 
+/// An expert whose rows a holder shares with the expert's other copies: this holder serves
+/// the rows `index, index + count, ...` of the step's batch and leaves the rest to them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExpertRowShare {
+    pub expert: u32,
+    pub index: u32,
+    pub count: u32,
+}
+
+impl ExpertRowShare {
+    /// Whether this holder serves `row` for the expert.
+    pub fn serves(&self, row: u32) -> bool {
+        self.count <= 1 || row % self.count == self.index
+    }
+}
+
 /// Parameters of an [`AppKind::ExpertSlice`] unit: the experts of one layer resident on one holder.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExpertSliceParams {
@@ -1367,6 +1521,22 @@ pub struct ExpertSliceParams {
     pub holder: NodeId,
     /// Experts this holder may be asked for; the trunk's routing picks which are needed.
     pub resident_experts: Vec<u32>,
+    /// Experts among them whose rows are dealt across their copies (EPLB's even split); an
+    /// expert not listed is served by this holder for every row.
+    #[serde(default)]
+    pub row_shares: Vec<ExpertRowShare>,
+}
+
+impl ExpertSliceParams {
+    /// Whether this holder serves `expert` for `row`.
+    pub fn serves(&self, expert: u32, row: u32) -> bool {
+        self.resident_experts.contains(&expert)
+            && self
+                .row_shares
+                .iter()
+                .find(|s| s.expert == expert)
+                .is_none_or(|s| s.serves(row))
+    }
 }
 
 /// Parameters of a [`AppKind::Combine`] unit: the fixed-order sum of one layer's partials.
@@ -1380,11 +1550,81 @@ pub struct CombineParams {
     pub contributors: Vec<NodeId>,
 }
 
+/// Parameters of a [`AppKind::DraftVerify`] unit: the acceptance test at the end of a
+/// speculative step (ARCHITECTURE 9.11). The step's stage chain or fan-out verified a batch of
+/// `1 + draft_length` rows: the session's own row first, then the drafter's rows. The unit
+/// accepts the longest prefix of draft positions that pass the modelled acceptance test,
+/// emits the row at that position as the next step's input, and appends the next step's
+/// `next_draft_length` draft rows to it, so the next step's first unit reads a verify batch
+/// again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DraftVerifyParams {
+    pub model_id: String,
+    pub epoch: u64,
+    pub session_id: String,
+    /// The last layer of the model, whose boundary the unit reads.
+    pub layer: u32,
+    /// Draft positions verified this step.
+    pub draft_length: u32,
+    /// The drafter's conditional survival per position, `c_1 .. c_draft_length`, modelled.
+    pub confidences: Vec<f64>,
+    /// Draft rows to append for the next step.
+    pub next_draft_length: u32,
+    /// The step index within the session, which seeds the next step's draft rows.
+    pub step: u64,
+    /// The session's seed, which the modelled drafter and acceptance test both use.
+    pub seed: u64,
+}
+
 pub struct StepGraphBuilder;
 
 impl StepGraphBuilder {
     fn graph_id(session_id: &str, epoch: u64) -> String {
         format!("{session_id}/step-{epoch}")
+    }
+
+    /// [`StepGraphBuilder::decode_step_from`] over a verify batch of `1 + params.draft_length`
+    /// rows, with a [`AppKind::DraftVerify`] unit on the last stage's owner after the sink:
+    /// the acceptance test, whose output is the next step's input.
+    #[allow(clippy::too_many_arguments)]
+    pub fn speculative_step_from(
+        model: &ModelSpec,
+        placement: &ExpertPlacementPlan,
+        nodes: &[HardwareNode],
+        epoch: u64,
+        session_id: &str,
+        serving: &BTreeMap<(u32, u32), NodeId>,
+        input: &ContentRef,
+        params: &DraftVerifyParams,
+    ) -> WorkGraph {
+        let rows = 1 + params.draft_length;
+        let mut graph = Self::decode_step_from(
+            model, placement, nodes, epoch, session_id, rows, serving, input,
+        );
+        let Some(sink) = graph.sinks().last().map(|u| u.id.clone()) else {
+            return graph;
+        };
+        let owner = placement
+            .trunk_ranges
+            .last()
+            .map(|r| r.owner.clone())
+            .unwrap_or_else(|| NodeId("coordinator".into()));
+        let verify_id = WorkUnitId::qualified(&graph.id, "verify");
+        let mut unit = WorkUnit::new(verify_id.clone(), AppKind::DraftVerify)
+            .with_params_json(params)
+            .expect("params serialize")
+            .with_placement(Self::placement_for(&owner, Vec::new(), true))
+            .with_cost(
+                CostEstimate::new(1e5 * rows as f64, 0, (8 * 1024 * rows) as u64, 0.05)
+                    .with_work_units(rows as u64),
+            )
+            .with_redundancy(RedundancyPolicy::trusted());
+        unit.inputs = vec![Self::output_ref(&graph.id, &sink)];
+        graph.add_unit(unit);
+        graph
+            .add_dependency(&verify_id, &sink)
+            .expect("the verify unit follows the sink");
+        graph
     }
 
     /// The activation the first unit of a step consumes: the prompt (or previous token) batch.
@@ -1393,19 +1633,23 @@ impl StepGraphBuilder {
     }
 
     /// The routing a trunk unit produces for its layer, which the layer's expert slices consume.
+    /// Named by the unit's graph-qualified id (`<graph>/<unit>/routing`), whether the id handed
+    /// in is qualified or bare.
     pub fn routing_ref(graph_id: &str, trunk_unit_id: &WorkUnitId) -> ContentRef {
         ContentRef::named(
             ContentKind::Activation,
-            &format!("{graph_id}/{trunk_unit_id}/routing"),
+            &format!("{}/routing", trunk_unit_id.in_graph(graph_id)),
             0,
         )
     }
 
-    /// The activation a unit produces, which dependent units list among their inputs.
+    /// The activation a unit produces, which dependent units list among their inputs. Named by
+    /// the unit's graph-qualified id (`<graph>/<unit>/out`), whether the id handed in is
+    /// qualified or bare.
     pub fn output_ref(graph_id: &str, unit_id: &WorkUnitId) -> ContentRef {
         ContentRef::named(
             ContentKind::Activation,
-            &format!("{graph_id}/{unit_id}/out"),
+            &format!("{}/out", unit_id.in_graph(graph_id)),
             0,
         )
     }
@@ -1469,6 +1713,25 @@ impl StepGraphBuilder {
         rows: u32,
         serving: &BTreeMap<(u32, u32), NodeId>,
     ) -> WorkGraph {
+        let graph_id = Self::graph_id(session_id, epoch);
+        let input = Self::prompt_ref(&graph_id);
+        Self::decode_step_from(model, placement, nodes, epoch, session_id, rows, serving, &input)
+    }
+
+    /// [`StepGraphBuilder::decode_step_served`] with the step's first unit reading `input`
+    /// instead of the graph's own prompt reference: the sink output of the previous step, so
+    /// that successive steps of a session chain inside one queue.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_step_from(
+        model: &ModelSpec,
+        placement: &ExpertPlacementPlan,
+        nodes: &[HardwareNode],
+        epoch: u64,
+        session_id: &str,
+        rows: u32,
+        serving: &BTreeMap<(u32, u32), NodeId>,
+        input: &ContentRef,
+    ) -> WorkGraph {
         let rows = rows.max(1);
         let budgets: BTreeMap<NodeId, NodeBudget> = nodes
             .iter()
@@ -1506,15 +1769,19 @@ impl StepGraphBuilder {
                         .unwrap_or(ResidencyTier::SystemRam);
                     let bytes = range.bytes as f64 + k * expert_bytes * layers;
                     let previous_activation = if stage_index == 0 {
-                        Self::prompt_ref(&graph_id)
+                        input.clone()
                     } else {
                         Self::output_ref(
                             &graph_id,
-                            &WorkUnitId::new(format!("stage-{:02}", stage_index - 1)),
+                            &WorkUnitId::qualified(
+                                &graph_id,
+                                &format!("stage-{:02}", stage_index - 1),
+                            ),
                         )
                     };
-                    let mut unit =
-                        WorkUnit::new(format!("stage-{stage_index:02}"), AppKind::StageForward)
+                    let unit_id =
+                        WorkUnitId::qualified(&graph_id, &format!("stage-{stage_index:02}"));
+                    let mut unit = WorkUnit::new(unit_id, AppKind::StageForward)
                             .with_params_json(&StageForwardParams {
                                 model_id: model.id.clone(),
                                 epoch,
@@ -1552,7 +1819,7 @@ impl StepGraphBuilder {
             ExecutionStrategy::ExpertParallel => {
                 let mut graph = WorkGraph::new(graph_id.clone());
                 let mut previous: Option<WorkUnitId> = None;
-                let mut previous_activation = Self::prompt_ref(&graph_id);
+                let mut previous_activation = input.clone();
                 for range in &placement.trunk_ranges {
                     let trunk = ModelContentNames::trunk(
                         &model.id,
@@ -1569,7 +1836,8 @@ impl StepGraphBuilder {
                     let layers = (range.end_layer - range.start_layer + 1) as f64;
                     for layer in range.start_layer..=range.end_layer {
                         let boundary = layer == 0 || layer == last_layer;
-                        let trunk_id = WorkUnitId::new(format!("L{layer:03}-trunk"));
+                        let trunk_id =
+                            WorkUnitId::qualified(&graph_id, &format!("L{layer:03}-trunk"));
                         let mut trunk_unit = WorkUnit::new(trunk_id.clone(), AppKind::TrunkForward)
                             .with_params_json(&TrunkForwardParams {
                                 model_id: model.id.clone(),
@@ -1609,23 +1877,42 @@ impl StepGraphBuilder {
                             continue;
                         }
 
-                        // Which holder serves each expert of the layer this step.
+                        // Which holder serves each expert of the layer this step: the copy
+                        // `serving` names, else for a batch wider than one row every copy
+                        // with the rows dealt round robin (EPLB's even split), else the primary.
                         let mut by_node: BTreeMap<NodeId, Vec<u32>> = BTreeMap::new();
+                        let mut shares: BTreeMap<NodeId, Vec<ExpertRowShare>> = BTreeMap::new();
                         for home in placement.experts.iter().filter(|h| h.layer == layer) {
                             let Some(primary) = home.holders.first() else {
                                 continue;
                             };
-                            let node = serving
+                            if let Some(node) = serving
                                 .get(&(layer, home.expert))
                                 .filter(|n| home.holders.contains(n))
-                                .unwrap_or(primary);
-                            by_node.entry(node.clone()).or_default().push(home.expert);
+                            {
+                                by_node.entry(node.clone()).or_default().push(home.expert);
+                            } else if rows > 1 && home.holders.len() > 1 {
+                                let count = home.holders.len().min(rows as usize) as u32;
+                                for (index, node) in home.holders.iter().take(count as usize).enumerate()
+                                {
+                                    by_node.entry(node.clone()).or_default().push(home.expert);
+                                    shares.entry(node.clone()).or_default().push(ExpertRowShare {
+                                        expert: home.expert,
+                                        index: index as u32,
+                                        count,
+                                    });
+                                }
+                            } else {
+                                by_node.entry(primary.clone()).or_default().push(home.expert);
+                            }
                         }
                         let holders: Vec<NodeId> = by_node.keys().cloned().collect();
                         let mut leaf_ids = Vec::new();
                         for holder in &holders {
                             let mut resident = by_node.get(holder).cloned().unwrap_or_default();
                             resident.sort_unstable();
+                            let mut row_shares = shares.get(holder).cloned().unwrap_or_default();
+                            row_shares.sort_by_key(|s| s.expert);
                             let refs: Vec<ContentRef> = resident
                                 .iter()
                                 .map(|e| {
@@ -1646,8 +1933,10 @@ impl StepGraphBuilder {
                             let expected_bytes = k
                                 * (resident.len() as f64 / model.experts_per_layer as f64)
                                 * expert_bytes;
-                            let leaf_id =
-                                WorkUnitId::new(format!("L{layer:03}-experts-{}", holder.0));
+                            let leaf_id = WorkUnitId::qualified(
+                                &graph_id,
+                                &format!("L{layer:03}-experts-{}", holder.0),
+                            );
                             let mut leaf = WorkUnit::new(leaf_id.clone(), AppKind::ExpertSlice)
                                 .with_params_json(&ExpertSliceParams {
                                     model_id: model.id.clone(),
@@ -1657,6 +1946,7 @@ impl StepGraphBuilder {
                                     rows,
                                     holder: holder.clone(),
                                     resident_experts: resident,
+                                    row_shares,
                                 })
                                 .expect("params serialize")
                                 .with_placement(Self::placement_for(holder, refs.clone(), boundary))
@@ -1684,7 +1974,8 @@ impl StepGraphBuilder {
                             leaf_ids.push(leaf_id);
                         }
 
-                        let combine_id = WorkUnitId::new(format!("L{layer:03}-combine"));
+                        let combine_id =
+                            WorkUnitId::qualified(&graph_id, &format!("L{layer:03}-combine"));
                         let mut combine = WorkUnit::new(combine_id.clone(), AppKind::Combine)
                             .with_params_json(&CombineParams {
                                 model_id: model.id.clone(),
@@ -1997,14 +2288,93 @@ mod tests {
             Some(&pop),
         );
         assert_eq!(plain.replicated_experts, 0);
+        assert!(plain.balance.is_none());
         assert!(hot.replicated_experts > 0);
-        assert!(hot.experts.iter().all(|h| h.holders.len() <= 2));
+        let balance = hot.balance.as_ref().expect("the balancer ran");
+        assert!(balance.modelled);
+        assert_eq!(balance.replicas_added, hot.replicated_experts);
+        assert!(balance.busiest_bytes_after < balance.busiest_bytes_before);
+        assert!(
+            hot.experts
+                .iter()
+                .all(|h| h.holders.len() <= 1 + balance.per_layer_budget as usize)
+        );
         let replicated_rule = hot
             .rules
             .iter()
-            .find(|r| r.min_replicas == 2)
-            .expect("a replicated expert has a two-replica rule");
-        assert_eq!(replicated_rule.candidate_nodes.len(), 2);
+            .find(|r| r.min_replicas >= 2)
+            .expect("a replicated expert has a multi-replica rule");
+        assert_eq!(
+            replicated_rule.candidate_nodes.len(),
+            replicated_rule.min_replicas as usize
+        );
+        // Copies land in free fast memory and are counted against it.
+        for change in &balance.changes {
+            let fit = hot.fit.per_node.iter().find(|f| f.node == change.node).unwrap();
+            assert!(fit.fast_used_gb <= fit.fast_offered_gb + 1e-6);
+        }
+
+        // The cost model reports the busiest node before and after, and the even split only
+        // pays for a batch wider than one row.
+        let cost = StrategyCostModel::default();
+        let one_row = cost.balance_summary(&model, &hot, &nodes, Some(&pop)).unwrap();
+        assert!(one_row.modelled);
+        assert_eq!(one_row.rows, 1);
+        assert!(one_row.busiest_ms_after < one_row.busiest_ms_before);
+        assert_eq!(
+            one_row.expert_read_ms_after, one_row.expert_read_ms_before,
+            "one row goes to the primary alone, so copies change nothing yet"
+        );
+        let eight = StrategyCostModel::default()
+            .with_rows(8)
+            .balance_summary(&model, &hot, &nodes, Some(&pop))
+            .unwrap();
+        assert!(
+            eight.expert_read_ms_after < eight.expert_read_ms_before,
+            "{eight:?}"
+        );
+        assert!(eight.step_ms_after < eight.step_ms_before, "{eight:?}");
+        assert_eq!(ExpertPlacementPlan::row_share(1, 2, 0), 1.0);
+        assert_eq!(ExpertPlacementPlan::row_share(1, 2, 1), 0.0);
+        assert_eq!(ExpertPlacementPlan::row_share(3, 2, 0), 2.0 / 3.0);
+        assert_eq!(ExpertPlacementPlan::row_share(3, 2, 1), 1.0 / 3.0);
+        assert!(cost.balance_summary(&model, &plain, &nodes, None).is_none());
+
+        // A wide step deals a replicated expert's rows across its copies, one holder per row.
+        let graph = StepGraphBuilder::decode_step(&model, &hot, &nodes, 1, "shares", 4);
+        let replicated = hot
+            .experts
+            .iter()
+            .find(|h| h.holders.len() > 1)
+            .expect("a replicated expert");
+        let slices: Vec<ExpertSliceParams> = graph
+            .units()
+            .filter(|u| u.app == AppKind::ExpertSlice)
+            .filter_map(|u| u.params_json::<ExpertSliceParams>().ok())
+            .filter(|p| p.layer == replicated.layer)
+            .collect();
+        for row in 0..4 {
+            let serving: Vec<&NodeId> = slices
+                .iter()
+                .filter(|p| p.serves(replicated.expert, row))
+                .map(|p| &p.holder)
+                .collect();
+            assert_eq!(serving.len(), 1, "row {row} of expert {:?}", replicated.expert);
+        }
+        let share = slices
+            .iter()
+            .flat_map(|p| p.row_shares.iter())
+            .find(|s| s.expert == replicated.expert)
+            .expect("a row share");
+        assert_eq!(share.count as usize, replicated.holders.len().min(4));
+        let single = StepGraphBuilder::decode_step(&model, &hot, &nodes, 1, "shares", 1);
+        assert!(
+            single
+                .units()
+                .filter_map(|u| u.params_json::<ExpertSliceParams>().ok())
+                .all(|p| p.row_shares.is_empty()),
+            "one row goes to the primary alone"
+        );
     }
 
     #[test]
@@ -2139,6 +2509,44 @@ mod tests {
         assert_eq!(graph.id, "sess-a/step-7");
         let first = graph.ready();
         assert_eq!(first.len(), 1);
+        assert_eq!(first[0].id.0, "sess-a/step-7/stage-00");
+        assert!(
+            first[0]
+                .inputs
+                .iter()
+                .any(|c| c.content_id == "sess-a/step-7/prompt")
+        );
+        assert_eq!(
+            StepGraphBuilder::output_ref(&graph.id, &first[0].id).content_id,
+            "sess-a/step-7/stage-00/out"
+        );
+        assert_eq!(
+            StepGraphBuilder::output_ref(&graph.id, &"stage-00".into()).content_id,
+            "sess-a/step-7/stage-00/out",
+            "a bare name and the qualified id name the same output"
+        );
+        // Step 8 chained to step 7 reads step 7's sink output instead of its own prompt.
+        let sink = StepGraphBuilder::output_ref(
+            &graph.id,
+            &graph.sinks().last().map(|u| u.id.clone()).unwrap(),
+        );
+        let next = StepGraphBuilder::decode_step_from(
+            &model,
+            &plan,
+            &nodes,
+            8,
+            "sess-a",
+            1,
+            &BTreeMap::new(),
+            &sink,
+        );
+        assert_eq!(next.id, "sess-a/step-8");
+        assert!(
+            next.ready()[0]
+                .inputs
+                .iter()
+                .any(|c| c.content_id == sink.content_id)
+        );
         let params: StageForwardParams = first[0].params_json().unwrap();
         assert_eq!(params.start_layer, 0);
         assert_eq!(params.stage_index, 0);
@@ -2175,7 +2583,8 @@ mod tests {
 
         let ready = graph.ready();
         assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].id, WorkUnitId::new("L000-trunk"));
+        assert_eq!(ready[0].id, WorkUnitId::qualified("sess-b/step-1", "L000-trunk"));
+        assert_eq!(ready[0].id.name(), "L000-trunk");
         assert!(ready[0].placement.boundary_layer_access);
         let levels = graph.wavefronts().unwrap();
         assert_eq!(levels.len(), 3 * model.num_layers as usize);
@@ -2317,7 +2726,7 @@ impl StepGraphBuilder {
                     }
                 })
                 .unwrap_or(1.0);
-            let unit_id = WorkUnitId::new(format!("stage-{stage_index:02}"));
+            let unit_id = WorkUnitId::qualified(&graph_id, &format!("stage-{stage_index:02}"));
             let mut unit = WorkUnit::new(unit_id.clone(), AppKind::TrainForwardBackward)
                 .with_params_json(&TrainStageParams {
                     model_id: model.id.clone(),
@@ -2352,7 +2761,7 @@ impl StepGraphBuilder {
             .first()
             .cloned()
             .unwrap_or_else(|| NodeId("coordinator".into()));
-        let reduce_id = WorkUnitId::new("demo-reduce");
+        let reduce_id = WorkUnitId::qualified(&graph_id, "demo-reduce");
         let mut reduce = WorkUnit::new(reduce_id.clone(), AppKind::DeMoReduce)
             .with_params_json(&DeMoReduceParams {
                 model_id: model.id.clone(),
@@ -2394,7 +2803,7 @@ impl StepGraphBuilder {
         nodes: &[HardwareNode],
     ) -> WorkGraph {
         let graph_id = format!("{session_id}/replay-{epoch}");
-        let mut graph = WorkGraph::new(graph_id);
+        let mut graph = WorkGraph::new(graph_id.clone());
         let cpu_backends: Vec<ComputeBackend> = [
             ComputeBackend::CpuAvx512OrAvx2,
             ComputeBackend::CpuArmNeonNpu,
@@ -2407,7 +2816,8 @@ impl StepGraphBuilder {
                 allowed_backends: cpu_backends.clone(),
                 ..PlacementConstraints::default()
             };
-            let unit = WorkUnit::new(format!("replay-{i:03}"), AppKind::DreamReplay)
+            let unit_id = WorkUnitId::qualified(&graph_id, &format!("replay-{i:03}"));
+            let unit = WorkUnit::new(unit_id, AppKind::DreamReplay)
                 .with_params_json(&DreamReplayParams {
                     replay_id: format!("{session_id}-{epoch}-{i:03}"),
                     epoch,
@@ -2485,9 +2895,15 @@ mod phase5_tests {
         let levels = graph.wavefronts().unwrap();
         assert_eq!(levels.len(), 2);
         assert_eq!(levels[0].len(), stages);
-        assert_eq!(levels[1], vec![WorkUnitId::new("demo-reduce")]);
+        assert_eq!(levels[1], vec![WorkUnitId::qualified("lab/train-17", "demo-reduce")]);
         let reduce = graph.unit(&"demo-reduce".into()).unwrap();
         assert_eq!(reduce.inputs.len(), stages);
+        assert!(
+            reduce
+                .inputs
+                .iter()
+                .all(|c| c.content_id.starts_with("lab/train-17/stage-"))
+        );
         let params: DeMoReduceParams = reduce.params_json().unwrap();
         assert_eq!(params.contributors.len(), stages);
         let first = graph.unit(&"stage-00".into()).unwrap();

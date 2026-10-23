@@ -58,6 +58,12 @@ pub enum GridError {
         from: WorkState,
         to: WorkState,
     },
+    #[error("`{unit}` waits on `{prereq}`, which is {state:?} and will never validate")]
+    PrerequisiteFailed {
+        unit: WorkUnitId,
+        prereq: WorkUnitId,
+        state: WorkState,
+    },
     #[error("parameter encoding error: {0}")]
     Params(String),
 }

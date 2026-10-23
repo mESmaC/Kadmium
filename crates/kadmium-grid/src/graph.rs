@@ -4,6 +4,10 @@
 //! replay batch is a bag with no edges; a training step is a chain ending in a reduce. The
 //! scheduler consumes the ready set, which is the wavefront: every unit whose prerequisites
 //! have all been validated.
+//!
+//! Every unit a graph holds carries a graph-qualified id (`<graph id>/<name>`), so the steps of
+//! one session and the graphs of several sessions can share one queue. A bare name handed to any
+//! method here is read as the name of this graph's unit.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -32,8 +36,16 @@ impl WorkGraph {
         }
     }
 
-    /// Adds or replaces a unit, tagging it with this graph's id.
+    /// The id a unit name or id has inside this graph: `<graph id>/<name>`, unchanged when it
+    /// is already qualified by this graph.
+    pub fn qualify(&self, id: &WorkUnitId) -> WorkUnitId {
+        id.in_graph(&self.id)
+    }
+
+    /// Adds or replaces a unit, qualifying its id by this graph and tagging it with the graph's
+    /// id. A unit added under a bare name is thereafter known as `<graph id>/<name>`.
     pub fn add_unit(&mut self, mut unit: WorkUnit) -> &mut Self {
+        unit.id = self.qualify(&unit.id);
         unit.graph_id = Some(self.id.clone());
         if !self.units.contains_key(&unit.id) {
             self.order.push(unit.id.clone());
@@ -49,22 +61,18 @@ impl WorkGraph {
         unit: &WorkUnitId,
         prereq: &WorkUnitId,
     ) -> Result<(), GridError> {
-        if !self.units.contains_key(unit) {
-            return Err(GridError::UnknownUnit(unit.clone()));
+        let unit = self.qualify(unit);
+        let prereq = self.qualify(prereq);
+        if !self.units.contains_key(&unit) {
+            return Err(GridError::UnknownUnit(unit));
         }
-        if !self.units.contains_key(prereq) {
-            return Err(GridError::UnknownUnit(prereq.clone()));
+        if !self.units.contains_key(&prereq) {
+            return Err(GridError::UnknownUnit(prereq));
         }
-        if unit == prereq || self.depends_on(prereq, unit) {
-            return Err(GridError::DependencyCycle {
-                unit: unit.clone(),
-                prereq: prereq.clone(),
-            });
+        if unit == prereq || self.depends_on(&prereq, &unit) {
+            return Err(GridError::DependencyCycle { unit, prereq });
         }
-        self.prereqs
-            .entry(unit.clone())
-            .or_default()
-            .insert(prereq.clone());
+        self.prereqs.entry(unit).or_default().insert(prereq);
         Ok(())
     }
 
@@ -87,7 +95,7 @@ impl WorkGraph {
     }
 
     pub fn unit(&self, id: &WorkUnitId) -> Option<&WorkUnit> {
-        self.units.get(id)
+        self.units.get(&self.qualify(id))
     }
 
     /// Units in insertion order.
@@ -105,16 +113,24 @@ impl WorkGraph {
 
     pub fn prerequisites(&self, id: &WorkUnitId) -> Vec<WorkUnitId> {
         self.prereqs
-            .get(id)
+            .get(&self.qualify(id))
             .map(|ps| ps.iter().cloned().collect())
             .unwrap_or_default()
     }
 
     pub fn dependents(&self, id: &WorkUnitId) -> Vec<WorkUnitId> {
+        let id = self.qualify(id);
         self.order
             .iter()
-            .filter(|u| self.prereqs.get(*u).is_some_and(|ps| ps.contains(id)))
+            .filter(|u| self.prereqs.get(*u).is_some_and(|ps| ps.contains(&id)))
             .cloned()
+            .collect()
+    }
+
+    /// The units nothing in the graph depends on: where a step's final activation comes out.
+    pub fn sinks(&self) -> Vec<&WorkUnit> {
+        self.units()
+            .filter(|u| self.dependents(&u.id).is_empty())
             .collect()
     }
 
@@ -132,15 +148,16 @@ impl WorkGraph {
     }
 
     pub fn mark_completed(&mut self, id: &WorkUnitId) -> Result<(), GridError> {
-        if !self.units.contains_key(id) {
-            return Err(GridError::UnknownUnit(id.clone()));
+        let id = self.qualify(id);
+        if !self.units.contains_key(&id) {
+            return Err(GridError::UnknownUnit(id));
         }
-        self.completed.insert(id.clone());
+        self.completed.insert(id);
         Ok(())
     }
 
     pub fn is_completed(&self, id: &WorkUnitId) -> bool {
-        self.completed.contains(id)
+        self.completed.contains(&self.qualify(id))
     }
 
     pub fn is_complete(&self) -> bool {
@@ -303,19 +320,31 @@ mod tests {
     #[test]
     fn chain_releases_one_unit_at_a_time() {
         let mut g = WorkGraph::chain("decode", vec![unit("s0", 10.0), unit("s1", 20.0)]);
+        // Units are known by their graph-qualified ids; bare names resolve to them.
         let ready: Vec<_> = g.ready().iter().map(|u| u.id.0.clone()).collect();
-        assert_eq!(ready, vec!["s0"]);
+        assert_eq!(ready, vec!["decode/s0"]);
+        assert_eq!(g.ready()[0].id.name(), "s0");
+        assert_eq!(g.qualify(&"s0".into()), WorkUnitId::new("decode/s0"));
+        assert_eq!(g.qualify(&"decode/s0".into()), WorkUnitId::new("decode/s0"));
         g.mark_completed(&"s0".into()).unwrap();
-        let ready: Vec<_> = g.ready().iter().map(|u| u.id.0.clone()).collect();
+        let ready: Vec<_> = g.ready().iter().map(|u| u.id.name().to_string()).collect();
         assert_eq!(ready, vec!["s1"]);
         assert!(!g.is_complete());
-        g.mark_completed(&"s1".into()).unwrap();
+        g.mark_completed(&WorkUnitId::qualified("decode", "s1"))
+            .unwrap();
         assert!(g.is_complete());
         assert_eq!(g.critical_path_ms(), 30.0);
         assert_eq!(
             g.unit(&"s1".into()).unwrap().graph_id.as_deref(),
             Some("decode")
         );
+        assert_eq!(g.sinks().len(), 1);
+        assert_eq!(g.sinks()[0].id.name(), "s1");
+        assert!(g.unit(&"nowhere".into()).is_none());
+        assert!(matches!(
+            g.mark_completed(&"nowhere".into()),
+            Err(GridError::UnknownUnit(id)) if id.0 == "decode/nowhere"
+        ));
     }
 
     #[test]
@@ -328,13 +357,14 @@ mod tests {
         );
         let levels = g.wavefronts().unwrap();
         assert_eq!(levels.len(), 3);
-        assert_eq!(levels[0], vec![WorkUnitId::new("trunk")]);
+        assert_eq!(levels[0], vec![WorkUnitId::qualified("layer25", "trunk")]);
         assert_eq!(levels[1].len(), 3);
-        assert_eq!(levels[2], vec![WorkUnitId::new("combine")]);
+        assert_eq!(levels[2], vec![g.qualify(&"combine".into())]);
         assert_eq!(g.critical_path_ms(), 5.0 + 8.0 + 1.0);
         assert_eq!(g.total_est_wall_ms(), 23.0);
         assert_eq!(g.dependents(&"trunk".into()).len(), 3);
         assert_eq!(g.prerequisites(&"combine".into()).len(), 3);
+        assert_eq!(g.sinks().len(), 1);
     }
 
     #[test]
@@ -351,6 +381,11 @@ mod tests {
         assert!(matches!(
             g.add_dependency(&"a".into(), &"zz".into()),
             Err(GridError::UnknownUnit(_))
+        ));
+        // Qualified and bare names are the same unit.
+        assert!(matches!(
+            g.add_dependency(&"c/a".into(), &"c/b".into()),
+            Err(GridError::DependencyCycle { .. })
         ));
     }
 
