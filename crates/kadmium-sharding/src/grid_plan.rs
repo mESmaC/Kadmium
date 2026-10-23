@@ -78,6 +78,9 @@ pub struct TrunkRange {
     pub end_layer: u32,
     pub owner: NodeId,
     pub bytes: u64,
+    /// The owner's bandwidth-adaptive split, carried into stage units so kernels route exactly
+    /// as the legacy planner's assignment did.
+    pub q_star_ratio: f64,
 }
 
 /// Where one routed expert lives: its holders, fastest first, and the tier of the primary copy.
@@ -349,6 +352,7 @@ impl ExpertPlacementPlanner {
                     end_layer: e,
                     owner: a.node_id.clone(),
                     bytes: (model.dense_layer_size_gb * (e - s + 1) as f64 * GIB) as u64,
+                    q_star_ratio: a.tiered_memory.q_star_accel_ratio,
                 })
             })
             .collect();
@@ -916,6 +920,8 @@ pub struct StageForwardParams {
     pub start_layer: u32,
     pub end_layer: u32,
     pub rows: u32,
+    /// The stage owner's bandwidth-adaptive split ratio, which steers expert routing.
+    pub q_star_ratio: f64,
 }
 
 /// Parameters of a [`AppKind::TrunkForward`] unit: attention, norms and the router of one layer.
@@ -959,6 +965,20 @@ pub struct StepGraphBuilder;
 impl StepGraphBuilder {
     fn graph_id(session_id: &str, epoch: u64) -> String {
         format!("{session_id}/step-{epoch}")
+    }
+
+    /// The activation the first unit of a step consumes: the prompt (or previous token) batch.
+    pub fn prompt_ref(graph_id: &str) -> ContentRef {
+        ContentRef::named(ContentKind::Activation, &format!("{graph_id}/prompt"), 0)
+    }
+
+    /// The activation a unit produces, which dependent units list among their inputs.
+    pub fn output_ref(graph_id: &str, unit_id: &WorkUnitId) -> ContentRef {
+        ContentRef::named(
+            ContentKind::Activation,
+            &format!("{graph_id}/{unit_id}/out"),
+            0,
+        )
     }
 
     fn placement_for(
@@ -1031,7 +1051,15 @@ impl StepGraphBuilder {
                         .map(|r| r.preferred_tier)
                         .unwrap_or(ResidencyTier::SystemRam);
                     let bytes = range.bytes as f64 + k * expert_bytes * layers;
-                    let unit =
+                    let previous_activation = if stage_index == 0 {
+                        Self::prompt_ref(&graph_id)
+                    } else {
+                        Self::output_ref(
+                            &graph_id,
+                            &WorkUnitId::new(format!("stage-{:02}", stage_index - 1)),
+                        )
+                    };
+                    let mut unit =
                         WorkUnit::new(format!("stage-{stage_index:02}"), AppKind::StageForward)
                             .with_params_json(&StageForwardParams {
                                 model_id: model.id.clone(),
@@ -1041,11 +1069,12 @@ impl StepGraphBuilder {
                                 start_layer: range.start_layer,
                                 end_layer: range.end_layer,
                                 rows,
+                                q_star_ratio: range.q_star_ratio,
                             })
                             .expect("params serialize")
                             .with_placement(Self::placement_for(
                                 &range.owner,
-                                vec![trunk],
+                                vec![trunk.clone()],
                                 boundary,
                             ))
                             .with_cost(Self::cost(
@@ -1059,13 +1088,15 @@ impl StepGraphBuilder {
                                 rows,
                             ))
                             .with_redundancy(RedundancyPolicy::trusted());
+                    unit.inputs = vec![trunk, previous_activation];
                     units.push(unit);
                 }
                 WorkGraph::chain(graph_id, units)
             }
             ExecutionStrategy::ExpertParallel => {
-                let mut graph = WorkGraph::new(graph_id);
+                let mut graph = WorkGraph::new(graph_id.clone());
                 let mut previous: Option<WorkUnitId> = None;
+                let mut previous_activation = Self::prompt_ref(&graph_id);
                 for range in &placement.trunk_ranges {
                     let trunk = ModelContentNames::trunk(
                         &model.id,
@@ -1083,7 +1114,7 @@ impl StepGraphBuilder {
                     for layer in range.start_layer..=range.end_layer {
                         let boundary = layer == 0 || layer == last_layer;
                         let trunk_id = WorkUnitId::new(format!("L{layer:03}-trunk"));
-                        let trunk_unit = WorkUnit::new(trunk_id.clone(), AppKind::TrunkForward)
+                        let mut trunk_unit = WorkUnit::new(trunk_id.clone(), AppKind::TrunkForward)
                             .with_params_json(&TrunkForwardParams {
                                 model_id: model.id.clone(),
                                 epoch,
@@ -1106,14 +1137,17 @@ impl StepGraphBuilder {
                                 rows,
                             ))
                             .with_redundancy(RedundancyPolicy::trusted());
+                        trunk_unit.inputs = vec![trunk.clone(), previous_activation.clone()];
                         graph.add_unit(trunk_unit);
                         if let Some(prev) = &previous {
                             graph
                                 .add_dependency(&trunk_id, prev)
                                 .expect("step graphs are acyclic");
                         }
+                        let trunk_out = Self::output_ref(&graph_id, &trunk_id);
 
                         if !model.is_moe || model.experts_per_layer == 0 {
+                            previous_activation = trunk_out;
                             previous = Some(trunk_id);
                             continue;
                         }
@@ -1144,7 +1178,7 @@ impl StepGraphBuilder {
                                 * expert_bytes;
                             let leaf_id =
                                 WorkUnitId::new(format!("L{layer:03}-experts-{}", holder.0));
-                            let leaf = WorkUnit::new(leaf_id.clone(), AppKind::ExpertSlice)
+                            let mut leaf = WorkUnit::new(leaf_id.clone(), AppKind::ExpertSlice)
                                 .with_params_json(&ExpertSliceParams {
                                     model_id: model.id.clone(),
                                     epoch,
@@ -1155,7 +1189,7 @@ impl StepGraphBuilder {
                                     resident_experts: resident,
                                 })
                                 .expect("params serialize")
-                                .with_placement(Self::placement_for(holder, refs, boundary))
+                                .with_placement(Self::placement_for(holder, refs.clone(), boundary))
                                 .with_cost(Self::cost(
                                     expected_bytes,
                                     bw_of(holder, tier),
@@ -1167,6 +1201,11 @@ impl StepGraphBuilder {
                                     rows,
                                 ))
                                 .with_redundancy(RedundancyPolicy::trusted());
+                            leaf.inputs = {
+                                let mut inputs = refs;
+                                inputs.push(trunk_out.clone());
+                                inputs
+                            };
                             graph.add_unit(leaf);
                             graph
                                 .add_dependency(&leaf_id, &trunk_id)
@@ -1175,7 +1214,7 @@ impl StepGraphBuilder {
                         }
 
                         let combine_id = WorkUnitId::new(format!("L{layer:03}-combine"));
-                        let combine = WorkUnit::new(combine_id.clone(), AppKind::Combine)
+                        let mut combine = WorkUnit::new(combine_id.clone(), AppKind::Combine)
                             .with_params_json(&CombineParams {
                                 model_id: model.id.clone(),
                                 epoch,
@@ -1193,6 +1232,11 @@ impl StepGraphBuilder {
                                 0.05,
                             ))
                             .with_redundancy(RedundancyPolicy::trusted());
+                        combine.inputs = leaf_ids
+                            .iter()
+                            .map(|leaf| Self::output_ref(&graph_id, leaf))
+                            .chain(std::iter::once(trunk_out.clone()))
+                            .collect();
                         graph.add_unit(combine);
                         for leaf in &leaf_ids {
                             graph
@@ -1204,6 +1248,7 @@ impl StepGraphBuilder {
                                 .add_dependency(&combine_id, &trunk_id)
                                 .expect("step graphs are acyclic");
                         }
+                        previous_activation = Self::output_ref(&graph_id, &combine_id);
                         previous = Some(combine_id);
                     }
                 }

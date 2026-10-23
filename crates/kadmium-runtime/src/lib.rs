@@ -13,6 +13,7 @@ pub mod exl3_qtip;
 pub mod fraud_proof;
 pub mod inference_compute;
 pub mod kernels;
+pub mod grid_executor;
 pub mod live_worker;
 pub mod throughput_boost;
 pub mod training_compute;
@@ -21,6 +22,7 @@ pub use exl3_qtip::*;
 pub use fraud_proof::*;
 pub use inference_compute::*;
 pub use kernels::*;
+pub use grid_executor::*;
 pub use live_worker::*;
 pub use throughput_boost::*;
 pub use training_compute::*;
@@ -2324,8 +2326,9 @@ mod tests {
         assert_eq!(pong.node.id, cluster[1].id);
         drop(stream);
 
-        // Generic grid work frames are answered (never left hanging) until phase 3 registers an
-        // executor, and the reply carries the request id so the channel can match it.
+        // A work frame whose payload is not a dispatch envelope is answered with a failure
+        // envelope (never left hanging), and the reply carries the request id so the channel
+        // can match it.
         let channel = PeerChannel::connect(&worker.local_addr.to_string(), Duration::from_secs(5))
             .await
             .expect("connect channel");
@@ -2341,8 +2344,12 @@ mod tests {
         assert_eq!(result.kind, WireFrameKind::WorkResult);
         assert_eq!(result.epoch, 9);
         assert_ne!(result.request_id, 0);
-        let body: serde_json::Value = serde_json::from_slice(&result.payload).expect("error body");
-        assert_eq!(body["error"], "no executor registered");
+        let body = WorkResultPayload::from_le_bytes(&result.payload).expect("work result envelope");
+        assert!(!body.header.ok);
+        assert!(
+            body.error_message()
+                .is_some_and(|e| e.contains("malformed WorkDispatch"))
+        );
 
         // A malformed payload for a known kind is answered with an error body on the same
         // connection, and the connection stays usable afterwards.

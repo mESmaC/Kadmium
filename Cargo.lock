@@ -1380,6 +1380,7 @@ version = "0.1.0"
 dependencies = [
  "kadmium-core",
  "kadmium-data",
+ "kadmium-grid",
  "kadmium-network",
  "kadmium-sharding",
  "serde",

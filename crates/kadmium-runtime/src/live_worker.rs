@@ -14,10 +14,11 @@
 
 use crate::{
     BlockwiseInt8Tensor, DeMoDctCompressor, DiLoCoOuterOptimizer, DistributedMoEPipelineExecutor,
-    DistributedPipelineExecutionReport, DistributedQLoRAAdapter, ExpertResidencyTier,
-    FusedRmsNormRopeKernel, KvPageBlock, MoEGatingRouter, MoERoutedExpertSelection,
-    PagedGqaAttentionKernel, SparseDctPacket, SpeculativeDraftVerificationReport,
-    StageExecutionTrace, VerdeVerificationEngine,
+    DistributedPipelineExecutionReport, DistributedQLoRAAdapter, ExecutorContext,
+    ExecutorRegistry, ExpertResidencyTier, FusedRmsNormRopeKernel, KvPageBlock, MoEGatingRouter,
+    MoERoutedExpertSelection, PagedGqaAttentionKernel, SparseDctPacket,
+    SpeculativeDraftVerificationReport, StageExecutionTrace, VerdeVerificationEngine,
+    WorkDispatchPayload, WorkResultPayload, execute_dispatch,
 };
 use kadmium_core::{
     HardwareNode, NodeId, NodeRole, PoliteState, sample_personal_cluster,
@@ -1185,6 +1186,9 @@ pub struct WorkerFrameContext {
     pub served_forward_stages: Arc<AtomicU64>,
     pub served_training_steps: Arc<AtomicU64>,
     pub served_fts3_pages: Arc<AtomicU64>,
+    /// Executors for generic grid work units, by app kind.
+    pub executors: ExecutorRegistry,
+    pub served_work_units: Arc<AtomicU64>,
     /// Remote address of the connection the frame arrived on (console logging only).
     pub peer_addr: SocketAddr,
     pub log_console: bool,
@@ -1590,9 +1594,42 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                 return Some(reply);
             }
         }
-        WireFrameKind::WorkDispatch | WireFrameKind::WorkRequest | WireFrameKind::WorkResult => {
-            // Phase 3 (`kadmium-grid`) registers executors for generic work units. Until then
-            // every work frame is answered with an error body so the caller's channel never hangs.
+        WireFrameKind::WorkDispatch => {
+            let exec_ctx = ExecutorContext::new(
+                &node_id_str,
+                &hostname_str,
+                Arc::clone(&ctx.resident_ktb_bank),
+            );
+            let reply = match WorkDispatchPayload::from_le_bytes(&frame.payload) {
+                Ok(dispatch) => {
+                    let app = dispatch.header.unit.app.label();
+                    let unit_id = dispatch.header.unit.id.clone();
+                    let result = execute_dispatch(dispatch, &ctx.executors, &exec_ctx);
+                    if result.header.ok {
+                        ctx.served_work_units.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if log_console {
+                        println!(
+                            "  [WireFrame WORK] Peer {peer_addr} -> {hostname_str} {app} `{unit_id}` | ok={} {}",
+                            result.header.ok,
+                            result.error_message().unwrap_or("")
+                        );
+                    }
+                    result
+                }
+                Err(e) => {
+                    WorkResultPayload::failure(format!("malformed WorkDispatch payload: {e}"))
+                }
+            };
+            return Some(WireFrame::new(
+                WireFrameKind::WorkResult,
+                frame.epoch,
+                reply.to_le_bytes(),
+            ));
+        }
+        WireFrameKind::WorkRequest | WireFrameKind::WorkResult => {
+            // The worker port serves dispatches; pull requests and results are addressed to the
+            // coordinator. Answer with an error body so the caller's channel never hangs.
             return Some(WireFrame::new(
                 WireFrameKind::WorkResult,
                 frame.epoch,
@@ -1661,6 +1698,9 @@ pub struct LiveNodeWorkerServer {
     /// TCP connections accepted since the server started (one persistent `PeerChannel` per
     /// coordinator is the expected steady state).
     pub accepted_connections: Arc<AtomicU64>,
+    /// Executors for generic grid work units; register more after spawning to extend the worker.
+    pub executors: ExecutorRegistry,
+    pub served_work_units: Arc<AtomicU64>,
 }
 
 impl LiveNodeWorkerServer {
@@ -1713,6 +1753,8 @@ impl LiveNodeWorkerServer {
         let trn_counter = Arc::new(AtomicU64::new(0));
         let fts_counter = Arc::new(AtomicU64::new(0));
         let accepted_counter = Arc::new(AtomicU64::new(0));
+        let work_counter = Arc::new(AtomicU64::new(0));
+        let executors = ExecutorRegistry::with_defaults();
 
         let ctx_template = WorkerFrameContext {
             node: Arc::clone(&node_arc),
@@ -1722,6 +1764,8 @@ impl LiveNodeWorkerServer {
             served_forward_stages: Arc::clone(&fwd_counter),
             served_training_steps: Arc::clone(&trn_counter),
             served_fts3_pages: Arc::clone(&fts_counter),
+            executors: executors.clone(),
+            served_work_units: Arc::clone(&work_counter),
             peer_addr: local_addr,
             log_console,
         };
@@ -1748,6 +1792,8 @@ impl LiveNodeWorkerServer {
             served_training_steps: trn_counter,
             served_fts3_pages: fts_counter,
             accepted_connections: accepted_counter,
+            executors,
+            served_work_units: work_counter,
         })
     }
 }
@@ -1836,6 +1882,22 @@ impl LocalFleetSpawner {
 
         Ok(instances)
     }
+}
+
+/// The synthetic boundary vector a prompt seeds the reference pipeline with: `dim` floats derived
+/// from the prompt bytes. Shared by the legacy stage loop and the grid chain graph, so both start
+/// from the identical activation.
+pub fn prompt_seed_hidden(prompt_text: &str, dim: usize) -> Vec<f32> {
+    (0..dim)
+        .map(|i| {
+            let b = prompt_text
+                .as_bytes()
+                .get(i % prompt_text.len().max(1))
+                .copied()
+                .unwrap_or(68) as f32;
+            ((b * 0.017) + (i as f32) * 0.11).sin() * 0.8
+        })
+        .collect()
 }
 
 /// Orchestrates live multi-hop TCP `WireFrame` pipeline execution, distributed training,
@@ -2152,16 +2214,7 @@ impl DistributedLanExecutor {
         live_workers: &BTreeMap<String, LiveWorkerRegistration>,
     ) -> (DistributedPipelineExecutionReport, Vec<LiveHopTelemetry>) {
         let dim = 64usize;
-        let initial_hidden: Vec<f32> = (0..dim)
-            .map(|i| {
-                let b = prompt_text
-                    .as_bytes()
-                    .get(i % prompt_text.len().max(1))
-                    .copied()
-                    .unwrap_or(68) as f32;
-                ((b * 0.017) + (i as f32) * 0.11).sin() * 0.8
-            })
-            .collect();
+        let initial_hidden = prompt_seed_hidden(prompt_text, dim);
 
         let mut current_boundary = BlockwiseInt8Tensor::quantize(&initial_hidden, 16);
         let mut stages = Vec::new();

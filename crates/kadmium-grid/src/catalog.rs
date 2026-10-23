@@ -325,6 +325,22 @@ impl ReplicaCatalog {
         replica.pinned = job.pin;
         self.record(replica);
     }
+
+    /// Records every rule as already satisfied: each candidate node holds the content in the
+    /// rule's preferred tier. For a catalog seeded from a placement whose staging has completed,
+    /// or for tests that want locality to follow a plan.
+    pub fn assume_placed(rules: &[PlacementRule], now_unix_ms: u64) -> Self {
+        let mut catalog = Self::new();
+        for rule in rules {
+            for node in &rule.candidate_nodes {
+                let mut replica =
+                    Replica::new(rule.content.clone(), node.clone(), rule.preferred_tier, now_unix_ms);
+                replica.pinned = rule.pin;
+                catalog.record(replica);
+            }
+        }
+        catalog
+    }
 }
 
 #[cfg(test)]
