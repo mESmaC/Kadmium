@@ -1,30 +1,47 @@
 # Getting Started with Kadmium
 
-This guide walks you through installing **Kadmium**, profiling your local hardware, spinning up a heterogeneous cluster across your home or lab devices, and running your first distributed inference, training, or **Dream-RSI** workload.
+This guide covers installing **Kadmium**, inspecting a launch plan, opening the Control Room and connecting local workers. The current gateway runs reference compute and returns diagnostic text and vectors; it does not generate language-model answers.
 
 ---
 
 ## 1. Installation
 
-Kadmium compiles into a single dependency-free native binary (`kadmium`) across Windows, macOS (Apple Silicon), Linux (`x86_64`), and ARM64/RISC-V single-board computers.
+### Build the current source
 
-### Option A: Download Prebuilt Binary or Desktop Companion App
-Grab the latest release for your OS from the GitHub Releases page or `https://kadmium.ai/download`:
-- **Windows (`x86_64-pc-windows-msvc`):** `kadmium-x86_64-pc-windows-msvc.exe`, with `kadmium-desktop.exe` (the desktop app) next to it
-- **macOS Apple Silicon (`aarch64-apple-darwin`):** `kadmium-aarch64-apple-darwin.tar.gz`, which includes `kadmium-desktop`
-- **Linux Workstation / NAS / Cloud (`x86_64-unknown-linux-gnu`):** `kadmium-x86_64-unknown-linux-gnu.tar.gz`
-- **ARM64 SBCs — Orange Pi 5 / RK3588 / Raspberry Pi 5 (`aarch64-unknown-linux-gnu`):** `kadmium-aarch64-unknown-linux-gnu.tar.gz`
-
-### Option B: Build from Source (100% Pure Rust)
-Requires Rust `1.85+` (`rustup`):
+Use the current stable Rust toolchain (`rustup`):
 
 ```bash
-git clone https://github.com/kadmium-ai/kadmium.git
-cd kadmium
+git clone https://github.com/mESmaC/Kadmium.git
+cd Kadmium
 cargo build --release -p kadmium-cli
 ```
 
 The compiled binary will be located at `./target/release/kadmium` (or `.\target\release\kadmium.exe` on Windows).
+
+### Checked release installers (next tagged release)
+
+The installer scripts require published assets for an explicit `vX.Y.Z` tag. This documentation does not imply that those assets already exist. Once a matching tag is published, run the script from a checked-out repository and replace the placeholder with that tag:
+
+```bash
+bash scripts/install.sh --version vX.Y.Z
+# Add --launch to start the installed CLI after verification.
+```
+
+```powershell
+.\scripts\install.ps1 -Version vX.Y.Z
+# Add -Launch to start the installed CLI after verification.
+```
+
+| Platform | Release archive |
+| :--- | :--- |
+| Windows x64 | `kadmium-windows-x86_64.zip` |
+| macOS Apple Silicon | `kadmium-macos-arm64.tar.gz` |
+| Linux x64 | `kadmium-linux-x86_64.tar.gz` |
+| Linux ARM64 | `kadmium-linux-arm64.tar.gz` |
+
+The scripts verify the archive against `SHA256SUMS`, check its executable names and CLI version, and install into a versioned per-user directory. They print the binary path and do not modify `PATH`. Windows and macOS archives include the desktop companion. Linux builds use GNU targets, with Ubuntu 22.04 for x64 and Ubuntu 24.04 for ARM64 as build baselines; compatibility is not universal across Linux distributions or musl systems. No release archive is promised for other architectures.
+
+The checksums detect corrupted or mismatched downloads; they are not an independent signature. This setup change adds no direct or transitive Rust dependencies and preserves the existing Cargo manifests and lockfile.
 
 ---
 
@@ -49,16 +66,21 @@ cargo run -p kadmium-cli -- probe
 
 ## 3. Launch the Coordinator & Live Control Dashboard
 
-Start the local Kadmium coordinator and Strata-compatible AI Gateway on port `7848`:
+Inspect the setup without creating files or starting listeners:
 
 ```bash
-cargo run -p kadmium-cli -- serve --port 7848
+cargo run -p kadmium-cli -- launch --plan
 ```
 
-Open **`http://127.0.0.1:7848`** in your browser. From the interactive dashboard you can:
-- Inspect your **7-node heterogeneous cluster topology** (Gaming PC, Apple Silicon Mac Mini, Gaming Laptop, Home NAS Vault, Legacy Laptop, ARM SBC Bramble, and Friend's Remote PC).
-- Trigger live **Responsibility Shifts** (`Host Gaming Mode` auto-yield, `Cloud Burst Node Joined`, or `Coordinator Quorum Failover`) and watch CERN FTS3 P2P transfers rebalance layers without dropping active requests.
-- Inspect the **100-Node Sub-Cluster Pool Slicer**, **TPU/CIM Token vs. Weight Streaming** analyzer, **Dream-RSI Evolving Worlds** discovery tree, and **CloudShield** spot arbitrage planner.
+Then start the existing coordinator on port `7848`:
+
+```bash
+cargo run -p kadmium-cli -- launch
+```
+
+`launch` preserves an existing `kadmium.toml` and creates it only when missing. Its hardware recommendation is informational: it does not download weights, fix the coordinator's model selection or establish model fit. The existing `serve --port 7848` command remains available and unchanged.
+
+Open **`http://127.0.0.1:7848`** in your browser to inspect live hardware, reference workloads and planner telemetry. Add `--demo` for the simulated seven-node fleet or `--spawn-fleet` for the existing worker test fleet. The HTTP coordinator and built-in worker listen on all interfaces; use a trusted network or external access controls. See the [launch guide](guides/cli.md) for configuration semantics and the [API reference](api-reference.md) for diagnostic behavior.
 
 ### Open the desktop app
 
@@ -79,8 +101,15 @@ cargo run -p kadmium-cli -- desktop
 
 ## 4. Connect Additional Devices
 
-### Local LAN Devices (Zero-Config mDNS)
-Any device on the same local Wi-Fi or Ethernet subnet running the Kadmium daemon or Desktop Companion App automatically discovers the active coordinator via mDNS (`_kadmium._udp.local`).
+### Local LAN devices
+
+On a peer, specify the coordinator's reachable LAN address:
+
+```bash
+kadmium join --coordinator http://192.168.1.10:7848
+```
+
+Replace the example IP with the coordinator's real address. Omitting `--coordinator` uses Kadmium's UDP discovery announcements on port `7849`, not mDNS. Discovery and joining require the relevant HTTP, worker and UDP ports to be reachable. Client API keys do not authenticate access to the coordinator.
 
 ### Remote Friends, Family, Lab Nodes, or Cloud GPUs (`kdm1_...` Join Tickets)
 To add a machine across the internet (behind home NAT) or in a cloud datacenter, copy the `kdm1_...` ticket printed by `kadmium probe` or `kadmium serve`.
@@ -95,37 +124,37 @@ Tickets encode:
 
 ---
 
-## 5. Run Inference with Any OpenAI or Anthropic Client
+## 5. Inspect the reference API
 
-Once `kadmium serve` is running, point any existing SDK, IDE plugin (Cursor, Continue, Claude Code), or chat UI (OpenWebUI) to `http://127.0.0.1:7848`:
+The existing `/v1` routes return OpenAI/Anthropic-shaped diagnostic responses. They are not drop-in SDK replacements or a working chat assistant. A request exercises reference compute and returns fixed diagnostic text with telemetry; `stream: true` returns a prebuilt diagnostic event stream, not incremental model generation.
 
-### OpenAI-Compatible Endpoint (`POST /v1/chat/completions`)
+### Chat-shaped diagnostic (`POST /v1/chat/completions`)
 
 ```bash
 curl -X POST http://127.0.0.1:7848/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-ai/DeepSeek-V3-671B-MoE-Q4_K_M",
     "messages": [
-      {"role": "user", "content": "Explain how Kadmium shards MoE experts across NVMe and VRAM."}
+      {"role": "user", "content": "Run a reference compute step."}
     ]
   }'
 ```
 
-### Anthropic-Compatible Endpoint (`POST /v1/messages`)
+### Messages-shaped diagnostic (`POST /v1/messages`)
 
 ```bash
 curl -X POST http://127.0.0.1:7848/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "deepseek-ai/DeepSeek-V3-671B-MoE-Q4_K_M",
     "messages": [
-      {"role": "user", "content": "Hello from an Anthropic-compatible client!"}
+      {"role": "user", "content": "Run a reference compute step."}
     ]
   }'
 ```
 
 ---
+
+`GET /v1/models` lists planning presets, not verified loaded models. `/v1/embeddings` produces reference vectors, not pretrained semantic embeddings. There is no external backend relay, backend URL flag or credential setting in this setup change. A relay requires a future owner decision about dependencies and downstream access design.
 
 ## Next Steps
 

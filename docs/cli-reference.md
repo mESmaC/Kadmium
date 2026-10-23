@@ -14,7 +14,8 @@ Commands:
   dataflow      Evaluate TPU / Compute-in-Memory (CIM) inspired Dynamic Token Streaming vs. Dynamic Weight Streaming
   cloud-shield  Evaluate Kadmium Cloud Business Model: Multi-Datacenter Spot Arbitrage + Bidirectional Downtime Protection
   plan          Compute and print the asymmetric sharding plan for a target workload
-  serve         Launch the Unified Web Control Dashboard & OpenAI/Anthropic compatible AI Gateway
+  launch        Inspect setup, create a missing configuration and start the existing coordinator
+  serve         Launch the Control Room and reference API diagnostics
   desktop       Open the Kadmium desktop app (the Companion in its own window) with a local coordinator
 ```
 
@@ -62,7 +63,7 @@ cargo run -p kadmium-cli -- probe
 
 ## 2. `kadmium serve`
 
-Starts the **Kadmium Control Plane Dashboard** and **Strata-compatible OpenAI/Anthropic AI Gateway**.
+Starts the **Kadmium Control Room** and existing reference API diagnostics. The `/v1` message routes return fixed diagnostic text and telemetry; they do not provide language-model generation or full OpenAI/Anthropic SDK compatibility.
 
 ```bash
 kadmium serve --port 7848
@@ -71,6 +72,35 @@ kadmium serve --port 7848
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `-p`, `--port <PORT>` | `7848` | TCP port for the web dashboard, REST control plane, and `/v1/chat/completions` + `/v1/messages` endpoints. |
+| `-c`, `--config <PATH>` | none | Read a workspace file using the existing tolerant parser. |
+| `--live` | on unless `--demo` | Start with only the real probed hardware nodes. |
+| `--demo` | off | Include the simulated seven-node fleet alongside live hardware. |
+| `--spawn-fleet` | off | Start the existing worker test fleet. |
+| `--worker-port <PORT>` | `7850` | Preferred built-in worker TCP port; `0` asks the OS for a free port. |
+
+HTTP and worker listeners use all interfaces. `serve` behavior, its defaults and its parser are unchanged by the additive setup command. Configuration does not override the listener, host capabilities or active model; the existing coordinator consumes CloudShield settings and the workspace name for that mode. There are no new backend URL, key or inference-relay settings.
+
+---
+
+## 2a. `kadmium launch`
+
+Probes this host, prints an informational planning recommendation, preserves an existing configuration or exclusively creates a missing one, then starts the existing coordinator. `--plan` performs only the probe and prints the plan: no files, listeners, bridge discovery or downloads.
+
+```bash
+kadmium launch --plan
+kadmium launch --config kadmium.toml --port 7848
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--plan` | off | Print a human-readable setup plan and exit. |
+| `-c`, `--config <PATH>` | `kadmium.toml` | Preserve an existing readable file; create a missing file without overwriting. |
+| `-p`, `--port <PORT>` | `7848` | HTTP port, listening on all interfaces. |
+| `--demo` | off | Include the simulated seven-node fleet. |
+| `--spawn-fleet` | off | Start the existing worker test fleet. |
+| `--worker-port <PORT>` | `7850` | Preferred built-in worker TCP port; `0` asks for a free port. |
+
+The generated recommendation does not fix model selection, prove model fit or load weights; the coordinator recommends again at startup. Existing configuration bytes are left unchanged. See the [launch guide](guides/cli.md) for the dependency decision and network/configuration limitations. `init`, `serve` and `desktop` retain their existing behavior.
 
 ---
 

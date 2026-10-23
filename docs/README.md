@@ -2,7 +2,7 @@
 
 Welcome to the official documentation for **Kadmium** (`https://kadmium.ai`) — the open-source consolidated, aggregate, and distributed AI/ML compute fabric written in 100% Pure Rust.
 
-Kadmium turns every piece of silicon you can reach—your main gaming desktop, Apple Silicon Mac Minis, gaming laptops, old laptops in a drawer, Linux ARM/RISC-V single-board computers (SBCs), a Home NAS storage vault, friends' idle PCs, and optional burst cloud GPUs—into a single elastic supercomputer for **LLM/MoE Inference**, **Fault-Tolerant Distributed Training**, and **Disaggregated RL + Dream-RSI**.
+Kadmium implements a heterogeneous compute control plane, planners, worker transport and reference workloads. Current model-related kernels run small reference tensors; the `/v1` routes return diagnostic text and vectors, not language-model generation. Architecture and roadmap documents also describe intended capabilities, so consult the [API contract](api-reference.md) and [execution status](MARKET_RESEARCH_REVIEW_2026-10.md#2-what-kadmium-is-from-the-code) before treating a feature as ready for a real model.
 
 ---
 
@@ -11,9 +11,10 @@ Kadmium turns every piece of silicon you can reach—your main gaming desktop, A
 ### 1. Getting Started & Core Reference
 | Guide | Description |
 | :--- | :--- |
-| [**Quickstart & Installation (`getting-started.md`)**](./getting-started.md) | Install the single-binary `kadmium` CLI or Desktop Companion App, probe your hardware, launch a local cluster in 60 seconds, and connect LAN or remote nodes. |
+| [**Quickstart & Installation (`getting-started.md`)**](./getting-started.md) | Build the CLI, inspect setup, start the Control Room and connect LAN workers; checked release installers require published tagged assets. |
+| [**Launch Guide (`guides/cli.md`)**](./guides/cli.md) | Additive `launch --plan`, non-overwriting configuration creation, unchanged coordinator behavior and the decision to keep existing dependencies. |
 | [**CLI Command Reference (`cli-reference.md`)**](./cli-reference.md) | Complete reference for `kadmium probe`, `serve`, `plan`, `simulate`, `slice`, `dataflow`, `dream`, and `cloud-shield`. |
-| [**HTTP & AI Gateway API (`api-reference.md`)**](./api-reference.md) | Drop-in OpenAI (`/v1/chat/completions`) & Anthropic (`/v1/messages`) endpoints plus the full Cluster Control Plane REST API. |
+| [**HTTP & AI Gateway API (`api-reference.md`)**](./api-reference.md) | Reference diagnostics at `/v1/chat/completions`, `/v1/messages`, `/v1/embeddings` and `/v1/models`, plus the Cluster Control Plane REST API. |
 | [**Technical Specsheet & Product Roadmap (`SPECSHEET_AND_ROADMAP.md`)**](./SPECSHEET_AND_ROADMAP.md) | Complete `Cd-48` engine specifications, 5-tier memory & hardware matrix, algorithmic guarantees, and phased `v0.1` $\to$ `v1.0 GA` roadmap. |
 | [**Deep Technical Architecture (`ARCHITECTURE.md`)**](./ARCHITECTURE.md) | Mathematical foundations, 5-tier memory hierarchy, `.ktb` binary format spec, 1F1B pipeline scheduling, `DeMo` DCT math, and `Verde` verification. |
 
@@ -32,9 +33,9 @@ Kadmium turns every piece of silicon you can reach—your main gaming desktop, A
 
 ```mermaid
 flowchart LR
-    subgraph Clients["AI Clients & SDKs"]
-        OAI["OpenAI SDK / Cursor / OpenWebUI\nPOST /v1/chat/completions"]
-        ANT["Anthropic SDK / Claude Code\nPOST /v1/messages"]
+    subgraph Clients["Reference Requests & Interfaces"]
+        OAI["Chat-shaped Diagnostic\nPOST /v1/chat/completions"]
+        ANT["Messages-shaped Diagnostic\nPOST /v1/messages"]
         COMP["Kadmium Desktop Companion\n(OSS Mode or kadmium.ai Cloud)"]
     end
 

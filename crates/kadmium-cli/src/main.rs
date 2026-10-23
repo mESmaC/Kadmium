@@ -23,6 +23,7 @@ use kadmium_sharding::{
 
 mod diloco_ops;
 mod grid_ops;
+mod launch;
 mod ops;
 use grid_ops::*;
 use ops::*;
@@ -90,7 +91,7 @@ enum Commands {
         #[arg(short, long, default_value = "inference")]
         workload: String,
     },
-    /// Launch the Unified Web Dashboard & OpenAI/Anthropic compatible API Gateway
+    /// Launch the Control Room and reference API diagnostics
     Serve {
         /// Port to bind the HTTP dashboard and API gateway
         #[arg(short, long, default_value_t = 7848)]
@@ -111,6 +112,8 @@ enum Commands {
         #[arg(long, default_value_t = DEFAULT_WORKER_TCP_PORT)]
         worker_port: u16,
     },
+    /// Plan or launch using local hardware, preserving an existing workspace configuration
+    Launch(launch::LaunchArgs),
     /// Join a live Kadmium cluster as a persistent LAN/WAN `WireFrame` compute worker daemon (or verify a `kdm1_...` ticket)
     Join {
         /// Coordinator HTTP gateway URL (e.g., `http://192.168.1.48:7848`); auto-discovered via UDP LAN broadcast if omitted
@@ -349,6 +352,12 @@ async fn main() {
             worker_port,
             spawn_fleet,
         } => run_server(port, config.as_deref(), live || !demo, worker_port, spawn_fleet).await,
+        Commands::Launch(args) => {
+            if let Err(error) = launch::run(args).await {
+                eprintln!("kadmium launch: {error}");
+                std::process::exit(1);
+            }
+        }
         Commands::Join {
             coordinator,
             ticket,
