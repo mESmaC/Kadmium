@@ -187,6 +187,27 @@ Inspired by **FreeToken (`FTW`)** and **Colibri**:
 - **`.ktb` (Kadmium Tensor Bank)** pre-aligns tensors into **4 KB / 64 KB page-aligned execution banks** grouped by `(LayerIndex, ExpertId, QuantFormat)` with Blake3 content-addressed chunk hashes.
 - Enables direct `mmap` / `io_uring` / Windows `IoRing` reads straight from NVMe into DMA buffers or QUIC network streams with zero deserialization overhead.
 
+### 6.1.1 Pre-Merged MoE Expert Sub-Format (`FTWX`)
+When packing routed MoE experts for single-seek execution (`kadmium-data::premerged_bank`), `gate_proj`, `up_proj`, and `down_proj` for a given `(layer_index, expert_index)` are concatenated into one 64 KiB page-aligned `.ktb` entry named `layers.{layer}.moe.experts.{expert}.premerged_gate_up_down`. If the `.ktb` JSON header directory exceeds one 64 KiB page (such as banks containing several hundred experts), `KtbBankPacker::try_pack_to_bytes` expands the header reservation across multiple 64 KiB pages before placing the first tensor entry.
+
+Each pre-merged expert entry begins with a 32-byte little-endian `FTWX` sub-header followed immediately by the three contiguous projection payloads:
+
+| Byte Range | Type | Field | Description |
+| :--- | :--- | :--- | :--- |
+| `0..4` | `[u8; 4]` | `magic` | ASCII `"FTWX"` (`[0x46, 0x54, 0x57, 0x58]`) |
+| `4..8` | `u32` | `layer_index` | Transformer layer index; must match the enclosing `KtbSliceEntry` |
+| `8..12` | `u32` | `expert_index` | Routed MoE expert index; must match `entry.expert_index` |
+| `12..16` | `u32` | `hidden_dim` | Model hidden dimension $d_{\text{model}} > 0$ |
+| `16..20` | `u32` | `intermediate_dim` | Expert SwiGLU intermediate dimension $d_{\text{ff}} > 0$ |
+| `20..24` | `u32` | `gate_len` | Byte length of `gate_proj` payload |
+| `24..28` | `u32` | `up_len` | Byte length of `up_proj` payload |
+| `28..32` | `u32` | `down_len` | Byte length of `down_proj` payload |
+| `32..32+gate_len` | `[u8]` | `gate_proj_bytes` | Contiguous `gate_proj` weights |
+| `..+up_len` | `[u8]` | `up_proj_bytes` | Contiguous `up_proj` weights |
+| `..+down_len` | `[u8]` | `down_proj_bytes` | Contiguous `down_proj` weights |
+
+`KtbPreMergedBankReader` validates all slice offsets with checked arithmetic, verifies the enclosing entry's FNV-1a64 checksum, checks that `32 + gate_len + up_len + down_len == entry.length_bytes`, and verifies `encoding`, `hidden_dim`, and `intermediate_dim` before evaluating the SwiGLU expert. Any reader, checksum, header, or dimension error is returned to the caller (`StageForwardExecutor`, `TrunkForwardExecutor`, `ExpertSliceExecutor`) rather than falling back to synthetic reference weights.
+
 ### 6.2 Third-Party Transfer Scheduler (CERN FTS3 Pattern)
 In naive distributed systems, the coordinator downloads and forwards weights to workers, becoming a severe bottleneck.
 Following **CERN's FTS3** architecture:

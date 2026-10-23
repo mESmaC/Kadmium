@@ -539,13 +539,34 @@ pub fn execute_stage_layers_with_ktb_routed(
     experts_per_layer: u32,
     top_k: u32,
 ) -> (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>) {
+    try_execute_stage_layers_with_ktb_routed(
+        node_id,
+        hostname,
+        req,
+        resident_ktb_bytes,
+        experts_per_layer,
+        top_k,
+    )
+    .expect("resident .ktb bank failed validation")
+}
+
+/// Checked variant of [`execute_stage_layers_with_ktb_routed`] that surfaces `.ktb` reader,
+/// checksum, `FTWX` header, and dimension errors instead of panicking or falling back.
+pub fn try_execute_stage_layers_with_ktb_routed(
+    node_id: &str,
+    hostname: &str,
+    req: &LiveStageForwardRequest,
+    resident_ktb_bytes: Option<&[u8]>,
+    experts_per_layer: u32,
+    top_k: u32,
+) -> Result<(LiveStageForwardResponse, Vec<(u32, Vec<u32>)>), String> {
     let t0 = Instant::now();
     let mut hidden = req.boundary_input.dequantize();
     let dim = hidden.len().max(16);
     if hidden.len() < dim {
         hidden.resize(dim, 0.1);
     }
-    let gamma = LayerReference::gamma_from_bank(resident_ktb_bytes, dim);
+    let gamma = LayerReference::gamma_from_bank_checked(resident_ktb_bytes, dim)?;
 
     // The first layer's trunk and routing: the sample the response reports, and the gate the
     // hardware bridges take.
@@ -624,14 +645,15 @@ pub fn execute_stage_layers_with_ktb_routed(
     let mut routed_per_layer: Vec<(u32, Vec<u32>)> = Vec::new();
     if k230_hw_exec_ms.is_none() {
         for layer in req.start_layer..=req.end_layer {
-            let (out, routing) = LayerReference::layer_forward(
+            let (out, routing) = LayerReference::layer_forward_with_bank(
                 &hidden,
                 layer,
                 &gamma,
                 experts_per_layer,
                 top_k,
                 req.q_star_ratio,
-            );
+                resident_ktb_bytes,
+            )?;
             routed_per_layer.push((layer, routing.iter().map(|r| r.expert_id).collect()));
             let boundary = LayerReference::boundary_quantize(&out);
             hidden = boundary.dequantize();
@@ -687,7 +709,7 @@ pub fn execute_stage_layers_with_ktb_routed(
         draft_tokens,
         draft_probs,
     };
-    (response, routed_per_layer)
+    Ok((response, routed_per_layer))
 }
 
 /// Executes a single training stage's QLoRA forward/backward step and Nous `DeMo` DCT momentum

@@ -15,7 +15,8 @@
 use crate::{
     BlockwiseInt8Tensor, DistributedLanExecutor, ExpertPartial, ExpertPartialsBatch,
     LAYER_BOUNDARY_BLOCK, LayerReference, LayerRouting, LiveStageForwardRequest,
-    MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8, execute_stage_layers_with_ktb_routed,
+    MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8,
+    try_execute_stage_layers_with_ktb_routed,
 };
 use kadmium_core::{NodeId, VerifiedComputeReceipt};
 use kadmium_grid::{
@@ -491,14 +492,14 @@ impl WorkExecutor for StageForwardExecutor {
                 boundary_input,
                 run_speculative_draft: false,
             };
-            let (response, routed) = execute_stage_layers_with_ktb_routed(
+            let (response, routed) = try_execute_stage_layers_with_ktb_routed(
                 &ctx.node_id,
                 &ctx.hostname,
                 &request,
                 Some(&bank),
                 params.experts_per_layer,
                 params.active_experts_per_token,
-            );
+            )?;
             for (layer, experts) in routed {
                 for expert in experts {
                     *routed_hits.entry((layer, expert)).or_default() += 1;
@@ -618,7 +619,7 @@ impl WorkExecutor for TrunkForwardExecutor {
         let rows = batch.dequantize_rows();
         let gamma = {
             let bank = ctx.resident_ktb_bank.lock().expect("resident bank lock");
-            LayerReference::gamma_from_bank(Some(&bank), (batch.dim as usize).max(16))
+            LayerReference::gamma_from_bank_checked(Some(&bank), (batch.dim as usize).max(16))?
         };
         let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
 
@@ -705,7 +706,7 @@ impl WorkExecutor for ExpertSliceExecutor {
         &self,
         unit: &WorkUnit,
         inputs: &WorkInputs,
-        _ctx: &ExecutorContext,
+        ctx: &ExecutorContext,
     ) -> Result<WorkOutput, String> {
         let params: ExpertSliceParams = unit.params_json().map_err(|e| e.to_string())?;
         let (_, trunk_bytes) = activation_input(unit, inputs, |id| id.ends_with("/out"))?;
@@ -720,6 +721,7 @@ impl WorkExecutor for ExpertSliceExecutor {
             ));
         }
 
+        let bank = ctx.resident_ktb_bank.lock().expect("resident bank lock");
         let mut partials = Vec::new();
         for (row, selections) in routing.rows.iter().enumerate() {
             let h = trunk.row(row);
@@ -732,15 +734,17 @@ impl WorkExecutor for ExpertSliceExecutor {
                 partials.push(ExpertPartial {
                     row: row as u32,
                     expert: selection.expert_id,
-                    data: LayerReference::expert_contribution(
+                    data: LayerReference::expert_contribution_from_bank(
                         h,
                         params.layer,
                         selection.expert_id,
                         selection.gating_weight,
-                    ),
+                        Some(&bank),
+                    )?,
                 });
             }
         }
+        drop(bank);
         let applied = partials.len();
         let mut served_hits: BTreeMap<(u32, u32), u64> = BTreeMap::new();
         for partial in &partials {
@@ -2075,6 +2079,158 @@ mod fanout_tests {
         assert_eq!(chain2, fan_out2, "two-row batch differs between shapes");
         assert_eq!(TokenBatchInt8::from_le_bytes(&fan_out2).unwrap().rows, 2);
         assert_ne!(chain2, chain_bytes);
+    }
+
+    #[tokio::test]
+    async fn premerged_ktb_expert_banks_execute_identically_across_chain_and_expert_parallel_over_tcp()
+     {
+        let cluster = sample_personal_cluster();
+        let nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        let w0 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[0].clone(), false)
+            .await
+            .expect("spawn worker 0");
+        let w1 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[1].clone(), false)
+            .await
+            .expect("spawn worker 1");
+        let mut live_workers = BTreeMap::new();
+        live_workers.insert(
+            nodes[0].id.0.clone(),
+            registration(&nodes[0], &w0.local_addr.to_string(), 0.3),
+        );
+        live_workers.insert(
+            nodes[1].id.0.clone(),
+            registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
+        );
+        let model = toy_moe();
+        let seed =
+            TokenBatchInt8::quantize(&prompt_seed_hidden("premerged-ftwx-bank", 64), 1, 64, 16)
+                .unwrap();
+
+        let (_, synthetic_bytes) = run_shape(
+            ExecutionStrategy::PipelineChain,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed,
+            "synthetic-baseline",
+        )
+        .await;
+
+        let custom_bank = LayerReference::pack_premerged_scaled_bank(
+            &model.id,
+            0,
+            model.num_layers - 1,
+            model.experts_per_layer,
+            64,
+            1.35,
+        )
+        .expect("pack pre-merged reference bank");
+        *w0.resident_ktb_bank.lock().unwrap() = custom_bank.clone();
+        *w1.resident_ktb_bank.lock().unwrap() = custom_bank.clone();
+
+        let (_, chain_custom) = run_shape(
+            ExecutionStrategy::PipelineChain,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed,
+            "premerged-chain",
+        )
+        .await;
+        let (_, fan_out_custom) = run_shape(
+            ExecutionStrategy::ExpertParallel,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed,
+            "premerged-fanout",
+        )
+        .await;
+
+        assert_eq!(
+            chain_custom, fan_out_custom,
+            "PipelineChain and ExpertParallel must produce identical bytes with pre-merged .ktb banks"
+        );
+        assert_ne!(
+            chain_custom, synthetic_bytes,
+            "pre-merged .ktb bank with 1.35x weights must change output vs synthetic fallback"
+        );
+
+        // Corrupting a payload byte in w1's resident bank must fail the step rather than
+        // falling back to synthetic reference weights.
+        let mut corrupted_bank = custom_bank.clone();
+        for page_offset in (65_536..corrupted_bank.len()).step_by(65_536) {
+            corrupted_bank[page_offset] ^= 0xFF;
+        }
+        *w1.resident_ktb_bank.lock().unwrap() = corrupted_bank;
+
+        let placement =
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::ExpertParallel, None);
+        let graph =
+            StepGraphBuilder::decode_step(&model, &placement, &nodes, 1, "corrupted-fanout", 1);
+        let catalog = ReplicaCatalog::assume_placed(&placement.rules, 1);
+        let mut workers = GridDispatcher::workers_from_registrations(&live_workers);
+        let config = GridRunConfig::default()
+            .with_seed(StepGraphBuilder::prompt_ref(&graph.id), seed.to_le_bytes());
+        let corrupted_report =
+            GridDispatcher::run_graph(&graph, &mut workers, &catalog, &live_workers, None, &config)
+                .await;
+        assert!(
+            !corrupted_report.success,
+            "corrupted resident .ktb bank must fail the graph instead of falling back"
+        );
+        assert!(
+            corrupted_report.traces.iter().any(|t| !t.ok
+                && t.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("Checksum mismatch"))),
+            "worker trace must surface checksum mismatch: {:?}",
+            corrupted_report.traces
+        );
+
+        // A resident pre-merged bank that is missing one of the model's layers must also
+        // surface an error rather than mixing bank weights with synthetic weights.
+        let incomplete_bank = LayerReference::pack_premerged_scaled_bank(
+            &model.id,
+            0,
+            model.num_layers - 2,
+            model.experts_per_layer,
+            64,
+            1.35,
+        )
+        .expect("pack incomplete bank");
+        *w0.resident_ktb_bank.lock().unwrap() = incomplete_bank.clone();
+        *w1.resident_ktb_bank.lock().unwrap() = incomplete_bank;
+
+        let chain_placement =
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
+        let chain_graph = StepGraphBuilder::decode_step(
+            &model,
+            &chain_placement,
+            &nodes,
+            1,
+            "incomplete-chain",
+            1,
+        );
+        let chain_catalog = ReplicaCatalog::assume_placed(&chain_placement.rules, 1);
+        let mut chain_workers = GridDispatcher::workers_from_registrations(&live_workers);
+        let chain_config = GridRunConfig::default().with_seed(
+            StepGraphBuilder::prompt_ref(&chain_graph.id),
+            seed.to_le_bytes(),
+        );
+        let incomplete_report = GridDispatcher::run_graph(
+            &chain_graph,
+            &mut chain_workers,
+            &chain_catalog,
+            &live_workers,
+            None,
+            &chain_config,
+        )
+        .await;
+        assert!(
+            !incomplete_report.success,
+            "incomplete pre-merged .ktb bank must fail the graph instead of falling back"
+        );
     }
 }
 

@@ -16,7 +16,7 @@ use crate::{
     BlockwiseInt8Tensor, FusedRmsNormRopeKernel, KvPageBlock, MoEGatingRouter,
     MoERoutedExpertSelection, PagedGqaAttentionKernel,
 };
-use kadmium_data::KtbBankReader;
+use kadmium_data::{KtbBankReader, KtbPreMergedBankPacker, KtbPreMergedBankReader, TensorEncoding};
 use serde::{Deserialize, Serialize};
 
 /// Block size of the INT8 quantization applied at every layer boundary.
@@ -50,6 +50,38 @@ impl LayerReference {
             gamma = (0..dim).map(|i| 1.0 + (i as f32) * 0.002).collect();
         }
         gamma
+    }
+
+    /// Fallible RMSNorm scale reader: returns an error if a non-empty `bank` fails `.ktb`
+    /// parsing or checksum verification on `layer.rmsnorm.gamma`.
+    pub fn gamma_from_bank_checked(bank: Option<&[u8]>, dim: usize) -> Result<Vec<f32>, String> {
+        let mut gamma: Vec<f32> = Vec::new();
+        if let Some(ktb_buf) = bank
+            && !ktb_buf.is_empty()
+        {
+            let reader = KtbBankReader::from_slice(ktb_buf)?;
+            if let Some(entry) = reader
+                .header
+                .entries
+                .iter()
+                .find(|e| e.tensor_name == "layer.rmsnorm.gamma")
+            {
+                let raw_slice = reader.get_verified_tensor_slice(entry)?;
+                if !raw_slice.len().is_multiple_of(4) {
+                    return Err(format!(
+                        "layer.rmsnorm.gamma payload is {} bytes, not a multiple of 4",
+                        raw_slice.len()
+                    ));
+                }
+                for chunk in raw_slice.chunks_exact(4).take(dim) {
+                    gamma.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                }
+            }
+        }
+        if gamma.len() < dim {
+            gamma.extend((gamma.len()..dim).map(|i| 1.0 + (i as f32) * 0.002));
+        }
+        Ok(gamma)
     }
 
     /// Hot and warm expert cutoffs for the router's locality prior, from the node's q* ratio.
@@ -181,6 +213,118 @@ impl LayerReference {
             })
             .collect();
         (Self::combine(&h, &partials), routing)
+    }
+
+    /// Evaluates one expert's contribution from a pre-merged `FTWX` `.ktb` weight bank when
+    /// `bank` contains pre-merged experts, or from [`Self::expert_contribution`] when `bank` is
+    /// empty or contains no `FTWX` entries.
+    ///
+    /// Any `.ktb` parse error, checksum mismatch, `FTWX` header mismatch, dimension/encoding
+    /// mismatch, or missing `(layer, expert)` in a pre-merged bank is returned as an error.
+    pub fn expert_contribution_from_bank(
+        hidden: &[f32],
+        layer: u32,
+        expert: u32,
+        gate: f32,
+        bank: Option<&[u8]>,
+    ) -> Result<Vec<f32>, String> {
+        if let Some(ktb_buf) = bank
+            && !ktb_buf.is_empty()
+        {
+            let reader = KtbPreMergedBankReader::from_slice(ktb_buf)?;
+            if reader.premerged_expert_count() > 0 {
+                let slices = reader.get_premerged_expert(layer, expert)?.ok_or_else(|| {
+                    format!(
+                        "pre-merged bank has {} experts but is missing L{layer} E{expert}",
+                        reader.premerged_expert_count()
+                    )
+                })?;
+                return slices.evaluate_swiglu_f32(hidden, gate);
+            }
+        }
+        Ok(Self::expert_contribution(hidden, layer, expert, gate))
+    }
+
+    /// Trunk, every selected expert (reading `FTWX` pre-merged `.ktb` banks when present), and
+    /// combine on one node. Surfaces any bank error.
+    pub fn layer_forward_with_bank(
+        hidden_in: &[f32],
+        layer: u32,
+        gamma: &[f32],
+        experts_per_layer: u32,
+        top_k: u32,
+        q_star: f64,
+        bank: Option<&[u8]>,
+    ) -> Result<(Vec<f32>, Vec<MoERoutedExpertSelection>), String> {
+        let (h, routing) =
+            Self::trunk_forward(hidden_in, layer, gamma, experts_per_layer, top_k, q_star);
+        let mut partials = Vec::with_capacity(routing.len());
+        for r in &routing {
+            let contrib = Self::expert_contribution_from_bank(
+                &h,
+                layer,
+                r.expert_id,
+                r.gating_weight,
+                bank,
+            )?;
+            partials.push((r.expert_id, contrib));
+        }
+        Ok((Self::combine(&h, &partials), routing))
+    }
+
+    /// Packs a 64 KiB page-aligned pre-merged `.ktb` bank for `start_layer..=end_layer` containing
+    /// `layer.rmsnorm.gamma` and `FTWX` (`gate_proj`, `up_proj`, `down_proj`) entries for all
+    /// `0..experts_per_layer` whose evaluation matches [`Self::expert_contribution`].
+    pub fn pack_premerged_reference_bank(
+        model_id: &str,
+        start_layer: u32,
+        end_layer: u32,
+        experts_per_layer: u32,
+        dim: usize,
+    ) -> Result<Vec<u8>, String> {
+        Self::pack_premerged_scaled_bank(
+            model_id,
+            start_layer,
+            end_layer,
+            experts_per_layer,
+            dim,
+            1.0,
+        )
+    }
+
+    /// Packs a 64 KiB page-aligned pre-merged .ktb bank for start_layer..=end_layer with
+    /// down_proj scaled by weight_scale.
+    pub fn pack_premerged_scaled_bank(
+        model_id: &str,
+        start_layer: u32,
+        end_layer: u32,
+        experts_per_layer: u32,
+        dim: usize,
+        weight_scale: f32,
+    ) -> Result<Vec<u8>, String> {
+        let mut packer = KtbPreMergedBankPacker::new(model_id);
+        let mut gamma_bytes = Vec::with_capacity(dim * 4);
+        for i in 0..dim {
+            let g = 1.0f32 + (i as f32) * 0.002;
+            gamma_bytes.extend_from_slice(&g.to_le_bytes());
+        }
+        packer.add_dense_trunk_tensor(
+            "layer.rmsnorm.gamma",
+            start_layer,
+            TensorEncoding::Fp32,
+            gamma_bytes,
+        );
+        let gate_ones = vec![1.0f32; dim];
+        let up_ones = vec![1.0f32; dim];
+        for layer in start_layer..=end_layer {
+            for expert in 0..experts_per_layer {
+                let down: Vec<f32> = (0..dim)
+                    .map(|idx| Self::expert_weight(layer, expert, idx) * weight_scale)
+                    .collect();
+                packer.add_premerged_f32_expert(layer, expert, &gate_ones, &up_ones, &down)?;
+            }
+        }
+        packer.try_pack_to_bytes()
     }
 }
 
@@ -438,5 +582,57 @@ mod tests {
             routing
         );
         assert_eq!(LayerReference::routing_cutoffs(256, 0.9), (127, 196));
+    }
+
+    #[test]
+    fn premerged_ktb_bank_matches_reference_and_surfaces_corruption() {
+        let dim = 64usize;
+        let ktb_bank =
+            LayerReference::pack_premerged_reference_bank("test-moe", 0, 3, 16, dim).unwrap();
+        let gamma = LayerReference::gamma_from_bank_checked(Some(&ktb_bank), dim).unwrap();
+        let h_in = hidden();
+
+        let (ref_out, ref_routing) = LayerReference::layer_forward(&h_in, 2, &gamma, 16, 4, 0.75);
+        let (bank_out, bank_routing) = LayerReference::layer_forward_with_bank(
+            &h_in,
+            2,
+            &gamma,
+            16,
+            4,
+            0.75,
+            Some(&ktb_bank),
+        )
+        .unwrap();
+        assert_eq!(ref_routing, bank_routing);
+        assert_eq!(ref_out, bank_out);
+
+        // Missing layer/expert in a pre-merged bank is surfaced as an error rather than falling
+        // back to synthetic reference weights:
+        assert!(
+            LayerReference::layer_forward_with_bank(
+                &h_in,
+                9,
+                &gamma,
+                16,
+                4,
+                0.75,
+                Some(&ktb_bank)
+            )
+            .is_err()
+        );
+
+        // Width mismatch is surfaced as an error:
+        assert!(
+            LayerReference::layer_forward_with_bank(
+                &[0.25f32; 32],
+                2,
+                &gamma[..32],
+                16,
+                4,
+                0.75,
+                Some(&ktb_bank)
+            )
+            .is_err()
+        );
     }
 }

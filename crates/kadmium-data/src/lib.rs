@@ -23,6 +23,7 @@ pub const KTB_PAGE_ALIGNMENT_BYTES: u64 = 65_536;
 /// Quantization and tensor encoding format inside a `.ktb` bank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TensorEncoding {
+    Fp32,
     Fp16,
     Bf16,
     Fp8E4M3,
@@ -305,57 +306,75 @@ impl KtbBankPacker {
         });
     }
 
-    /// Packs all added tensors into a 64 KiB page-aligned `.ktb` binary image.
-    /// Page 0 (`0..65536`) contains the `"KDTB"` magic, version, and JSON header directory;
-    /// subsequent 64 KiB pages hold each aligned tensor bank.
-    pub fn pack_to_bytes(&self) -> Vec<u8> {
+    /// Fallibly packs all added tensors into a 64 KiB page-aligned `.ktb` binary image.
+    ///
+    /// The JSON header directory starts in Page 0 and spans as many 64 KiB pages as required
+    /// before the first tensor entry begins.
+    pub fn try_pack_to_bytes(&self) -> Result<Vec<u8>, String> {
         let page_size = KTB_PAGE_ALIGNMENT_BYTES as usize;
-        let mut current_offset = page_size as u64; // Page 0 reserved for header directory
-        let mut entries = Vec::with_capacity(self.tensors.len());
+        let mut header_reserved_bytes = page_size;
+        let checksums: Vec<(usize, usize, u64)> = self
+            .tensors
+            .iter()
+            .map(|t| {
+                let payload_len = t.data.len();
+                let padded_len = align_to_64kb_page(payload_len.max(1));
+                let checksum = compute_fnv1a64_checksum(&t.data);
+                (payload_len, padded_len, checksum)
+            })
+            .collect();
 
-        for t in &self.tensors {
-            let payload_len = t.data.len();
-            let padded_len = align_to_64kb_page(payload_len.max(1));
-            let checksum = compute_fnv1a64_checksum(&t.data);
+        let (header_json, current_offset) = loop {
+            let mut offset = header_reserved_bytes as u64;
+            let mut entries = Vec::with_capacity(self.tensors.len());
+            for (t, &(payload_len, padded_len, checksum)) in
+                self.tensors.iter().zip(checksums.iter())
+            {
+                entries.push(KtbPageAlignedTensorEntry {
+                    tensor_name: t.name.clone(),
+                    layer_index: t.layer,
+                    expert_index: t.expert,
+                    encoding: t.encoding,
+                    page_offset_bytes: offset,
+                    payload_bytes: payload_len as u64,
+                    padded_reservation_bytes: padded_len as u64,
+                    checksum_fnv64: checksum,
+                });
+                offset = offset
+                    .checked_add(padded_len as u64)
+                    .ok_or_else(|| "KTB archive size overflows u64".to_string())?;
+            }
 
-            entries.push(KtbPageAlignedTensorEntry {
-                tensor_name: t.name.clone(),
-                layer_index: t.layer,
-                expert_index: t.expert,
-                encoding: t.encoding,
-                page_offset_bytes: current_offset,
-                payload_bytes: payload_len as u64,
-                padded_reservation_bytes: padded_len as u64,
-                checksum_fnv64: checksum,
-            });
-
-            current_offset += padded_len as u64;
-        }
-
-        let header = KtbBinaryArchiveHeader {
-            model_id: self.model_id.clone(),
-            format_version: 1,
-            page_alignment_bytes: KTB_PAGE_ALIGNMENT_BYTES,
-            entries,
+            let header = KtbBinaryArchiveHeader {
+                model_id: self.model_id.clone(),
+                format_version: 1,
+                page_alignment_bytes: KTB_PAGE_ALIGNMENT_BYTES,
+                entries,
+            };
+            let json = serde_json::to_vec(&header)
+                .map_err(|e| format!("failed to serialize KtbBinaryArchiveHeader: {e}"))?;
+            let _ = u32::try_from(json.len())
+                .map_err(|_| "KTB header JSON exceeds u32::MAX".to_string())?;
+            let required = 10usize
+                .checked_add(json.len())
+                .ok_or_else(|| "KTB header length overflows usize".to_string())?;
+            let needed_pages = align_to_64kb_page(required.max(1));
+            if needed_pages <= header_reserved_bytes {
+                break (json, offset);
+            }
+            header_reserved_bytes = needed_pages;
         };
 
-        let header_json = serde_json::to_vec(&header).expect("serialize KtbBinaryArchiveHeader");
-        assert!(
-            10 + header_json.len() <= page_size,
-            "KTB header directory exceeds 64 KiB Page 0"
-        );
-
-        let mut out = Vec::with_capacity(current_offset as usize);
-        // Write Page 0: Magic (4B) + Version (2B) + JSON len (4B) + JSON + 0x00 padding to 64 KiB
+        let total_bytes = usize::try_from(current_offset)
+            .map_err(|_| "KTB archive size overflows usize".to_string())?;
+        let mut out = Vec::with_capacity(total_bytes);
         out.extend_from_slice(&KTB_MAGIC_BYTES);
         out.extend_from_slice(&1u16.to_le_bytes());
         out.extend_from_slice(&(header_json.len() as u32).to_le_bytes());
         out.extend_from_slice(&header_json);
-        out.resize(page_size, 0u8);
+        out.resize(header_reserved_bytes, 0u8);
 
-        // Write each 64 KiB page-aligned tensor bank
-        for t in &self.tensors {
-            let padded_len = align_to_64kb_page(t.data.len().max(1));
+        for (t, &(_, padded_len, _)) in self.tensors.iter().zip(checksums.iter()) {
             out.extend_from_slice(&t.data);
             let pad_bytes = padded_len - t.data.len();
             if pad_bytes > 0 {
@@ -363,7 +382,12 @@ impl KtbBankPacker {
             }
         }
 
-        out
+        Ok(out)
+    }
+
+    /// Packs all added tensors into a 64 KiB page-aligned `.ktb` binary image.
+    pub fn pack_to_bytes(&self) -> Vec<u8> {
+        self.try_pack_to_bytes().expect("pack KtbBankPacker")
     }
 }
 
@@ -383,7 +407,13 @@ impl<'a> KtbBankReader<'a> {
             return Err("Invalid KTB magic header (expected 'KDTB')".into());
         }
         let json_len = u32::from_le_bytes([raw[6], raw[7], raw[8], raw[9]]) as usize;
-        let header: KtbBinaryArchiveHeader = serde_json::from_slice(&raw[10..10 + json_len])
+        let json_end = 10usize
+            .checked_add(json_len)
+            .ok_or_else(|| "KTB header length overflows usize".to_string())?;
+        let json_slice = raw
+            .get(10..json_end)
+            .ok_or_else(|| "KTB header JSON exceeds archive bounds".to_string())?;
+        let header: KtbBinaryArchiveHeader = serde_json::from_slice(json_slice)
             .map_err(|e| format!("Invalid KTB header JSON: {e}"))?;
 
         Ok(Self { raw, header })
@@ -398,18 +428,24 @@ impl<'a> KtbBankReader<'a> {
         if !entry
             .page_offset_bytes
             .is_multiple_of(KTB_PAGE_ALIGNMENT_BYTES)
+            || entry.page_offset_bytes < KTB_PAGE_ALIGNMENT_BYTES
         {
             return Err(format!(
                 "Tensor {} offset {} is not 64 KiB page-aligned",
                 entry.tensor_name, entry.page_offset_bytes
             ));
         }
-        let start = entry.page_offset_bytes as usize;
-        let end = start + (entry.payload_bytes as usize);
-        if end > self.raw.len() {
-            return Err("Tensor slice exceeds KTB archive bounds".into());
-        }
-        let slice = &self.raw[start..end];
+        let start = usize::try_from(entry.page_offset_bytes)
+            .map_err(|_| format!("Tensor {} offset overflows usize", entry.tensor_name))?;
+        let len = usize::try_from(entry.payload_bytes)
+            .map_err(|_| format!("Tensor {} length overflows usize", entry.tensor_name))?;
+        let end = start
+            .checked_add(len)
+            .ok_or_else(|| format!("Tensor {} span overflows usize", entry.tensor_name))?;
+        let slice = self
+            .raw
+            .get(start..end)
+            .ok_or_else(|| "Tensor slice exceeds KTB archive bounds".to_string())?;
         let actual_hash = compute_fnv1a64_checksum(slice);
         if actual_hash != entry.checksum_fnv64 {
             return Err(format!(
@@ -424,12 +460,14 @@ impl<'a> KtbBankReader<'a> {
 pub mod importer;
 pub mod integrations;
 pub mod merkle;
+pub mod premerged_bank;
 pub mod range_pull;
 pub mod transcoder;
 
 pub use importer::*;
 pub use integrations::*;
 pub use merkle::*;
+pub use premerged_bank::*;
 pub use range_pull::*;
 pub use transcoder::*;
 
