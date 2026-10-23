@@ -12,11 +12,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 pub mod lan_pairing;
 pub mod live_mesh;
 pub mod nat_traversal;
+pub mod peer_channel;
 pub mod raid_striper;
 pub mod usbc_interconnect;
 pub use lan_pairing::*;
 pub use live_mesh::*;
 pub use nat_traversal::*;
+pub use peer_channel::*;
 pub use raid_striper::*;
 pub use usbc_interconnect::*;
 
@@ -155,8 +157,23 @@ impl JoinTicket {
     }
 }
 
-/// Magic bytes for Kadmium's binary QUIC wire frame header (`"KDMF"`).
+/// Magic bytes of the legacy 13-byte binary wire frame header (`"KDMF"`), which carried no
+/// request id. Still accepted on read so pre-`KDM2` nodes can talk to this one; never emitted.
 pub const KDM_FRAME_MAGIC: [u8; 4] = *b"KDMF";
+
+/// Magic bytes of the current 21-byte binary wire frame header (`"KDM2"`) carrying a `u64` request id.
+pub const KDM_FRAME_MAGIC_V2: [u8; 4] = *b"KDM2";
+
+/// Legacy `KDMF` header length: magic (4) + kind `u8` (1) + epoch `u32` LE (4) + len `u32` LE (4).
+pub const KDM_FRAME_HEADER_LEN_V1: usize = 13;
+
+/// `KDM2` header length: magic (4) + kind `u8` (1) + epoch `u32` LE (4) + request_id `u64` LE (8)
+/// + len `u32` LE (4).
+pub const KDM_FRAME_HEADER_LEN_V2: usize = 21;
+
+/// Upper bound on a single frame payload accepted from the wire (1 GiB). A corrupt or hostile
+/// length field must not make a node allocate gigabytes before the payload even arrives.
+pub const KDM_FRAME_MAX_PAYLOAD_BYTES: usize = 1 << 30;
 
 /// Multiplexed QUIC stream message kind in the Kadmium P2P data/control plane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +188,14 @@ pub enum WireFrameKind {
     FleetUpdatePush = 7,
     DreamRsiRolloutReplay = 8,
     KvCachePageMigration = 9,
+    /// Generic grid work unit pushed to a worker. The payload is opaque bytes whose layout
+    /// `kadmium-grid` defines; the worker answers with a `WorkResult` carrying the same `request_id`.
+    WorkDispatch = 10,
+    /// Result (or a small `{"error":"..."}` JSON body) for a `WorkDispatch` or `WorkRequest`,
+    /// matched to it by `request_id`.
+    WorkResult = 11,
+    /// A worker asking a scheduler for work. Opaque payload defined by `kadmium-grid`.
+    WorkRequest = 12,
 }
 
 impl WireFrameKind {
@@ -185,48 +210,130 @@ impl WireFrameKind {
             7 => Some(Self::FleetUpdatePush),
             8 => Some(Self::DreamRsiRolloutReplay),
             9 => Some(Self::KvCachePageMigration),
+            10 => Some(Self::WorkDispatch),
+            11 => Some(Self::WorkResult),
+            12 => Some(Self::WorkRequest),
             _ => None,
         }
     }
 }
 
-/// Binary length-prefixed wire frame for Kadmium P2P streams (`13-byte header + payload`).
+/// Binary length-prefixed wire frame for Kadmium P2P streams.
+///
+/// Encodes as the 21-byte `KDM2` header followed by the payload:
+///
+/// ```text
+/// offset  size  field
+///      0     4  magic "KDM2"
+///      4     1  kind (WireFrameKind as u8)
+///      5     4  epoch, u32 LE
+///      9     8  request_id, u64 LE
+///     17     4  payload length, u32 LE
+///     21     n  payload
+/// ```
+///
+/// Decoding also accepts the legacy 13-byte `KDMF` header, which has no `request_id` field (it
+/// reads as 0). The sender (`PeerChannel`) allocates `request_id` per connection and the receiver
+/// echoes it on the reply, so many requests can be in flight on one socket and replies may come
+/// back in any order. `0` means "legacy or unsolicited".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WireFrame {
     pub kind: WireFrameKind,
     pub epoch: u32,
+    pub request_id: u64,
     pub payload: Vec<u8>,
 }
 
 impl WireFrame {
+    /// A frame with `request_id` 0; tag it with [`WireFrame::with_request_id`].
+    pub fn new(kind: WireFrameKind, epoch: u32, payload: Vec<u8>) -> Self {
+        Self {
+            kind,
+            epoch,
+            request_id: 0,
+            payload,
+        }
+    }
+
+    /// Returns the frame tagged with `request_id`.
+    pub fn with_request_id(mut self, request_id: u64) -> Self {
+        self.request_id = request_id;
+        self
+    }
+
+    /// Encodes as a `KDM2` frame.
     pub fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(13 + self.payload.len());
-        out.extend_from_slice(&KDM_FRAME_MAGIC);
+        self.encode_with_request_id(self.request_id)
+    }
+
+    /// Encodes as a `KDM2` frame carrying `request_id` instead of `self.request_id`, without
+    /// cloning the payload (lets a caller resend one prepared frame under a fresh id).
+    pub fn encode_with_request_id(&self, request_id: u64) -> Vec<u8> {
+        let mut out = Vec::with_capacity(KDM_FRAME_HEADER_LEN_V2 + self.payload.len());
+        out.extend_from_slice(&KDM_FRAME_MAGIC_V2);
         out.push(self.kind as u8);
         out.extend_from_slice(&self.epoch.to_le_bytes());
+        out.extend_from_slice(&request_id.to_le_bytes());
         out.extend_from_slice(&(self.payload.len() as u32).to_le_bytes());
         out.extend_from_slice(&self.payload);
         out
     }
 
+    /// Header length implied by the 4 magic bytes, or an error for anything that is not a frame.
+    fn header_len_for_magic(magic: &[u8]) -> Result<usize, String> {
+        if magic == KDM_FRAME_MAGIC_V2 {
+            Ok(KDM_FRAME_HEADER_LEN_V2)
+        } else if magic == KDM_FRAME_MAGIC {
+            Ok(KDM_FRAME_HEADER_LEN_V1)
+        } else {
+            Err("Invalid WireFrame magic (expected 'KDM2' or legacy 'KDMF')".into())
+        }
+    }
+
+    /// Parses a complete v1 or v2 header into `(kind, epoch, request_id, payload_len)`.
+    fn parse_header(header: &[u8]) -> Result<(WireFrameKind, u32, u64, usize), String> {
+        let kind = WireFrameKind::from_u8(header[4])
+            .ok_or_else(|| format!("Unknown WireFrameKind byte: {}", header[4]))?;
+        let epoch = u32::from_le_bytes([header[5], header[6], header[7], header[8]]);
+        let (request_id, len_at) = if header.len() == KDM_FRAME_HEADER_LEN_V2 {
+            let mut id = [0u8; 8];
+            id.copy_from_slice(&header[9..17]);
+            (u64::from_le_bytes(id), 17)
+        } else {
+            (0, 9)
+        };
+        let len = u32::from_le_bytes([
+            header[len_at],
+            header[len_at + 1],
+            header[len_at + 2],
+            header[len_at + 3],
+        ]) as usize;
+        if len > KDM_FRAME_MAX_PAYLOAD_BYTES {
+            return Err(format!(
+                "WireFrame payload length {len} exceeds the {KDM_FRAME_MAX_PAYLOAD_BYTES}-byte limit"
+            ));
+        }
+        Ok((kind, epoch, request_id, len))
+    }
+
+    /// Decodes a `KDM2` or legacy `KDMF` frame from a byte slice.
     pub fn decode(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.len() < 13 {
-            return Err("WireFrame shorter than 13-byte header".into());
+        if bytes.len() < 4 {
+            return Err("WireFrame shorter than 4-byte magic".into());
         }
-        if bytes[0..4] != KDM_FRAME_MAGIC {
-            return Err("Invalid WireFrame magic (expected 'KDMF')".into());
+        let header_len = Self::header_len_for_magic(&bytes[0..4])?;
+        if bytes.len() < header_len {
+            return Err(format!("WireFrame shorter than {header_len}-byte header"));
         }
-        let kind = WireFrameKind::from_u8(bytes[4])
-            .ok_or_else(|| format!("Unknown WireFrameKind byte: {}", bytes[4]))?;
-        let epoch = u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]);
-        let len = u32::from_le_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]) as usize;
-        if bytes.len() < 13 + len {
+        let (kind, epoch, request_id, len) = Self::parse_header(&bytes[..header_len])?;
+        if bytes.len() < header_len + len {
             return Err("WireFrame payload truncated".into());
         }
         Ok(Self {
             kind,
             epoch,
-            payload: bytes[13..13 + len].to_vec(),
+            request_id,
+            payload: bytes[header_len..header_len + len].to_vec(),
         })
     }
 
@@ -246,20 +353,22 @@ impl WireFrame {
             .map_err(|e| format!("Stream flush error: {e}"))
     }
 
-    /// Asynchronously reads a single binary `WireFrame` from any Tokio `AsyncRead` stream.
+    /// Asynchronously reads a single `KDM2` (or legacy `KDMF`) `WireFrame` from any Tokio
+    /// `AsyncRead` stream.
     pub async fn read_from_stream<R: AsyncReadExt + Unpin>(stream: &mut R) -> Result<Self, String> {
-        let mut header = [0u8; 13];
+        let mut header = [0u8; KDM_FRAME_HEADER_LEN_V2];
         stream
-            .read_exact(&mut header)
+            .read_exact(&mut header[..4])
             .await
             .map_err(|e| format!("Stream header read error: {e}"))?;
-        if header[0..4] != KDM_FRAME_MAGIC {
-            return Err("Invalid WireFrame magic on stream (expected 'KDMF')".into());
-        }
-        let kind = WireFrameKind::from_u8(header[4])
-            .ok_or_else(|| format!("Unknown WireFrameKind byte: {}", header[4]))?;
-        let epoch = u32::from_le_bytes([header[5], header[6], header[7], header[8]]);
-        let len = u32::from_le_bytes([header[9], header[10], header[11], header[12]]) as usize;
+        let header_len = Self::header_len_for_magic(&header[..4]).map_err(|_| {
+            "Invalid WireFrame magic on stream (expected 'KDM2' or legacy 'KDMF')".to_string()
+        })?;
+        stream
+            .read_exact(&mut header[4..header_len])
+            .await
+            .map_err(|e| format!("Stream header read error: {e}"))?;
+        let (kind, epoch, request_id, len) = Self::parse_header(&header[..header_len])?;
         let mut payload = vec![0u8; len];
         if len > 0 {
             stream
@@ -270,6 +379,7 @@ impl WireFrame {
         Ok(Self {
             kind,
             epoch,
+            request_id,
             payload,
         })
     }
@@ -496,11 +606,11 @@ impl ClusterStateCrdt {
 
     /// Packs this CRDT snapshot into a `WireFrame` for P2P gossip transmission.
     pub fn to_wire_frame(&self, epoch: u32) -> WireFrame {
-        WireFrame {
-            kind: WireFrameKind::ShardPlanEpochUpdate,
+        WireFrame::new(
+            WireFrameKind::ShardPlanEpochUpdate,
             epoch,
-            payload: serde_json::to_vec(self).expect("serialize ClusterStateCrdt"),
-        }
+            serde_json::to_vec(self).expect("serialize ClusterStateCrdt"),
+        )
     }
 
     /// Unpacks a `ClusterStateCrdt` from a received `WireFrame`.
@@ -530,16 +640,95 @@ mod tests {
         assert_eq!(decoded, ticket);
     }
 
+    /// Encodes a frame with the pre-request-id 13-byte `KDMF` header exactly as old nodes did.
+    fn encode_legacy_kdmf(frame: &WireFrame) -> Vec<u8> {
+        let mut out = Vec::with_capacity(KDM_FRAME_HEADER_LEN_V1 + frame.payload.len());
+        out.extend_from_slice(&KDM_FRAME_MAGIC);
+        out.push(frame.kind as u8);
+        out.extend_from_slice(&frame.epoch.to_le_bytes());
+        out.extend_from_slice(&(frame.payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&frame.payload);
+        out
+    }
+
     #[test]
     fn test_binary_wire_frame_encode_decode() {
-        let frame = WireFrame {
-            kind: WireFrameKind::SystolicTokenWavefront,
-            epoch: 4,
-            payload: vec![1, 2, 3, 4, 5, 6, 7, 8],
-        };
+        // Current layout: 21-byte `KDM2` header with a u64 request id.
+        let frame = WireFrame::new(
+            WireFrameKind::SystolicTokenWavefront,
+            4,
+            vec![1, 2, 3, 4, 5, 6, 7, 8],
+        )
+        .with_request_id(0xDEAD_BEEF_0000_0042);
         let raw = frame.encode();
-        let decoded = WireFrame::decode(&raw).expect("decode frame");
+        assert_eq!(raw.len(), KDM_FRAME_HEADER_LEN_V2 + 8);
+        assert_eq!(&raw[0..4], &KDM_FRAME_MAGIC_V2);
+        assert_eq!(raw[4], WireFrameKind::SystolicTokenWavefront as u8);
+        assert_eq!(u32::from_le_bytes([raw[5], raw[6], raw[7], raw[8]]), 4);
+        let mut id = [0u8; 8];
+        id.copy_from_slice(&raw[9..17]);
+        assert_eq!(u64::from_le_bytes(id), 0xDEAD_BEEF_0000_0042);
+        assert_eq!(u32::from_le_bytes([raw[17], raw[18], raw[19], raw[20]]), 8);
+        let decoded = WireFrame::decode(&raw).expect("decode KDM2 frame");
         assert_eq!(decoded, frame);
+        assert_eq!(
+            WireFrame::decode(&frame.encode_with_request_id(7))
+                .expect("decode re-tagged frame")
+                .request_id,
+            7
+        );
+
+        // Legacy layout: 13-byte `KDMF` header still decodes, with request_id 0.
+        let legacy = WireFrame::new(WireFrameKind::DeMoCompressedGradient, 9, b"legacy".to_vec());
+        let raw_legacy = encode_legacy_kdmf(&legacy);
+        assert_eq!(raw_legacy.len(), KDM_FRAME_HEADER_LEN_V1 + 6);
+        let decoded_legacy = WireFrame::decode(&raw_legacy).expect("decode legacy KDMF frame");
+        assert_eq!(decoded_legacy, legacy);
+        assert_eq!(decoded_legacy.request_id, 0);
+
+        // Truncation, unknown kinds, and bad magic are rejected.
+        assert!(WireFrame::decode(&raw[..raw.len() - 1]).is_err());
+        assert!(WireFrame::decode(&raw[..KDM_FRAME_HEADER_LEN_V2 - 1]).is_err());
+        assert!(WireFrame::decode(&raw_legacy[..5]).is_err());
+        assert!(WireFrame::decode(b"KD").is_err());
+        let mut bad_magic = raw.clone();
+        bad_magic[0..4].copy_from_slice(b"KDMX");
+        assert!(WireFrame::decode(&bad_magic).is_err());
+        let mut bad_kind = raw.clone();
+        bad_kind[4] = 200;
+        assert!(WireFrame::decode(&bad_kind).is_err());
+
+        // Generic grid work kinds round-trip through the byte codec.
+        for (kind, byte) in [
+            (WireFrameKind::WorkDispatch, 10u8),
+            (WireFrameKind::WorkResult, 11u8),
+            (WireFrameKind::WorkRequest, 12u8),
+        ] {
+            assert_eq!(kind as u8, byte);
+            assert_eq!(WireFrameKind::from_u8(byte), Some(kind));
+        }
+        assert_eq!(WireFrameKind::from_u8(13), None);
+    }
+
+    #[tokio::test]
+    async fn test_wire_frame_stream_reader_accepts_v2_and_legacy_headers() {
+        // `&[u8]` is an `AsyncRead`: feed both layouts back to back through one reader.
+        let v2 = WireFrame::new(WireFrameKind::WorkDispatch, 1, vec![9, 9, 9]).with_request_id(77);
+        let legacy = WireFrame::new(WireFrameKind::HeartbeatTelemetry, 2, Vec::new());
+        let mut bytes = v2.encode();
+        bytes.extend(encode_legacy_kdmf(&legacy));
+
+        let mut cursor: &[u8] = &bytes;
+        let first = WireFrame::read_from_stream(&mut cursor)
+            .await
+            .expect("read KDM2 frame");
+        assert_eq!(first, v2);
+        let second = WireFrame::read_from_stream(&mut cursor)
+            .await
+            .expect("read legacy KDMF frame");
+        assert_eq!(second, legacy);
+        assert!(cursor.is_empty());
+        assert!(WireFrame::read_from_stream(&mut cursor).await.is_err());
     }
 
     #[tokio::test]
@@ -557,11 +746,11 @@ mod tests {
             assert_eq!(received.kind, WireFrameKind::DeMoCompressedGradient);
             assert_eq!(received.epoch, 7);
 
-            let reply = WireFrame {
-                kind: WireFrameKind::ShardPlanEpochUpdate,
-                epoch: 8,
-                payload: b"ACK-EPOCH-8".to_vec(),
-            };
+            let reply = WireFrame::new(
+                WireFrameKind::ShardPlanEpochUpdate,
+                8,
+                b"ACK-EPOCH-8".to_vec(),
+            );
             reply
                 .write_to_stream(&mut socket)
                 .await
@@ -571,11 +760,7 @@ mod tests {
         let mut client = tokio::net::TcpStream::connect(addr)
             .await
             .expect("connect loopback");
-        let out_frame = WireFrame {
-            kind: WireFrameKind::DeMoCompressedGradient,
-            epoch: 7,
-            payload: vec![42, 99, 128],
-        };
+        let out_frame = WireFrame::new(WireFrameKind::DeMoCompressedGradient, 7, vec![42, 99, 128]);
         out_frame
             .write_to_stream(&mut client)
             .await

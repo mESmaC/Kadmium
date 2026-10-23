@@ -2224,4 +2224,208 @@ mod tests {
             deep_256.zerocopy_mmap_repops_digest,
         );
     }
+
+    #[tokio::test]
+    async fn test_live_worker_serves_64_concurrent_forward_stages_over_one_pooled_channel() {
+        let cluster = sample_personal_cluster();
+        let worker =
+            LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, cluster[0].clone(), false)
+                .await
+                .expect("spawn worker");
+        let addr = worker.local_addr.to_string();
+        let input: Vec<f32> = (0..64).map(|i| ((i as f32) * 0.07).sin() * 0.6).collect();
+        let boundary = BlockwiseInt8Tensor::quantize(&input, 16);
+
+        // 64 stage calls in flight at once against one worker, all through the process-wide pool.
+        let mut tasks = Vec::with_capacity(64);
+        for i in 0..64u32 {
+            let addr = addr.clone();
+            let req = LiveStageForwardRequest {
+                epoch: 7,
+                model_id: "deepseek-v3-671b-moe-q4k".into(),
+                stage_index: i as usize,
+                start_layer: i,
+                end_layer: i + 1,
+                q_star_ratio: 0.8,
+                boundary_input: boundary.clone(),
+                run_speculative_draft: false,
+            };
+            tasks.push(tokio::spawn(async move {
+                let (resp, wall_ms) = DistributedLanExecutor::send_stage_forward_tcp(&addr, &req)
+                    .await
+                    .expect("concurrent forward stage");
+                (i, resp, wall_ms)
+            }));
+        }
+        for task in tasks {
+            let (i, resp, wall_ms) = task.await.expect("join stage task");
+            assert_eq!(resp.start_layer, i, "reply correlated to the wrong request");
+            assert_eq!(resp.end_layer, i + 1);
+            assert_eq!(resp.node_id, cluster[0].id.0);
+            assert!(wall_ms > 0.0);
+        }
+        assert_eq!(
+            worker
+                .served_forward_stages
+                .load(std::sync::atomic::Ordering::Relaxed),
+            64
+        );
+        // One persistent connection carried all 64 requests.
+        assert_eq!(
+            worker
+                .accepted_connections
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+        let channel = DistributedLanExecutor::channel_pool()
+            .get_or_connect(&addr)
+            .await
+            .expect("pooled channel");
+        assert!(channel.is_healthy());
+        assert_eq!(channel.in_flight(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_live_worker_answers_legacy_kdmf_one_shot_client_and_unregistered_work_frames() {
+        use kadmium_network::{KDM_FRAME_MAGIC, PeerChannel, WireFrame, WireFrameKind};
+        use std::time::Duration;
+        use tokio::io::AsyncWriteExt;
+
+        let cluster = sample_personal_cluster();
+        let worker =
+            LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, cluster[1].clone(), false)
+                .await
+                .expect("spawn worker");
+
+        // A pre-KDM2 node: raw socket, hand-built 13-byte KDMF header, one frame, one reply, close.
+        let ping = LiveHeartbeatPing {
+            epoch: 3,
+            timestamp_unix_ms: 1,
+        };
+        let payload = serde_json::to_vec(&ping).expect("serialize ping");
+        let mut raw = Vec::with_capacity(13 + payload.len());
+        raw.extend_from_slice(&KDM_FRAME_MAGIC);
+        raw.push(WireFrameKind::HeartbeatTelemetry as u8);
+        raw.extend_from_slice(&3u32.to_le_bytes());
+        raw.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        raw.extend_from_slice(&payload);
+
+        let mut stream = tokio::net::TcpStream::connect(worker.local_addr)
+            .await
+            .expect("connect raw client");
+        stream.write_all(&raw).await.expect("write legacy frame");
+        let reply = WireFrame::read_from_stream(&mut stream)
+            .await
+            .expect("legacy client still gets a reply");
+        assert_eq!(reply.kind, WireFrameKind::HeartbeatTelemetry);
+        assert_eq!(reply.epoch, 3);
+        assert_eq!(reply.request_id, 0);
+        let pong: LiveHeartbeatPong = serde_json::from_slice(&reply.payload).expect("pong payload");
+        assert_eq!(pong.node.id, cluster[1].id);
+        drop(stream);
+
+        // Generic grid work frames are answered (never left hanging) until phase 3 registers an
+        // executor, and the reply carries the request id so the channel can match it.
+        let channel = PeerChannel::connect(&worker.local_addr.to_string(), Duration::from_secs(5))
+            .await
+            .expect("connect channel");
+        let result = channel
+            .call(
+                WireFrameKind::WorkDispatch,
+                9,
+                b"opaque-work-unit".to_vec(),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("work frame answered");
+        assert_eq!(result.kind, WireFrameKind::WorkResult);
+        assert_eq!(result.epoch, 9);
+        assert_ne!(result.request_id, 0);
+        let body: serde_json::Value = serde_json::from_slice(&result.payload).expect("error body");
+        assert_eq!(body["error"], "no executor registered");
+
+        // A malformed payload for a known kind is answered with an error body on the same
+        // connection, and the connection stays usable afterwards.
+        let bad = channel
+            .call(
+                WireFrameKind::SystolicTokenWavefront,
+                9,
+                b"not json".to_vec(),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("malformed request still answered");
+        assert_eq!(bad.kind, WireFrameKind::SystolicTokenWavefront);
+        assert!(serde_json::from_slice::<LiveStageForwardResponse>(&bad.payload).is_err());
+        let (pong_again, _) =
+            DistributedLanExecutor::ping_worker_tcp(&worker.local_addr.to_string(), 4)
+                .await
+                .expect("ping after error replies");
+        assert_eq!(pong_again.node.id, cluster[1].id);
+        assert!(channel.is_healthy());
+        assert_eq!(channel.in_flight(), 0);
+    }
+
+    #[test]
+    fn test_token_batch_int8_binary_codec_roundtrip() {
+        let rows = 4usize;
+        let dim = 40usize;
+        let flat: Vec<f32> = (0..(rows * dim))
+            .map(|i| ((i as f32) * 0.05).sin() * (1.0 + (i / dim) as f32))
+            .collect();
+        let batch = TokenBatchInt8::quantize(&flat, rows as u32, dim as u32, 16)
+            .expect("quantize batch");
+        assert_eq!(batch.tensor.total_elements, rows * dim);
+        assert_eq!(batch.tensor.absmax_scales.len(), 10);
+
+        let bytes = batch.to_le_bytes();
+        assert_eq!(
+            bytes.len(),
+            8 + INT8_TENSOR_CODEC_HEADER_LEN + 10 * 4 + rows * dim
+        );
+        let decoded = TokenBatchInt8::from_le_bytes(&bytes).expect("decode batch");
+        assert_eq!(decoded.rows, 4);
+        assert_eq!(decoded.dim, 40);
+        assert_eq!(decoded.tensor.block_size, batch.tensor.block_size);
+        assert_eq!(decoded.tensor.total_elements, batch.tensor.total_elements);
+        assert_eq!(decoded.tensor.absmax_scales, batch.tensor.absmax_scales);
+        assert_eq!(decoded.tensor.quantized_data, batch.tensor.quantized_data);
+        assert_eq!(decoded.tensor.dequantize(), batch.tensor.dequantize());
+        assert_eq!(decoded.to_le_bytes(), bytes);
+        let rows_back = decoded.dequantize_rows();
+        assert_eq!(rows_back.len(), rows);
+        assert!(rows_back.iter().all(|r| r.len() == dim));
+        for (a, b) in flat.iter().zip(rows_back.concat().iter()) {
+            assert!((a - b).abs() < 0.05, "dequantized {b} drifted from {a}");
+        }
+
+        // Standalone tensor codec, including negative values and a partial last block.
+        let q = BlockwiseInt8Tensor::quantize(&flat[..37], 8);
+        let t_bytes = q.to_le_bytes();
+        assert_eq!(t_bytes.len(), INT8_TENSOR_CODEC_HEADER_LEN + 5 * 4 + 37);
+        let q2 = BlockwiseInt8Tensor::from_le_bytes(&t_bytes).expect("decode tensor");
+        assert_eq!(q2.block_size, 8);
+        assert_eq!(q2.total_elements, 37);
+        assert_eq!(q2.absmax_scales, q.absmax_scales);
+        assert_eq!(q2.quantized_data, q.quantized_data);
+        let (prefix, consumed) =
+            BlockwiseInt8Tensor::from_le_bytes_prefix(&[t_bytes.clone(), vec![0xAA; 3]].concat())
+                .expect("decode tensor prefix");
+        assert_eq!(consumed, t_bytes.len());
+        assert_eq!(prefix.quantized_data, q.quantized_data);
+
+        // Corrupt inputs are rejected rather than mis-decoded.
+        assert!(BlockwiseInt8Tensor::from_le_bytes(&t_bytes[..t_bytes.len() - 1]).is_err());
+        assert!(BlockwiseInt8Tensor::from_le_bytes(&t_bytes[..5]).is_err());
+        assert!(BlockwiseInt8Tensor::from_le_bytes(&[t_bytes.clone(), vec![0]].concat()).is_err());
+        let mut zero_block = t_bytes.clone();
+        zero_block[0..4].copy_from_slice(&0u32.to_le_bytes());
+        assert!(BlockwiseInt8Tensor::from_le_bytes(&zero_block).is_err());
+        assert!(TokenBatchInt8::from_le_bytes(&bytes[..bytes.len() - 3]).is_err());
+        assert!(TokenBatchInt8::from_le_bytes(&bytes[..6]).is_err());
+        let mut wrong_shape = bytes.clone();
+        wrong_shape[0..4].copy_from_slice(&5u32.to_le_bytes());
+        assert!(TokenBatchInt8::from_le_bytes(&wrong_shape).is_err());
+        assert!(TokenBatchInt8::quantize(&flat, 3, 40, 16).is_err());
+    }
 }

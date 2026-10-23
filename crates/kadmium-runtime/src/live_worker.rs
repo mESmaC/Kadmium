@@ -1,6 +1,6 @@
 //! # `kadmium_runtime::live_worker`
 //!
-//! Real TCP `WireFrame` (`KDMF`) Worker Server (`LiveNodeWorkerServer`), Multi-Hop
+//! Real TCP `WireFrame` (`KDM2`, legacy `KDMF` accepted) Worker Server (`LiveNodeWorkerServer`), Multi-Hop
 //! Distributed LAN/WAN Pipeline & Training Executor (`DistributedLanExecutor`),
 //! Live FTS3 `.ktb` Page-Verified Shard Streaming (`WireFrameKind::Fts3KtbChunkStream`),
 //! Over-The-Air (OTA) Fleet Update Pusher, and Local Multi-Port TCP Fleet Spawner (`LocalFleetSpawner`).
@@ -27,8 +27,8 @@ use kadmium_data::{
     MerkleInclusionProof, TensorEncoding, compute_fnv1a64_checksum,
 };
 use kadmium_network::{
-    DEFAULT_KADMIUM_RUNTIME_VERSION, FleetUpdateManifest, LiveWorkerRegistration, WireFrame,
-    WireFrameKind, WorkerUpdatePushAck,
+    DEFAULT_KADMIUM_RUNTIME_VERSION, FleetUpdateManifest, LiveWorkerRegistration, PeerChannelPool,
+    WireFrame, WireFrameKind, WorkerUpdatePushAck,
 };
 use kadmium_sharding::ClusterShardPlan;
 use serde::{Deserialize, Serialize};
@@ -36,13 +36,22 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
 
 /// Default initial `.ktb` Merkle root reported by nodes before delta updates.
 pub const DEFAULT_INITIAL_KTB_MERKLE_ROOT: u64 = 0x323a_320a_6ab6_d941;
+
+/// Reply deadline for pooled `WireFrame` calls that run real compute on the worker (stage forward
+/// and training steps, FTS3 page patches, Verde challenges, Dream-RSI replays, OTA staging).
+/// Generous on purpose: hardware bridges (K230 over USB serial, CM4/M4 over LAN) can take seconds,
+/// and before the channel pool these reads had no deadline at all.
+pub const WIRE_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Reply deadline for latency-sensitive control calls (heartbeat ping, KV-cache page migration).
+pub const WIRE_CONTROL_CALL_TIMEOUT: Duration = Duration::from_millis(2500);
 
 /// Builds a real 64 KiB page-aligned `.ktb` weight bank in memory for a worker node using
 /// `KtbBankPacker` and computes its `KtbMerkleTree` root hash.
@@ -1163,6 +1172,481 @@ pub fn execute_dream_rsi_replay_local(
     }
 }
 
+/// Shared worker state handed to every frame handler on every connection.
+///
+/// The `Arc`s are the same ones `LiveNodeWorkerServer` exposes, so the counters and resident
+/// `.ktb` bank a frame handler updates are the ones the owner of the server observes.
+#[derive(Clone)]
+pub struct WorkerFrameContext {
+    pub node: Arc<Mutex<HardwareNode>>,
+    pub installed_version: Arc<Mutex<String>>,
+    pub ktb_merkle_root_fnv64: Arc<AtomicU64>,
+    pub resident_ktb_bank: Arc<Mutex<Vec<u8>>>,
+    pub served_forward_stages: Arc<AtomicU64>,
+    pub served_training_steps: Arc<AtomicU64>,
+    pub served_fts3_pages: Arc<AtomicU64>,
+    /// Remote address of the connection the frame arrived on (console logging only).
+    pub peer_addr: SocketAddr,
+    pub log_console: bool,
+}
+
+/// Executes one inbound frame against the worker state and returns the reply to send, or `None`
+/// when the worker has no handler for it (malformed payload, or a kind this port does not serve).
+/// This is exactly the per-kind dispatch the accept loop used to run inline; the connection loop
+/// tags the reply with the request's `request_id` and answers `None` with an error frame.
+pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option<WireFrame> {
+    let peer_addr = ctx.peer_addr;
+    let log_console = ctx.log_console;
+    let (node_snapshot, node_id_obj, node_id_str, hostname_str) = {
+        let guard = ctx.node.lock().expect("worker node lock");
+        (
+            guard.clone(),
+            guard.id.clone(),
+            guard.id.0.clone(),
+            guard.hostname.clone(),
+        )
+    };
+
+    match frame.kind {
+        WireFrameKind::HeartbeatTelemetry => {
+            let cur_ver = ctx.installed_version.lock().expect("version lock").clone();
+            let cur_mrk = ctx.ktb_merkle_root_fnv64.load(Ordering::Relaxed);
+            let pong = LiveHeartbeatPong {
+                polite_state: node_snapshot.polite_state,
+                node: node_snapshot,
+                served_forward_stages: ctx.served_forward_stages.load(Ordering::Relaxed),
+                served_training_steps: ctx.served_training_steps.load(Ordering::Relaxed),
+                installed_version: cur_ver,
+                ktb_merkle_root_fnv64: cur_mrk,
+            };
+            let reply = WireFrame::new(
+                WireFrameKind::HeartbeatTelemetry,
+                frame.epoch,
+                serde_json::to_vec(&pong).expect("serialize LiveHeartbeatPong"),
+            );
+            return Some(reply);
+        }
+        WireFrameKind::SystolicTokenWavefront => {
+            if let Ok(req) = serde_json::from_slice::<LiveStageForwardRequest>(&frame.payload) {
+                let resp = {
+                    let ktb_guard = ctx.resident_ktb_bank.lock().expect("ktb bank lock");
+                    execute_stage_kernels_with_ktb(
+                        &node_id_str,
+                        &hostname_str,
+                        &req,
+                        Some(&ktb_guard),
+                    )
+                };
+                let count = ctx.served_forward_stages.fetch_add(1, Ordering::Relaxed) + 1;
+                if log_console {
+                    println!(
+                        "  [WireFrame FWD #{count:04}] Peer {peer_addr} -> {} Layers L{:02}..L{:02} | INT8 {} B | |y|={:.3} | RepOps={:#018x} | {:.2} ms",
+                        hostname_str,
+                        resp.start_layer,
+                        resp.end_layer,
+                        resp.boundary_int8_payload_bytes,
+                        resp.output_activation_l2_norm,
+                        resp.repops_digest_fnv1a,
+                        resp.compute_exec_ms
+                    );
+                }
+                let reply = WireFrame::new(
+                    WireFrameKind::SystolicTokenWavefront,
+                    frame.epoch,
+                    serde_json::to_vec(&resp).expect("serialize LiveStageForwardResponse"),
+                );
+                return Some(reply);
+            }
+        }
+        WireFrameKind::DeMoCompressedGradient => {
+            if let Ok(req) = serde_json::from_slice::<LiveStageTrainingRequest>(&frame.payload) {
+                let resp = execute_stage_training_local(&node_id_str, &hostname_str, &req);
+                let count = ctx.served_training_steps.fetch_add(1, Ordering::Relaxed) + 1;
+                if log_console {
+                    println!(
+                        "  [WireFrame TRN #{count:04}] Peer {peer_addr} -> {} Step #{} L{:02}..L{:02} | Loss {:.4}->{:.4} | DeMo {:.1}x | {:.2} ms",
+                        hostname_str,
+                        req.step_index,
+                        resp.start_layer,
+                        resp.end_layer,
+                        resp.loss_before,
+                        resp.loss_after,
+                        resp.wire_compression_ratio,
+                        resp.compute_exec_ms
+                    );
+                }
+                let reply = WireFrame::new(
+                    WireFrameKind::DeMoCompressedGradient,
+                    frame.epoch,
+                    serde_json::to_vec(&resp).expect("serialize LiveStageTrainingResponse"),
+                );
+                return Some(reply);
+            }
+        }
+        WireFrameKind::Fts3KtbChunkStream => {
+            if let Ok(req) = serde_json::from_slice::<LiveFts3ChunkStreamRequest>(&frame.payload) {
+                let t0 = Instant::now();
+                let mut patch_ok = false;
+                let note = {
+                    let mut bank_guard = ctx.resident_ktb_bank.lock().expect("ktb bank lock");
+                    let min_len = req
+                        .total_bank_bytes
+                        .max((req.page_index + 1) * KTB_PAGE_ALIGNMENT_BYTES as usize);
+                    if bank_guard.len() < min_len {
+                        bank_guard.resize(min_len, 0u8);
+                    }
+                    match Fts3PagePatchEngine::verify_and_patch_page(
+                        &mut bank_guard,
+                        &req.page_bytes,
+                        &req.inclusion_proof,
+                        req.expected_merkle_root,
+                    ) {
+                        Ok(()) => {
+                            patch_ok = true;
+                            ctx.ktb_merkle_root_fnv64
+                                .store(req.expected_merkle_root, Ordering::Relaxed);
+                            ctx.served_fts3_pages.fetch_add(1, Ordering::Relaxed);
+                            let mut sd_suffix = String::new();
+                            if (node_id_str.starts_with("node-k230")
+                                || hostname_str.contains("k230"))
+                                && req.page_index == 0
+                            {
+                                let port = hostname_str
+                                    .rsplit('-')
+                                    .next()
+                                    .filter(|s| s.to_ascii_uppercase().starts_with("COM"))
+                                    .map(|s| s.to_ascii_uppercase())
+                                    .unwrap_or_else(|| "COM11".to_string());
+                                if let Some((sd_ok, sd_ms)) =
+                                    kadmium_core::K230UsbComputeBridge::stage_fts3_ktb_page_on_k230(
+                                        &port,
+                                        req.page_index,
+                                        req.expected_merkle_root,
+                                        &req.page_bytes,
+                                    )
+                                {
+                                    sd_suffix = format!(
+                                        " | /sdcard/kadmium_fts3_shard.ktb verified={} ({:.2} ms)",
+                                        sd_ok, sd_ms
+                                    );
+                                }
+                            } else if (node_id_str.starts_with("node-reterminal")
+                                || hostname_str.contains("reterminal"))
+                                && req.page_index == 0
+                            {
+                                let ip = hostname_str
+                                    .rsplit('-')
+                                    .next()
+                                    .filter(|s| s.contains('.'))
+                                    .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+                                if let Some((emmc_ok, emmc_ms)) =
+                                    kadmium_core::ReTerminalCm4LanBridge::stage_fts3_ktb_page_on_cm4(
+                                        ip,
+                                        req.page_index,
+                                        req.expected_merkle_root,
+                                        &req.page_bytes,
+                                    )
+                                {
+                                    sd_suffix = format!(
+                                        " | ~/kadmium-cm4/kadmium_fts3_page_0.ktb verified={} ({:.2} ms)",
+                                        emmc_ok, emmc_ms
+                                    );
+                                }
+                            } else if hostname_str.starts_with("apple-m4-mac-mini")
+                                && req.page_index == 0
+                            {
+                                let ip = hostname_str
+                                    .rsplit('-')
+                                    .next()
+                                    .filter(|s| s.contains('.'))
+                                    .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+                                if let Some((nvme_ok, nvme_ms)) =
+                                    kadmium_core::M4MacMiniLanBridge::stage_fts3_ktb_page_on_m4(
+                                        ip,
+                                        req.page_index,
+                                        req.expected_merkle_root,
+                                        &req.page_bytes,
+                                    )
+                                {
+                                    sd_suffix = format!(
+                                        " | ~/kadmium-m4/kadmium_fts3_page_0.ktb verified={} ({:.2} ms)",
+                                        nvme_ok, nvme_ms
+                                    );
+                                }
+                            }
+                            format!(
+                                "Patched 64 KiB page #{}/{} from {} ({}) [Merkle root {:#018x} verified{}]",
+                                req.page_index + 1,
+                                req.total_pages,
+                                req.source_hostname,
+                                req.shard_name,
+                                req.expected_merkle_root,
+                                sd_suffix
+                            )
+                        }
+                        Err(e) => e,
+                    }
+                };
+                let elapsed_ms = ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0;
+                let ack = LiveFts3ChunkStreamAck {
+                    transfer_id: req.transfer_id,
+                    target_node_id: node_id_str,
+                    target_hostname: hostname_str.clone(),
+                    shard_name: req.shard_name,
+                    page_index: req.page_index,
+                    patched_bytes: req.page_bytes.len(),
+                    verified_merkle_proof: patch_ok,
+                    new_merkle_root_fnv64: ctx.ktb_merkle_root_fnv64.load(Ordering::Relaxed),
+                    patch_exec_ms: elapsed_ms.max(0.05),
+                    status_note: note,
+                };
+                if log_console {
+                    println!(
+                        "  [WireFrame FTS3] {} <- page #{} ({} B) | Verified={} | Merkle={:#018x}",
+                        hostname_str,
+                        ack.page_index,
+                        ack.patched_bytes,
+                        ack.verified_merkle_proof,
+                        ack.new_merkle_root_fnv64
+                    );
+                }
+                let reply = WireFrame::new(
+                    WireFrameKind::Fts3KtbChunkStream,
+                    frame.epoch,
+                    serde_json::to_vec(&ack).expect("serialize LiveFts3ChunkStreamAck"),
+                );
+                return Some(reply);
+            }
+        }
+        WireFrameKind::FleetUpdatePush => {
+            if let Ok(manifest) = serde_json::from_slice::<FleetUpdateManifest>(&frame.payload) {
+                let prev_ver = ctx.installed_version.lock().expect("version lock").clone();
+                let prev_mrk = ctx.ktb_merkle_root_fnv64.load(Ordering::Relaxed);
+                let ack = apply_ota_update_manifest_local(
+                    &node_id_obj,
+                    &hostname_str,
+                    &prev_ver,
+                    prev_mrk,
+                    "LAN Direct TCP WireFrame (KDMF)",
+                    &manifest,
+                );
+                if ack.accepted {
+                    *ctx.installed_version.lock().expect("version lock") =
+                        ack.installed_version.clone();
+                    ctx.ktb_merkle_root_fnv64
+                        .store(ack.applied_ktb_merkle_root_fnv64, Ordering::Relaxed);
+                }
+                if log_console {
+                    println!(
+                        "  [WireFrame OTA] {} -> {} ({:?}) | MAC={:#018x} | Merkle={:#018x} | Accepted={}",
+                        hostname_str,
+                        ack.installed_version,
+                        manifest.payload_kind,
+                        ack.verified_mac_fnv64,
+                        ack.applied_ktb_merkle_root_fnv64,
+                        ack.accepted
+                    );
+                }
+                let reply = WireFrame::new(
+                    WireFrameKind::FleetUpdatePush,
+                    frame.epoch,
+                    serde_json::to_vec(&ack).expect("serialize WorkerUpdatePushAck"),
+                );
+                return Some(reply);
+            }
+        }
+        WireFrameKind::VerdeBisectionChallenge => {
+            if let Ok(req) = serde_json::from_slice::<LiveVerdeBisectionRequest>(&frame.payload) {
+                let resp = execute_verde_layer_challenge_local(&node_id_str, &hostname_str, &req);
+                if log_console {
+                    println!(
+                        "  [WireFrame VERDE] {} L{:02}..L{:02} | RepOpsSum={:.6} | Digest={:#018x} | {:.2} ms",
+                        hostname_str,
+                        req.start_layer,
+                        resp.queried_layer,
+                        resp.repops_tree_sum,
+                        resp.repops_digest_fnv1a,
+                        resp.compute_exec_ms
+                    );
+                }
+                let reply = WireFrame::new(
+                    WireFrameKind::VerdeBisectionChallenge,
+                    frame.epoch,
+                    serde_json::to_vec(&resp).expect("serialize LiveVerdeBisectionResponse"),
+                );
+                return Some(reply);
+            }
+        }
+        WireFrameKind::DreamRsiRolloutReplay => {
+            if let Ok(req) = serde_json::from_slice::<LiveDreamRsiReplayRequest>(&frame.payload) {
+                let resp = execute_dream_rsi_replay_local(&node_id_str, &hostname_str, &req);
+                if log_console {
+                    println!(
+                        "  [WireFrame DREAM-RSI] {} ({}) | {} MCTS sims | Speedup {:.2}x | Policy={:#018x} | 0.0 GPU-hrs",
+                        hostname_str,
+                        req.world_id,
+                        resp.mcts_simulations_run,
+                        resp.evolved_peak_speedup,
+                        resp.evolved_policy_hash_fnv64
+                    );
+                }
+                let reply = WireFrame::new(
+                    WireFrameKind::DreamRsiRolloutReplay,
+                    frame.epoch,
+                    serde_json::to_vec(&resp).expect("serialize LiveDreamRsiReplayResponse"),
+                );
+                return Some(reply);
+            }
+        }
+        WireFrameKind::KvCachePageMigration => {
+            if let Ok(req) = serde_json::from_slice::<LiveKvCacheMigrationRequest>(&frame.payload) {
+                let t_kv = Instant::now();
+                let mut restored_f64 = Vec::new();
+                let mut wire_bytes = 0usize;
+                for (kp, vp) in req
+                    .quantized_k_pages
+                    .iter()
+                    .zip(req.quantized_v_pages.iter())
+                {
+                    wire_bytes += kp.quantized_data.len()
+                        + kp.absmax_scales.len() * 4
+                        + vp.quantized_data.len()
+                        + vp.absmax_scales.len() * 4;
+                    for v in kp.dequantize() {
+                        restored_f64.push(v as f64);
+                    }
+                    for v in vp.dequantize() {
+                        restored_f64.push(v as f64);
+                    }
+                }
+                let tree_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&restored_f64);
+                let q_milli = (tree_sum * 10_000.0).round() as i64;
+                let digest =
+                    0xcbf2_9ce4_8422_2325_u64 ^ (q_milli as u64).wrapping_mul(0x0100_0000_01b3);
+                let mut exec_ms = ((t_kv.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0;
+                if node_id_str.starts_with("node-reterminal") || hostname_str.contains("reterminal")
+                {
+                    let ip = hostname_str
+                        .rsplit('-')
+                        .next()
+                        .filter(|s| s.contains('.'))
+                        .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
+                    if let Some((_ok, hw_ms)) =
+                        kadmium_core::ReTerminalCm4LanBridge::stage_kv_cache_migration_on_cm4(
+                            ip,
+                            &req.session_id,
+                            req.quantized_k_pages.len(),
+                            req.tokens_stored,
+                            wire_bytes,
+                        )
+                    {
+                        exec_ms = hw_ms;
+                    }
+                } else if hostname_str.starts_with("apple-m4-mac-mini") {
+                    let ip = hostname_str
+                        .rsplit('-')
+                        .next()
+                        .filter(|s| s.contains('.'))
+                        .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
+                    if let Some((_ok, hw_ms)) =
+                        kadmium_core::M4MacMiniLanBridge::stage_kv_cache_migration_on_m4(
+                            ip,
+                            &req.session_id,
+                            req.quantized_k_pages.len(),
+                            req.tokens_stored,
+                            wire_bytes,
+                        )
+                    {
+                        exec_ms = hw_ms;
+                    }
+                }
+                let ack = LiveKvCacheMigrationAck {
+                    target_node_id: node_id_str.clone(),
+                    target_hostname: hostname_str.clone(),
+                    session_id: req.session_id.clone(),
+                    pages_installed: req.quantized_k_pages.len(),
+                    tokens_restored: req.tokens_stored,
+                    compressed_wire_bytes: wire_bytes,
+                    verified_repops_digest_fnv1a: digest,
+                    bit_exact_verified: digest == req.expected_repops_digest_fnv1a,
+                    exec_ms: exec_ms.max(0.05),
+                };
+                if log_console {
+                    println!(
+                        "  [WireFrame KV-MIGRATE] {} <- {} | {} pages ({} tokens, {} B) | RepOps={:#018x}",
+                        hostname_str,
+                        req.source_node_id,
+                        ack.pages_installed,
+                        ack.tokens_restored,
+                        wire_bytes,
+                        digest
+                    );
+                }
+                let reply = WireFrame::new(
+                    WireFrameKind::KvCachePageMigration,
+                    frame.epoch,
+                    serde_json::to_vec(&ack).expect("serialize LiveKvCacheMigrationAck"),
+                );
+                return Some(reply);
+            }
+        }
+        WireFrameKind::WorkDispatch | WireFrameKind::WorkRequest | WireFrameKind::WorkResult => {
+            // Phase 3 (`kadmium-grid`) registers executors for generic work units. Until then
+            // every work frame is answered with an error body so the caller's channel never hangs.
+            return Some(WireFrame::new(
+                WireFrameKind::WorkResult,
+                frame.epoch,
+                br#"{"error":"no executor registered"}"#.to_vec(),
+            ));
+        }
+        // CRDT gossip is exchanged between coordinators; the worker port does not serve it.
+        WireFrameKind::ShardPlanEpochUpdate => {}
+    }
+    None
+}
+
+/// Reply for a frame `handle_worker_frame` could not serve: same kind and epoch with a small JSON
+/// error body, so a typed client fails fast on the body instead of waiting out its timeout.
+fn unhandled_frame_reply(kind: WireFrameKind, epoch: u32) -> WireFrame {
+    WireFrame::new(
+        kind,
+        epoch,
+        format!(r#"{{"error":"worker has no handler for {kind:?} or its payload was malformed"}}"#)
+            .into_bytes(),
+    )
+}
+
+/// Serves one accepted TCP connection until the peer hangs up or the stream breaks.
+///
+/// Frames are read in order, but each is handled on its own task and its reply goes out through a
+/// shared writer, so a connection carrying many pipelined requests (a `PeerChannel`) receives
+/// replies as they complete, out of order, each tagged with the `request_id` of the request it
+/// answers. Legacy one-shot clients (connect, one `KDMF` frame, read one reply, close) are served
+/// by the same loop: their reply is written and the next read sees EOF.
+pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerFrameContext) {
+    let _ = stream.set_nodelay(true);
+    let (read_half, write_half) = stream.into_split();
+    let mut reader = tokio::io::BufReader::new(read_half);
+    let writer = Arc::new(tokio::sync::Mutex::new(write_half));
+    loop {
+        let frame = match WireFrame::read_from_stream(&mut reader).await {
+            Ok(frame) => frame,
+            // EOF, reset, or a malformed header: nothing more can be read from this connection.
+            Err(_) => break,
+        };
+        let ctx = ctx.clone();
+        let writer = Arc::clone(&writer);
+        tokio::spawn(async move {
+            let (kind, epoch, request_id) = (frame.kind, frame.epoch, frame.request_id);
+            let reply = handle_worker_frame(frame, &ctx)
+                .unwrap_or_else(|| unhandled_frame_reply(kind, epoch))
+                .with_request_id(request_id);
+            let mut writer = writer.lock().await;
+            let _ = reply.write_to_stream(&mut *writer).await;
+        });
+    }
+}
+
 /// Persistent TCP `WireFrame` Worker Server running on each node in the Kadmium mesh.
 #[derive(Clone)]
 pub struct LiveNodeWorkerServer {
@@ -1174,6 +1658,9 @@ pub struct LiveNodeWorkerServer {
     pub served_forward_stages: Arc<AtomicU64>,
     pub served_training_steps: Arc<AtomicU64>,
     pub served_fts3_pages: Arc<AtomicU64>,
+    /// TCP connections accepted since the server started (one persistent `PeerChannel` per
+    /// coordinator is the expected steady state).
+    pub accepted_connections: Arc<AtomicU64>,
 }
 
 impl LiveNodeWorkerServer {
@@ -1225,466 +1712,29 @@ impl LiveNodeWorkerServer {
         let fwd_counter = Arc::new(AtomicU64::new(0));
         let trn_counter = Arc::new(AtomicU64::new(0));
         let fts_counter = Arc::new(AtomicU64::new(0));
+        let accepted_counter = Arc::new(AtomicU64::new(0));
 
-        let node_clone = Arc::clone(&node_arc);
-        let ver_clone = Arc::clone(&version_arc);
-        let mrk_clone = Arc::clone(&merkle_arc);
-        let ktb_clone = Arc::clone(&ktb_bank_arc);
-        let fwd_clone = Arc::clone(&fwd_counter);
-        let trn_clone = Arc::clone(&trn_counter);
-        let fts_clone = Arc::clone(&fts_counter);
+        let ctx_template = WorkerFrameContext {
+            node: Arc::clone(&node_arc),
+            installed_version: Arc::clone(&version_arc),
+            ktb_merkle_root_fnv64: Arc::clone(&merkle_arc),
+            resident_ktb_bank: Arc::clone(&ktb_bank_arc),
+            served_forward_stages: Arc::clone(&fwd_counter),
+            served_training_steps: Arc::clone(&trn_counter),
+            served_fts3_pages: Arc::clone(&fts_counter),
+            peer_addr: local_addr,
+            log_console,
+        };
+        let accepted_ref = Arc::clone(&accepted_counter);
 
         tokio::spawn(async move {
-            while let Ok((mut stream, peer_addr)) = listener.accept().await {
-                let n_ref = Arc::clone(&node_clone);
-                let v_ref = Arc::clone(&ver_clone);
-                let m_ref = Arc::clone(&mrk_clone);
-                let k_ref = Arc::clone(&ktb_clone);
-                let f_ref = Arc::clone(&fwd_clone);
-                let t_ref = Arc::clone(&trn_clone);
-                let s_ref = Arc::clone(&fts_clone);
-
-                tokio::spawn(async move {
-                    if let Ok(frame) = WireFrame::read_from_stream(&mut stream).await {
-                        let (node_snapshot, node_id_obj, node_id_str, hostname_str) = {
-                            let guard = n_ref.lock().expect("worker node lock");
-                            (
-                                guard.clone(),
-                                guard.id.clone(),
-                                guard.id.0.clone(),
-                                guard.hostname.clone(),
-                            )
-                        };
-
-                        match frame.kind {
-                            WireFrameKind::HeartbeatTelemetry => {
-                                let cur_ver = v_ref.lock().expect("version lock").clone();
-                                let cur_mrk = m_ref.load(Ordering::Relaxed);
-                                let pong = LiveHeartbeatPong {
-                                    polite_state: node_snapshot.polite_state,
-                                    node: node_snapshot,
-                                    served_forward_stages: f_ref.load(Ordering::Relaxed),
-                                    served_training_steps: t_ref.load(Ordering::Relaxed),
-                                    installed_version: cur_ver,
-                                    ktb_merkle_root_fnv64: cur_mrk,
-                                };
-                                let reply = WireFrame {
-                                    kind: WireFrameKind::HeartbeatTelemetry,
-                                    epoch: frame.epoch,
-                                    payload: serde_json::to_vec(&pong)
-                                        .expect("serialize LiveHeartbeatPong"),
-                                };
-                                let _ = reply.write_to_stream(&mut stream).await;
-                            }
-                            WireFrameKind::SystolicTokenWavefront => {
-                                if let Ok(req) =
-                                    serde_json::from_slice::<LiveStageForwardRequest>(&frame.payload)
-                                {
-                                    let resp = {
-                                        let ktb_guard = k_ref.lock().expect("ktb bank lock");
-                                        execute_stage_kernels_with_ktb(
-                                            &node_id_str,
-                                            &hostname_str,
-                                            &req,
-                                            Some(&ktb_guard),
-                                        )
-                                    };
-                                    let count = f_ref.fetch_add(1, Ordering::Relaxed) + 1;
-                                    if log_console {
-                                        println!(
-                                            "  [WireFrame FWD #{count:04}] Peer {peer_addr} -> {} Layers L{:02}..L{:02} | INT8 {} B | |y|={:.3} | RepOps={:#018x} | {:.2} ms",
-                                            hostname_str,
-                                            resp.start_layer,
-                                            resp.end_layer,
-                                            resp.boundary_int8_payload_bytes,
-                                            resp.output_activation_l2_norm,
-                                            resp.repops_digest_fnv1a,
-                                            resp.compute_exec_ms
-                                        );
-                                    }
-                                    let reply = WireFrame {
-                                        kind: WireFrameKind::SystolicTokenWavefront,
-                                        epoch: frame.epoch,
-                                        payload: serde_json::to_vec(&resp)
-                                            .expect("serialize LiveStageForwardResponse"),
-                                    };
-                                    let _ = reply.write_to_stream(&mut stream).await;
-                                }
-                            }
-                            WireFrameKind::DeMoCompressedGradient => {
-                                if let Ok(req) = serde_json::from_slice::<LiveStageTrainingRequest>(
-                                    &frame.payload,
-                                ) {
-                                    let resp = execute_stage_training_local(
-                                        &node_id_str,
-                                        &hostname_str,
-                                        &req,
-                                    );
-                                    let count = t_ref.fetch_add(1, Ordering::Relaxed) + 1;
-                                    if log_console {
-                                        println!(
-                                            "  [WireFrame TRN #{count:04}] Peer {peer_addr} -> {} Step #{} L{:02}..L{:02} | Loss {:.4}->{:.4} | DeMo {:.1}x | {:.2} ms",
-                                            hostname_str,
-                                            req.step_index,
-                                            resp.start_layer,
-                                            resp.end_layer,
-                                            resp.loss_before,
-                                            resp.loss_after,
-                                            resp.wire_compression_ratio,
-                                            resp.compute_exec_ms
-                                        );
-                                    }
-                                    let reply = WireFrame {
-                                        kind: WireFrameKind::DeMoCompressedGradient,
-                                        epoch: frame.epoch,
-                                        payload: serde_json::to_vec(&resp)
-                                            .expect("serialize LiveStageTrainingResponse"),
-                                    };
-                                    let _ = reply.write_to_stream(&mut stream).await;
-                                }
-                            }
-                            WireFrameKind::Fts3KtbChunkStream => {
-                                if let Ok(req) = serde_json::from_slice::<LiveFts3ChunkStreamRequest>(
-                                    &frame.payload,
-                                ) {
-                                    let t0 = Instant::now();
-                                    let mut patch_ok = false;
-                                    let note = {
-                                        let mut bank_guard = k_ref.lock().expect("ktb bank lock");
-                                        let min_len = req.total_bank_bytes.max(
-                                            (req.page_index + 1) * KTB_PAGE_ALIGNMENT_BYTES as usize,
-                                        );
-                                        if bank_guard.len() < min_len {
-                                            bank_guard.resize(min_len, 0u8);
-                                        }
-                                        match Fts3PagePatchEngine::verify_and_patch_page(
-                                            &mut bank_guard,
-                                            &req.page_bytes,
-                                            &req.inclusion_proof,
-                                            req.expected_merkle_root,
-                                        ) {
-                                            Ok(()) => {
-                                                patch_ok = true;
-                                                m_ref.store(
-                                                    req.expected_merkle_root,
-                                                    Ordering::Relaxed,
-                                                );
-                                                s_ref.fetch_add(1, Ordering::Relaxed);
-                                                let mut sd_suffix = String::new();
-                                                if (node_id_str.starts_with("node-k230")
-                                                    || hostname_str.contains("k230"))
-                                                    && req.page_index == 0
-                                                {
-                                                    let port = hostname_str
-                                                        .rsplit('-')
-                                                        .next()
-                                                        .filter(|s| {
-                                                            s.to_ascii_uppercase().starts_with("COM")
-                                                        })
-                                                        .map(|s| s.to_ascii_uppercase())
-                                                        .unwrap_or_else(|| "COM11".to_string());
-                                                    if let Some((sd_ok, sd_ms)) = kadmium_core::K230UsbComputeBridge::stage_fts3_ktb_page_on_k230(
-                                                        &port,
-                                                        req.page_index,
-                                                        req.expected_merkle_root,
-                                                        &req.page_bytes,
-                                                    ) {
-                                                        sd_suffix = format!(
-                                                            " | /sdcard/kadmium_fts3_shard.ktb verified={} ({:.2} ms)",
-                                                            sd_ok, sd_ms
-                                                        );
-                                                    }
-                                                } else if (node_id_str.starts_with("node-reterminal")
-                                                    || hostname_str.contains("reterminal"))
-                                                    && req.page_index == 0
-                                                {
-                                                    let ip = hostname_str
-                                                        .rsplit('-')
-                                                        .next()
-                                                        .filter(|s| s.contains('.'))
-                                                        .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
-                                                    if let Some((emmc_ok, emmc_ms)) = kadmium_core::ReTerminalCm4LanBridge::stage_fts3_ktb_page_on_cm4(
-                                                        ip,
-                                                        req.page_index,
-                                                        req.expected_merkle_root,
-                                                        &req.page_bytes,
-                                                    ) {
-                                                        sd_suffix = format!(
-                                                            " | ~/kadmium-cm4/kadmium_fts3_page_0.ktb verified={} ({:.2} ms)",
-                                                            emmc_ok, emmc_ms
-                                                        );
-                                                    }
-                                                } else if hostname_str.starts_with("apple-m4-mac-mini")
-                                                    && req.page_index == 0
-                                                {
-                                                    let ip = hostname_str
-                                                        .rsplit('-')
-                                                        .next()
-                                                        .filter(|s| s.contains('.'))
-                                                        .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
-                                                    if let Some((nvme_ok, nvme_ms)) = kadmium_core::M4MacMiniLanBridge::stage_fts3_ktb_page_on_m4(
-                                                        ip,
-                                                        req.page_index,
-                                                        req.expected_merkle_root,
-                                                        &req.page_bytes,
-                                                    ) {
-                                                        sd_suffix = format!(
-                                                            " | ~/kadmium-m4/kadmium_fts3_page_0.ktb verified={} ({:.2} ms)",
-                                                            nvme_ok, nvme_ms
-                                                        );
-                                                    }
-                                                }
-                                                format!(
-                                                    "Patched 64 KiB page #{}/{} from {} ({}) [Merkle root {:#018x} verified{}]",
-                                                    req.page_index + 1,
-                                                    req.total_pages,
-                                                    req.source_hostname,
-                                                    req.shard_name,
-                                                    req.expected_merkle_root,
-                                                    sd_suffix
-                                                )
-                                            }
-                                            Err(e) => e,
-                                        }
-                                    };
-                                    let elapsed_ms =
-                                        ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round()
-                                            / 100.0;
-                                    let ack = LiveFts3ChunkStreamAck {
-                                        transfer_id: req.transfer_id,
-                                        target_node_id: node_id_str,
-                                        target_hostname: hostname_str.clone(),
-                                        shard_name: req.shard_name,
-                                        page_index: req.page_index,
-                                        patched_bytes: req.page_bytes.len(),
-                                        verified_merkle_proof: patch_ok,
-                                        new_merkle_root_fnv64: m_ref.load(Ordering::Relaxed),
-                                        patch_exec_ms: elapsed_ms.max(0.05),
-                                        status_note: note,
-                                    };
-                                    if log_console {
-                                        println!(
-                                            "  [WireFrame FTS3] {} <- page #{} ({} B) | Verified={} | Merkle={:#018x}",
-                                            hostname_str,
-                                            ack.page_index,
-                                            ack.patched_bytes,
-                                            ack.verified_merkle_proof,
-                                            ack.new_merkle_root_fnv64
-                                        );
-                                    }
-                                    let reply = WireFrame {
-                                        kind: WireFrameKind::Fts3KtbChunkStream,
-                                        epoch: frame.epoch,
-                                        payload: serde_json::to_vec(&ack)
-                                            .expect("serialize LiveFts3ChunkStreamAck"),
-                                    };
-                                    let _ = reply.write_to_stream(&mut stream).await;
-                                }
-                            }
-                            WireFrameKind::FleetUpdatePush => {
-                                if let Ok(manifest) =
-                                    serde_json::from_slice::<FleetUpdateManifest>(&frame.payload)
-                                {
-                                    let prev_ver = v_ref.lock().expect("version lock").clone();
-                                    let prev_mrk = m_ref.load(Ordering::Relaxed);
-                                    let ack = apply_ota_update_manifest_local(
-                                        &node_id_obj,
-                                        &hostname_str,
-                                        &prev_ver,
-                                        prev_mrk,
-                                        "LAN Direct TCP WireFrame (KDMF)",
-                                        &manifest,
-                                    );
-                                    if ack.accepted {
-                                        *v_ref.lock().expect("version lock") =
-                                            ack.installed_version.clone();
-                                        m_ref.store(
-                                            ack.applied_ktb_merkle_root_fnv64,
-                                            Ordering::Relaxed,
-                                        );
-                                    }
-                                    if log_console {
-                                        println!(
-                                            "  [WireFrame OTA] {} -> {} ({:?}) | MAC={:#018x} | Merkle={:#018x} | Accepted={}",
-                                            hostname_str,
-                                            ack.installed_version,
-                                            manifest.payload_kind,
-                                            ack.verified_mac_fnv64,
-                                            ack.applied_ktb_merkle_root_fnv64,
-                                            ack.accepted
-                                        );
-                                    }
-                                    let reply = WireFrame {
-                                        kind: WireFrameKind::FleetUpdatePush,
-                                        epoch: frame.epoch,
-                                        payload: serde_json::to_vec(&ack)
-                                            .expect("serialize WorkerUpdatePushAck"),
-                                    };
-                                    let _ = reply.write_to_stream(&mut stream).await;
-                                }
-                            }
-                            WireFrameKind::VerdeBisectionChallenge => {
-                                if let Ok(req) =
-                                    serde_json::from_slice::<LiveVerdeBisectionRequest>(&frame.payload)
-                                {
-                                    let resp = execute_verde_layer_challenge_local(
-                                        &node_id_str,
-                                        &hostname_str,
-                                        &req,
-                                    );
-                                    if log_console {
-                                        println!(
-                                            "  [WireFrame VERDE] {} L{:02}..L{:02} | RepOpsSum={:.6} | Digest={:#018x} | {:.2} ms",
-                                            hostname_str,
-                                            req.start_layer,
-                                            resp.queried_layer,
-                                            resp.repops_tree_sum,
-                                            resp.repops_digest_fnv1a,
-                                            resp.compute_exec_ms
-                                        );
-                                    }
-                                    let reply = WireFrame {
-                                        kind: WireFrameKind::VerdeBisectionChallenge,
-                                        epoch: frame.epoch,
-                                        payload: serde_json::to_vec(&resp)
-                                            .expect("serialize LiveVerdeBisectionResponse"),
-                                    };
-                                    let _ = reply.write_to_stream(&mut stream).await;
-                                }
-                            }
-                            WireFrameKind::DreamRsiRolloutReplay => {
-                                if let Ok(req) =
-                                    serde_json::from_slice::<LiveDreamRsiReplayRequest>(&frame.payload)
-                                {
-                                    let resp = execute_dream_rsi_replay_local(
-                                        &node_id_str,
-                                        &hostname_str,
-                                        &req,
-                                    );
-                                    if log_console {
-                                        println!(
-                                            "  [WireFrame DREAM-RSI] {} ({}) | {} MCTS sims | Speedup {:.2}x | Policy={:#018x} | 0.0 GPU-hrs",
-                                            hostname_str,
-                                            req.world_id,
-                                            resp.mcts_simulations_run,
-                                            resp.evolved_peak_speedup,
-                                            resp.evolved_policy_hash_fnv64
-                                        );
-                                    }
-                                    let reply = WireFrame {
-                                        kind: WireFrameKind::DreamRsiRolloutReplay,
-                                        epoch: frame.epoch,
-                                        payload: serde_json::to_vec(&resp)
-                                            .expect("serialize LiveDreamRsiReplayResponse"),
-                                    };
-                                    let _ = reply.write_to_stream(&mut stream).await;
-                                }
-                            }
-                            WireFrameKind::KvCachePageMigration => {
-                                if let Ok(req) = serde_json::from_slice::<LiveKvCacheMigrationRequest>(
-                                    &frame.payload,
-                                ) {
-                                    let t_kv = Instant::now();
-                                    let mut restored_f64 = Vec::new();
-                                    let mut wire_bytes = 0usize;
-                                    for (kp, vp) in req
-                                        .quantized_k_pages
-                                        .iter()
-                                        .zip(req.quantized_v_pages.iter())
-                                    {
-                                        wire_bytes += kp.quantized_data.len()
-                                            + kp.absmax_scales.len() * 4
-                                            + vp.quantized_data.len()
-                                            + vp.absmax_scales.len() * 4;
-                                        for v in kp.dequantize() {
-                                            restored_f64.push(v as f64);
-                                        }
-                                        for v in vp.dequantize() {
-                                            restored_f64.push(v as f64);
-                                        }
-                                    }
-                                    let tree_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(
-                                        &restored_f64,
-                                    );
-                                    let q_milli = (tree_sum * 10_000.0).round() as i64;
-                                    let digest = 0xcbf2_9ce4_8422_2325_u64
-                                        ^ (q_milli as u64).wrapping_mul(0x0100_0000_01b3);
-                                    let mut exec_ms =
-                                        ((t_kv.elapsed().as_secs_f64() * 1000.0) * 100.0).round()
-                                            / 100.0;
-                                    if node_id_str.starts_with("node-reterminal")
-                                        || hostname_str.contains("reterminal")
-                                    {
-                                        let ip = hostname_str
-                                            .rsplit('-')
-                                            .next()
-                                            .filter(|s| s.contains('.'))
-                                            .unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
-                                        if let Some((_ok, hw_ms)) =
-                                            kadmium_core::ReTerminalCm4LanBridge::stage_kv_cache_migration_on_cm4(
-                                                ip,
-                                                &req.session_id,
-                                                req.quantized_k_pages.len(),
-                                                req.tokens_stored,
-                                                wire_bytes,
-                                            )
-                                        {
-                                            exec_ms = hw_ms;
-                                        }
-                                    } else if hostname_str.starts_with("apple-m4-mac-mini") {
-                                        let ip = hostname_str
-                                            .rsplit('-')
-                                            .next()
-                                            .filter(|s| s.contains('.'))
-                                            .unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
-                                        if let Some((_ok, hw_ms)) =
-                                            kadmium_core::M4MacMiniLanBridge::stage_kv_cache_migration_on_m4(
-                                                ip,
-                                                &req.session_id,
-                                                req.quantized_k_pages.len(),
-                                                req.tokens_stored,
-                                                wire_bytes,
-                                            )
-                                        {
-                                            exec_ms = hw_ms;
-                                        }
-                                    }
-                                    let ack = LiveKvCacheMigrationAck {
-                                        target_node_id: node_id_str.clone(),
-                                        target_hostname: hostname_str.clone(),
-                                        session_id: req.session_id.clone(),
-                                        pages_installed: req.quantized_k_pages.len(),
-                                        tokens_restored: req.tokens_stored,
-                                        compressed_wire_bytes: wire_bytes,
-                                        verified_repops_digest_fnv1a: digest,
-                                        bit_exact_verified: digest
-                                            == req.expected_repops_digest_fnv1a,
-                                        exec_ms: exec_ms.max(0.05),
-                                    };
-                                    if log_console {
-                                        println!(
-                                            "  [WireFrame KV-MIGRATE] {} <- {} | {} pages ({} tokens, {} B) | RepOps={:#018x}",
-                                            hostname_str,
-                                            req.source_node_id,
-                                            ack.pages_installed,
-                                            ack.tokens_restored,
-                                            wire_bytes,
-                                            digest
-                                        );
-                                    }
-                                    let reply = WireFrame {
-                                        kind: WireFrameKind::KvCachePageMigration,
-                                        epoch: frame.epoch,
-                                        payload: serde_json::to_vec(&ack)
-                                            .expect("serialize LiveKvCacheMigrationAck"),
-                                    };
-                                    let _ = reply.write_to_stream(&mut stream).await;
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                });
+            while let Ok((stream, peer_addr)) = listener.accept().await {
+                accepted_ref.fetch_add(1, Ordering::Relaxed);
+                let ctx = WorkerFrameContext {
+                    peer_addr,
+                    ..ctx_template.clone()
+                };
+                tokio::spawn(serve_worker_connection(stream, ctx));
             }
         });
 
@@ -1697,6 +1747,7 @@ impl LiveNodeWorkerServer {
             served_forward_stages: fwd_counter,
             served_training_steps: trn_counter,
             served_fts3_pages: fts_counter,
+            accepted_connections: accepted_counter,
         })
     }
 }
@@ -1792,6 +1843,14 @@ impl LocalFleetSpawner {
 pub struct DistributedLanExecutor;
 
 impl DistributedLanExecutor {
+    /// Process-wide pool of persistent, multiplexed `PeerChannel`s keyed by worker address.
+    /// Every coordinator-side sender below reuses these connections instead of dialing a fresh TCP
+    /// connection per hop, so concurrent stage calls to one worker share a single socket.
+    pub fn channel_pool() -> &'static PeerChannelPool {
+        static POOL: OnceLock<PeerChannelPool> = OnceLock::new();
+        POOL.get_or_init(PeerChannelPool::new)
+    }
+
     /// Pings a worker's TCP `WireFrame` socket (`WireFrameKind::HeartbeatTelemetry`) and returns
     /// the worker's `LiveHeartbeatPong` along with the measured round-trip latency in milliseconds.
     pub async fn ping_worker_tcp(
@@ -1799,25 +1858,21 @@ impl DistributedLanExecutor {
         epoch: u64,
     ) -> Result<(LiveHeartbeatPong, f64), String> {
         let t0 = Instant::now();
-        let mut stream = tokio::time::timeout(
-            Duration::from_millis(1500),
-            tokio::net::TcpStream::connect(worker_tcp_addr),
-        )
-        .await
-        .map_err(|_| format!("TCP connect timeout to worker {worker_tcp_addr}"))?
-        .map_err(|e| format!("TCP connect error to worker {worker_tcp_addr}: {e}"))?;
-
         let ping = LiveHeartbeatPing {
             epoch,
             timestamp_unix_ms: LiveWorkerRegistration::now_unix_ms(),
         };
-        let req_frame = WireFrame {
-            kind: WireFrameKind::HeartbeatTelemetry,
-            epoch: epoch as u32,
-            payload: serde_json::to_vec(&ping).expect("serialize ping"),
-        };
-        req_frame.write_to_stream(&mut stream).await?;
-        let resp_frame = WireFrame::read_from_stream(&mut stream).await?;
+        let resp_frame = Self::channel_pool()
+            .call_with_connect_timeout(
+                worker_tcp_addr,
+                Duration::from_millis(1500),
+                WireFrameKind::HeartbeatTelemetry,
+                epoch as u32,
+                serde_json::to_vec(&ping).expect("serialize ping"),
+                WIRE_CONTROL_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("TCP ping to worker {worker_tcp_addr} failed: {e}"))?;
         let rtt_ms = (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
 
         let pong: LiveHeartbeatPong = serde_json::from_slice(&resp_frame.payload)
@@ -1832,21 +1887,17 @@ impl DistributedLanExecutor {
         epoch: u64,
         manifest: &FleetUpdateManifest,
     ) -> Result<WorkerUpdatePushAck, String> {
-        let mut stream = tokio::time::timeout(
-            Duration::from_millis(2500),
-            tokio::net::TcpStream::connect(worker_tcp_addr),
-        )
-        .await
-        .map_err(|_| format!("TCP OTA update connect timeout to {worker_tcp_addr}"))?
-        .map_err(|e| format!("TCP OTA update connect error to {worker_tcp_addr}: {e}"))?;
-
-        let frame = WireFrame {
-            kind: WireFrameKind::FleetUpdatePush,
-            epoch: epoch as u32,
-            payload: serde_json::to_vec(manifest).expect("serialize FleetUpdateManifest"),
-        };
-        frame.write_to_stream(&mut stream).await?;
-        let reply = WireFrame::read_from_stream(&mut stream).await?;
+        let reply = Self::channel_pool()
+            .call_with_connect_timeout(
+                worker_tcp_addr,
+                Duration::from_millis(2500),
+                WireFrameKind::FleetUpdatePush,
+                epoch as u32,
+                serde_json::to_vec(manifest).expect("serialize FleetUpdateManifest"),
+                WIRE_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("TCP OTA update push to {worker_tcp_addr} failed: {e}"))?;
         let ack: WorkerUpdatePushAck = serde_json::from_slice(&reply.payload)
             .map_err(|e| format!("Malformed WorkerUpdatePushAck: {e}"))?;
         Ok(ack)
@@ -1858,21 +1909,17 @@ impl DistributedLanExecutor {
         worker_tcp_addr: &str,
         req: &LiveFts3ChunkStreamRequest,
     ) -> Result<LiveFts3ChunkStreamAck, String> {
-        let mut stream = tokio::time::timeout(
-            Duration::from_millis(3000),
-            tokio::net::TcpStream::connect(worker_tcp_addr),
-        )
-        .await
-        .map_err(|_| format!("TCP FTS3 stream connect timeout to {worker_tcp_addr}"))?
-        .map_err(|e| format!("TCP FTS3 stream connect error to {worker_tcp_addr}: {e}"))?;
-
-        let frame = WireFrame {
-            kind: WireFrameKind::Fts3KtbChunkStream,
-            epoch: req.epoch as u32,
-            payload: serde_json::to_vec(req).expect("serialize LiveFts3ChunkStreamRequest"),
-        };
-        frame.write_to_stream(&mut stream).await?;
-        let reply = WireFrame::read_from_stream(&mut stream).await?;
+        let reply = Self::channel_pool()
+            .call_with_connect_timeout(
+                worker_tcp_addr,
+                Duration::from_millis(3000),
+                WireFrameKind::Fts3KtbChunkStream,
+                req.epoch as u32,
+                serde_json::to_vec(req).expect("serialize LiveFts3ChunkStreamRequest"),
+                WIRE_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("TCP FTS3 stream to {worker_tcp_addr} failed: {e}"))?;
         let ack: LiveFts3ChunkStreamAck = serde_json::from_slice(&reply.payload)
             .map_err(|e| format!("Malformed LiveFts3ChunkStreamAck: {e}"))?;
         Ok(ack)
@@ -2046,27 +2093,24 @@ impl DistributedLanExecutor {
         })
     }
 
-    /// Sends a `LiveStageForwardRequest` over TCP `WireFrame` to `worker_tcp_addr`.
+    /// Sends a `LiveStageForwardRequest` to `worker_tcp_addr` over the pooled TCP `WireFrame`
+    /// channel and returns the response with the measured wall time of the call in milliseconds.
     pub async fn send_stage_forward_tcp(
         worker_tcp_addr: &str,
         req: &LiveStageForwardRequest,
     ) -> Result<(LiveStageForwardResponse, f64), String> {
         let t0 = Instant::now();
-        let mut stream = tokio::time::timeout(
-            Duration::from_millis(2500),
-            tokio::net::TcpStream::connect(worker_tcp_addr),
-        )
-        .await
-        .map_err(|_| format!("TCP forward hop timeout to {worker_tcp_addr}"))?
-        .map_err(|e| format!("TCP forward hop connect error to {worker_tcp_addr}: {e}"))?;
-
-        let frame = WireFrame {
-            kind: WireFrameKind::SystolicTokenWavefront,
-            epoch: req.epoch as u32,
-            payload: serde_json::to_vec(req).expect("serialize LiveStageForwardRequest"),
-        };
-        frame.write_to_stream(&mut stream).await?;
-        let reply = WireFrame::read_from_stream(&mut stream).await?;
+        let reply = Self::channel_pool()
+            .call_with_connect_timeout(
+                worker_tcp_addr,
+                Duration::from_millis(2500),
+                WireFrameKind::SystolicTokenWavefront,
+                req.epoch as u32,
+                serde_json::to_vec(req).expect("serialize LiveStageForwardRequest"),
+                WIRE_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("TCP forward hop to {worker_tcp_addr} failed: {e}"))?;
         let wall_ms = (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
 
         let resp: LiveStageForwardResponse = serde_json::from_slice(&reply.payload)
@@ -2074,27 +2118,24 @@ impl DistributedLanExecutor {
         Ok((resp, wall_ms.max(0.1)))
     }
 
-    /// Sends a `LiveStageTrainingRequest` over TCP `WireFrame` to `worker_tcp_addr`.
+    /// Sends a `LiveStageTrainingRequest` to `worker_tcp_addr` over the pooled TCP `WireFrame`
+    /// channel and returns the response with the measured wall time of the call in milliseconds.
     pub async fn send_stage_training_tcp(
         worker_tcp_addr: &str,
         req: &LiveStageTrainingRequest,
     ) -> Result<(LiveStageTrainingResponse, f64), String> {
         let t0 = Instant::now();
-        let mut stream = tokio::time::timeout(
-            Duration::from_millis(3000),
-            tokio::net::TcpStream::connect(worker_tcp_addr),
-        )
-        .await
-        .map_err(|_| format!("TCP training hop timeout to {worker_tcp_addr}"))?
-        .map_err(|e| format!("TCP training hop connect error to {worker_tcp_addr}: {e}"))?;
-
-        let frame = WireFrame {
-            kind: WireFrameKind::DeMoCompressedGradient,
-            epoch: req.epoch as u32,
-            payload: serde_json::to_vec(req).expect("serialize LiveStageTrainingRequest"),
-        };
-        frame.write_to_stream(&mut stream).await?;
-        let reply = WireFrame::read_from_stream(&mut stream).await?;
+        let reply = Self::channel_pool()
+            .call_with_connect_timeout(
+                worker_tcp_addr,
+                Duration::from_millis(3000),
+                WireFrameKind::DeMoCompressedGradient,
+                req.epoch as u32,
+                serde_json::to_vec(req).expect("serialize LiveStageTrainingRequest"),
+                WIRE_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("TCP training hop to {worker_tcp_addr} failed: {e}"))?;
         let wall_ms = (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0;
 
         let resp: LiveStageTrainingResponse = serde_json::from_slice(&reply.payload)
@@ -2398,21 +2439,17 @@ impl DistributedLanExecutor {
         req: &LiveVerdeBisectionRequest,
     ) -> Result<(LiveVerdeBisectionResponse, f64), String> {
         let t0 = Instant::now();
-        let mut stream = tokio::time::timeout(
-            Duration::from_millis(2500),
-            tokio::net::TcpStream::connect(worker_tcp_addr),
-        )
-        .await
-        .map_err(|_| format!("TCP Verde challenge timeout to {worker_tcp_addr}"))?
-        .map_err(|e| format!("TCP Verde challenge connect error to {worker_tcp_addr}: {e}"))?;
-
-        let frame = WireFrame {
-            kind: WireFrameKind::VerdeBisectionChallenge,
-            epoch: req.epoch as u32,
-            payload: serde_json::to_vec(req).expect("serialize LiveVerdeBisectionRequest"),
-        };
-        frame.write_to_stream(&mut stream).await?;
-        let reply = WireFrame::read_from_stream(&mut stream).await?;
+        let reply = Self::channel_pool()
+            .call_with_connect_timeout(
+                worker_tcp_addr,
+                Duration::from_millis(2500),
+                WireFrameKind::VerdeBisectionChallenge,
+                req.epoch as u32,
+                serde_json::to_vec(req).expect("serialize LiveVerdeBisectionRequest"),
+                WIRE_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("TCP Verde challenge to {worker_tcp_addr} failed: {e}"))?;
         let rtt_ms = ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0;
 
         let resp: LiveVerdeBisectionResponse = serde_json::from_slice(&reply.payload)
@@ -2553,21 +2590,17 @@ impl DistributedLanExecutor {
         worker_tcp_addr: &str,
         req: &LiveDreamRsiReplayRequest,
     ) -> Result<LiveDreamRsiReplayResponse, String> {
-        let mut stream = tokio::time::timeout(
-            Duration::from_millis(2500),
-            tokio::net::TcpStream::connect(worker_tcp_addr),
-        )
-        .await
-        .map_err(|_| format!("TCP Dream-RSI replay timeout to {worker_tcp_addr}"))?
-        .map_err(|e| format!("TCP Dream-RSI replay connect error to {worker_tcp_addr}: {e}"))?;
-
-        let frame = WireFrame {
-            kind: WireFrameKind::DreamRsiRolloutReplay,
-            epoch: req.epoch as u32,
-            payload: serde_json::to_vec(req).expect("serialize LiveDreamRsiReplayRequest"),
-        };
-        frame.write_to_stream(&mut stream).await?;
-        let reply = WireFrame::read_from_stream(&mut stream).await?;
+        let reply = Self::channel_pool()
+            .call_with_connect_timeout(
+                worker_tcp_addr,
+                Duration::from_millis(2500),
+                WireFrameKind::DreamRsiRolloutReplay,
+                req.epoch as u32,
+                serde_json::to_vec(req).expect("serialize LiveDreamRsiReplayRequest"),
+                WIRE_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("TCP Dream-RSI replay to {worker_tcp_addr} failed: {e}"))?;
         let resp: LiveDreamRsiReplayResponse = serde_json::from_slice(&reply.payload)
             .map_err(|e| format!("Malformed LiveDreamRsiReplayResponse: {e}"))?;
         Ok(resp)
@@ -2847,48 +2880,35 @@ impl DistributedLanExecutor {
                 / 100.0;
 
         if let Some(tw) = target_worker {
-            if let Ok(mut stream) = tokio::time::timeout(
-                Duration::from_millis(600),
-                tokio::net::TcpStream::connect(&tw.worker_tcp_addr),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "kv connect timeout",
-                ))
-            }) {
-                let _ = stream.set_nodelay(true);
-                let frame = WireFrame {
-                    kind: WireFrameKind::KvCachePageMigration,
-                    epoch: epoch as u32,
-                    payload: serde_json::to_vec(&req).expect("serialize LiveKvCacheMigrationRequest"),
+            let payload = serde_json::to_vec(&req).expect("serialize LiveKvCacheMigrationRequest");
+            if let Ok(reply) = Self::channel_pool()
+                .call_with_connect_timeout(
+                    &tw.worker_tcp_addr,
+                    Duration::from_millis(600),
+                    WireFrameKind::KvCachePageMigration,
+                    epoch as u32,
+                    payload,
+                    WIRE_CONTROL_CALL_TIMEOUT,
+                )
+                .await
+                && let Ok(ack) = serde_json::from_slice::<LiveKvCacheMigrationAck>(&reply.payload)
+            {
+                let rtt_ms = ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0;
+                return LiveKvCacheMigrationReport {
+                    session_id: session_id.to_string(),
+                    prefix_hash_fnv64: prefix_hash,
+                    source_hostname: "cameron-main-rig".to_string(),
+                    target_hostname: tw.node.hostname.clone(),
+                    migrated_layers,
+                    pages_migrated: num_pages,
+                    tokens_preserved: tokens_stored,
+                    compressed_wire_bytes,
+                    uncompressed_fp16_bytes,
+                    compression_ratio,
+                    migration_rtt_ms: rtt_ms.max(0.25),
+                    zero_context_drop_verified: ack.bit_exact_verified,
+                    ack,
                 };
-                if frame.write_to_stream(&mut stream).await.is_ok() {
-                    if let Ok(reply) = WireFrame::read_from_stream(&mut stream).await {
-                        if let Ok(ack) =
-                            serde_json::from_slice::<LiveKvCacheMigrationAck>(&reply.payload)
-                        {
-                            let rtt_ms =
-                                ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0;
-                            return LiveKvCacheMigrationReport {
-                                session_id: session_id.to_string(),
-                                prefix_hash_fnv64: prefix_hash,
-                                source_hostname: "cameron-main-rig".to_string(),
-                                target_hostname: tw.node.hostname.clone(),
-                                migrated_layers,
-                                pages_migrated: num_pages,
-                                tokens_preserved: tokens_stored,
-                                compressed_wire_bytes,
-                                uncompressed_fp16_bytes,
-                                compression_ratio,
-                                migration_rtt_ms: rtt_ms.max(0.25),
-                                zero_context_drop_verified: ack.bit_exact_verified,
-                                ack,
-                            };
-                        }
-                    }
-                }
             }
         }
 
@@ -2919,5 +2939,182 @@ impl DistributedLanExecutor {
             zero_context_drop_verified: true,
             ack: fallback_ack,
         }
+    }
+}
+
+// ================================================================================================
+// Binary INT8 Tensor Codec (hot-path wire format for phase 3 grid work-unit payloads)
+// ================================================================================================
+
+/// Fixed header of the `BlockwiseInt8Tensor` binary codec: block size `u32` LE, element count
+/// `u32` LE, scale count `u32` LE.
+pub const INT8_TENSOR_CODEC_HEADER_LEN: usize = 12;
+
+impl BlockwiseInt8Tensor {
+    /// Serializes to the compact little-endian layout
+    /// `block_size u32 | element_count u32 | scale_count u32 | scales f32 ... | data i8 ...`.
+    ///
+    /// One byte per element instead of the two to five the JSON form spends, and it decodes
+    /// without parsing. Phase 3 uses it for work-unit payloads; the JSON stage payloads are
+    /// unchanged. Panics only if a dimension does not fit in `u32`, which no real tensor hits.
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        let block_size = u32::try_from(self.block_size).expect("block size fits in u32");
+        let element_count =
+            u32::try_from(self.quantized_data.len()).expect("element count fits in u32");
+        let scale_count = u32::try_from(self.absmax_scales.len()).expect("scale count fits in u32");
+        let mut out = Vec::with_capacity(
+            INT8_TENSOR_CODEC_HEADER_LEN + self.absmax_scales.len() * 4 + self.quantized_data.len(),
+        );
+        out.extend_from_slice(&block_size.to_le_bytes());
+        out.extend_from_slice(&element_count.to_le_bytes());
+        out.extend_from_slice(&scale_count.to_le_bytes());
+        for scale in &self.absmax_scales {
+            out.extend_from_slice(&scale.to_le_bytes());
+        }
+        out.extend(self.quantized_data.iter().map(|&q| q as u8));
+        out
+    }
+
+    /// Parses the layout written by [`BlockwiseInt8Tensor::to_le_bytes`]; the slice must hold
+    /// exactly one tensor.
+    pub fn from_le_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let (tensor, consumed) = Self::from_le_bytes_prefix(bytes)?;
+        if consumed != bytes.len() {
+            return Err(format!(
+                "BlockwiseInt8Tensor codec: {} trailing bytes after the tensor",
+                bytes.len() - consumed
+            ));
+        }
+        Ok(tensor)
+    }
+
+    /// Parses one tensor from the front of `bytes`, returning it and the number of bytes consumed,
+    /// so several tensors can be packed back to back in one payload.
+    pub fn from_le_bytes_prefix(bytes: &[u8]) -> Result<(Self, usize), String> {
+        if bytes.len() < INT8_TENSOR_CODEC_HEADER_LEN {
+            return Err(format!(
+                "BlockwiseInt8Tensor codec: {} bytes is shorter than the {INT8_TENSOR_CODEC_HEADER_LEN}-byte header",
+                bytes.len()
+            ));
+        }
+        let read_u32 = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as usize
+        };
+        let block_size = read_u32(0);
+        let element_count = read_u32(4);
+        let scale_count = read_u32(8);
+        if block_size == 0 {
+            return Err("BlockwiseInt8Tensor codec: block size must be non-zero".into());
+        }
+        if scale_count != element_count.div_ceil(block_size) {
+            return Err(format!(
+                "BlockwiseInt8Tensor codec: {scale_count} scales do not cover {element_count} elements in blocks of {block_size}"
+            ));
+        }
+        let scales_end = scale_count
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(INT8_TENSOR_CODEC_HEADER_LEN))
+            .ok_or_else(|| "BlockwiseInt8Tensor codec: scale table length overflows".to_string())?;
+        let data_end = scales_end
+            .checked_add(element_count)
+            .ok_or_else(|| "BlockwiseInt8Tensor codec: data length overflows".to_string())?;
+        if bytes.len() < data_end {
+            return Err(format!(
+                "BlockwiseInt8Tensor codec: need {data_end} bytes, got {}",
+                bytes.len()
+            ));
+        }
+        let absmax_scales = bytes[INT8_TENSOR_CODEC_HEADER_LEN..scales_end]
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let quantized_data = bytes[scales_end..data_end]
+            .iter()
+            .map(|&b| b as i8)
+            .collect();
+        Ok((
+            Self {
+                block_size,
+                total_elements: element_count,
+                absmax_scales,
+                quantized_data,
+            },
+            data_end,
+        ))
+    }
+}
+
+/// A batch of `rows` token activations of width `dim`, blockwise INT8-quantized as one flat
+/// row-major tensor: the unit a grid work-unit payload carries between pipeline stages.
+///
+/// Binary layout: `rows u32 LE | dim u32 LE | BlockwiseInt8Tensor::to_le_bytes()`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenBatchInt8 {
+    pub rows: u32,
+    pub dim: u32,
+    pub tensor: BlockwiseInt8Tensor,
+}
+
+impl TokenBatchInt8 {
+    /// Quantizes a row-major `rows x dim` activation buffer in blocks of `block_size` elements.
+    pub fn quantize(
+        activations: &[f32],
+        rows: u32,
+        dim: u32,
+        block_size: usize,
+    ) -> Result<Self, String> {
+        let expected = (rows as usize) * (dim as usize);
+        if activations.len() != expected {
+            return Err(format!(
+                "TokenBatchInt8: {} activations do not form a {rows} x {dim} batch ({expected} expected)",
+                activations.len()
+            ));
+        }
+        Ok(Self {
+            rows,
+            dim,
+            tensor: BlockwiseInt8Tensor::quantize(activations, block_size),
+        })
+    }
+
+    /// Dequantizes back into `rows` vectors of `dim` activations.
+    pub fn dequantize_rows(&self) -> Vec<Vec<f32>> {
+        self.tensor
+            .dequantize()
+            .chunks(self.dim.max(1) as usize)
+            .map(<[f32]>::to_vec)
+            .collect()
+    }
+
+    /// Serializes as `rows u32 LE | dim u32 LE | tensor bytes`.
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        let tensor = self.tensor.to_le_bytes();
+        let mut out = Vec::with_capacity(8 + tensor.len());
+        out.extend_from_slice(&self.rows.to_le_bytes());
+        out.extend_from_slice(&self.dim.to_le_bytes());
+        out.extend_from_slice(&tensor);
+        out
+    }
+
+    /// Parses the layout written by [`TokenBatchInt8::to_le_bytes`], rejecting a tensor whose
+    /// element count disagrees with `rows x dim`.
+    pub fn from_le_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < 8 {
+            return Err(format!(
+                "TokenBatchInt8 codec: {} bytes is shorter than the 8-byte header",
+                bytes.len()
+            ));
+        }
+        let rows = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        let dim = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        let tensor = BlockwiseInt8Tensor::from_le_bytes(&bytes[8..])?;
+        let expected = (rows as usize) * (dim as usize);
+        if tensor.total_elements != expected {
+            return Err(format!(
+                "TokenBatchInt8 codec: tensor holds {} elements but the header says {rows} x {dim} = {expected}",
+                tensor.total_elements
+            ));
+        }
+        Ok(Self { rows, dim, tensor })
     }
 }
