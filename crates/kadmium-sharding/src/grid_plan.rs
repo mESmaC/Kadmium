@@ -29,7 +29,7 @@ use kadmium_grid::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::ShardPlanner;
+use crate::{CalibrationRecord, ShardPlanner};
 
 const GIB: f64 = 1_073_741_824.0;
 
@@ -927,12 +927,72 @@ pub struct StepCostEstimate {
     pub modelled: bool,
 }
 
+/// What settled a [`StrategyChoice`].
+pub const DECIDED_BY_MODELLED: &str = "modelled";
+pub const DECIDED_BY_MEASURED: &str = "measured";
+pub const DECIDED_BY_DENSE: &str = "dense";
+
+fn default_decided_by() -> String {
+    DECIDED_BY_MODELLED.to_string()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StrategyChoice {
     pub chosen: ExecutionStrategy,
     pub chain: StepCostEstimate,
     pub expert_parallel: StepCostEstimate,
     pub rationale: String,
+    /// A calibration of the chain shape that binds to this mesh and placement, if one exists.
+    #[serde(default)]
+    pub measured_chain: Option<CalibrationRecord>,
+    /// The same for the expert-parallel shape.
+    #[serde(default)]
+    pub measured_expert_parallel: Option<CalibrationRecord>,
+    /// `measured` when both shapes carry a trusted calibration and the faster one was chosen;
+    /// `dense` when the model has no routed experts; else `modelled`.
+    #[serde(default = "default_decided_by")]
+    pub decided_by: String,
+}
+
+impl StrategyChoice {
+    /// Attaches the calibrations that bind to the two shapes. When both are present and trusted,
+    /// the measured figures decide and the rationale says so; with one or none, the modelled
+    /// decision stands and the records ride along for the reader. Returns whether the chosen
+    /// shape changed.
+    pub fn apply_measurements(
+        &mut self,
+        chain: Option<CalibrationRecord>,
+        expert_parallel: Option<CalibrationRecord>,
+    ) -> bool {
+        self.measured_chain = chain.filter(CalibrationRecord::is_trusted);
+        self.measured_expert_parallel = expert_parallel.filter(CalibrationRecord::is_trusted);
+        if self.decided_by == DECIDED_BY_DENSE {
+            return false;
+        }
+        let (Some(c), Some(e)) = (&self.measured_chain, &self.measured_expert_parallel) else {
+            return false;
+        };
+        let measured_choice = if c.measured_ms_per_token <= e.measured_ms_per_token {
+            ExecutionStrategy::PipelineChain
+        } else {
+            ExecutionStrategy::ExpertParallel
+        };
+        let changed = measured_choice != self.chosen;
+        self.chosen = measured_choice;
+        self.decided_by = DECIDED_BY_MEASURED.to_string();
+        self.rationale = format!(
+            "measured {:.2} ms/token for the chain over {} step{} against {:.2} ms/token expert-parallel over {} step{} on the {} kernels; the measurements decide. Modelled: {}",
+            c.measured_ms_per_token,
+            c.steps,
+            if c.steps == 1 { "" } else { "s" },
+            e.measured_ms_per_token,
+            e.steps,
+            if e.steps == 1 { "" } else { "s" },
+            c.kernels,
+            self.rationale
+        );
+        changed
+    }
 }
 
 /// Bandwidth-bound cost model for a decode step, after the R4 review's envelope.
@@ -946,6 +1006,10 @@ pub struct StrategyCostModel {
     pub measured_rtt_ms: BTreeMap<NodeId, f64>,
     /// Exponent of distinct-expert growth with batch size.
     pub batch_expert_growth: f64,
+    /// Memory streaming rates nodes measured on themselves, in GB/s, which replace the nominal
+    /// system-RAM bandwidth times the efficiency factor for those nodes.
+    #[serde(default)]
+    pub measured_stream_gbps: BTreeMap<NodeId, f64>,
 }
 
 impl Default for StrategyCostModel {
@@ -955,6 +1019,7 @@ impl Default for StrategyCostModel {
             rows: 1,
             measured_rtt_ms: BTreeMap::new(),
             batch_expert_growth: 0.7,
+            measured_stream_gbps: BTreeMap::new(),
         }
     }
 }
@@ -968,6 +1033,30 @@ impl StrategyCostModel {
     pub fn with_measured_rtt(mut self, node: NodeId, rtt_ms: f64) -> Self {
         self.measured_rtt_ms.insert(node, rtt_ms);
         self
+    }
+
+    pub fn with_measured_stream(mut self, node: NodeId, gbps: f64) -> Self {
+        if gbps.is_finite() && gbps > 0.0 {
+            self.measured_stream_gbps.insert(node, gbps);
+        }
+        self
+    }
+
+    /// Effective bandwidth of a tier on a node in GB/s: the node's own measured streaming rate
+    /// for system RAM when it reported one, else the nominal figure scaled by the efficiency.
+    fn effective_bw_gbps(
+        &self,
+        node: &NodeId,
+        budget: &NodeBudget,
+        tier: ResidencyTier,
+        eta: f64,
+    ) -> f64 {
+        if tier == ResidencyTier::SystemRam
+            && let Some(measured) = self.measured_stream_gbps.get(node)
+        {
+            return measured.max(0.1);
+        }
+        Self::tier_bw_gbps(budget, tier) * eta
     }
 
     fn rtt_ms(&self, node: &NodeId, budgets: &BTreeMap<NodeId, NodeBudget>) -> f64 {
@@ -1028,7 +1117,7 @@ impl StrategyCostModel {
                 })
                 .map(|r| r.preferred_tier)
                 .unwrap_or(ResidencyTier::SystemRam);
-            let trunk_bw = Self::tier_bw_gbps(owner_budget, trunk_tier) * eta * 1e9;
+            let trunk_bw = self.effective_bw_gbps(&range.owner, owner_budget, trunk_tier, eta) * 1e9;
             let trunk_ms = range.bytes as f64 / trunk_bw * 1000.0;
             weight_ms += trunk_ms;
             *per_node_ms.entry(range.owner.clone()).or_default() += trunk_ms;
@@ -1069,9 +1158,8 @@ impl StrategyCostModel {
                 for ((node, tier), bytes) in &node_tier_bytes {
                     let bw = budgets
                         .get(node)
-                        .map(|b| Self::tier_bw_gbps(b, *tier))
-                        .unwrap_or(0.3)
-                        * eta
+                        .map(|b| self.effective_bw_gbps(node, b, *tier, eta))
+                        .unwrap_or(0.3 * eta)
                         * 1e9;
                     let ms = bytes / bw * 1000.0;
                     *layer_node_ms.entry(node.clone()).or_default() += ms;
@@ -1158,6 +1246,25 @@ impl StrategyCostModel {
         popularity: Option<&ExpertPopularity>,
         offers: &BTreeMap<NodeId, ResourceOffer>,
     ) -> (StrategyChoice, ExpertPlacementPlan) {
+        let (choice, chain_plan, ep_plan) =
+            self.choose_both_with_offers(model, nodes, popularity, offers);
+        let plan = if choice.chosen == ExecutionStrategy::PipelineChain {
+            chain_plan
+        } else {
+            ep_plan
+        };
+        (choice, plan)
+    }
+
+    /// Both placements with the choice between them, for callers that attach measurements
+    /// afterwards and may end up running the other shape.
+    pub fn choose_both_with_offers(
+        &self,
+        model: &ModelSpec,
+        nodes: &[HardwareNode],
+        popularity: Option<&ExpertPopularity>,
+        offers: &BTreeMap<NodeId, ResourceOffer>,
+    ) -> (StrategyChoice, ExpertPlacementPlan, ExpertPlacementPlan) {
         let chain_plan = ExpertPlacementPlanner::plan_with_offers(
             model,
             nodes,
@@ -1199,19 +1306,22 @@ impl StrategyCostModel {
                 chain_plan.hot_fraction() * 100.0
             )
         };
-        let plan = if chosen == ExecutionStrategy::PipelineChain {
-            chain_plan
-        } else {
-            ep_plan
-        };
         (
             StrategyChoice {
                 chosen,
                 chain,
                 expert_parallel: ep,
                 rationale,
+                measured_chain: None,
+                measured_expert_parallel: None,
+                decided_by: if dense {
+                    DECIDED_BY_DENSE.to_string()
+                } else {
+                    DECIDED_BY_MODELLED.to_string()
+                },
             },
-            plan,
+            chain_plan,
+            ep_plan,
         )
     }
 }
@@ -1704,7 +1814,7 @@ mod tests {
         assert!(!leaf(&default_graph, &replica).contains(&replicated.expert));
         assert!(leaf(&served_graph, &replica).contains(&replicated.expert));
         assert!(!leaf(&served_graph, &replicated.holders[0]).contains(&replicated.expert));
-        assert_eq!(default_graph.len() <= served_graph.len() + 1, true);
+        assert!(default_graph.len() <= served_graph.len() + 1);
     }
 
     #[test]
@@ -1915,6 +2025,83 @@ mod tests {
         assert_eq!(dense_choice.chosen, ExecutionStrategy::PipelineChain);
         assert_eq!(dense_plan.experts.len(), 0);
         assert!(dense_choice.rationale.contains("dense"));
+    }
+
+    #[test]
+    fn measurements_decide_the_shape_only_when_both_shapes_are_measured() {
+        use crate::{CalibrationBinding, CalibrationRecord};
+        let nodes = cluster();
+        let model = toy_moe();
+        let cost = StrategyCostModel::default();
+        let (mut choice, chain_plan, ep_plan) =
+            cost.choose_both_with_offers(&model, &nodes, None, &BTreeMap::new());
+        assert_eq!(choice.decided_by, DECIDED_BY_MODELLED);
+        let modelled = choice.chosen;
+        let node_ids: Vec<String> = nodes.iter().map(|n| n.id.0.clone()).collect();
+        let bind = |plan: &ExpertPlacementPlan| {
+            CalibrationBinding::new(
+                &model.id,
+                plan.strategy,
+                plan.digest(),
+                node_ids.clone(),
+                BTreeMap::new(),
+                1,
+            )
+        };
+        let record = |plan: &ExpertPlacementPlan, ms: f64| {
+            CalibrationRecord::from_steps(bind(plan), &[ms], BTreeMap::new(), 1, None, 1)
+        };
+
+        // One measurement rides along without deciding.
+        assert!(!choice.apply_measurements(Some(record(&chain_plan, 9.0)), None));
+        assert_eq!(choice.decided_by, DECIDED_BY_MODELLED);
+        assert_eq!(choice.chosen, modelled);
+        assert!(choice.measured_chain.is_some());
+
+        // Both measured: the faster shape wins whatever the model said.
+        let changed = choice.apply_measurements(
+            Some(record(&chain_plan, 9.0)),
+            Some(record(&ep_plan, 3.0)),
+        );
+        assert_eq!(choice.chosen, ExecutionStrategy::ExpertParallel);
+        assert_eq!(changed, modelled != ExecutionStrategy::ExpertParallel);
+        assert_eq!(choice.decided_by, DECIDED_BY_MEASURED);
+        assert!(choice.rationale.starts_with("measured 9.00 ms/token"));
+
+        let changed = choice.apply_measurements(
+            Some(record(&chain_plan, 2.0)),
+            Some(record(&ep_plan, 3.0)),
+        );
+        assert!(changed);
+        assert_eq!(choice.chosen, ExecutionStrategy::PipelineChain);
+
+        // A record that failed the digest gate is dropped, and the decision falls back.
+        let mut failed = record(&ep_plan, 1.0);
+        failed.digest_matches_chain = Some(false);
+        choice.apply_measurements(Some(record(&chain_plan, 2.0)), Some(failed));
+        assert!(choice.measured_expert_parallel.is_none());
+        assert_eq!(choice.chosen, ExecutionStrategy::PipelineChain);
+
+        // A measured streaming rate replaces the nominal RAM bandwidth in the estimate.
+        let slow_ram = StrategyCostModel::default()
+            .with_measured_stream(nodes[0].id.clone(), 2.0);
+        let nominal = cost.estimate(&model, &chain_plan, &nodes, None);
+        let measured = slow_ram.estimate(&model, &chain_plan, &nodes, None);
+        assert!(measured.modelled);
+        let any_ram = chain_plan
+            .rules
+            .iter()
+            .any(|r| r.preferred_tier == ResidencyTier::SystemRam);
+        if any_ram {
+            assert!(measured.weight_read_ms >= nominal.weight_read_ms);
+        }
+        assert!(
+            StrategyCostModel::default()
+                .with_measured_stream(nodes[0].id.clone(), 0.0)
+                .measured_stream_gbps
+                .is_empty(),
+            "a zero probe is ignored"
+        );
     }
 
     #[test]

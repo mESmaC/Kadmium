@@ -26,7 +26,8 @@ use kadmium_runtime::{
     build_initial_resident_ktb_bank, prompt_seed_hidden,
 };
 use kadmium_sharding::{
-    ClusterShardPlan, CombineParams, ExecutionStrategy, ExpertPlacementPlan,
+    CALIBRATION_MAX_STEPS, CALIBRATION_MAX_WALL_MS, CalibrationBinding, CalibrationRecord,
+    CalibrationStore, ClusterShardPlan, CombineParams, ExecutionStrategy, ExpertPlacementPlan,
     ExpertPlacementPlanner, ExpertSliceParams, PlacementFit, RepinPlanner, RepinPolicy,
     RepinProposal, RepinSwap, StageForwardParams, StepGraphBuilder, StrategyChoice,
     StrategyCostModel, TrainStageParams, TrunkForwardParams, TrunkRange, UsageSummary,
@@ -34,6 +35,7 @@ use kadmium_sharding::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// Summary of the last grid run, kept in the gateway state and shown on the inventory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,18 +58,41 @@ pub struct GridLastRun {
     pub compute_samples: usize,
 }
 
-/// A placement the coordinator keeps between runs for a model, so the pins it learned stay put
-/// and the live re-pin adapts them a few swaps at a time instead of re-planning on every step.
-/// Re-planned when its key no longer matches the mesh.
+/// The placements the coordinator keeps between runs for a model: both shapes, planned once
+/// against the mesh and the offers, so the pins the planner learned stay put, the live re-pin
+/// adapts them a few swaps at a time, and a calibration binds to a digest that holds still.
+/// Re-planned only when the key no longer matches the mesh.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedPlacement {
     pub choice: StrategyChoice,
-    pub placement: ExpertPlacementPlan,
+    pub chain_plan: ExpertPlacementPlan,
+    pub ep_plan: ExpertPlacementPlan,
     pub key: PlacementKey,
     pub created_unix_ms: u64,
-    /// Re-pin boundaries applied to this placement, and the swaps they made in total.
+    /// Re-pin boundaries applied to the active placement, and the swaps they made in total.
     pub repins_applied: usize,
     pub swaps_applied: usize,
+}
+
+impl CachedPlacement {
+    pub fn plan_for(&self, strategy: ExecutionStrategy) -> &ExpertPlacementPlan {
+        match strategy {
+            ExecutionStrategy::PipelineChain => &self.chain_plan,
+            ExecutionStrategy::ExpertParallel => &self.ep_plan,
+        }
+    }
+
+    pub fn plan_for_mut(&mut self, strategy: ExecutionStrategy) -> &mut ExpertPlacementPlan {
+        match strategy {
+            ExecutionStrategy::PipelineChain => &mut self.chain_plan,
+            ExecutionStrategy::ExpertParallel => &mut self.ep_plan,
+        }
+    }
+
+    /// The placement the chosen shape runs on.
+    pub fn active(&self) -> &ExpertPlacementPlan {
+        self.plan_for(self.choice.chosen)
+    }
 }
 
 /// What a cached placement was planned against.
@@ -76,7 +101,6 @@ pub struct PlacementKey {
     pub epoch: u64,
     pub node_ids: Vec<String>,
     pub offers_digest: u64,
-    pub forced: Option<ExecutionStrategy>,
 }
 
 struct MeshSnapshot {
@@ -90,6 +114,7 @@ struct MeshSnapshot {
     /// The offer in force on every node: the owner's where one was sent, else the default.
     offers: BTreeMap<NodeId, ResourceOffer>,
     approvals: BTreeMap<String, PlanApproval>,
+    calibrations: CalibrationStore,
 }
 
 /// The offer in force on every node of the mesh.
@@ -128,7 +153,59 @@ fn snapshot(state: &Arc<Mutex<GatewayState>>) -> MeshSnapshot {
         telemetry: guard.grid_telemetry.clone(),
         offers: effective_offers(&guard.nodes, &guard.grid_offers),
         approvals: guard.grid_plan_approvals.clone(),
+        calibrations: guard.grid_calibrations.clone(),
     }
+}
+
+/// The identity a measurement of `strategy` on `placement_digest` binds to on this mesh: every
+/// node, with the version each live worker runs (`in-process` for the coordinator's own nodes).
+fn calibration_binding(
+    snap: &MeshSnapshot,
+    model_id: &str,
+    strategy: ExecutionStrategy,
+    placement_digest: u64,
+    rows: u32,
+) -> CalibrationBinding {
+    let node_ids: Vec<String> = snap.nodes.iter().map(|n| n.id.0.clone()).collect();
+    let versions: BTreeMap<String, String> = snap
+        .nodes
+        .iter()
+        .map(|n| {
+            let version = snap
+                .live_workers
+                .get(&n.id.0)
+                .map(|r| r.installed_version.clone())
+                .unwrap_or_else(|| "in-process".to_string());
+            (n.id.0.clone(), version)
+        })
+        .collect();
+    CalibrationBinding::new(model_id, strategy, placement_digest, node_ids, versions, rows)
+}
+
+/// Attaches the calibrations that bind to the cached shapes, letting measurements decide the
+/// shape when both have one.
+fn refresh_measurements(cached: &mut CachedPlacement, snap: &MeshSnapshot, model_id: &str) {
+    let chain = snap
+        .calibrations
+        .lookup(&calibration_binding(
+            snap,
+            model_id,
+            ExecutionStrategy::PipelineChain,
+            cached.chain_plan.digest(),
+            1,
+        ))
+        .cloned();
+    let ep = snap
+        .calibrations
+        .lookup(&calibration_binding(
+            snap,
+            model_id,
+            ExecutionStrategy::ExpertParallel,
+            cached.ep_plan.digest(),
+            1,
+        ))
+        .cloned();
+    cached.choice.apply_measurements(chain, ep);
 }
 
 /// Worker profiles for every node of the mesh: live registrations where they exist, in-process
@@ -169,7 +246,7 @@ fn local_executor(local_node: &HardwareNode) -> LocalExecutor {
     }
 }
 
-fn placement_key(snap: &MeshSnapshot, forced: Option<ExecutionStrategy>) -> PlacementKey {
+fn placement_key(snap: &MeshSnapshot) -> PlacementKey {
     let mut node_ids: Vec<String> = snap.nodes.iter().map(|n| n.id.0.clone()).collect();
     node_ids.sort();
     let offers_json = serde_json::to_vec(&snap.offers).unwrap_or_default();
@@ -177,63 +254,64 @@ fn placement_key(snap: &MeshSnapshot, forced: Option<ExecutionStrategy>) -> Plac
         epoch: snap.epoch,
         node_ids,
         offers_digest: fnv1a_64(&offers_json),
-        forced,
     }
 }
 
-/// The placement in force for a model: the cached one while the mesh it was planned against is
-/// unchanged, else a fresh plan seeded from the model's learned routing heat and cached. The
-/// boolean says whether it came from the cache.
+/// Forces a shape onto a choice without re-planning: both shapes are cached.
+fn force_shape(choice: &mut StrategyChoice, forced: Option<ExecutionStrategy>) {
+    if let Some(strategy) = forced
+        && strategy != choice.chosen
+    {
+        choice.chosen = strategy;
+        choice.decided_by = "forced".to_string();
+        choice.rationale = format!("shape forced to {strategy:?}; {}", choice.rationale);
+    }
+}
+
+/// The placement in force for a model: the cached shapes while the mesh they were planned
+/// against is unchanged, else fresh plans seeded from the model's learned routing heat and
+/// cached. Calibrations that bind to the cached shapes are attached every time, so measurements
+/// decide the shape as soon as both shapes have one. The boolean says whether the placement came
+/// from the cache.
 fn current_placement(
     state: &Arc<Mutex<GatewayState>>,
     snap: &MeshSnapshot,
     model: &ModelSpec,
     forced: Option<ExecutionStrategy>,
 ) -> (StrategyChoice, ExpertPlacementPlan, bool) {
-    let key = placement_key(snap, forced);
+    let key = placement_key(snap);
     let popularity = {
         let mut guard = state.lock().expect("gateway state lock");
-        if let Some(cached) = guard.grid_placements.get(&model.id)
+        if let Some(cached) = guard.grid_placements.get_mut(&model.id)
             && cached.key == key
         {
-            return (cached.choice.clone(), cached.placement.clone(), true);
+            refresh_measurements(cached, snap, &model.id);
+            let mut choice = cached.choice.clone();
+            force_shape(&mut choice, forced);
+            let plan = cached.plan_for(choice.chosen).clone();
+            return (choice, plan, true);
         }
         let ledger = guard.usage_for(&model.id);
         (!ledger.is_empty()).then(|| ledger.popularity())
     };
-    let (mut choice, mut placement) = cost_model(&snap.live_workers).choose_with_offers(
-        model,
-        &snap.nodes,
-        popularity.as_ref(),
-        &snap.offers,
-    );
-    if let Some(strategy) = forced
-        && strategy != choice.chosen
-    {
-        choice.chosen = strategy;
-        choice.rationale = format!("shape forced to {strategy:?}; {}", choice.rationale);
-        placement = ExpertPlacementPlanner::plan_with_offers(
-            model,
-            &snap.nodes,
-            strategy,
-            popularity.as_ref(),
-            WorkloadKind::Inference,
-            &snap.offers,
-        );
-    }
+    let (choice, chain_plan, ep_plan) = cost_model(&snap.live_workers, &snap.telemetry)
+        .choose_both_with_offers(model, &snap.nodes, popularity.as_ref(), &snap.offers);
+    let mut cached = CachedPlacement {
+        choice,
+        chain_plan,
+        ep_plan,
+        key,
+        created_unix_ms: now_unix_ms(),
+        repins_applied: 0,
+        swaps_applied: 0,
+    };
+    refresh_measurements(&mut cached, snap, &model.id);
+    let mut choice = cached.choice.clone();
+    force_shape(&mut choice, forced);
+    let plan = cached.plan_for(choice.chosen).clone();
     let mut guard = state.lock().expect("gateway state lock");
-    guard.grid_placements.insert(
-        model.id.clone(),
-        CachedPlacement {
-            choice: choice.clone(),
-            placement: placement.clone(),
-            key,
-            created_unix_ms: now_unix_ms(),
-            repins_applied: 0,
-            swaps_applied: 0,
-        },
-    );
-    (choice, placement, false)
+    guard.grid_placements.insert(model.id.clone(), cached);
+    (choice, plan, false)
 }
 
 /// One re-pin boundary on the model's cached placement: the proposal from the learned heat, and
@@ -263,19 +341,20 @@ fn repin_now(
             model.id
         ));
     };
-    let proposal = RepinPlanner::propose(&cached.placement, &heat, policy);
+    let active = cached.choice.chosen;
+    let proposal = RepinPlanner::propose(cached.plan_for(active), &heat, policy);
     let staging_jobs = if apply && !proposal.swaps.is_empty() {
         let expert_bytes = (model.single_expert_size_gb * 1_073_741_824.0) as u64;
         cached.repins_applied += 1;
         cached.swaps_applied += proposal.swaps.len();
-        RepinPlanner::apply(&mut cached.placement, &proposal, expert_bytes)
+        RepinPlanner::apply(cached.plan_for_mut(active), &proposal, expert_bytes)
     } else {
         Vec::new()
     };
     Ok(GridRepinOutcome {
         model_id: model.id.clone(),
         applied: apply && !proposal.swaps.is_empty(),
-        placement_digest: cached.placement.digest(),
+        placement_digest: cached.active().digest(),
         repins_applied: cached.repins_applied,
         swaps_applied: cached.swaps_applied,
         proposal,
@@ -283,11 +362,21 @@ fn repin_now(
     })
 }
 
-fn cost_model(live_workers: &BTreeMap<String, LiveWorkerRegistration>) -> StrategyCostModel {
+/// The cost model with what the mesh has measured: round trips from the registrations and
+/// memory streaming rates from the workers' own probes.
+fn cost_model(
+    live_workers: &BTreeMap<String, LiveWorkerRegistration>,
+    telemetry: &TelemetryStore,
+) -> StrategyCostModel {
     let mut model = StrategyCostModel::default();
     for reg in live_workers.values() {
         if reg.last_measured_rtt_ms > 0.0 {
             model = model.with_measured_rtt(reg.node.id.clone(), reg.last_measured_rtt_ms);
+        }
+    }
+    for (node, t) in &telemetry.workers {
+        if let Some(gbps) = t.measured_stream_gbps {
+            model = model.with_measured_stream(node.clone(), gbps);
         }
     }
     model
@@ -385,7 +474,11 @@ pub struct GridStepOutcome {
     pub report: GridRunReport,
     pub hops: Vec<LiveHopTelemetry>,
     pub modelled_ms_per_token: f64,
+    /// RepOps digest of the last unit that ran; its form depends on the unit's kind.
     pub final_digest_fnv1a: u64,
+    /// FNV-1a of the bytes the step's sink units produced: the same for every shape that
+    /// produces the same bytes, which is what calibration's digest gate compares.
+    pub final_output_fnv1a: u64,
     /// Whether the step ran on the placement already in force rather than a fresh plan.
     pub placement_cached: bool,
     /// Routing accesses folded into the model's usage ledger.
@@ -526,6 +619,11 @@ pub async fn run_grid_decode_step_with(
         .find(|t| t.ok)
         .map(|t| t.digest_fnv1a)
         .unwrap_or(0);
+    let final_output_fnv1a = report
+        .outputs
+        .iter()
+        .map(|(_, bytes)| fnv1a_64(bytes))
+        .fold(0u64, |acc, d| acc ^ d);
     record_run(
         state,
         "decode",
@@ -559,6 +657,7 @@ pub async fn run_grid_decode_step_with(
         hops,
         modelled_ms_per_token,
         final_digest_fnv1a,
+        final_output_fnv1a,
         placement_cached,
         routing_recorded,
         repin,
@@ -911,6 +1010,153 @@ pub async fn post_grid_repin(
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GridCalibrateRequest {
+    /// Shape to measure: `chain` or `expert-parallel`; the planner's choice when absent.
+    pub strategy: Option<String>,
+    /// Decode steps to run, at most 8.
+    pub steps: Option<u32>,
+    pub rows: Option<u32>,
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GridCalibrateResponse {
+    pub model_id: String,
+    pub strategy: Option<ExecutionStrategy>,
+    pub record: Option<CalibrationRecord>,
+    pub steps_run: u32,
+    pub wall_ms: f64,
+    /// For the fan-out shape, whether its bytes matched a chain step on the same prompt.
+    pub digest_matches_chain: Option<bool>,
+    /// Whether the record binds to the placement now in force for the shape it measured.
+    pub applies_to_plan_in_force: bool,
+    /// What now decides the shape for this model: `measured`, `modelled`, `dense` or `forced`.
+    pub decided_by: String,
+    pub rationale: String,
+    pub error: Option<String>,
+}
+
+/// Measures the placement in force: at most eight decode steps of one shape within a 20 second
+/// budget, recorded as milliseconds per token bound to the placement's digest, the node set and
+/// the versions that ran. A fan-out measurement also runs one chain step on the same prompt and
+/// keeps whether the bytes matched; a record that fails that gate is kept but never steers the
+/// choice. Once both shapes are measured on the same mesh, the measurements decide the shape.
+pub async fn post_grid_calibrate(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    maybe_req: Option<Json<GridCalibrateRequest>>,
+) -> Json<GridCalibrateResponse> {
+    let req = maybe_req.map(|j| j.0).unwrap_or_default();
+    let steps = req
+        .steps
+        .unwrap_or(CALIBRATION_MAX_STEPS)
+        .clamp(1, CALIBRATION_MAX_STEPS);
+    let rows = req.rows.unwrap_or(1).clamp(1, 64);
+    let prompt = req
+        .prompt
+        .filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| "calibration: the same prompt on every step".to_string());
+    let forced = parse_strategy(req.strategy.as_deref());
+    let model_id = snapshot(&state).inference_model.id.clone();
+    let failure = |error: String| GridCalibrateResponse {
+        model_id: model_id.clone(),
+        strategy: forced,
+        record: None,
+        steps_run: 0,
+        wall_ms: 0.0,
+        digest_matches_chain: None,
+        applies_to_plan_in_force: false,
+        decided_by: String::new(),
+        rationale: String::new(),
+        error: Some(error),
+    };
+
+    let t0 = Instant::now();
+    let mut walls = Vec::new();
+    let mut exec_by_node: BTreeMap<String, f64> = BTreeMap::new();
+    let mut last: Option<GridStepOutcome> = None;
+    for _ in 0..steps {
+        if t0.elapsed().as_millis() as u64 > CALIBRATION_MAX_WALL_MS {
+            break;
+        }
+        match run_grid_decode_step(&state, &prompt, rows, forced).await {
+            Ok(outcome) => {
+                walls.push(outcome.report.wall_ms);
+                for trace in outcome.report.traces.iter().filter(|t| t.ok) {
+                    *exec_by_node.entry(trace.node_id.0.clone()).or_default() += trace.exec_ms;
+                }
+                last = Some(outcome);
+            }
+            Err(e) => return Json(failure(format!("calibration step failed: {e}"))),
+        }
+    }
+    let Some(outcome) = last else {
+        return Json(failure("no calibration step ran within the time budget".to_string()));
+    };
+    let strategy = outcome.strategy;
+    let digest_matches_chain = match strategy {
+        ExecutionStrategy::ExpertParallel => {
+            match run_grid_decode_step(
+                &state,
+                &prompt,
+                rows,
+                Some(ExecutionStrategy::PipelineChain),
+            )
+            .await
+            {
+                Ok(chain) => Some(chain.final_output_fnv1a == outcome.final_output_fnv1a),
+                Err(_) => Some(false),
+            }
+        }
+        ExecutionStrategy::PipelineChain => None,
+    };
+    let steps_run = walls.len() as u32;
+    for v in exec_by_node.values_mut() {
+        *v /= steps_run.max(1) as f64;
+    }
+    let snap = snapshot(&state);
+    let binding = calibration_binding(
+        &snap,
+        &model_id,
+        strategy,
+        outcome.placement.digest(),
+        rows,
+    );
+    let record = CalibrationRecord::from_steps(
+        binding,
+        &walls,
+        exec_by_node,
+        outcome.final_output_fnv1a,
+        digest_matches_chain,
+        now_unix_ms(),
+    );
+    {
+        let mut guard = state.lock().expect("gateway state lock");
+        guard.grid_calibrations.record(record.clone());
+        let _ = guard.save_grid_calibrations();
+    }
+    let snap = snapshot(&state);
+    let (choice, _, _) = current_placement(&state, &snap, &snap.inference_model.clone(), None);
+    let in_force = state
+        .lock()
+        .expect("gateway state lock")
+        .grid_placements
+        .get(&model_id)
+        .map(|c| c.plan_for(strategy).digest());
+    Json(GridCalibrateResponse {
+        model_id,
+        strategy: Some(strategy),
+        applies_to_plan_in_force: in_force == Some(record.binding.placement_digest),
+        record: Some(record),
+        steps_run,
+        wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
+        digest_matches_chain,
+        decided_by: choice.decided_by,
+        rationale: choice.rationale,
+        error: None,
+    })
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct GridApproveRequest {
     pub model: Option<String>,
@@ -927,8 +1173,7 @@ pub async fn post_grid_plan_approve(
 ) -> Json<GridPlanResponse> {
     let snap = snapshot(&state);
     let model = resolve_model(&snap, req.model.as_deref());
-    let (_, placement) =
-        cost_model(&snap.live_workers).choose_with_offers(&model, &snap.nodes, None, &snap.offers);
+    let (_, placement, _) = current_placement(&state, &snap, &model, None);
     let digest = placement.digest();
     {
         let mut guard = state.lock().expect("gateway state lock");
@@ -1428,7 +1673,7 @@ mod tests {
         assert_ne!(auto.placement_digest, 0);
         let node_count = state.lock().unwrap().nodes.len();
         assert_eq!(auto.offers.len(), node_count);
-        assert_eq!(auto.fit.per_node.len() > 0, true);
+        assert!(!auto.fit.per_node.is_empty());
         assert_eq!(
             auto.staging.ready_to_stage,
             auto.staging.nodes_awaiting_approval.is_empty()
@@ -1503,7 +1748,8 @@ mod tests {
         )
         .await
         .expect("expert-parallel step runs");
-        assert_eq!(ep.final_digest_fnv1a, outcome.final_digest_fnv1a);
+        assert_eq!(ep.final_output_fnv1a, outcome.final_output_fnv1a);
+        assert_ne!(ep.final_output_fnv1a, 0);
         assert!(ep.routing_recorded > 0);
         assert!(ep.repin.is_some());
         assert!(
@@ -1513,6 +1759,80 @@ mod tests {
                 .any(|a| a.app == "TrunkForward")
         );
         assert_eq!(state.lock().unwrap().usage_for(&model_id).turns, 2);
+    }
+
+    #[tokio::test]
+    async fn calibrations_bind_to_the_plan_in_force_and_decide_once_both_shapes_are_measured() {
+        let state = demo_state();
+        let chain = post_grid_calibrate(
+            State(state.clone()),
+            Some(Json(GridCalibrateRequest {
+                strategy: Some("chain".into()),
+                steps: Some(2),
+                rows: None,
+                prompt: None,
+            })),
+        )
+        .await
+        .0;
+        assert!(chain.error.is_none(), "{:?}", chain.error);
+        assert_eq!(chain.steps_run, 2);
+        assert_eq!(chain.strategy, Some(ExecutionStrategy::PipelineChain));
+        let record = chain.record.clone().expect("a record");
+        assert_eq!(record.steps, 2);
+        assert!(record.measured_ms_per_token > 0.0);
+        assert_eq!(record.kernels, "reference-synthetic");
+        assert!(chain.applies_to_plan_in_force);
+        assert_eq!(chain.digest_matches_chain, None);
+        assert_ne!(chain.decided_by, "measured", "one shape measured decides nothing");
+
+        let plan = get_grid_plan(State(state.clone()), Query(GridPlanQuery::default()))
+            .await
+            .0;
+        assert_eq!(
+            plan.choice.measured_chain.as_ref().map(|r| r.binding.placement_digest),
+            Some(record.binding.placement_digest)
+        );
+        assert!(plan.choice.measured_expert_parallel.is_none());
+
+        let ep = post_grid_calibrate(
+            State(state.clone()),
+            Some(Json(GridCalibrateRequest {
+                strategy: Some("expert-parallel".into()),
+                steps: Some(2),
+                rows: None,
+                prompt: None,
+            })),
+        )
+        .await
+        .0;
+        assert!(ep.error.is_none(), "{:?}", ep.error);
+        assert_eq!(ep.digest_matches_chain, Some(true), "the fan-out bytes match the chain");
+        assert!(ep.applies_to_plan_in_force);
+        assert_eq!(ep.decided_by, "measured");
+        assert!(ep.rationale.starts_with("measured"));
+
+        let decided = get_grid_plan(State(state.clone()), Query(GridPlanQuery::default()))
+            .await
+            .0;
+        assert_eq!(decided.choice.decided_by, "measured");
+        assert!(decided.choice.measured_chain.is_some());
+        assert!(decided.choice.measured_expert_parallel.is_some());
+        let faster = if decided.choice.measured_chain.as_ref().unwrap().measured_ms_per_token
+            <= decided
+                .choice
+                .measured_expert_parallel
+                .as_ref()
+                .unwrap()
+                .measured_ms_per_token
+        {
+            ExecutionStrategy::PipelineChain
+        } else {
+            ExecutionStrategy::ExpertParallel
+        };
+        assert_eq!(decided.choice.chosen, faster);
+        assert_eq!(decided.placement.strategy, faster);
+        assert_eq!(state.lock().unwrap().grid_calibrations.len(), 2);
     }
 
     #[tokio::test]

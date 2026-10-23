@@ -67,6 +67,25 @@ kadmium plan --workload training
 | :--- | :--- | :--- |
 | `-w`, `--workload <MODE>` | `inference` | Target workload (`inference` or `training`). |
 
+After the shard plan it prints the grid execution shape: both modelled estimates, the placement, the usage it learned from a coordinator's ledger when `target/kadmium-state/usage/<model>.usage.json` exists, every calibration record kept for the model, and the offers and fit table (fast memory, RAM and NVMe used against offered per node, and one line per shortfall).
+
+---
+
+## 3a. `kadmium calibrate`
+
+Asks a running coordinator to measure the placement in force: up to 8 decode steps of one shape within a 20 second budget, recorded as ms per token bound to the placement digest, node set and versions that ran.
+
+```bash
+kadmium calibrate --coordinator http://127.0.0.1:7848 --strategy expert-parallel --steps 8
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-c`, `--coordinator <URL>` | `http://127.0.0.1:7848` | Coordinator HTTP gateway. |
+| `-s`, `--strategy <SHAPE>` | planner's choice | `chain` or `expert-parallel`. |
+| `--steps <N>` | `8` | Decode steps to run, at most 8. |
+| `--rows <N>` | `1` | Rows per step. |
+
 ---
 
 ## 4. `kadmium simulate`
@@ -179,7 +198,18 @@ Verifies an HMAC-SHA256 `kdm1_...` Join Ticket, broadcasts a UDP LAN discovery b
 
 ```bash
 kadmium join --ticket kdm1_...
+kadmium join --offer-ram-gb 24 --offer-fast-gb 10 --slots 2 --require-approval
 ```
+
+The worker measures its memory streaming rate before registering (a single-thread copy, which replaces the nominal RAM figure in the coordinator's cost model for this node) and sends the owner's offer with every registration and heartbeat.
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--offer-fast-gb <GiB>` | 90% of VRAM plus all unified memory | VRAM or unified memory offered to the grid. |
+| `--offer-ram-gb <GiB>` | 70% of RAM, never within the reserve | System RAM offered; the reserve (a quarter of RAM, bounded to 1 to 4 GiB) is never offered. |
+| `--offer-nvme-gb <GiB>` | the whole Kadmium cache | NVMe offered for cold weight banks. |
+| `--slots <N>` | `4` | Work instances this machine runs at once. |
+| `--require-approval` | off for owned hardware | Review placement plans before anything is staged here. |
 
 ---
 

@@ -131,6 +131,21 @@ enum Commands {
         #[arg(long)]
         require_approval: bool,
     },
+    /// Measure the plan in force on a running coordinator: up to 8 decode steps of one shape, recorded against the placement, node set and versions that ran
+    Calibrate {
+        /// Coordinator HTTP gateway URL
+        #[arg(short, long, default_value = "http://127.0.0.1:7848")]
+        coordinator: String,
+        /// Shape to measure: chain | expert-parallel (default: the planner's choice)
+        #[arg(short, long)]
+        strategy: Option<String>,
+        /// Decode steps to run, at most 8
+        #[arg(long, default_value_t = 8)]
+        steps: u32,
+        /// Rows per step
+        #[arg(long, default_value_t = 1)]
+        rows: u32,
+    },
     /// Pull and stage a Hugging Face model/dataset (hf://...) or GitHub RL/Dream-RSI world (gh://...)
     Pull {
         /// Ecosystem URI (e.g., hf://deepseek-ai/DeepSeek-V3@main or gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt)
@@ -337,6 +352,12 @@ async fn main() {
             )
             .await
         }
+        Commands::Calibrate {
+            coordinator,
+            strategy,
+            steps,
+            rows,
+        } => run_calibrate(&coordinator, strategy.as_deref(), steps, rows).await,
         Commands::Pull { uri } => run_pull(&uri),
         Commands::Mcp { inspect } => run_mcp(inspect),
         Commands::Init { out } => run_init(out.as_deref()),
@@ -776,6 +797,25 @@ fn run_plan(model_name: &str, workload_name: &str) {
     );
     println!("  * Placement: {}", placement.summary());
     println!("  * Why: {}", choice.rationale);
+    let calibrations = kadmium_sharding::CalibrationStore::load(std::path::Path::new(
+        "target/kadmium-state/grid_calibrations.json",
+    ))
+    .unwrap_or_default();
+    let measured = calibrations.for_model(&model.id);
+    if measured.is_empty() {
+        println!(
+            "  * Measured: no calibration recorded for this model (run `kadmium calibrate` against a coordinator)"
+        );
+    } else {
+        for record in measured {
+            println!(
+                "  * Measured: {} | placement {:#018x} | {} rows",
+                record.summary(),
+                record.binding.placement_digest,
+                record.binding.rows
+            );
+        }
+    }
     println!(
         "\n--- Offers and Fit (default offers: {}% of VRAM plus unified memory, {}% of RAM outside a {}-{} GiB reserve) ---",
         (kadmium_core::OFFER_FAST_MEMORY_FRAC * 100.0).round(),

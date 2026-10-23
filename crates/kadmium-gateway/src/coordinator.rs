@@ -71,6 +71,14 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         Ok(_) => {}
         Err(e) => println!("  [Grid] Saved usage ledgers could not be read: {e}"),
     }
+    match gw_state.load_grid_calibrations() {
+        Ok(n) if n > 0 => println!(
+            "  [Grid] Restored {n} calibration records from {}",
+            GatewayState::grid_calibrations_path().display()
+        ),
+        Ok(_) => {}
+        Err(e) => println!("  [Grid] Saved calibration records could not be read: {e}"),
+    }
     // GatewayState::new() assumes the default port; point the self-hosted URL at the real one.
     if let crate::CompanionConnectionMode::SelfHostedOpenSource {
         local_coordinator_url,
@@ -112,6 +120,11 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
     let worker_tcp_addr = format!("{lan_ip}:{bound_worker_port}");
 
     gw_state.register_live_worker(local_node.clone(), worker_tcp_addr.clone(), 0.15, live_only);
+    let local_stream_gbps = LiveHardwareProfiler::probe_memory_stream_gbps();
+    gw_state.set_worker_offer(&local_node.id.0, None, None, Some(local_stream_gbps));
+    println!(
+        "  [Grid] Measured memory stream on this machine: {local_stream_gbps:.1} GB/s (single thread, feeds the cost model)"
+    );
 
     // Automatically detect and attach a physical CanMV K230 RISC-V + 6 TOPS KPU board over USB-CDC if connected:
     let k230_probe = kadmium_core::K230UsbComputeBridge::probe_attached_k230();

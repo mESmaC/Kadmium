@@ -701,6 +701,59 @@ impl JoinOfferArgs {
     }
 }
 
+/// Asks a running coordinator to measure the plan in force and prints the record it kept.
+pub async fn run_calibrate(coordinator: &str, strategy: Option<&str>, steps: u32, rows: u32) {
+    let req = kadmium_gateway::GridCalibrateRequest {
+        strategy: strategy.map(str::to_string),
+        steps: Some(steps.clamp(1, 8)),
+        rows: Some(rows.max(1)),
+        prompt: None,
+    };
+    println!(
+        "===================================================================================="
+    );
+    println!(" Kadmium (Cd-48) — Grid Calibration ({} step(s), {} row(s) per step)", req.steps.unwrap_or(8), req.rows.unwrap_or(1));
+    println!(
+        "===================================================================================="
+    );
+    match MeshHttpClient::post_json::<kadmium_gateway::GridCalibrateRequest, kadmium_gateway::GridCalibrateResponse>(
+        coordinator,
+        "/api/v1/grid/calibrate",
+        &req,
+    )
+    .await
+    {
+        Ok(resp) => {
+            if let Some(error) = resp.error {
+                println!("  * Calibration failed:     {error}");
+                return;
+            }
+            println!("  * Model:                  {}", resp.model_id);
+            if let Some(record) = &resp.record {
+                println!("  * Record:                 {}", record.summary());
+                println!(
+                    "  * Binding:                placement {:#018x} | {} nodes | {} rows",
+                    record.binding.placement_digest,
+                    record.binding.node_ids.len(),
+                    record.binding.rows
+                );
+                for (node, ms) in &record.per_node_exec_ms {
+                    println!("  * Compute on {:<16} {ms:>8.2} ms per step (worker clock)", node);
+                }
+            }
+            println!(
+                "  * Applies to plan in force: {} | shape decided by: {}",
+                resp.applies_to_plan_in_force, resp.decided_by
+            );
+            println!("  * Why:                    {}", resp.rationale);
+            println!("  * Wall:                   {:.1} ms for {} step(s)", resp.wall_ms, resp.steps_run);
+        }
+        Err(e) => println!(
+            "  * No coordinator answered at {coordinator}: {e}. Start one with `kadmium serve` first."
+        ),
+    }
+}
+
 pub async fn run_join(
     coordinator_arg: Option<String>,
     ticket_arg: Option<String>,
@@ -837,6 +890,10 @@ pub async fn run_join(
     );
 
     // Attempt live registration with the running `kadmium serve` Coordinator:
+    let measured_stream_gbps = LiveHardwareProfiler::probe_memory_stream_gbps();
+    println!(
+        "  * Memory Stream Probe:    {measured_stream_gbps:.1} GB/s single-thread copy (replaces the nominal RAM figure in the cost model)"
+    );
     let reg_req = WorkerRegisterRequest {
         node: local_node.clone(),
         worker_tcp_addr: worker_tcp_addr.clone(),
@@ -844,7 +901,7 @@ pub async fn run_join(
         switch_to_live_only: live_only,
         offer: offer.clone(),
         free_system_ram_gb: None,
-        measured_stream_gbps: None,
+        measured_stream_gbps: Some(measured_stream_gbps),
     };
 
     match MeshHttpClient::post_json::<WorkerRegisterRequest, WorkerRegistrationAck>(

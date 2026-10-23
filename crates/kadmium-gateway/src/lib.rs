@@ -159,6 +159,9 @@ pub struct GatewayState {
     /// The placement in force per model, kept between runs so learned pins stay put and the live
     /// re-pin adapts them a few swaps at a time; re-planned when the mesh or the offers change.
     pub grid_placements: BTreeMap<String, crate::grid_api::CachedPlacement>,
+    /// Measured speeds of placements, bound to the placement, node set and versions that ran;
+    /// persisted as `target/kadmium-state/grid_calibrations.json`.
+    pub grid_calibrations: kadmium_sharding::CalibrationStore,
     pub coordinator_lan_ip: String,
     pub coordinator_http_port: u16,
     pub training_step_counter: u64,
@@ -289,7 +292,24 @@ impl GatewayState {
             grid_plan_approvals: BTreeMap::new(),
             grid_usage: BTreeMap::new(),
             grid_placements: BTreeMap::new(),
+            grid_calibrations: kadmium_sharding::CalibrationStore::new(),
         }
+    }
+
+    pub fn grid_calibrations_path() -> std::path::PathBuf {
+        std::path::Path::new("target/kadmium-state").join("grid_calibrations.json")
+    }
+
+    /// Restores the saved calibration records, returning how many there are.
+    pub fn load_grid_calibrations(&mut self) -> Result<usize, String> {
+        self.grid_calibrations =
+            kadmium_sharding::CalibrationStore::load(&Self::grid_calibrations_path())?;
+        Ok(self.grid_calibrations.len())
+    }
+
+    pub fn save_grid_calibrations(&self) -> Result<(), String> {
+        self.grid_calibrations
+            .save(&Self::grid_calibrations_path())
     }
 
     /// Where the per-model usage ledgers live between restarts.

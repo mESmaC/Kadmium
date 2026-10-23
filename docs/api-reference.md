@@ -261,16 +261,34 @@ Returns the complete `v1.0 GA` governance bundle:
 The grid substrate (`kadmium-grid`) runs every workload as a graph of work units scheduled across the mesh. These endpoints expose the mesh as one machine, the planner's shape choice, graph runs, and the credit ledger. Every throughput figure a planner endpoint returns is modelled; every wall time a run endpoint returns is measured on the synthetic reference kernels.
 
 ### `GET /api/v1/grid/inventory`
-The mesh summed as one machine: online nodes, FP16 TFLOPS (total and polite-availability-weighted), fast memory, system RAM, NVMe, CPU threads, free slots, hop latency range and backends, plus a one-line summary, the number of grid runs, and the last run's record.
+The mesh summed as one machine: online nodes, FP16 TFLOPS (total and polite-availability-weighted), fast memory, system RAM, NVMe, CPU threads, free slots, hop latency range, backends, how many workers are measured and how many compute samples they hold, plus a one-line summary, the number of grid runs, the last run's record (with the samples it added) and `telemetry`: per worker, the measured compute cost per kind of work (ms per unit of work, samples, last sample), the memory streaming rate it measured on itself and the RAM it last reported free.
 
 ### `GET /api/v1/grid/plan?model=<id>&strategy=<chain|expert-parallel>`
-The cost model's choice between the pipeline chain and expert-parallel shapes for a model on the current mesh, with both estimates (ms per token, hops per step, cold streaming), the rationale, and the placement summary (trunk ranges, experts, share in fast memory, replicated experts, cold gigabytes, rules, fast memory used per node). `strategy` forces a shape. `modelled` is always `true`.
+The placement in force for a model and the choice between the pipeline chain and expert-parallel shapes: both modelled estimates (ms per token, hops per step, cold streaming), the rationale, `decided_by` (`modelled`, `measured` once both shapes carry a calibration that binds to this mesh, `dense`, or `forced`), the calibration records that bind to each shape, and the placement summary. Beside it: `placement_digest` (approvals and calibrations bind to it), `fit` (whether every trunk fits its owner's offer, what streams from the vault, per-node offered and used memory, one line per shortfall), `offers` (the offer in force on every node), `staging` (the transfers that can start, the ones held for an owner's approval, which owners must approve and which have), `usage` (turns, routed hits, experts seen, the hottest experts; `learned` is false until a step has run), `placement_cached`, and the re-pin boundaries and swaps applied so far. `strategy` forces a shape without re-planning. `modelled` is always `true`.
+
+### `POST /api/v1/grid/plan/approve`
+```json
+{ "model": "deepseek-v3-671b-moe-q4k", "node": "node-laptop", "approve": true }
+```
+Records (or with `approve: false` withdraws) the owner's approval of the placement in force for their node. The approval binds to the placement digest, so a changed placement asks again; a changed offer drops it too. Returns the plan response with the staging preview updated.
 
 ### `POST /api/v1/grid/run`
 ```json
-{ "prompt": "text", "rows": 1, "strategy": "chain" }
+{ "prompt": "text", "rows": 1, "strategy": "chain", "repin": false }
 ```
-Runs one decode step as a work graph over live workers, with simulated nodes executed in-process on the coordinator. Returns the shape, graph id, units total and validated, measured wall time, the modelled ms per token for that shape, the final boundary digest, per-unit hop telemetry, credit granted and receipts issued.
+Runs one decode step as a work graph over live workers, with simulated nodes executed in-process on the coordinator, on the placement in force; replicated experts are served by the copy with the lowest measured completion estimate. Returns the shape, graph id, units total and validated, measured wall time, the modelled ms per token for that shape, the final boundary digest, per-unit hop telemetry, credit granted and receipts issued, whether the placement came from the cache, how many routing accesses the usage ledger recorded, and with `repin: true` how many swaps the re-pin boundary after the step made.
+
+### `POST /api/v1/grid/repin`
+```json
+{ "model": "deepseek-v3-671b-moe-q4k", "max_swaps": 4, "apply": true }
+```
+One re-pin boundary on the placement in force: per layer, the hottest streamed expert against the coldest pinned one, swapped when the learned heat clears a 25% hysteresis, at most `max_swaps` per boundary. Returns the swaps, the staging transfers they imply (the promoted expert into the node's fast tier, pinned, and the demoted one out), the placement digest afterwards and the running totals. With `apply: false` it only proposes.
+
+### `POST /api/v1/grid/calibrate`
+```json
+{ "strategy": "expert-parallel", "steps": 8, "rows": 1, "prompt": "text" }
+```
+Measures the placement in force: at most eight decode steps of one shape within a twenty second budget, recorded as ms per token bound to the placement digest, the node set, the versions that ran and the batch width. A fan-out calibration also runs one chain step on the same prompt and reports `digest_matches_chain`; a record that fails that gate is kept but never steers the choice. Returns the record (with per-node compute time per step from the workers' own clocks and the kernels it measured, today `reference-synthetic`), whether it applies to the plan in force, and what now decides the shape.
 
 ### `POST /api/v1/grid/train`
 ```json

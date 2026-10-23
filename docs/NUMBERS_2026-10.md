@@ -92,3 +92,17 @@ $$\text{BuyerGrossClearing}(\text{USD/hr}) = R_{\text{tok}} \cdot \frac{\text{To
 | **RK3588 Node Role Classification** | **24/7 Coordinator, `.ktb` NAS Seed Vault, WASI Verifier & Speculative Draft Node** | — | Over `2.5GbE` (`0.28 GB/s`) or USB-C (`0.9–2.4 GB/s`), an external box is `~100–200×` slower than desktop VRAM/DDR5 and `~20×` slower than PCIe Gen4 NVMe (`R4 §3.4`). Never marketed as a desktop memory execution sidecar. |
 | **Reference Prosumer Cluster Benchmarks** | **Framework Desktop 128 GB (`$2,459`)** / **Mac Studio M4 Max 128 GB (`$3,699`)** / **DGX Spark 128 GB (`$6,950`)** | — | Oct 2026 MSRP/street prices after memory-price revisions (`R4 §7.3`) |
 | **Buyer ROI & Throughput Figures** | **Modelled** (until `kadmium bench` verified logs land) | — | All projected throughput and ROI tables are explicitly labelled **Modelled** (`R4 §10`) |
+
+---
+
+## 6. Resource Offer Defaults (engineering constants, not market data)
+
+What a node offers the grid before its owner edits the offer. One set of figures for the planner, the scheduler and the capability vector; the reserve rule is lumabri's donor default, the RAM fraction is the resident-weight budget the planner has always used.
+
+| Constant | Value | Rust Symbol | Rationale |
+| :--- | :--- | :--- | :--- |
+| **Fast memory offered by an idle host** | **`90%` of discrete VRAM, all unified memory** | `OFFER_FAST_MEMORY_FRAC` | The share of VRAM an idle host lends; unified memory has no game to keep clear for |
+| **System RAM offered** | **`70%`**, capped by the reserve | `OFFER_SYSTEM_RAM_FRAC` | The resident-weight budget behind `resident_weight_capacity_gb` |
+| **RAM reserve kept for the owner** | **`25%`, bounded to `1–4 GiB`** | `OFFER_RAM_RESERVE_FRAC`, `_MIN_GB`, `_MAX_GB` | lumabri's donor reserve: a 16 GiB host keeps 4 GiB, an 8 GiB host keeps 2 GiB; never offered even by an explicit offer |
+| **Slots per node** | **`4`** | `OFFER_DEFAULT_SLOTS` | Work instances a node runs at once |
+| **Model allocations per node** | **`4`** | `OFFER_MAX_ALLOCATIONS` | lumabri's cap on models sharing one donor |

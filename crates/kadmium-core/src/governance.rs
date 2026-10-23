@@ -18,6 +18,25 @@ pub struct LiveHardwareProfiler;
 impl LiveHardwareProfiler {
     /// Discovers the local machine's primary outbound LAN IPv4 address (e.g., `192.168.1.42`)
     /// by querying the OS routing table via a non-transmitting UDP socket connect.
+    /// Measures this machine's memory streaming rate with one thread: a 64 MiB buffer copied
+    /// three times, best run, read plus write bytes per second in GB/s. A floor for what a
+    /// kernel streaming weights out of RAM can expect, not the DRAM's peak; the cost model uses
+    /// it in place of the nominal RAM bandwidth for the node that measured it.
+    pub fn probe_memory_stream_gbps() -> f64 {
+        const BYTES: usize = 64 * 1024 * 1024;
+        let src: Vec<u8> = (0..BYTES).map(|i| (i % 251) as u8).collect();
+        let mut dst = vec![0u8; BYTES];
+        let mut best = 0.0f64;
+        for _ in 0..3 {
+            let t0 = std::time::Instant::now();
+            dst.copy_from_slice(&src);
+            let secs = t0.elapsed().as_secs_f64().max(1e-6);
+            std::hint::black_box(&dst);
+            best = best.max((2.0 * BYTES as f64) / secs / 1e9);
+        }
+        (best * 100.0).round() / 100.0
+    }
+
     pub fn probe_local_lan_ip() -> String {
         if let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0")
             && sock.connect("8.8.8.8:80").is_ok()
