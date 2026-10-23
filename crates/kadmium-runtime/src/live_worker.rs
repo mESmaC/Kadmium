@@ -484,6 +484,9 @@ pub struct LiveDistributedTrainingStepReport {
     #[serde(default)]
     pub preview_error: Option<String>,
     pub total_step_wall_ms: f64,
+    /// Every stage's returned layer range matches its request and its decompressed payload
+    /// matches the reported digest under the current RepOps manifest. False for no stages.
+    /// This is payload consistency, not independent kernel reexecution or numeric validity.
     pub all_stages_repops_verified: bool,
 }
 
@@ -844,14 +847,7 @@ pub fn execute_stage_training_local(
 
     // The island's RepOps digest: the exact bits of the update it ships, under the manifest.
     let decomp = DeMoDctCompressor::decompress_packet(&dct_packet);
-    let repops_digest = {
-        let mut digest = repops::Digest::new("island-step");
-        digest
-            .update_u32(req.start_layer)
-            .update_u32(req.end_layer)
-            .update_f32s(&decomp);
-        digest.finish()
-    };
+    let repops_digest = stage_training_payload_digest(req.start_layer, req.end_layer, &decomp);
 
     let compute_exec_ms = cm4_hw_ms
         .unwrap_or_else(|| (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0);
@@ -867,6 +863,170 @@ pub fn execute_stage_training_local(
         wire_compression_ratio: ratio,
         repops_digest_fnv1a: repops_digest,
         compute_exec_ms: compute_exec_ms.max(0.08),
+    }
+}
+
+/// The existing training-payload digest contract, shared by producer and receiver.
+fn stage_training_payload_digest(start_layer: u32, end_layer: u32, values: &[f32]) -> u64 {
+    let mut digest = repops::Digest::new("island-step");
+    digest
+        .update_u32(start_layer)
+        .update_u32(end_layer)
+        .update_f32s(values);
+    digest.finish()
+}
+
+fn stage_training_payload_verified(
+    request: &LiveStageTrainingRequest,
+    response: &LiveStageTrainingResponse,
+    decompressed: &[f32],
+) -> bool {
+    response.start_layer == request.start_layer
+        && response.end_layer == request.end_layer
+        && response.repops_digest_fnv1a
+            == stage_training_payload_digest(request.start_layer, request.end_layer, decompressed)
+}
+
+#[cfg(test)]
+mod training_digest_tests {
+    use super::*;
+    use kadmium_core::{ModelSpec, WorkloadKind};
+    use kadmium_sharding::ShardPlanner;
+
+    async fn report_from_worker(
+        mutate: fn(&mut LiveStageTrainingResponse),
+    ) -> LiveDistributedTrainingStepReport {
+        let node = sample_personal_cluster().remove(0);
+        let plan = ShardPlanner::compute_plan(
+            1,
+            &ModelSpec::llama_3_70b_lora(),
+            WorkloadKind::DistributedTraining,
+            std::slice::from_ref(&node),
+        );
+        assert_eq!(
+            plan.assignments
+                .iter()
+                .filter(|a| a.layer_count > 0)
+                .count(),
+            1
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let worker_node = node.clone();
+        let worker = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let frame = WireFrame::read_from_stream(&mut stream).await.unwrap();
+            assert_eq!(frame.kind, WireFrameKind::DeMoCompressedGradient);
+            let request: LiveStageTrainingRequest = serde_json::from_slice(&frame.payload).unwrap();
+            let mut response =
+                execute_stage_training_local(&worker_node.id.0, &worker_node.hostname, &request);
+            mutate(&mut response);
+            WireFrame::new(
+                WireFrameKind::DeMoCompressedGradient,
+                frame.epoch,
+                serde_json::to_vec(&response).unwrap(),
+            )
+            .with_request_id(frame.request_id)
+            .write_to_stream(&mut stream)
+            .await
+            .unwrap();
+        });
+        let workers = BTreeMap::from([(
+            node.id.0.clone(),
+            LiveWorkerRegistration {
+                node,
+                worker_tcp_addr: addr.to_string(),
+                worker_lan_ip: "127.0.0.1".into(),
+                worker_tcp_port: addr.port(),
+                os_name: "test".into(),
+                cpu_arch: "test".into(),
+                board_or_model: "test".into(),
+                network_channel: "LocalLAN".into(),
+                installed_version: DEFAULT_KADMIUM_RUNTIME_VERSION.into(),
+                ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+                heartbeat_count: 1,
+                registered_at_unix_ms: 0,
+                last_heartbeat_unix_ms: 0,
+                last_measured_rtt_ms: 0.0,
+                executed_forward_stages: 0,
+                executed_training_steps: 0,
+                online: true,
+            },
+        )]);
+        let report = tokio::time::timeout(
+            Duration::from_secs(5),
+            DistributedLanExecutor::execute_live_training_step(&plan, 1, 0.0001, &workers),
+        )
+        .await
+        .expect("training reply deadline");
+        worker.await.unwrap();
+        assert_eq!(report.stages.len(), 1);
+        assert!(report.stages[0].transport_mode.starts_with("Live TCP"));
+        report
+    }
+
+    fn refresh_digest(response: &mut LiveStageTrainingResponse) {
+        let gradient = DeMoDctCompressor::decompress_packet(&response.demo_dct_packet);
+        response.repops_digest_fnv1a =
+            stage_training_payload_digest(response.start_layer, response.end_layer, &gradient);
+    }
+
+    #[tokio::test]
+    async fn tampered_digest_fails_verification_even_when_numeric_preview_succeeds() {
+        let report = report_from_worker(|response| response.repops_digest_fnv1a ^= 1).await;
+        assert!(!report.all_stages_repops_verified);
+        assert!(report.preview_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn matching_digest_remains_verified_when_numeric_preview_overflows() {
+        let report = report_from_worker(|response| {
+            // Finite JSON payload with a valid digest, but too large for Nesterov arithmetic.
+            response.demo_dct_packet = SparseDctPacket {
+                block_len: 1,
+                indices: vec![0],
+                values: vec![f32::MAX],
+            };
+            response.wire_compression_ratio = response.demo_dct_packet.compression_ratio();
+            refresh_digest(response);
+        })
+        .await;
+        assert!(report.all_stages_repops_verified);
+        assert!(
+            report
+                .preview_error
+                .as_deref()
+                .unwrap()
+                .contains("overflow")
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_digest_for_the_wrong_layer_range_is_not_verified() {
+        let report = report_from_worker(|response| {
+            response.end_layer += 1;
+            refresh_digest(response);
+        })
+        .await;
+        assert!(!report.all_stages_repops_verified);
+        assert!(report.preview_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn no_stages_do_not_claim_repops_verification() {
+        let mut plan = ShardPlanner::compute_plan(
+            1,
+            &ModelSpec::llama_3_70b_lora(),
+            WorkloadKind::DistributedTraining,
+            &sample_personal_cluster(),
+        );
+        plan.assignments.clear();
+        let report =
+            DistributedLanExecutor::execute_live_training_step(&plan, 1, 0.0001, &BTreeMap::new())
+                .await;
+        assert!(report.stages.is_empty());
+        assert!(!report.all_stages_repops_verified);
+        assert!(report.preview_error.is_some());
     }
 }
 
@@ -2495,6 +2655,7 @@ impl DistributedLanExecutor {
 
         let mut stage_traces = Vec::new();
         let mut ordered_stage_gradients: Vec<(u32, u32, Vec<f32>)> = Vec::new();
+        let mut all_stages_repops_verified = true;
         // (start layer, end layer, loss before, loss after, compression) per stage, reduced
         // in layer-range order like the grid's stateless preview unit.
         let mut stage_summaries: Vec<(u32, u32, f32, f32, f64)> = Vec::new();
@@ -2555,6 +2716,7 @@ impl DistributedLanExecutor {
             ));
 
             let decompressed = DeMoDctCompressor::decompress_packet(&resp.demo_dct_packet);
+            all_stages_repops_verified &= stage_training_payload_verified(&req, &resp, &decompressed);
             ordered_stage_gradients.push((start_l, end_l, decompressed));
 
             stage_traces.push(LiveTrainingStageTrace {
@@ -2590,6 +2752,7 @@ impl DistributedLanExecutor {
                 Err(error) => (0.0, 0, Some(error)),
             };
 
+        all_stages_repops_verified &= !stage_traces.is_empty();
         LiveDistributedTrainingStepReport {
             model_id: plan.model_id.clone(),
             epoch: plan.epoch,
@@ -2607,7 +2770,7 @@ impl DistributedLanExecutor {
             diloco_outer_consensus_norm: (preview_norm * 1000.0).round() / 1000.0,
             execution_mode: crate::scheduler::STATELESS_STAGE_PREVIEW_MODE.to_string(),
             stage_preview_digest_fnv1a,
-            all_stages_repops_verified: preview_error.is_none(),
+            all_stages_repops_verified,
             preview_error,
             total_step_wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
         }

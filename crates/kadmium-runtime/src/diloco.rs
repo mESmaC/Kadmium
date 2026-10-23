@@ -6,6 +6,7 @@
 //! momentum and commits every shard together. Local optimizers and transport live outside
 //! this module. Byte counters estimate uncompressed FP32 parameter payloads only.
 
+use crate::DiLoCoOuterOptimizer;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -168,7 +169,7 @@ impl DiLoCoSession {
         }
         let mut islands = BTreeSet::new();
         for id in island_ids {
-            validate_id(&id, "island")?;
+            validate_diloco_id(&id, "island")?;
             if !islands.insert(id.clone()) {
                 return Err(format!("duplicate island `{id}`"));
             }
@@ -232,42 +233,42 @@ impl DiLoCoSession {
             .checked_add(self.payload.total_bytes_per_round)
             .ok_or("completed parameter payload estimate overflow")?;
         let mut candidate = BTreeMap::new();
-        let mu = f64::from(self.config.outer_momentum);
-        let lr = f64::from(self.config.outer_learning_rate);
         for (shard_id, master) in &self.shards {
-            let mut values = Vec::with_capacity(master.values.len());
-            let mut momentum = Vec::with_capacity(master.values.len());
-            let mut terms = vec![0.0f64; self.island_ids.len()];
-            for (coordinate, &before) in master.values.iter().enumerate() {
-                // Island-ID ordering and the RepOps tree make arrival order and input shard
-                // order irrelevant. f64 also avoids overflow before averaging FP32 replicas.
-                for (term, id) in terms.iter_mut().zip(&self.island_ids) {
-                    let replica = if id == &island_id {
-                        &local
-                    } else {
-                        self.pending.get(id).ok_or("incomplete island barrier")?
-                    };
-                    let final_values = replica.get(shard_id).ok_or("missing replica shard")?;
-                    *term = f64::from(before) - f64::from(final_values[coordinate]);
-                }
-                let sum = crate::repops::tree_sum_f64(&terms);
-                let gradient = checked_f32(sum / self.island_ids.len() as f64, "pseudo-gradient")?;
-                let velocity = checked_f32(
-                    mu * f64::from(master.momentum[coordinate]) + f64::from(gradient),
-                    "outer momentum",
-                )?;
-                let direction = checked_f32(
-                    f64::from(gradient) + mu * f64::from(velocity),
-                    "Nesterov direction",
-                )?;
-                let value = checked_f32(
-                    f64::from(before) - lr * f64::from(direction),
-                    "master parameter",
-                )?;
-                values.push(value);
-                momentum.push(velocity);
+            let mut pseudo_gradients = Vec::with_capacity(self.island_ids.len());
+            for id in &self.island_ids {
+                let replica = if id == &island_id {
+                    &local
+                } else {
+                    self.pending.get(id).ok_or("incomplete island barrier")?
+                };
+                let final_values = replica.get(shard_id).ok_or("missing replica shard")?;
+                // Match the weight-oriented optimizer API's FP32 subtraction exactly.
+                // The shared optimizer owns canonical RepOps reduction and all arithmetic checks.
+                pseudo_gradients.push(
+                    master
+                        .values
+                        .iter()
+                        .zip(final_values)
+                        .map(|(before, after)| before - after)
+                        .collect(),
+                );
             }
-            candidate.insert(shard_id.clone(), ShardState { values, momentum });
+            let mut values = master.values.clone();
+            let mut optimizer = DiLoCoOuterOptimizer {
+                outer_lr: self.config.outer_learning_rate,
+                outer_momentum_mu: self.config.outer_momentum,
+                velocity: master.momentum.clone(),
+            };
+            optimizer
+                .try_step_pseudo_gradients(&mut values, &pseudo_gradients)
+                .map_err(|error| format!("outer update for shard `{shard_id}`: {error}"))?;
+            candidate.insert(
+                shard_id.clone(),
+                ShardState {
+                    values,
+                    momentum: optimizer.velocity,
+                },
+            );
         }
         self.shards = candidate;
         self.round = next_round;
@@ -278,6 +279,7 @@ impl DiLoCoSession {
     }
 
     fn validate_update(&self, update: IslandUpdate) -> Result<BTreeMap<String, Vec<f32>>, String> {
+        validate_diloco_id(&update.island_id, "island")?;
         if !self.island_ids.contains(&update.island_id) {
             return Err(format!("unknown island `{}`", update.island_id));
         }
@@ -362,24 +364,19 @@ impl DiLoCoSession {
     }
 
     fn baseline_id(&self) -> String {
-        let mut hash = 0xcbf29ce484222325u64;
-        let mut feed = |bytes: &[u8]| {
-            for byte in bytes {
-                hash ^= u64::from(*byte);
-                hash = hash.wrapping_mul(0x100000001b3);
-            }
-        };
-        feed(b"kadmium-diloco-baseline-v1");
-        feed(&self.round.to_le_bytes());
-        feed(&(self.shards.len() as u64).to_le_bytes());
+        let mut encoded = Vec::new();
+        encoded.extend_from_slice(b"kadmium-diloco-baseline-v1");
+        encoded.extend_from_slice(&self.round.to_le_bytes());
+        encoded.extend_from_slice(&(self.shards.len() as u64).to_le_bytes());
         for (id, shard) in &self.shards {
-            feed(&(id.len() as u64).to_le_bytes());
-            feed(id.as_bytes());
-            feed(&(shard.values.len() as u64).to_le_bytes());
+            encoded.extend_from_slice(&(id.len() as u64).to_le_bytes());
+            encoded.extend_from_slice(id.as_bytes());
+            encoded.extend_from_slice(&(shard.values.len() as u64).to_le_bytes());
             for value in &shard.values {
-                feed(&value.to_bits().to_le_bytes());
+                encoded.extend_from_slice(&value.to_bits().to_le_bytes());
             }
         }
+        let hash = kadmium_grid::fnv1a_64(&encoded);
         format!("fnv1a64-{hash:016x}")
     }
 
@@ -490,10 +487,16 @@ impl DiLoCoSession {
     }
 }
 
-fn validate_id(id: &str, kind: &str) -> Result<(), String> {
-    if id.trim().is_empty() || id.len() > MAX_ID_BYTES || id.chars().any(char::is_control) {
+/// Shared session/island/shard identifier rule, including IDs restored from checkpoints.
+pub fn validate_diloco_id(id: &str, kind: &str) -> Result<(), String> {
+    if id.is_empty()
+        || id.len() > MAX_ID_BYTES
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         return Err(format!(
-            "{kind} ID must be nonblank, contain no control characters, and be at most {MAX_ID_BYTES} bytes"
+            "{kind} ID must contain 1..={MAX_ID_BYTES} ASCII letters, digits, hyphens or underscores"
         ));
     }
     Ok(())
@@ -506,7 +509,7 @@ fn normalize_shards(shards: Vec<ParameterShard>) -> Result<BTreeMap<String, Vec<
     let mut normalized = BTreeMap::new();
     let mut count = 0u64;
     for shard in shards {
-        validate_id(&shard.shard_id, "shard")?;
+        validate_diloco_id(&shard.shard_id, "shard")?;
         if shard.values.is_empty() || shard.values.iter().any(|v| !v.is_finite()) {
             return Err(format!(
                 "shard `{}` must have nonempty finite values",
@@ -527,14 +530,6 @@ fn normalize_shards(shards: Vec<ParameterShard>) -> Result<BTreeMap<String, Vec<
         }
     }
     Ok(normalized)
-}
-
-fn checked_f32(value: f64, label: &str) -> Result<f32, String> {
-    let narrowed = value as f32;
-    if !value.is_finite() || !narrowed.is_finite() {
-        return Err(format!("{label} overflowed finite FP32 range"));
-    }
-    Ok(narrowed)
 }
 
 #[cfg(test)]
@@ -652,9 +647,9 @@ mod tests {
     }
 
     #[test]
-    fn outer_round_uses_repops_tree_in_island_id_order() {
-        // In island-ID order the terms are [1e20, 1, -1e20, 3]. RepOps pairs
-        // adjacent terms, yielding zero here; a linear accumulator would yield 3.
+    fn outer_round_uses_shared_optimizer_canonical_repops_order() {
+        // Island-ID order would yield zero; the shared optimizer orders gradient bits as
+        // [1, 3, 1e20, -1e20], whose RepOps tree mean is exactly one.
         let gradients = [1.0e20f32, 1.0, -1.0e20, 3.0];
         let ids: Vec<_> = ["a", "b", "c", "d"]
             .into_iter()
@@ -685,9 +680,245 @@ mod tests {
             }
             assert_eq!(
                 session.snapshot().shards[0].values[0].to_bits(),
-                0.0f32.to_bits()
+                (-1.0f32).to_bits()
             );
             assert_eq!(session.status().round, 1);
+        }
+    }
+
+    #[test]
+    fn sessions_and_both_optimizer_apis_are_bit_identical_across_rounds_and_restore() {
+        let ids: Vec<_> = ["a", "b", "c", "d"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut session = DiLoCoSession::new(
+            DiLoCoConfig {
+                inner_steps: 3,
+                outer_learning_rate: 0.7,
+                outer_momentum: 0.9,
+            },
+            ids.clone(),
+            vec![
+                shard("a-order", &[0.0, 0.1, -0.125]),
+                shard("b-precision", &[100.25, -0.000001, 17.375]),
+            ],
+        )
+        .unwrap();
+        let mut optimizers: BTreeMap<_, _> = session
+            .shards
+            .iter()
+            .map(|(id, shard)| {
+                (
+                    id.clone(),
+                    DiLoCoOuterOptimizer::new(shard.values.len(), 0.7, 0.9),
+                )
+            })
+            .collect();
+        for round in 0..8 {
+            let snapshot = session.snapshot();
+            let updates: Vec<_> = ids
+                .iter()
+                .enumerate()
+                .map(|(island, id)| IslandUpdate {
+                    island_id: id.clone(),
+                    round: snapshot.round,
+                    baseline_id: snapshot.baseline_id.clone(),
+                    local_steps: 3,
+                    shards: snapshot
+                        .shards
+                        .iter()
+                        .map(|part| ParameterShard {
+                            shard_id: part.shard_id.clone(),
+                            values: part
+                                .values
+                                .iter()
+                                .enumerate()
+                                .map(|(coordinate, before)| {
+                                    if part.shard_id == "a-order" && coordinate == 0 {
+                                        -[1.0e20f32, 1.0, -1.0e20, 3.0][island]
+                                    } else {
+                                        let delta = (island as f32 - 1.3)
+                                            * (coordinate as f32 + 0.10000003)
+                                            / (round as f32 + 0.7);
+                                        before - delta
+                                    }
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect();
+            let mut expected = BTreeMap::new();
+            for part in &snapshot.shards {
+                let local_weights: Vec<_> = updates
+                    .iter()
+                    .rev()
+                    .map(|update| {
+                        update
+                            .shards
+                            .iter()
+                            .find(|s| s.shard_id == part.shard_id)
+                            .unwrap()
+                            .values
+                            .clone()
+                    })
+                    .collect();
+                let gradients: Vec<Vec<f32>> = local_weights
+                    .iter()
+                    .map(|local| {
+                        part.values
+                            .iter()
+                            .zip(local)
+                            .map(|(before, after)| before - after)
+                            .collect()
+                    })
+                    .collect();
+                let optimizer = optimizers.get_mut(&part.shard_id).unwrap();
+                let mut compatibility_optimizer = optimizer.clone();
+                let mut compatibility_weights = part.values.clone();
+                compatibility_optimizer
+                    .step_outer_nesterov(&mut compatibility_weights, &local_weights);
+                let mut values = part.values.clone();
+                optimizer
+                    .try_step_pseudo_gradients(&mut values, &gradients)
+                    .unwrap();
+                assert_eq!(bits(&values), bits(&compatibility_weights));
+                assert_eq!(
+                    bits(&optimizer.velocity),
+                    bits(&compatibility_optimizer.velocity)
+                );
+                expected.insert(part.shard_id.clone(), values);
+            }
+            let order = if round % 2 == 0 {
+                [2, 0, 3, 1]
+            } else {
+                [1, 3, 0, 2]
+            };
+            for (position, index) in order.into_iter().enumerate() {
+                let mut update = updates[index].clone();
+                update.shards.reverse();
+                session.submit(update).unwrap();
+                if position == 1 {
+                    let checkpoint = session.checkpoint_json().unwrap();
+                    session = DiLoCoSession::from_checkpoint_json(&checkpoint).unwrap();
+                    assert_eq!(session.checkpoint_json().unwrap(), checkpoint);
+                }
+            }
+            for (id, state) in &session.shards {
+                assert_eq!(
+                    bits(&state.values),
+                    bits(&expected[id]),
+                    "round {round}, shard {id}"
+                );
+                assert_eq!(
+                    bits(&state.momentum),
+                    bits(&optimizers[id].velocity),
+                    "round {round}, shard {id}"
+                );
+            }
+            assert_eq!(session.round, round + 1);
+        }
+    }
+
+    fn bits(values: &[f32]) -> Vec<u32> {
+        values.iter().map(|value| value.to_bits()).collect()
+    }
+
+    #[test]
+    fn session_uses_shared_fp32_update_rounding() {
+        let mut session = DiLoCoSession::new(
+            DiLoCoConfig {
+                inner_steps: 1,
+                outer_learning_rate: 0.7,
+                outer_momentum: 0.9,
+            },
+            vec!["a".into()],
+            vec![shard("weight", &[0.1])],
+        )
+        .unwrap();
+        session
+            .submit(IslandUpdate {
+                island_id: "a".into(),
+                round: 0,
+                baseline_id: session.snapshot().baseline_id,
+                local_steps: 1,
+                shards: vec![shard("weight", &[0.2])],
+            })
+            .unwrap();
+        // The former f64 session formula yielded 0x3e6e978d, one ULP below the shared
+        // optimizer's FP32 multiply-then-subtract result for these same inputs.
+        assert_eq!(session.snapshot().shards[0].values[0].to_bits(), 0x3e6e978e);
+    }
+
+    #[test]
+    fn baseline_hash_retains_the_canonical_version_one_encoding() {
+        let session = session();
+        // Frozen before replacing the inline FNV loop: domain tag, LE round/shard count,
+        // then length-prefixed IDs and FP32 bits in sorted shard-ID order (95 bytes).
+        assert_eq!(session.snapshot().baseline_id, "fnv1a64-d058c4ade9eda14d");
+        let mut reordered = session.snapshot().shards;
+        reordered.reverse();
+        let reordered = DiLoCoSession::new(
+            session.config.clone(),
+            vec!["island-a".into(), "island-b".into()],
+            reordered,
+        )
+        .unwrap();
+        assert_eq!(
+            session.snapshot().baseline_id,
+            reordered.snapshot().baseline_id
+        );
+        let restored =
+            DiLoCoSession::from_checkpoint_json(&session.checkpoint_json().unwrap()).unwrap();
+        assert_eq!(
+            session.snapshot().baseline_id,
+            restored.snapshot().baseline_id
+        );
+    }
+
+    #[test]
+    fn identifier_rule_is_shared_by_creation_updates_and_checkpoint_restore() {
+        for kind in ["session", "island", "shard"] {
+            for valid in ["a", "A0-z_9", "_", "-"] {
+                assert!(validate_diloco_id(valid, kind).is_ok());
+            }
+            assert!(validate_diloco_id(&"a".repeat(96), kind).is_ok());
+            assert!(validate_diloco_id(&"a".repeat(97), kind).is_err());
+            for invalid in ["", " ", "a b", "a/b", "a.b", "a\\b", "a\n", "é"] {
+                assert!(validate_diloco_id(invalid, kind).is_err());
+            }
+        }
+        assert!(
+            DiLoCoSession::new(
+                DiLoCoConfig::default(),
+                vec!["a/b".into()],
+                vec![shard("weight", &[0.0])]
+            )
+            .is_err()
+        );
+        assert!(
+            DiLoCoSession::new(
+                DiLoCoConfig::default(),
+                vec!["a".into()],
+                vec![shard("weight.value", &[0.0])]
+            )
+            .is_err()
+        );
+        let mut session = session();
+        let saved = session.checkpoint_json().unwrap();
+        let mut invalid = update(&session, "island-a", &[1.0, 2.0], 3.0);
+        invalid.island_id = "a/b".into();
+        assert!(session.submit(invalid).is_err());
+        assert_eq!(session.checkpoint_json().unwrap(), saved);
+        for field in ["island_ids", "shards"] {
+            let mut checkpoint: serde_json::Value = serde_json::from_str(&saved).unwrap();
+            if field == "island_ids" {
+                checkpoint[field][0] = "a/b".into();
+            } else {
+                checkpoint[field][0]["shard_id"] = "a/b".into();
+            }
+            assert!(DiLoCoSession::from_checkpoint_json(&checkpoint.to_string()).is_err());
         }
     }
 
@@ -755,7 +986,7 @@ mod tests {
         };
         s.submit(make(&s, "a")).unwrap();
         let before = s.checkpoint_json().unwrap();
-        assert!(s.submit(make(&s, "b")).unwrap_err().contains("overflow"));
+        assert!(s.submit(make(&s, "b")).is_err());
         assert_eq!(s.checkpoint_json().unwrap(), before);
         assert_eq!(s.status().received_islands, vec!["a"]);
     }

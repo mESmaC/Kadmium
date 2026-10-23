@@ -150,12 +150,15 @@ For nodes on the same LAN (e.g., Main PC, M4 Mac Mini, 2 Gaming Laptops):
 - Base weights are stored in compressed `KTB` banks (`NF4` / `INT4` / `FP8`) and sharded across nodes.
 - Only compact low-rank adapter matrices ($A, B$) and micro-batch hidden states cross node boundaries, slashing memory footprint and network traffic by $>90\%$.
 
-### 5.3 Mode C: Sharded-Island DiLoCo (`OpenDiLoCo` Generalized to Consumer Hardware)
-Standard DiLoCo assumes every worker (or datacenter island) holds a full replica of the model and performs data-parallel inner steps. On consumer hardware, **no single machine can hold a full 70B–671B model**.
-Kadmium introduces **Sharded-Island DiLoCo**:
-1. **Pipeline-Sharded Compute Islands:** A local group of heterogeneous devices (e.g., Island 1 = your Home LAN cluster; Island 2 = a friend's PC + laptop mesh or a university lab rack; Island 3 = a burst cloud GPU) collectively holds one full model replica partitioned across pipeline stages $[L_0..L_a], [L_{a+1}..L_b], \dots$.
-2. **Inner-Loop Local Optimization ($H$ Steps):** Each Sharded Island independently executes $H$ inner-loop steps (`AdamW` over asymmetric 1F1B micro-batches) on distinct dataset shards streamed from its local NAS/cache.
-3. **Shard-Aligned Outer-Loop Synchronization:** Every $H$ steps (e.g., $H = 50..500$), nodes holding overlapping layer ranges across different islands directly exchange outer-loop pseudo-gradients ($\Delta \theta_l = \theta_l^{(0)} - \theta_l^{(H)}$) via peer-to-peer QUIC streams and apply an outer Nesterov momentum step.
+### 5.3 Mode C: Sharded-Island DiLoCo (target architecture)
+
+DiLoCo synchronizes complete replicas after multiple local optimizer steps. When a replica is too large for one device, the target design is to partition it across devices **within each island**:
+
+1. **Pipeline partition within an island:** A local group would collectively hold one complete replica split into layer ranges $[L_0..L_a], [L_{a+1}..L_b], \dots$. Every other island would collectively hold the same complete layout.
+2. **Local optimization:** Each island would execute $H$ optimizer steps over that replica using its own data and a pipeline schedule.
+3. **Outer synchronization:** Matching parameter ranges across complete replicas would contribute master-minus-local pseudo-gradients to a persistent Nesterov outer update. Pipeline execution and peer-to-peer transport for this design remain integration work.
+
+The current [`DiLoCoSession`](../crates/kadmium-runtime/src/diloco.rs) implements the synchronous outer barrier, complete-replica layout validation, persistent master/momentum state and checkpoints. Its `ParameterShard` is a named parameter slice repeated on **every** island, not a pipeline stage owned by one island. It receives all shards from each caller after `H` local steps; it neither runs the local learner nor distributes a replica across devices. A separate single-process CPU regression experiment exercises this session API with complete local replicas. The existing `/api/v1/training/step` and grid training paths remain stateless per-stage previews and are not an implementation of the pipeline-sharded target above.
 
 ### 5.4 Mode D: DeMo / DisTrO Frequency-Domain Momentum Compression (`NousResearch/DisTrO`)
 Even outer-loop synchronization or cross-node gradient averaging can bottleneck slow home internet uploads (e.g., 20–50 Mbps upstream).

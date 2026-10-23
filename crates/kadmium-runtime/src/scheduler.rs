@@ -229,6 +229,9 @@ impl DiLoCoOuterOptimizer {
     /// Applies already-computed `master_before - local_after` pseudo-gradients from replicas of
     /// the SAME parameter shard. This must not receive parameter values or unrelated layer shards.
     /// The mean is followed by `v = mu * v + g; master -= lr * (g + mu * v)`.
+    /// Gradients are sorted by their FP32 bits, summed with the RepOps FP64 tree, then narrowed
+    /// to FP32. Momentum, Nesterov direction and parameter arithmetic use FP32 operations.
+    /// This is the shared update implementation for both direct callers and stateful sessions.
     /// Both parameters and momentum remain unchanged on any validation or arithmetic failure.
     pub fn try_step_pseudo_gradients(
         &mut self,

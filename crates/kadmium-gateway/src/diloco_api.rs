@@ -9,7 +9,7 @@ use axum::{
 };
 use kadmium_runtime::{
     DiLoCoConfig, DiLoCoProgress, DiLoCoSession, DiLoCoSnapshot, DiLoCoStatus, IslandUpdate,
-    ParameterShard,
+    ParameterShard, validate_diloco_id,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -50,21 +50,6 @@ pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
 
 fn error(code: StatusCode, message: impl Into<String>) -> ApiError {
     (code, Json(serde_json::json!({"error": message.into()})))
-}
-
-fn valid_id(id: &str) -> Result<(), ApiError> {
-    if id.is_empty()
-        || id.len() > 96
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return Err(error(
-            StatusCode::BAD_REQUEST,
-            "session_id must contain 1-96 ASCII letters, digits, hyphens or underscores",
-        ));
-    }
-    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,7 +103,8 @@ async fn create(
     State(sessions): State<Sessions>,
     Json(req): Json<CreateDiLoCoSession>,
 ) -> Result<(StatusCode, Json<DiLoCoSessionStatus>), ApiError> {
-    valid_id(&req.session_id)?;
+    validate_diloco_id(&req.session_id, "session")
+        .map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
     let session = DiLoCoSession::new(req.config, req.island_ids, req.shards)
         .map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
     Ok((
@@ -235,7 +221,8 @@ async fn restore(
     State(sessions): State<Sessions>,
     Json(req): Json<RestoreDiLoCoSession>,
 ) -> Result<(StatusCode, Json<DiLoCoSessionStatus>), ApiError> {
-    valid_id(&req.session_id)?;
+    validate_diloco_id(&req.session_id, "session")
+        .map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
     let session = DiLoCoSession::from_checkpoint_json(&req.checkpoint.to_string())
         .map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
     Ok((
@@ -291,6 +278,44 @@ mod tests {
         let (headers, body) = response.split_once("\r\n\r\n").unwrap();
         let code = headers.split_whitespace().nth(1).unwrap().parse().unwrap();
         (code, serde_json::from_str(body).unwrap_or(Value::Null))
+    }
+
+    #[tokio::test]
+    async fn session_island_and_parameter_ids_share_the_http_contract() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app: Router = router();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let path = "/api/v1/training/diloco/sessions";
+        for id in ["A_09-z".to_owned(), "x".repeat(96)] {
+            let (code, _) = request(
+                addr,
+                "POST",
+                path,
+                json!({
+                    "session_id":id, "island_ids":[id],
+                    "shards":[{"shard_id":id,"values":[1.0]}]
+                }),
+            )
+            .await;
+            assert_eq!(code, 201);
+        }
+        for id in ["", " ", "a b", "a/b", "a.b", "é", "a\n", &"x".repeat(97)] {
+            for field in ["session", "island", "shard"] {
+                let mut body = json!({"session_id":"valid", "island_ids":["valid"],
+                    "shards":[{"shard_id":"valid","values":[1.0]}]});
+                match field {
+                    "session" => body["session_id"] = id.into(),
+                    "island" => body["island_ids"][0] = id.into(),
+                    _ => body["shards"][0]["shard_id"] = id.into(),
+                }
+                let (code, _) = request(addr, "POST", path, body).await;
+                assert_eq!(code, 400, "accepted invalid {field} ID {id:?}");
+            }
+        }
+        let (_, sessions) = request(addr, "GET", path, Value::Null).await;
+        assert_eq!(sessions.as_array().unwrap().len(), 2);
+        server.abort();
     }
 
     #[tokio::test]

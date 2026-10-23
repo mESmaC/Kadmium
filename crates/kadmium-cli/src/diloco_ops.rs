@@ -1,7 +1,11 @@
 //! Reproducible CPU training experiment, independent of the gateway's synthetic training path.
 //!
-//! Each island owns a complete two-shard model and persistent local AdamW moments. Only
+//! Each island owns a complete model with two named parameter partitions and local AdamW moments. Only
 //! parameters are replaced at the outer barrier; resetting moments here changes the algorithm.
+//! Implementation decision: retain this private, two-parameter AdamW example because the runtime
+//! has no shared AdamW implementation. It is not a production optimizer or a RepOps kernel;
+//! its platform `powf`/`sqrt` and local reductions are confined to this CPU experiment. The outer
+//! update delegates to the runtime's shared optimizer through `DiLoCoSession`.
 
 use kadmium_runtime::{DiLoCoConfig, DiLoCoSession, IslandUpdate, ParameterShard};
 use serde_json::{Value, json};
@@ -34,6 +38,10 @@ impl Learner {
             steps: 0,
             samples,
         }
+    }
+
+    fn start_round(&mut self, parameters: [f32; 2]) {
+        self.parameters = parameters;
     }
 
     fn step(&mut self) {
@@ -127,7 +135,7 @@ fn experiment(inner_steps: u32, rounds: u32, islands: u32) -> Result<Value, Stri
         let snapshot = session.snapshot();
         let committed = parameters(&snapshot.shards)?;
         for (index, learner) in learners.iter_mut().enumerate() {
-            learner.parameters = committed;
+            learner.start_round(committed);
             for _ in 0..inner_steps {
                 learner.step();
             }
@@ -154,6 +162,7 @@ fn experiment(inner_steps: u32, rounds: u32, islands: u32) -> Result<Value, Stri
         "config": status.config,
         "inner_optimizer": {"kind": "AdamW", "learning_rate": INNER_LEARNING_RATE,
             "betas": [0.9, 0.999], "epsilon": 1e-8, "weight_decay": 0.01,
+            "scope": "private two-parameter CPU reference, not a RepOps kernel",
             "state_retained_across_rounds": true},
         "islands": islands,
         "samples_per_island": SAMPLES_PER_ISLAND,
@@ -220,6 +229,41 @@ pub(crate) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reference_adamw_matches_closed_form_and_keeps_moments_across_rounds() {
+        // x=y=0 leaves the slope gradient zero and makes the bias gradient 2*b.
+        // Start at w=3, b=-2: g1=-4, m1=-.4, v1=.016; bias correction gives
+        // m_hat=-4 and v_hat=16. Decoupled decay also changes the zero-gradient slope.
+        let mut learner = Learner {
+            parameters: [3.0, -2.0],
+            first_moment: [0.0; 2],
+            second_moment: [0.0; 2],
+            steps: 0,
+            samples: vec![(0.0, 0.0)],
+        };
+        learner.step();
+        assert!((learner.parameters[0] as f64 - 2.9994).abs() < 1e-6);
+        let first_bias = -2.0 * 0.9998 + 0.02 * 4.0 / (4.0 + 1e-8);
+        assert!((learner.parameters[1] as f64 - first_bias).abs() < 1e-6);
+        assert!((learner.first_moment[1] + 0.4).abs() < 1e-6);
+        assert!((learner.second_moment[1] - 0.016).abs() < 1e-6);
+
+        let moments = (learner.first_moment, learner.second_moment, learner.steps);
+        learner.start_round([7.0, 0.5]);
+        assert_eq!(
+            (learner.first_moment, learner.second_moment, learner.steps),
+            moments
+        );
+        learner.step();
+        // After replacing only parameters, g2=1; m2=-.26, v2=.016984.
+        // Use the closed form (not the implementation's iterative update) as the oracle.
+        let second_bias =
+            0.5 * 0.9998 - 0.02 * (-0.26 / 0.19) / ((0.016984_f64 / 0.001999).sqrt() + 1e-8);
+        assert!((learner.parameters[0] as f64 - 6.9986).abs() < 1e-6);
+        assert!((learner.parameters[1] as f64 - second_bias).abs() < 1e-6);
+        assert_eq!(learner.steps, 2);
+    }
 
     #[test]
     fn heterogeneous_islands_learn_with_fewer_synchronizations() {
