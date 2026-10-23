@@ -15,10 +15,10 @@
 use crate::{
     BlockwiseInt8Tensor, DeMoDctCompressor, DiLoCoOuterOptimizer, DistributedMoEPipelineExecutor,
     DistributedPipelineExecutionReport, DistributedQLoRAAdapter, ExecutorContext,
-    ExecutorRegistry, ExpertResidencyTier, FusedRmsNormRopeKernel, KvPageBlock, MoEGatingRouter,
-    MoERoutedExpertSelection, PagedGqaAttentionKernel, SparseDctPacket,
-    SpeculativeDraftVerificationReport, StageExecutionTrace, VerdeVerificationEngine,
-    WorkDispatchPayload, WorkResultPayload, execute_dispatch,
+    ExecutorRegistry, ExpertResidencyTier, LAYER_BOUNDARY_BLOCK, LayerReference,
+    MoERoutedExpertSelection, SparseDctPacket, SpeculativeDraftVerificationReport,
+    StageExecutionTrace, VerdeVerificationEngine, WorkDispatchPayload, WorkResultPayload,
+    execute_dispatch,
 };
 use kadmium_core::{
     HardwareNode, NodeId, NodeRole, PoliteState, sample_personal_cluster,
@@ -488,69 +488,52 @@ pub fn execute_stage_kernels_with_ktb(
     req: &LiveStageForwardRequest,
     resident_ktb_bytes: Option<&[u8]>,
 ) -> LiveStageForwardResponse {
+    let model = kadmium_core::ModelSpec::from_id(&req.model_id);
+    let (experts_per_layer, top_k) = if model.is_moe {
+        (model.experts_per_layer, model.active_experts_per_token)
+    } else {
+        (0, 0)
+    };
+    execute_stage_layers_with_ktb(
+        node_id,
+        hostname,
+        req,
+        resident_ktb_bytes,
+        experts_per_layer,
+        top_k,
+    )
+}
+
+/// Runs the stage's layers through the per-layer reference (`LayerReference`): for every layer
+/// the trunk, the selected experts and the combine, with the output quantized to INT8 at each
+/// layer boundary exactly as it would be on the wire. A chain of these stages and a fan-out
+/// graph of trunk, expert-slice and combine units therefore produce identical bytes. Nodes with
+/// a hardware bridge (K230, reTerminal CM4, M4 Mac mini) run the stage on that hardware instead.
+pub fn execute_stage_layers_with_ktb(
+    node_id: &str,
+    hostname: &str,
+    req: &LiveStageForwardRequest,
+    resident_ktb_bytes: Option<&[u8]>,
+    experts_per_layer: u32,
+    top_k: u32,
+) -> LiveStageForwardResponse {
     let t0 = Instant::now();
     let mut hidden = req.boundary_input.dequantize();
     let dim = hidden.len().max(16);
     if hidden.len() < dim {
         hidden.resize(dim, 0.1);
     }
+    let gamma = LayerReference::gamma_from_bank(resident_ktb_bytes, dim);
 
-    // Read zero-copy gamma weights from the worker's 64 KiB page-aligned .ktb bank if available
-    let mut gamma: Vec<f32> = Vec::new();
-    if let Some(ktb_buf) = resident_ktb_bytes
-        && let Ok(reader) = KtbBankReader::from_slice(ktb_buf)
-        && let Some(entry) = reader
-            .header
-            .entries
-            .iter()
-            .find(|e| e.tensor_name == "layer.rmsnorm.gamma")
-        && let Ok(raw_slice) = reader.get_verified_tensor_slice(entry)
-    {
-        for chunk in raw_slice.chunks_exact(4).take(dim) {
-            gamma.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-        }
-    }
-    if gamma.len() < dim {
-        gamma = (0..dim).map(|i| 1.0 + (i as f32) * 0.002).collect();
-    }
-
-    hidden = FusedRmsNormRopeKernel::forward(
-        &hidden,
-        &gamma,
-        (req.start_layer as usize) + 1,
-        10_000.0,
-        1e-5,
-    );
-
-    // Run FlashAttention-2 PagedGQA over a 16-token KV page block
-    let kv_page = KvPageBlock {
-        page_id: req.start_layer,
-        tokens_stored: 4,
-        head_dim: dim,
-        keys: (0..(4 * dim))
-            .map(|i| ((i as f32) * 0.03 + (req.start_layer as f32) * 0.1).cos() * 0.4)
-            .collect(),
-        values: (0..(4 * dim))
-            .map(|i| ((i as f32) * 0.05 + (req.start_layer as f32) * 0.07).sin() * 0.4)
-            .collect(),
-    };
-    let attn_out = PagedGqaAttentionKernel::forward_flash_paged(&hidden, &[kv_page]);
-    for (h, a) in hidden.iter_mut().zip(attn_out.iter()) {
-        *h += a * 0.25;
-    }
-
-    let total_exp = 256u32;
-    let q_star = req.q_star_ratio.clamp(0.15, 0.96);
-    let hot_cutoff = ((total_exp as f64) * q_star * 0.55).round() as u32;
-    let warm_cutoff = ((total_exp as f64) * (q_star * 0.85).min(0.92)).round() as u32;
-
-    let routed = MoEGatingRouter::route_top_k(
+    // The first layer's trunk and routing: the sample the response reports, and the gate the
+    // hardware bridges take.
+    let (first_trunk, routed) = LayerReference::trunk_forward(
         &hidden,
         req.start_layer,
-        total_exp,
-        4,
-        hot_cutoff,
-        warm_cutoff,
+        &gamma,
+        experts_per_layer,
+        top_k,
+        req.q_star_ratio,
     );
     let cold_fetches = routed
         .iter()
@@ -558,6 +541,7 @@ pub fn execute_stage_kernels_with_ktb(
         .count();
 
     let gate_scale = routed.first().map(|r| r.gating_weight).unwrap_or(0.25);
+    let mut last_boundary: Option<BlockwiseInt8Tensor> = None;
     let mut k230_hw_exec_ms: Option<f64> = None;
     if node_id.starts_with("node-k230") || hostname.contains("k230") {
         let port = hostname
@@ -572,7 +556,7 @@ pub fn execute_stage_kernels_with_ktb(
                 req.start_layer,
                 req.end_layer,
                 gate_scale,
-                &hidden,
+                &first_trunk,
             )
         {
             hidden = hw_hidden;
@@ -590,7 +574,7 @@ pub fn execute_stage_kernels_with_ktb(
                 req.start_layer,
                 req.end_layer,
                 gate_scale,
-                &hidden,
+                &first_trunk,
             )
         {
             hidden = hw_hidden;
@@ -608,7 +592,7 @@ pub fn execute_stage_kernels_with_ktb(
                 req.start_layer,
                 req.end_layer,
                 gate_scale,
-                &hidden,
+                &first_trunk,
             )
         {
             hidden = hw_hidden;
@@ -616,16 +600,23 @@ pub fn execute_stage_kernels_with_ktb(
         }
     }
     if k230_hw_exec_ms.is_none() {
-        for l in req.start_layer..=req.end_layer {
-            for (idx, val) in hidden.iter_mut().enumerate() {
-                let w = (((l as usize * 19 + idx * 7) % 53) as f32 - 26.0) * 0.004;
-                let swish = *val / (1.0 + (-*val).exp());
-                *val = (*val + swish * w * gate_scale).clamp(-8.0, 8.0);
-            }
+        for layer in req.start_layer..=req.end_layer {
+            let (out, _) = LayerReference::layer_forward(
+                &hidden,
+                layer,
+                &gamma,
+                experts_per_layer,
+                top_k,
+                req.q_star_ratio,
+            );
+            let boundary = LayerReference::boundary_quantize(&out);
+            hidden = boundary.dequantize();
+            last_boundary = Some(boundary);
         }
     }
 
-    let q_boundary = BlockwiseInt8Tensor::quantize(&hidden, 16);
+    let q_boundary =
+        last_boundary.unwrap_or_else(|| BlockwiseInt8Tensor::quantize(&hidden, LAYER_BOUNDARY_BLOCK));
     let boundary_bytes = q_boundary.quantized_data.len() + q_boundary.absmax_scales.len() * 4;
     let dequant = q_boundary.dequantize();
     let l2_norm = dequant.iter().map(|v| v * v).sum::<f32>().sqrt();

@@ -922,6 +922,8 @@ pub struct StageForwardParams {
     pub rows: u32,
     /// The stage owner's bandwidth-adaptive split ratio, which steers expert routing.
     pub q_star_ratio: f64,
+    pub experts_per_layer: u32,
+    pub active_experts_per_token: u32,
 }
 
 /// Parameters of a [`AppKind::TrunkForward`] unit: attention, norms and the router of one layer.
@@ -934,6 +936,8 @@ pub struct TrunkForwardParams {
     pub rows: u32,
     pub experts_per_layer: u32,
     pub active_experts_per_token: u32,
+    /// The trunk owner's bandwidth-adaptive split ratio, which steers the router's locality prior.
+    pub q_star_ratio: f64,
 }
 
 /// Parameters of an [`AppKind::ExpertSlice`] unit: the experts of one layer resident on one holder.
@@ -970,6 +974,15 @@ impl StepGraphBuilder {
     /// The activation the first unit of a step consumes: the prompt (or previous token) batch.
     pub fn prompt_ref(graph_id: &str) -> ContentRef {
         ContentRef::named(ContentKind::Activation, &format!("{graph_id}/prompt"), 0)
+    }
+
+    /// The routing a trunk unit produces for its layer, which the layer's expert slices consume.
+    pub fn routing_ref(graph_id: &str, trunk_unit_id: &WorkUnitId) -> ContentRef {
+        ContentRef::named(
+            ContentKind::Activation,
+            &format!("{graph_id}/{trunk_unit_id}/routing"),
+            0,
+        )
     }
 
     /// The activation a unit produces, which dependent units list among their inputs.
@@ -1070,6 +1083,8 @@ impl StepGraphBuilder {
                                 end_layer: range.end_layer,
                                 rows,
                                 q_star_ratio: range.q_star_ratio,
+                                experts_per_layer: model.experts_per_layer,
+                                active_experts_per_token: model.active_experts_per_token,
                             })
                             .expect("params serialize")
                             .with_placement(Self::placement_for(
@@ -1123,6 +1138,7 @@ impl StepGraphBuilder {
                                 rows,
                                 experts_per_layer: model.experts_per_layer,
                                 active_experts_per_token: model.active_experts_per_token,
+                                q_star_ratio: range.q_star_ratio,
                             })
                             .expect("params serialize")
                             .with_placement(Self::placement_for(
@@ -1204,6 +1220,7 @@ impl StepGraphBuilder {
                             leaf.inputs = {
                                 let mut inputs = refs;
                                 inputs.push(trunk_out.clone());
+                                inputs.push(Self::routing_ref(&graph_id, &trunk_id));
                                 inputs
                             };
                             graph.add_unit(leaf);

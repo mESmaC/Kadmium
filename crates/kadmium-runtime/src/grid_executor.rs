@@ -13,8 +13,9 @@
 //! digest for digest.
 
 use crate::{
-    BlockwiseInt8Tensor, DistributedLanExecutor, LiveStageForwardRequest, TokenBatchInt8,
-    execute_stage_kernels_with_ktb,
+    BlockwiseInt8Tensor, DistributedLanExecutor, ExpertPartial, ExpertPartialsBatch,
+    LAYER_BOUNDARY_BLOCK, LayerReference, LayerRouting, LiveStageForwardRequest,
+    MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8, execute_stage_layers_with_ktb,
 };
 use kadmium_core::NodeId;
 use kadmium_grid::{
@@ -23,7 +24,9 @@ use kadmium_grid::{
     fnv1a_64,
 };
 use kadmium_network::{LiveWorkerRegistration, WireFrameKind};
-use kadmium_sharding::{StageForwardParams, StepGraphBuilder};
+use kadmium_sharding::{
+    CombineParams, ExpertSliceParams, StageForwardParams, StepGraphBuilder, TrunkForwardParams,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, RwLock};
@@ -155,6 +158,9 @@ impl ExecutorRegistry {
     pub fn with_defaults() -> Self {
         let registry = Self::new();
         registry.register(Arc::new(StageForwardExecutor));
+        registry.register(Arc::new(TrunkForwardExecutor));
+        registry.register(Arc::new(ExpertSliceExecutor));
+        registry.register(Arc::new(CombineExecutor));
         registry
     }
 
@@ -461,8 +467,14 @@ impl WorkExecutor for StageForwardExecutor {
                 boundary_input,
                 run_speculative_draft: false,
             };
-            let response =
-                execute_stage_kernels_with_ktb(&ctx.node_id, &ctx.hostname, &request, Some(&bank));
+            let response = execute_stage_layers_with_ktb(
+                &ctx.node_id,
+                &ctx.hostname,
+                &request,
+                Some(&bank),
+                params.experts_per_layer,
+                params.active_experts_per_token,
+            );
             out_values.extend(response.boundary_output.dequantize());
             digests.push(response.repops_digest_fnv1a);
             l2_sum += response.output_activation_l2_norm as f64;
@@ -498,6 +510,277 @@ impl WorkExecutor for StageForwardExecutor {
             payload: serde_json::to_vec(&last).unwrap_or_default(),
             digest_fnv1a: digest,
             check_value: l2_sum / rows.len().max(1) as f64,
+        })
+    }
+}
+
+// ================================================================================================
+// Fan-out executors: one layer as trunk, expert slices and combine on different nodes
+// ================================================================================================
+
+fn l2_norm(values: &[f32]) -> f64 {
+    values
+        .iter()
+        .map(|v| (*v as f64) * (*v as f64))
+        .sum::<f64>()
+        .sqrt()
+}
+
+fn activation_input<'a>(
+    unit: &'a WorkUnit,
+    inputs: &'a WorkInputs,
+    pick: impl Fn(&str) -> bool,
+) -> Result<(&'a str, &'a [u8]), String> {
+    unit.inputs
+        .iter()
+        .filter(|c| c.kind == ContentKind::Activation && pick(&c.content_id))
+        .find_map(|c| {
+            inputs
+                .blob(&c.content_id)
+                .map(|b| (c.content_id.as_str(), b))
+        })
+        .ok_or_else(|| format!("unit `{}` is missing an activation input", unit.id))
+}
+
+/// Multi-row batches are quantized as one flat tensor, which equals per-row quantization only
+/// when a row is a whole number of blocks.
+fn boundary_batch(rows: &[Vec<f32>]) -> Result<TokenBatchInt8, String> {
+    let dim = rows.first().map_or(0, Vec::len);
+    if rows.len() > 1 && !dim.is_multiple_of(LAYER_BOUNDARY_BLOCK) {
+        return Err(format!(
+            "layer boundary batches need a width that is a multiple of {LAYER_BOUNDARY_BLOCK}, got {dim}"
+        ));
+    }
+    if rows.len() == 1 {
+        return Ok(TokenBatchInt8 {
+            rows: 1,
+            dim: dim as u32,
+            tensor: LayerReference::boundary_quantize(&rows[0]),
+        });
+    }
+    TokenBatchInt8::quantize(
+        &rows.concat(),
+        rows.len() as u32,
+        dim as u32,
+        LAYER_BOUNDARY_BLOCK,
+    )
+}
+
+/// Runs a [`AppKind::TrunkForward`] unit: the layer's trunk on every row of the INT8 input batch.
+/// With experts, the trunk output leaves as exact `f32` for the slices and the combine, with the
+/// routing beside it; without, the trunk is the whole layer and its output is boundary-quantized.
+pub struct TrunkForwardExecutor;
+
+impl WorkExecutor for TrunkForwardExecutor {
+    fn app_kind(&self) -> AppKind {
+        AppKind::TrunkForward
+    }
+
+    fn execute(
+        &self,
+        unit: &WorkUnit,
+        inputs: &WorkInputs,
+        ctx: &ExecutorContext,
+    ) -> Result<WorkOutput, String> {
+        let params: TrunkForwardParams = unit.params_json().map_err(|e| e.to_string())?;
+        let batch = inputs.activation_batch(unit)?;
+        let rows = batch.dequantize_rows();
+        let gamma = {
+            let bank = ctx.resident_ktb_bank.lock().expect("resident bank lock");
+            LayerReference::gamma_from_bank(Some(&bank), (batch.dim as usize).max(16))
+        };
+        let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
+
+        let mut trunk_rows = Vec::with_capacity(rows.len());
+        let mut routing_rows = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let (h, routing) = LayerReference::trunk_forward(
+                row,
+                params.layer,
+                &gamma,
+                params.experts_per_layer,
+                params.active_experts_per_token,
+                params.q_star_ratio,
+            );
+            trunk_rows.push(h);
+            routing_rows.push(routing);
+        }
+
+        if params.experts_per_layer == 0 || params.active_experts_per_token == 0 {
+            // A dense layer: the trunk is the whole layer, so this is the layer boundary.
+            let combined: Vec<Vec<f32>> = trunk_rows
+                .iter()
+                .map(|h| LayerReference::combine(h, &[]))
+                .collect();
+            let out = boundary_batch(&combined)?;
+            let bytes = out.to_le_bytes();
+            return Ok(WorkOutput {
+                outputs: vec![(
+                    StepGraphBuilder::output_ref(graph_id, &unit.id),
+                    bytes.clone(),
+                )],
+                payload: Vec::new(),
+                digest_fnv1a: fnv1a_64(&bytes),
+                check_value: l2_norm(&combined.concat()),
+            });
+        }
+
+        let out = TokenBatchF32::from_rows(&trunk_rows)?;
+        let routing = LayerRouting {
+            layer: params.layer,
+            rows: routing_rows,
+        };
+        let bytes = out.to_le_bytes();
+        Ok(WorkOutput {
+            outputs: vec![
+                (
+                    StepGraphBuilder::output_ref(graph_id, &unit.id),
+                    bytes.clone(),
+                ),
+                (
+                    StepGraphBuilder::routing_ref(graph_id, &unit.id),
+                    routing.to_json_bytes(),
+                ),
+            ],
+            payload: routing.to_json_bytes(),
+            digest_fnv1a: fnv1a_64(&bytes),
+            check_value: l2_norm(&out.data),
+        })
+    }
+}
+
+/// Runs an [`AppKind::ExpertSlice`] unit: for every row, the contribution of each selected expert
+/// resident on this holder, from the trunk output and routing the trunk unit produced.
+pub struct ExpertSliceExecutor;
+
+impl WorkExecutor for ExpertSliceExecutor {
+    fn app_kind(&self) -> AppKind {
+        AppKind::ExpertSlice
+    }
+
+    fn execute(
+        &self,
+        unit: &WorkUnit,
+        inputs: &WorkInputs,
+        _ctx: &ExecutorContext,
+    ) -> Result<WorkOutput, String> {
+        let params: ExpertSliceParams = unit.params_json().map_err(|e| e.to_string())?;
+        let (_, trunk_bytes) = activation_input(unit, inputs, |id| id.ends_with("/out"))?;
+        let (_, routing_bytes) = activation_input(unit, inputs, |id| id.ends_with("/routing"))?;
+        let trunk = TokenBatchF32::from_le_bytes(trunk_bytes)?;
+        let routing = LayerRouting::from_json_bytes(routing_bytes)?;
+        if routing.rows.len() != trunk.rows as usize {
+            return Err(format!(
+                "routing covers {} rows but the trunk output has {}",
+                routing.rows.len(),
+                trunk.rows
+            ));
+        }
+
+        let mut partials = Vec::new();
+        for (row, selections) in routing.rows.iter().enumerate() {
+            let h = trunk.row(row);
+            let mut mine: Vec<&MoERoutedExpertSelection> = selections
+                .iter()
+                .filter(|s| params.resident_experts.contains(&s.expert_id))
+                .collect();
+            mine.sort_by_key(|s| s.expert_id);
+            for selection in mine {
+                partials.push(ExpertPartial {
+                    row: row as u32,
+                    expert: selection.expert_id,
+                    data: LayerReference::expert_contribution(
+                        h,
+                        params.layer,
+                        selection.expert_id,
+                        selection.gating_weight,
+                    ),
+                });
+            }
+        }
+        let applied = partials.len();
+        let batch = ExpertPartialsBatch {
+            layer: params.layer,
+            rows: trunk.rows,
+            dim: trunk.dim,
+            partials,
+        };
+        let bytes = batch.to_le_bytes();
+        let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
+        Ok(WorkOutput {
+            outputs: vec![(
+                StepGraphBuilder::output_ref(graph_id, &unit.id),
+                bytes.clone(),
+            )],
+            payload: serde_json::to_vec(&serde_json::json!({
+                "layer": params.layer,
+                "holder": params.holder.0,
+                "experts_applied": applied,
+            }))
+            .unwrap_or_default(),
+            digest_fnv1a: fnv1a_64(&bytes),
+            check_value: applied as f64,
+        })
+    }
+}
+
+/// Runs an [`AppKind::Combine`] unit: the residual plus every holder's partials in expert-id
+/// order, clamped and quantized at the layer boundary, which the next trunk consumes.
+pub struct CombineExecutor;
+
+impl WorkExecutor for CombineExecutor {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Combine
+    }
+
+    fn execute(
+        &self,
+        unit: &WorkUnit,
+        inputs: &WorkInputs,
+        _ctx: &ExecutorContext,
+    ) -> Result<WorkOutput, String> {
+        let params: CombineParams = unit.params_json().map_err(|e| e.to_string())?;
+        let (_, trunk_bytes) = activation_input(unit, inputs, |id| id.contains("-trunk/"))?;
+        let trunk = TokenBatchF32::from_le_bytes(trunk_bytes)?;
+        let mut partial_batches = Vec::new();
+        for input in unit
+            .inputs
+            .iter()
+            .filter(|c| c.kind == ContentKind::Activation && !c.content_id.contains("-trunk/"))
+        {
+            let bytes = inputs.blob(&input.content_id).ok_or_else(|| {
+                format!(
+                    "combine `{}` is missing partials `{}`",
+                    unit.id, input.content_id
+                )
+            })?;
+            partial_batches.push(ExpertPartialsBatch::from_le_bytes(bytes)?);
+        }
+
+        let mut out_rows = Vec::with_capacity(trunk.rows as usize);
+        for row in 0..trunk.rows {
+            let partials: Vec<(u32, Vec<f32>)> = partial_batches
+                .iter()
+                .flat_map(|b| b.row_partials(row))
+                .collect();
+            out_rows.push(LayerReference::combine(trunk.row(row as usize), &partials));
+        }
+        let out = boundary_batch(&out_rows)?;
+        let bytes = out.to_le_bytes();
+        let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
+        Ok(WorkOutput {
+            outputs: vec![(
+                StepGraphBuilder::output_ref(graph_id, &unit.id),
+                bytes.clone(),
+            )],
+            payload: serde_json::to_vec(&serde_json::json!({
+                "layer": params.layer,
+                "contributors": params.contributors.len(),
+                "partials": partial_batches.iter().map(|b| b.partials.len()).sum::<usize>(),
+            }))
+            .unwrap_or_default(),
+            digest_fnv1a: fnv1a_64(&bytes),
+            check_value: l2_norm(&out_rows.concat()),
         })
     }
 }
@@ -1039,7 +1322,7 @@ mod tests {
     fn registry_runs_registered_kinds_and_reports_missing_ones() {
         let local = local_executor("node-a");
         assert!(local.registry.get(&AppKind::StageForward).is_some());
-        assert_eq!(local.registry.kinds().len(), 2);
+        assert_eq!(local.registry.kinds().len(), 5);
 
         let input = ContentRef::named(ContentKind::Activation, "g/in", 3);
         let mut unit = WorkUnit::new("rev", AppKind::Custom("echo-reverse".into()));
@@ -1229,5 +1512,190 @@ mod tests {
                 .as_deref()
                 .is_some_and(|e| e.contains("no live worker"))
         }));
+    }
+}
+
+#[cfg(test)]
+mod fanout_tests {
+    use super::*;
+    use crate::{DEFAULT_INITIAL_KTB_MERKLE_ROOT, LiveNodeWorkerServer, prompt_seed_hidden};
+    use kadmium_core::{HardwareNode, ModelSpec, sample_personal_cluster};
+    use kadmium_sharding::{ExecutionStrategy, ExpertPlacementPlanner, StepGraphBuilder};
+
+    fn registration(node: &HardwareNode, addr: &str, rtt_ms: f64) -> LiveWorkerRegistration {
+        LiveWorkerRegistration {
+            node: node.clone(),
+            worker_tcp_addr: addr.to_string(),
+            worker_lan_ip: "127.0.0.1".into(),
+            worker_tcp_port: addr
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(0),
+            os_name: "test".into(),
+            cpu_arch: "x86_64".into(),
+            board_or_model: "test".into(),
+            network_channel: "LocalLAN".into(),
+            installed_version: "v0.1.0-cd48".into(),
+            ktb_merkle_root_fnv64: DEFAULT_INITIAL_KTB_MERKLE_ROOT,
+            heartbeat_count: 1,
+            registered_at_unix_ms: 1000,
+            last_heartbeat_unix_ms: 1000,
+            last_measured_rtt_ms: rtt_ms,
+            executed_forward_stages: 0,
+            executed_training_steps: 0,
+            online: true,
+        }
+    }
+
+    fn toy_moe() -> ModelSpec {
+        ModelSpec {
+            id: "toy-moe".into(),
+            display_name: "Toy MoE".into(),
+            total_params_billions: 4.0,
+            num_layers: 4,
+            is_moe: true,
+            dense_layer_size_gb: 0.05,
+            experts_per_layer: 8,
+            active_experts_per_token: 2,
+            single_expert_size_gb: 0.01,
+            kv_cache_per_layer_gb: 0.01,
+            training_activation_per_layer_gb: 0.02,
+            lora_state_per_layer_gb: 0.01,
+        }
+    }
+
+    async fn run_shape(
+        strategy: ExecutionStrategy,
+        model: &ModelSpec,
+        nodes: &[HardwareNode],
+        live_workers: &BTreeMap<String, LiveWorkerRegistration>,
+        seed: &TokenBatchInt8,
+        session: &str,
+    ) -> (GridRunReport, Vec<u8>) {
+        let placement = ExpertPlacementPlanner::plan(model, nodes, strategy, None);
+        let graph = StepGraphBuilder::decode_step(model, &placement, nodes, 1, session, seed.rows);
+        let catalog = ReplicaCatalog::assume_placed(&placement.rules, 1);
+        let mut workers = GridDispatcher::workers_from_registrations(live_workers);
+        let config = GridRunConfig::default()
+            .with_seed(StepGraphBuilder::prompt_ref(&graph.id), seed.to_le_bytes());
+        let report =
+            GridDispatcher::run_graph(&graph, &mut workers, &catalog, live_workers, None, &config)
+                .await;
+        assert!(
+            report.success,
+            "{strategy:?} run failed: {:?}",
+            report.traces
+        );
+        let last_unit = match strategy {
+            ExecutionStrategy::PipelineChain => {
+                WorkUnitId::new(format!("stage-{:02}", placement.trunk_ranges.len() - 1))
+            }
+            ExecutionStrategy::ExpertParallel => {
+                WorkUnitId::new(format!("L{:03}-combine", model.num_layers - 1))
+            }
+        };
+        let out_ref = StepGraphBuilder::output_ref(&graph.id, &last_unit);
+        let bytes = report
+            .output(&out_ref.content_id)
+            .expect("final output present")
+            .to_vec();
+        (report, bytes)
+    }
+
+    #[tokio::test]
+    async fn fan_out_graph_matches_the_chain_graph_byte_for_byte() {
+        let cluster = sample_personal_cluster();
+        let nodes = vec![cluster[0].clone(), cluster[1].clone()];
+        let w0 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[0].clone(), false)
+            .await
+            .expect("spawn worker 0");
+        let w1 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, nodes[1].clone(), false)
+            .await
+            .expect("spawn worker 1");
+        let mut live_workers = BTreeMap::new();
+        live_workers.insert(
+            nodes[0].id.0.clone(),
+            registration(&nodes[0], &w0.local_addr.to_string(), 0.3),
+        );
+        live_workers.insert(
+            nodes[1].id.0.clone(),
+            registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
+        );
+        let model = toy_moe();
+
+        // One row.
+        let seed =
+            TokenBatchInt8::quantize(&prompt_seed_hidden("fan-out equivalence", 64), 1, 64, 16)
+                .unwrap();
+        let (chain, chain_bytes) = run_shape(
+            ExecutionStrategy::PipelineChain,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed,
+            "one-row",
+        )
+        .await;
+        let (fan_out, fan_out_bytes) = run_shape(
+            ExecutionStrategy::ExpertParallel,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed,
+            "one-row",
+        )
+        .await;
+        assert_eq!(
+            chain_bytes, fan_out_bytes,
+            "layer-3 boundary differs between shapes"
+        );
+        assert_eq!(fnv1a_64(&chain_bytes), fnv1a_64(&fan_out_bytes));
+        assert!(fan_out.units_total > chain.units_total);
+        let slice_nodes: std::collections::BTreeSet<_> = fan_out
+            .traces
+            .iter()
+            .filter(|t| t.app == "ExpertSlice")
+            .map(|t| t.node_id.clone())
+            .collect();
+        assert!(!slice_nodes.is_empty(), "no expert slices ran");
+        assert!(
+            fan_out
+                .traces
+                .iter()
+                .all(|t| t.transport.starts_with("pooled channel")),
+            "every unit crossed a real channel"
+        );
+        let decoded = TokenBatchInt8::from_le_bytes(&fan_out_bytes).unwrap();
+        assert_eq!((decoded.rows, decoded.dim), (1, 64));
+
+        // Two rows in one step: the batch path must agree too.
+        let rows: Vec<f32> = [
+            prompt_seed_hidden("row one", 64),
+            prompt_seed_hidden("row two", 64),
+        ]
+        .concat();
+        let seed2 = TokenBatchInt8::quantize(&rows, 2, 64, 16).unwrap();
+        let (_, chain2) = run_shape(
+            ExecutionStrategy::PipelineChain,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed2,
+            "two-rows",
+        )
+        .await;
+        let (_, fan_out2) = run_shape(
+            ExecutionStrategy::ExpertParallel,
+            &model,
+            &nodes,
+            &live_workers,
+            &seed2,
+            "two-rows",
+        )
+        .await;
+        assert_eq!(chain2, fan_out2, "two-row batch differs between shapes");
+        assert_eq!(TokenBatchInt8::from_le_bytes(&fan_out2).unwrap().rows, 2);
+        assert_ne!(chain2, chain_bytes);
     }
 }

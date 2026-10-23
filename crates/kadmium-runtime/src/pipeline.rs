@@ -19,7 +19,7 @@ pub enum ExpertResidencyTier {
 }
 
 /// A single routed expert selected by the Top-$k$ Softmax MoE Gating Router.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MoERoutedExpertSelection {
     pub expert_id: u32,
     pub gating_weight: f32,
