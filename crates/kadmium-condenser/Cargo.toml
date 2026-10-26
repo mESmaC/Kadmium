@@ -1,0 +1,32 @@
+[package]
+name = "kadmium-condenser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Condenser: the modular Kadmium Power Plant inference harness"
+default-run = "kadmium-condenser"
+
+[features]
+default = []
+# Linux uses the browser shell by default. Enable the same native window used on
+# Windows and macOS when WebKitGTK 4.1 and GTK 3 development files are available.
+linux-native = ["dep:wry", "dep:tao"]
+
+[dependencies]
+kadmium-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+axum.workspace = true
+clap.workspace = true
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+wry = "0.57"
+tao = "0.37"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wry = { version = "0.57", optional = true }
+tao = { version = "0.37", optional = true }

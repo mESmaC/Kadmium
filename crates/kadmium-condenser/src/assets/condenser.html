@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Condenser — Kadmium Power Plant</title>
+<link rel="icon" href="assets/Logos/kadmium-favicon.svg">
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="components/bundle.css">
+<link rel="stylesheet" href="condenser.css">
+<script src="condenser.js" defer></script>
+</head>
+<body data-view="harness">
+<header class="topbar">
+  <button id="toggle-sessions" class="icon-btn mobile-only" aria-label="Toggle task history">☰</button>
+  <div class="brand">
+    <img src="assets/Logos/kadmium-wordmark-dark.svg" alt="Kadmium">
+    <span class="brand-divider"></span>
+    <span class="brand-product">Condenser</span>
+  </div>
+  <span class="suite-tag label">AGENT HARNESS</span>
+  <span class="spacer"></span>
+  <span id="system-badge" class="status-chip"><span class="status-dot"></span><span>Probing host</span></span>
+  <button id="provider-button" class="provider-button" title="Open provider settings">
+    <span class="status-dot"></span><span id="header-provider">Kadmium</span><span class="provider-model" id="header-model">loading</span><span aria-hidden="true">⌄</span>
+  </button>
+  <button id="toggle-context" class="icon-btn" aria-label="Toggle run inspector" title="Run inspector">☷</button>
+</header>
+
+<div class="app-shell">
+  <aside id="session-rail" class="session-rail">
+    <button id="new-task" class="new-task"><span aria-hidden="true">＋</span> New task</button>
+    <div class="rail-navigation">
+      <button class="rail-nav active" data-view="harness"><span>Agent runs</span><span id="task-count" class="rail-count">0</span></button>
+      <button class="rail-nav" data-view="capabilities"><span>Capabilities</span><span id="nav-plugin-count" class="rail-count">0</span></button>
+    </div>
+    <div class="rail-section-head"><span class="label">TASK HISTORY</span><span class="local-only caption">LOCAL</span></div>
+    <div id="session-list" class="session-list"></div>
+    <div class="rail-footer">
+      <img src="assets/Logos/kadmium-mark-dark.svg" alt="" class="rail-mark">
+      <p class="caption">Tasks stay in this browser profile. API keys remain memory-only.</p>
+      <p class="caption muted">Kadmium Power Plant · plugin protocol v1</p>
+    </div>
+  </aside>
+
+  <main class="workspace">
+    <section id="view-harness" class="view active">
+      <div class="run-header">
+        <div class="run-heading">
+          <div class="run-kicker"><span id="task-kicker" class="label">TASK</span><span id="task-status" class="run-status ready">Ready</span></div>
+          <input id="task-title" class="task-title" value="Untitled task" aria-label="Task title" maxlength="120">
+        </div>
+        <div class="run-actions">
+          <button id="export-task" class="text-btn" title="Download this task without credentials">Export run</button>
+          <button id="archive-task" class="text-btn danger" title="Remove this task from local history">Archive</button>
+        </div>
+      </div>
+
+      <div class="agent-stage">
+        <div id="timeline" class="timeline" aria-live="polite"></div>
+        <div id="running-indicator" class="running-indicator hidden">
+          <span class="agent-pulse"></span>
+          <div><strong>Condenser is working</strong><p id="running-detail" class="caption">Preparing the provider request…</p></div>
+        </div>
+        <div class="composer">
+          <div id="composer-context" class="composer-context hidden">
+            <button id="edit-instructions" class="context-chip" title="Edit task instructions">Instructions active</button>
+          </div>
+          <textarea id="prompt" rows="3" placeholder="Give Condenser a task…" aria-label="Task prompt"></textarea>
+          <div class="composer-toolbar">
+            <div class="composer-controls">
+              <label class="tool-permission" title="Allow this provider to invoke discovered plugin tools">
+                <input id="enable-tools" type="checkbox">
+                <span class="toggle-track"><span></span></span>
+                <span id="tool-permission-label">Tools off</span>
+              </label>
+              <label class="budget-control" title="Maximum model and tool steps for one turn">
+                <span>Step budget</span><input id="step-budget" type="number" min="1" max="32" value="8">
+              </label>
+            </div>
+            <div class="composer-submit">
+              <span id="composer-status" class="composer-status caption"></span>
+              <span class="shortcut caption">Ctrl ↵</span>
+              <button id="send" class="run-button"><span>Run task</span><span aria-hidden="true">↑</span></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-capabilities" class="view">
+      <div class="capabilities-header">
+        <div>
+          <p class="eyebrow label">CAPABILITY REGISTRY</p>
+          <h1 class="headline">Extend the agent, not the core.</h1>
+          <p class="body">Discover process plugins, inspect their contracts, and test a tool before allowing a model to call it.</p>
+        </div>
+        <button id="refresh-plugins" class="secondary-btn">Refresh registry</button>
+      </div>
+      <div class="capability-stats">
+        <div class="stat-card"><span class="label">PLUGINS</span><strong id="stat-plugins">0</strong><span class="caption">discovered manifests</span></div>
+        <div class="stat-card"><span class="label">TOOLS</span><strong id="stat-tools">0</strong><span class="caption">available capabilities</span></div>
+        <div class="stat-card"><span class="label">EXECUTION</span><strong class="stat-word">Isolated</strong><span class="caption">process + JSON-RPC</span></div>
+      </div>
+      <div class="registry-note">
+        <span class="status-dot"></span>
+        <p class="caption">Discovery is passive. A plugin runs only when you invoke it directly or enable tool access for a task.</p>
+        <code>cargo run -p kadmium-condenser -- plugin scaffold my-tool</code>
+      </div>
+      <div id="plugin-diagnostics" class="plugin-diagnostics"></div>
+      <div id="plugin-list" class="plugin-list"></div>
+    </section>
+  </main>
+
+  <aside id="context-rail" class="context-rail">
+    <div class="inspector-header"><span class="label">RUN INSPECTOR</span><button id="close-context" class="icon-btn" aria-label="Close run inspector">×</button></div>
+    <div class="inspector-scroll">
+      <section class="inspector-section">
+        <div class="inspector-title">Current configuration</div>
+        <dl class="run-facts">
+          <div><dt>Provider</dt><dd id="run-provider">—</dd></div>
+          <div><dt>Model</dt><dd id="run-model" class="code-sm">—</dd></div>
+          <div><dt>Steps</dt><dd id="run-steps">0</dd></div>
+          <div><dt>Tokens</dt><dd id="run-tokens">—</dd></div>
+          <div><dt>Tool access</dt><dd id="run-tools">Disabled</dd></div>
+        </dl>
+      </section>
+      <section class="inspector-section">
+        <div class="inspector-title-row"><div class="inspector-title">Runbook</div><span id="runbook-count" class="caption muted">0 events</span></div>
+        <div id="runbook" class="runbook"><p class="empty-copy caption">Model requests and tool executions will appear here in order.</p></div>
+      </section>
+      <section class="inspector-section">
+        <div class="inspector-title-row"><div class="inspector-title">Task instructions</div><button id="save-instructions" class="text-btn">Apply</button></div>
+        <textarea id="system-prompt" rows="5" placeholder="Guide the agent’s behavior for this task…"></textarea>
+        <p class="caption muted">Applied to the next model request and saved with this task.</p>
+      </section>
+      <section class="inspector-section">
+        <div class="inspector-title-row"><div class="inspector-title">Capabilities</div><button id="open-capabilities" class="text-btn">View all</button></div>
+        <div id="capability-summary" class="capability-summary"><p class="empty-copy caption">No tools discovered yet.</p></div>
+      </section>
+    </div>
+  </aside>
+</div>
+
+<div id="settings-layer" class="modal-layer hidden" role="dialog" aria-modal="true" aria-label="Provider settings">
+  <button class="modal-backdrop" data-close="settings" aria-label="Close provider settings"></button>
+  <aside class="settings-drawer">
+    <div class="drawer-header"><div><p class="eyebrow label">RUNTIME</p><h2 class="title">Provider settings</h2></div><button class="icon-btn" data-close="settings" aria-label="Close provider settings">×</button></div>
+    <div class="drawer-body">
+      <div class="field"><label for="provider">Backend</label><select id="provider"></select></div>
+      <div class="field"><label for="base-url">Base URL</label><input id="base-url" class="code-sm" spellcheck="false" autocomplete="off"></div>
+      <div class="field"><label for="model">Model</label><input id="model" class="code-sm" list="model-options" spellcheck="false" autocomplete="off" placeholder="provider-model-id"><datalist id="model-options"></datalist></div>
+      <div class="field-inline"><button id="load-models" class="secondary-btn">Fetch models</button><span id="models-status" class="caption muted"></span></div>
+      <div class="field"><label for="api-key">API key</label><input id="api-key" type="password" autocomplete="off" placeholder="optional for local providers"><p id="key-hint" class="caption muted">Memory-only. Never written to task history.</p></div>
+      <p id="provider-note" class="provider-note caption"></p>
+      <details class="sampling-settings">
+        <summary>Sampling controls</summary>
+        <div class="field-grid">
+          <div class="field"><label for="temperature">Temperature</label><input id="temperature" type="number" min="0" step="0.1" placeholder="provider default"></div>
+          <div class="field"><label for="max-tokens">Max tokens</label><input id="max-tokens" type="number" min="1" step="1" placeholder="provider default"></div>
+        </div>
+      </details>
+    </div>
+    <div class="drawer-footer"><button id="cancel-settings" class="secondary-btn">Cancel</button><button id="save-settings" class="primary-btn">Apply to task</button></div>
+  </aside>
+</div>
+
+<div id="tool-layer" class="modal-layer hidden" role="dialog" aria-modal="true" aria-label="Test plugin tool">
+  <button class="modal-backdrop" data-close="tool" aria-label="Close tool console"></button>
+  <section class="tool-console">
+    <div class="drawer-header"><div><p class="eyebrow label">DIRECT INVOCATION</p><h2 id="tool-dialog-title" class="title">Test tool</h2></div><button class="icon-btn" data-close="tool" aria-label="Close tool console">×</button></div>
+    <p id="tool-dialog-description" class="body muted"></p>
+    <div class="field"><label for="tool-arguments">Arguments · JSON</label><textarea id="tool-arguments" class="code-sm" rows="8" spellcheck="false">{}</textarea></div>
+    <div id="tool-result" class="tool-result hidden"></div>
+    <div class="drawer-footer"><button class="secondary-btn" data-close="tool">Close</button><button id="invoke-tool" class="primary-btn">Invoke tool</button></div>
+  </section>
+</div>
+</body>
+</html>

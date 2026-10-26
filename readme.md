@@ -162,7 +162,7 @@ flowchart TB
 
 ## 📦 Workspace Structure
 
-Kadmium is organized as a modular **10-crate Pure Rust** Cargo workspace. The `kadmium-grid` crate is the generic distributed-compute substrate underneath the AI workloads: work units with a BOINC-style lifecycle, work graphs, a replica catalog with placement rules, a locality-aware scheduler with quorum validation, and a credit ledger. Inference steps, training steps, Dream-RSI replay batches and Verde audits are work graphs scheduled on it; a pipeline is a chain graph and expert parallelism is a fan-out graph, and the two produce identical bytes.
+Kadmium is organized as a modular **11-crate Pure Rust** Cargo workspace. The `kadmium-grid` crate is the generic distributed-compute substrate underneath the AI workloads: work units with a BOINC-style lifecycle, work graphs, a replica catalog with placement rules, a locality-aware scheduler with quorum validation, and a credit ledger. Inference steps, training steps, Dream-RSI replay batches and Verde audits are work graphs scheduled on it; a pipeline is a chain graph and expert parallelism is a fan-out graph, and the two produce identical bytes.
 
 ```text
 kadmium/
@@ -180,7 +180,8 @@ kadmium/
     ├── kadmium-network/        # USB-C/USB4/TB 30-80Gbps direct DMA engine, KDMF wire framing, RAID-5 striper, NAT hole-punching
     ├── kadmium-gateway/        # Axum server, Control Room, Docs Portal, reference API diagnostics and MCP
     ├── kadmium-cli/            # Single-binary `kadmium` CLI (serve, join, desktop, probe, plan, bench, import, exl3)
-    └── kadmium-desktop/        # Native Desktop Companion window (WebView2 / WKWebView / WebKitGTK)
+    ├── kadmium-desktop/        # Native Desktop Companion window (WebView2 / WKWebView / WebKitGTK)
+    └── kadmium-condenser/      # Kadmium Power Plant inference harness: native UI + CLI, provider adapters, bounded tool turns, process plugins
 ```
 
 ---
