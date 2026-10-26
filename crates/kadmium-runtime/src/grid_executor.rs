@@ -19,9 +19,10 @@
 //! committed to, and re-runs that one layer on a trusted referee through a [`VerdeProbe`].
 
 use crate::{
-    BlockwiseInt8Tensor, DistributedLanExecutor, ExpertPartial, ExpertPartialsBatch,
-    LAYER_BOUNDARY_BLOCK, LayerHook, LayerReference, LayerRouting, LiveStageForwardRequest,
-    LiveStageForwardResponse, MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8,
+    BlockwiseInt8Tensor, DispatchPrecision, DistributedLanExecutor, ExpertPartial,
+    ExpertPartialsBatch, HolderDispatchBatch, LAYER_BOUNDARY_BLOCK, LOW_LATENCY_COMBINE_MAGIC,
+    LayerHook, LayerReference, LayerRouting, LiveStageForwardRequest, LiveStageForwardResponse,
+    LowLatencyCombineBatch, MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8,
     VERDE_CHALLENGE_INITIAL_ACTIVATION, execute_stage_layers_with_ktb_routed_hooked, repops,
     verde_challenge_layers,
 };
@@ -950,17 +951,30 @@ impl WorkExecutor for TrunkForwardExecutor {
             rows: routing_rows,
         };
         let digest = LayerReference::trunk_digest(params.layer, &out);
+        let mut outputs = vec![
+            (
+                StepGraphBuilder::output_ref(graph_id, &unit.id),
+                out.to_le_bytes(),
+            ),
+            (
+                StepGraphBuilder::routing_ref(graph_id, &unit.id),
+                routing.to_json_bytes(),
+            ),
+        ];
+        for slice in &params.slices {
+            let dispatch = HolderDispatchBatch::for_slice(
+                &out,
+                &routing,
+                slice,
+                DispatchPrecision::ExactF32,
+            );
+            outputs.push((
+                StepGraphBuilder::holder_dispatch_ref(graph_id, &unit.id, &slice.holder),
+                dispatch.to_le_bytes(),
+            ));
+        }
         Ok(WorkOutput {
-            outputs: vec![
-                (
-                    StepGraphBuilder::output_ref(graph_id, &unit.id),
-                    out.to_le_bytes(),
-                ),
-                (
-                    StepGraphBuilder::routing_ref(graph_id, &unit.id),
-                    routing.to_json_bytes(),
-                ),
-            ],
+            outputs,
             payload: routing.to_json_bytes(),
             digest_fnv1a: digest,
             layer_digests: vec![LayerDigest::new(params.layer, digest)],
@@ -972,7 +986,8 @@ impl WorkExecutor for TrunkForwardExecutor {
 }
 
 /// Runs an [`AppKind::ExpertSlice`] unit: for every row, the contribution of each selected expert
-/// resident on this holder, from the trunk output and routing the trunk unit produced.
+/// resident on this holder, from the selective `HolderDispatchBatch` (DeepEP) or the full trunk
+/// output and routing.
 pub struct ExpertSliceExecutor;
 
 impl WorkExecutor for ExpertSliceExecutor {
@@ -987,54 +1002,62 @@ impl WorkExecutor for ExpertSliceExecutor {
         _ctx: &ExecutorContext,
     ) -> Result<WorkOutput, String> {
         let params: ExpertSliceParams = unit.params_json().map_err(|e| e.to_string())?;
-        let (_, trunk_bytes) = activation_input(unit, inputs, |id| id.ends_with("/out"))?;
-        let (_, routing_bytes) = activation_input(unit, inputs, |id| id.ends_with("/routing"))?;
-        let trunk = TokenBatchF32::from_le_bytes(trunk_bytes)?;
-        let routing = LayerRouting::from_json_bytes(routing_bytes)?;
-        if routing.rows.len() != trunk.rows as usize {
-            return Err(format!(
-                "routing covers {} rows but the trunk output has {}",
-                routing.rows.len(),
-                trunk.rows
-            ));
-        }
-
-        let mut partials = Vec::new();
-        for (row, selections) in routing.rows.iter().enumerate() {
-            let h = trunk.row(row);
-            // The experts this holder serves for this row: its resident experts, minus the rows
-            // of a replicated expert that another copy takes (EPLB's even split).
-            let mut mine: Vec<&MoERoutedExpertSelection> = selections
-                .iter()
-                .filter(|s| params.serves(s.expert_id, row as u32))
-                .collect();
-            mine.sort_by_key(|s| s.expert_id);
-            for selection in mine {
-                partials.push(ExpertPartial {
-                    row: row as u32,
-                    expert: selection.expert_id,
-                    data: LayerReference::expert_contribution(
-                        h,
-                        params.layer,
-                        selection.expert_id,
-                        selection.gating_weight,
-                    ),
-                });
+        let batch = if let Ok((_, dispatch_bytes)) =
+            activation_input(unit, inputs, |id| id.contains("/dispatch/"))
+        {
+            let dispatch = HolderDispatchBatch::from_le_bytes(dispatch_bytes)?;
+            dispatch.evaluate_partials()
+        } else {
+            let (_, trunk_bytes) = activation_input(unit, inputs, |id| id.ends_with("/out"))?;
+            let (_, routing_bytes) =
+                activation_input(unit, inputs, |id| id.ends_with("/routing"))?;
+            let trunk = TokenBatchF32::from_le_bytes(trunk_bytes)?;
+            let routing = LayerRouting::from_json_bytes(routing_bytes)?;
+            if routing.rows.len() != trunk.rows as usize {
+                return Err(format!(
+                    "routing covers {} rows but the trunk output has {}",
+                    routing.rows.len(),
+                    trunk.rows
+                ));
             }
-        }
-        let applied = partials.len();
+
+            let mut partials = Vec::new();
+            for (row, selections) in routing.rows.iter().enumerate() {
+                let h = trunk.row(row);
+                // The experts this holder serves for this row: its resident experts, minus the rows
+                // of a replicated expert that another copy takes (EPLB's even split).
+                let mut mine: Vec<&MoERoutedExpertSelection> = selections
+                    .iter()
+                    .filter(|s| params.serves(s.expert_id, row as u32))
+                    .collect();
+                mine.sort_by_key(|s| s.expert_id);
+                for selection in mine {
+                    partials.push(ExpertPartial {
+                        row: row as u32,
+                        expert: selection.expert_id,
+                        data: LayerReference::expert_contribution(
+                            h,
+                            params.layer,
+                            selection.expert_id,
+                            selection.gating_weight,
+                        ),
+                    });
+                }
+            }
+            ExpertPartialsBatch {
+                layer: params.layer,
+                rows: trunk.rows,
+                dim: trunk.dim,
+                partials,
+            }
+        };
+        let applied = batch.partials.len();
         let mut served_hits: BTreeMap<(u32, u32), u64> = BTreeMap::new();
-        for partial in &partials {
+        for partial in &batch.partials {
             *served_hits
                 .entry((params.layer, partial.expert))
                 .or_default() += 1;
         }
-        let batch = ExpertPartialsBatch {
-            layer: params.layer,
-            rows: trunk.rows,
-            dim: trunk.dim,
-            partials,
-        };
         let digest = LayerReference::partials_digest(&batch);
         let graph_id = unit.graph_id.as_deref().unwrap_or("graph");
         Ok(WorkOutput {
@@ -1051,7 +1074,7 @@ impl WorkExecutor for ExpertSliceExecutor {
             digest_fnv1a: digest,
             layer_digests: vec![LayerDigest::new(params.layer, digest)],
             check_value: applied as f64,
-            units_processed: trunk.rows as u64,
+            units_processed: batch.rows as u64,
             accessed: expert_accesses(&params.model_id, &served_hits),
         })
     }
@@ -1087,7 +1110,12 @@ impl WorkExecutor for CombineExecutor {
                     unit.id, input.content_id
                 )
             })?;
-            partial_batches.push(ExpertPartialsBatch::from_le_bytes(bytes)?);
+            let decoded = if bytes.starts_with(&LOW_LATENCY_COMBINE_MAGIC) {
+                LowLatencyCombineBatch::from_le_bytes(bytes)?.into_partials_batch()
+            } else {
+                ExpertPartialsBatch::from_le_bytes(bytes)?
+            };
+            partial_batches.push(decoded);
         }
 
         let mut out_rows = Vec::with_capacity(trunk.rows as usize);

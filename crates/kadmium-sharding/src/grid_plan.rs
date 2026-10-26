@@ -30,8 +30,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::{
-    BalanceMode, BalanceReport, CalibrationRecord, ExpertLoadBalancer, LinkSegments,
-    ReplicaBudget, ShardPlanner,
+    BalanceMode, BalanceReport, CalibrationRecord, DeepEpStepAccount, ExpertLoadBalancer,
+    LinkSegments, ReplicaBudget, ShardPlanner,
 };
 
 const GIB: f64 = 1_073_741_824.0;
@@ -1032,6 +1032,152 @@ pub struct StrategyChoice {
     /// run: the busiest node before and after, modelled.
     #[serde(default)]
     pub balance: Option<BalanceSummary>,
+    /// What DeepEP's selective dispatch layout, asymmetric-domain forwarding, low-latency FP8
+    /// quantization and Zero-SM hook overlap do to the expert-parallel step, modelled.
+    #[serde(default)]
+    pub deep_ep: Option<DeepEpStepAccount>,
+    /// What the strongest single node in the mesh would achieve running the model alone under
+    /// Ollama's `Q4_K_M` + `q8_0` KV cache hybrid GPU+DDR5 split (`EstimateGpuLayout` +
+    /// `vec_dot_q4_K_q8_K` / `MulMatID`), modelled.
+    #[serde(default)]
+    pub ollama_single_box_baseline: Option<OllamaSingleBoxBaseline>,
+}
+
+/// Analytical (`modelled: true`) single-box baseline modelled after `ollama/ollama`
+/// (`llm/memory.go` `EstimateGpuLayout` + `ml/backend/ggml` `vec_dot_q4_K_q8_K` & `MulMatID`):
+///
+/// Evaluates every node in the mesh as a standalone hybrid GPU+CPU runner with `Q4_K_M` weights
+/// (`4.85 bits/weight`, `0.303125x` of 16-bit weight size) and `q8_0` FlashAttention KV cache
+/// (`34 bytes` per 32 elements), placing as much of the model as fits into fast VRAM/UMA and
+/// streaming the overflow in place from host DDR5 (`SystemRam`) with zero network hops.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OllamaSingleBoxBaseline {
+    pub best_node: NodeId,
+    pub weight_quant: String,
+    pub kv_cache_type: String,
+    pub q4km_total_weight_gb: f64,
+    pub q4km_active_weight_gb_per_step: f64,
+    pub fast_tier_resident_gb: f64,
+    pub system_ram_spill_gb: f64,
+    pub nvme_spill_gb: f64,
+    pub single_box_ms_per_token: f64,
+    pub single_box_tokens_per_sec: f64,
+    pub chosen_distributed_ms_per_token: f64,
+    pub distributed_speedup_vs_single_box_q4km: f64,
+    pub beats_single_box_ollama_q4km: bool,
+    pub modelled: bool,
+}
+
+impl OllamaSingleBoxBaseline {
+    /// Ratio of `Q4_K_M` (`~4.85 bits/weight`) to 16-bit (`16 bits/weight`) checkpoint bytes.
+    pub const Q4_K_M_TO_BF16_RATIO: f64 = 4.85 / 16.0;
+
+    pub fn estimate(
+        model: &ModelSpec,
+        nodes: &[HardwareNode],
+        cost_model: &StrategyCostModel,
+        chosen_distributed_ms_per_token: f64,
+    ) -> Option<Self> {
+        if nodes.is_empty() {
+            return None;
+        }
+        let eta = cost_model.bandwidth_efficiency.clamp(0.05, 1.0);
+        let rows = (cost_model.rows.max(1)) as f64;
+        let distinct_scale = rows.powf(cost_model.batch_expert_growth);
+
+        let layers = (model.num_layers.max(1)) as f64;
+        let bf16_trunk_gb = layers * model.dense_layer_size_gb;
+        let bf16_total_experts_gb = if model.is_moe {
+            layers * (model.experts_per_layer as f64) * model.single_expert_size_gb
+        } else {
+            0.0
+        };
+        let bf16_active_experts_gb = if model.is_moe {
+            let k_eff = ((model.active_experts_per_token as f64) * distinct_scale)
+                .min(model.experts_per_layer as f64);
+            layers * k_eff * model.single_expert_size_gb
+        } else {
+            0.0
+        };
+
+        let spec_total_gb = (bf16_trunk_gb + bf16_total_experts_gb).max(1e-6);
+        let target_q4km_gb = model.total_params_billions * (4.85 / 8.0);
+        // If the ModelSpec is given in BF16/FP16 (larger than 4.85 bits/param), scale down to
+        // Q4_K_M; if the ModelSpec is already quantized at or below Q4_K_M (e.g. Q4/FP8 .ktb),
+        // keep its native Q4/FP8 footprint without double-quantizing.
+        let q4km_scale = (target_q4km_gb / spec_total_gb).clamp(Self::Q4_K_M_TO_BF16_RATIO, 1.0);
+        let q4km_total_gb = spec_total_gb * q4km_scale;
+        let q4km_active_gb = (bf16_trunk_gb + bf16_active_experts_gb) * q4km_scale;
+        // Reserve `q8_0` KV cache (`34/64` of FP16 KV) + 0.5 GiB GGML compute buffer in fast memory
+        let kv_q8_gb =
+            (layers * model.kv_cache_per_layer_gb * (34.0 / 64.0)).min(2.0);
+        let graph_scratch_gb = 0.5;
+
+        let round2 = |v: f64| (v * 100.0).round() / 100.0;
+        let mut best: Option<Self> = None;
+
+        for node in nodes {
+            let budget = NodeBudget::from_node(node);
+            let fast_cap_gb = ((budget.fast_left as f64) / GIB - kv_q8_gb - graph_scratch_gb)
+                .max(0.0);
+            let warm_cap_gb = (budget.warm_left as f64) / GIB;
+
+            let fast_res_gb = q4km_total_gb.min(fast_cap_gb);
+            let rem_after_fast = (q4km_total_gb - fast_res_gb).max(0.0);
+            let ram_spill_gb = rem_after_fast.min(warm_cap_gb);
+            let nvme_spill_gb = (rem_after_fast - ram_spill_gb).max(0.0);
+
+            let total_denom = q4km_total_gb.max(1e-6);
+            let fast_frac = fast_res_gb / total_denom;
+            let ram_frac = ram_spill_gb / total_denom;
+            let nvme_frac = nvme_spill_gb / total_denom;
+
+            let fast_bw = (budget.fast_bw_gbps.max(1.0) * eta).max(0.5);
+            let warm_bw = cost_model
+                .measured_stream_gbps
+                .get(&node.id)
+                .copied()
+                .unwrap_or_else(|| (budget.warm_bw_gbps * eta).max(0.5))
+                .max(0.5);
+            let cold_bw = (budget.cold_bw_gbps * eta).max(0.1);
+
+            let step_sec = (q4km_active_gb * fast_frac) / fast_bw
+                + (q4km_active_gb * ram_frac) / warm_bw
+                + (q4km_active_gb * nvme_frac) / cold_bw;
+            let step_ms = step_sec * 1000.0;
+            let ms_per_tok = (step_ms / rows).max(0.01);
+            let tok_s = 1000.0 / ms_per_tok;
+
+            let dist_ms = chosen_distributed_ms_per_token.max(0.01);
+            let speedup = ms_per_tok / dist_ms;
+
+            let candidate = Self {
+                best_node: node.id.clone(),
+                weight_quant: "Q4_K_M".to_string(),
+                kv_cache_type: "q8_0".to_string(),
+                q4km_total_weight_gb: round2(q4km_total_gb),
+                q4km_active_weight_gb_per_step: round2(q4km_active_gb),
+                fast_tier_resident_gb: round2(fast_res_gb),
+                system_ram_spill_gb: round2(ram_spill_gb),
+                nvme_spill_gb: round2(nvme_spill_gb),
+                single_box_ms_per_token: round2(ms_per_tok),
+                single_box_tokens_per_sec: round2(tok_s),
+                chosen_distributed_ms_per_token: round2(chosen_distributed_ms_per_token),
+                distributed_speedup_vs_single_box_q4km: round2(speedup),
+                beats_single_box_ollama_q4km: chosen_distributed_ms_per_token < ms_per_tok,
+                modelled: true,
+            };
+
+            if best
+                .as_ref()
+                .is_none_or(|b| candidate.single_box_ms_per_token < b.single_box_ms_per_token)
+            {
+                best = Some(candidate);
+            }
+        }
+
+        best
+    }
 }
 
 impl StrategyChoice {
@@ -1420,6 +1566,14 @@ impl StrategyCostModel {
         let chain = self.estimate(model, &chain_plan, nodes, popularity);
         let ep = self.estimate(model, &ep_plan, nodes, popularity);
         let balance = self.balance_summary(model, &ep_plan, nodes, popularity);
+        let deep_ep = DeepEpStepAccount::estimate(
+            model,
+            &ep_plan,
+            nodes,
+            popularity,
+            &ep,
+            &segments,
+        );
 
         let dense = !model.is_moe || model.experts_per_layer == 0;
         let chosen = if dense || chain.ms_per_token <= ep.ms_per_token {
@@ -1443,6 +1597,13 @@ impl StrategyCostModel {
                 chain_plan.hot_fraction() * 100.0
             )
         };
+        let chosen_ms_per_tok = if chosen == ExecutionStrategy::PipelineChain {
+            chain.ms_per_token
+        } else {
+            ep.ms_per_token
+        };
+        let ollama_single_box_baseline =
+            OllamaSingleBoxBaseline::estimate(model, nodes, self, chosen_ms_per_tok);
         (
             StrategyChoice {
                 chosen,
@@ -1457,6 +1618,8 @@ impl StrategyCostModel {
                     DECIDED_BY_MODELLED.to_string()
                 },
                 balance,
+                deep_ep,
+                ollama_single_box_baseline,
             },
             chain_plan,
             ep_plan,
@@ -1492,6 +1655,11 @@ pub struct TrunkForwardParams {
     pub active_experts_per_token: u32,
     /// The trunk owner's bandwidth-adaptive split ratio, which steers the router's locality prior.
     pub q_star_ratio: f64,
+    /// The layer's expert slices, when known at planning time, so the trunk unit can run
+    /// DeepEP's `get_dispatch_layout` and emit per-holder selective dispatches containing only
+    /// the rows `r` where `is_token_in_rank[holder][r]` is true.
+    #[serde(default)]
+    pub slices: Vec<ExpertSliceParams>,
 }
 
 /// An expert whose rows a holder shares with the expert's other copies: this holder serves
@@ -1639,6 +1807,21 @@ impl StepGraphBuilder {
         ContentRef::named(
             ContentKind::Activation,
             &format!("{}/routing", trunk_unit_id.in_graph(graph_id)),
+            0,
+        )
+    }
+
+    /// The per-holder selective dispatch packet a trunk unit produces for `holder` after
+    /// DeepEP's `get_dispatch_layout`: contains only the rows `r` where `holder` serves at
+    /// least one routed expert (`<graph>/<unit>/dispatch/<holder>`).
+    pub fn holder_dispatch_ref(
+        graph_id: &str,
+        trunk_unit_id: &WorkUnitId,
+        holder: &NodeId,
+    ) -> ContentRef {
+        ContentRef::named(
+            ContentKind::Activation,
+            &format!("{}/dispatch/{}", trunk_unit_id.in_graph(graph_id), holder.0),
             0,
         )
     }
@@ -1838,6 +2021,68 @@ impl StepGraphBuilder {
                         let boundary = layer == 0 || layer == last_layer;
                         let trunk_id =
                             WorkUnitId::qualified(&graph_id, &format!("L{layer:03}-trunk"));
+                        let trunk_out = Self::output_ref(&graph_id, &trunk_id);
+
+                        // Which holder serves each expert of the layer this step: the copy
+                        // `serving` names, else for a batch wider than one row every copy
+                        // with the rows dealt round robin (EPLB's even split), else the primary.
+                        let mut by_node: BTreeMap<NodeId, Vec<u32>> = BTreeMap::new();
+                        let mut shares: BTreeMap<NodeId, Vec<ExpertRowShare>> = BTreeMap::new();
+                        if model.is_moe && model.experts_per_layer > 0 {
+                            for home in placement.experts.iter().filter(|h| h.layer == layer) {
+                                let Some(primary) = home.holders.first() else {
+                                    continue;
+                                };
+                                if let Some(node) = serving
+                                    .get(&(layer, home.expert))
+                                    .filter(|n| home.holders.contains(n))
+                                {
+                                    by_node.entry(node.clone()).or_default().push(home.expert);
+                                } else if rows > 1 && home.holders.len() > 1 {
+                                    let count = home.holders.len().min(rows as usize) as u32;
+                                    for (index, node) in
+                                        home.holders.iter().take(count as usize).enumerate()
+                                    {
+                                        by_node.entry(node.clone()).or_default().push(home.expert);
+                                        shares.entry(node.clone()).or_default().push(
+                                            ExpertRowShare {
+                                                expert: home.expert,
+                                                index: index as u32,
+                                                count,
+                                            },
+                                        );
+                                    }
+                                } else {
+                                    by_node
+                                        .entry(primary.clone())
+                                        .or_default()
+                                        .push(home.expert);
+                                }
+                            }
+                        }
+                        let holders: Vec<NodeId> = by_node.keys().cloned().collect();
+                        let layer_slices: Vec<ExpertSliceParams> = holders
+                            .iter()
+                            .map(|holder| {
+                                let mut resident =
+                                    by_node.get(holder).cloned().unwrap_or_default();
+                                resident.sort_unstable();
+                                let mut row_shares =
+                                    shares.get(holder).cloned().unwrap_or_default();
+                                row_shares.sort_by_key(|s| s.expert);
+                                ExpertSliceParams {
+                                    model_id: model.id.clone(),
+                                    epoch,
+                                    session_id: session_id.to_string(),
+                                    layer,
+                                    rows,
+                                    holder: holder.clone(),
+                                    resident_experts: resident,
+                                    row_shares,
+                                }
+                            })
+                            .collect();
+
                         let mut trunk_unit = WorkUnit::new(trunk_id.clone(), AppKind::TrunkForward)
                             .with_params_json(&TrunkForwardParams {
                                 model_id: model.id.clone(),
@@ -1848,6 +2093,7 @@ impl StepGraphBuilder {
                                 experts_per_layer: model.experts_per_layer,
                                 active_experts_per_token: model.active_experts_per_token,
                                 q_star_ratio: range.q_star_ratio,
+                                slices: layer_slices.clone(),
                             })
                             .expect("params serialize")
                             .with_placement(Self::placement_for(
@@ -1869,7 +2115,6 @@ impl StepGraphBuilder {
                                 .add_dependency(&trunk_id, prev)
                                 .expect("step graphs are acyclic");
                         }
-                        let trunk_out = Self::output_ref(&graph_id, &trunk_id);
 
                         if !model.is_moe || model.experts_per_layer == 0 {
                             previous_activation = trunk_out;
@@ -1877,43 +2122,11 @@ impl StepGraphBuilder {
                             continue;
                         }
 
-                        // Which holder serves each expert of the layer this step: the copy
-                        // `serving` names, else for a batch wider than one row every copy
-                        // with the rows dealt round robin (EPLB's even split), else the primary.
-                        let mut by_node: BTreeMap<NodeId, Vec<u32>> = BTreeMap::new();
-                        let mut shares: BTreeMap<NodeId, Vec<ExpertRowShare>> = BTreeMap::new();
-                        for home in placement.experts.iter().filter(|h| h.layer == layer) {
-                            let Some(primary) = home.holders.first() else {
-                                continue;
-                            };
-                            if let Some(node) = serving
-                                .get(&(layer, home.expert))
-                                .filter(|n| home.holders.contains(n))
-                            {
-                                by_node.entry(node.clone()).or_default().push(home.expert);
-                            } else if rows > 1 && home.holders.len() > 1 {
-                                let count = home.holders.len().min(rows as usize) as u32;
-                                for (index, node) in home.holders.iter().take(count as usize).enumerate()
-                                {
-                                    by_node.entry(node.clone()).or_default().push(home.expert);
-                                    shares.entry(node.clone()).or_default().push(ExpertRowShare {
-                                        expert: home.expert,
-                                        index: index as u32,
-                                        count,
-                                    });
-                                }
-                            } else {
-                                by_node.entry(primary.clone()).or_default().push(home.expert);
-                            }
-                        }
-                        let holders: Vec<NodeId> = by_node.keys().cloned().collect();
                         let mut leaf_ids = Vec::new();
-                        for holder in &holders {
-                            let mut resident = by_node.get(holder).cloned().unwrap_or_default();
-                            resident.sort_unstable();
-                            let mut row_shares = shares.get(holder).cloned().unwrap_or_default();
-                            row_shares.sort_by_key(|s| s.expert);
-                            let refs: Vec<ContentRef> = resident
+                        for slice_params in &layer_slices {
+                            let holder = &slice_params.holder;
+                            let refs: Vec<ContentRef> = slice_params
+                                .resident_experts
                                 .iter()
                                 .map(|e| {
                                     ModelContentNames::expert(
@@ -1931,23 +2144,15 @@ impl StepGraphBuilder {
                                 .map(|h| h.tier)
                                 .unwrap_or(ResidencyTier::SystemRam);
                             let expected_bytes = k
-                                * (resident.len() as f64 / model.experts_per_layer as f64)
+                                * (slice_params.resident_experts.len() as f64
+                                    / model.experts_per_layer as f64)
                                 * expert_bytes;
                             let leaf_id = WorkUnitId::qualified(
                                 &graph_id,
                                 &format!("L{layer:03}-experts-{}", holder.0),
                             );
                             let mut leaf = WorkUnit::new(leaf_id.clone(), AppKind::ExpertSlice)
-                                .with_params_json(&ExpertSliceParams {
-                                    model_id: model.id.clone(),
-                                    epoch,
-                                    session_id: session_id.to_string(),
-                                    layer,
-                                    rows,
-                                    holder: holder.clone(),
-                                    resident_experts: resident,
-                                    row_shares,
-                                })
+                                .with_params_json(slice_params)
                                 .expect("params serialize")
                                 .with_placement(Self::placement_for(holder, refs.clone(), boundary))
                                 .with_cost(Self::cost(
@@ -1963,8 +2168,11 @@ impl StepGraphBuilder {
                                 .with_redundancy(RedundancyPolicy::trusted());
                             leaf.inputs = {
                                 let mut inputs = refs;
-                                inputs.push(trunk_out.clone());
-                                inputs.push(Self::routing_ref(&graph_id, &trunk_id));
+                                inputs.push(Self::holder_dispatch_ref(
+                                    &graph_id,
+                                    &trunk_id,
+                                    holder,
+                                ));
                                 inputs
                             };
                             graph.add_unit(leaf);
@@ -2933,5 +3141,44 @@ mod phase5_tests {
         );
         let ap: VerdeAuditParams = audit.params_json().unwrap();
         assert_eq!(ap.inject_fault_at_layer, Some(5));
+    }
+
+    #[test]
+    fn ollama_single_box_q4km_baseline_discloses_when_single_node_vram_ddr5_wins_and_when_mesh_wins() {
+        let nodes = sample_personal_cluster();
+        let cost = StrategyCostModel::default();
+
+        // 1. Small 35B-A3B MoE (~19 GB in Q4_K_M, ~3B active): fits entirely in a single PC's
+        //    VRAM + DDR5 with zero NVMe spill and 20-50 tok/s single-box decode.
+        let mut ornith_35b_a3b = ModelSpec::deepseek_v3_671b_moe();
+        ornith_35b_a3b.id = "ornith-1.5-35b-a3b".into();
+        ornith_35b_a3b.total_params_billions = 35.0;
+        ornith_35b_a3b.num_layers = 40;
+        ornith_35b_a3b.dense_layer_size_gb = 0.08;
+        ornith_35b_a3b.experts_per_layer = 64;
+        ornith_35b_a3b.active_experts_per_token = 4;
+        ornith_35b_a3b.single_expert_size_gb = 0.023;
+        ornith_35b_a3b.kv_cache_per_layer_gb = 0.01;
+
+        let (small_choice, _) = cost.choose(&ornith_35b_a3b, &nodes, None);
+        let small_base = small_choice
+            .ollama_single_box_baseline
+            .as_ref()
+            .expect("baseline present");
+        assert!(small_base.modelled);
+        assert_eq!(small_base.nvme_spill_gb, 0.0);
+        assert!(small_base.single_box_tokens_per_sec >= 20.0);
+
+        // 2. Massive 671B MoE (~400+ GB in Q4_K_M): spills heavily on any single node, so the
+        //    multi-node mesh beats the single-box Q4_K_M baseline.
+        let deepseek_671b = ModelSpec::deepseek_v3_671b_moe();
+        let (large_choice, _) = cost.choose(&deepseek_671b, &nodes, None);
+        let large_base = large_choice
+            .ollama_single_box_baseline
+            .as_ref()
+            .expect("baseline present");
+        assert!(large_base.nvme_spill_gb > 100.0);
+        assert!(large_base.beats_single_box_ollama_q4km);
+        assert!(large_base.distributed_speedup_vs_single_box_q4km > 1.0);
     }
 }

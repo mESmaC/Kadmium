@@ -18,12 +18,15 @@
 //! compares layer by layer.
 
 use crate::{
-    BlockwiseInt8Tensor, FusedRmsNormRopeKernel, KvPageBlock, MoEGatingRouter,
-    MoERoutedExpertSelection, PagedGqaAttentionKernel, TokenBatchInt8, repops,
+    BlockwiseInt8Tensor, DEFAULT_SUBBLOCK_SIZE, FusedRmsNormRopeKernel, KvPageBlock,
+    MoEGatingRouter, MoERoutedExpertSelection, PagedGqaAttentionKernel, PerTokenBlockQuantized,
+    ScaleFormat, TokenBatchInt8, repops, ue8m0_biased_byte, ue8m0_to_f32,
 };
 use kadmium_data::KtbBankReader;
 use kadmium_grid::LayerDigest;
+use kadmium_sharding::ExpertSliceParams;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 /// Block size of the INT8 quantization applied at every layer boundary.
 pub const LAYER_BOUNDARY_BLOCK: usize = 16;
@@ -491,6 +494,581 @@ impl ExpertPartialsBatch {
     }
 }
 
+// ================================================================================================
+// DeepEP Holder-Selective Dispatch, Low-Latency Quantized Combine & Zero-SM Hook Overlap
+// ================================================================================================
+
+/// Precision of a holder-selective dispatch packet (`HolderDispatchBatch`), after DeepEP's
+/// high-throughput (`ExactF32`) and low-latency decode (`LowLatencyFp8*`) modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DispatchPrecision {
+    /// Exact `f32` rows (`4` bytes/element), selective to `is_token_in_rank[holder]`:
+    /// preserves bit-for-bit equivalence with full-broadcast fan-out and chain execution.
+    ExactF32,
+    /// Fine-grained `1 x DEFAULT_SUBBLOCK_SIZE` 8-bit quantization with `f32` sub-block scales.
+    LowLatencyFp8F32Scale,
+    /// Fine-grained `1 x DEFAULT_SUBBLOCK_SIZE` 8-bit quantization with 1-byte `UE8M0`
+    /// power-of-two exponent scales (`ceil_to_ue8m0`), cutting wire bytes by nearly 4x.
+    LowLatencyFp8Ue8m0,
+}
+
+impl DispatchPrecision {
+    fn tag(self) -> u8 {
+        match self {
+            Self::ExactF32 => 0,
+            Self::LowLatencyFp8F32Scale => 1,
+            Self::LowLatencyFp8Ue8m0 => 2,
+        }
+    }
+
+    fn from_tag(tag: u8) -> Result<Self, String> {
+        match tag {
+            0 => Ok(Self::ExactF32),
+            1 => Ok(Self::LowLatencyFp8F32Scale),
+            2 => Ok(Self::LowLatencyFp8Ue8m0),
+            other => Err(format!("HolderDispatchBatch: unknown precision tag {other}")),
+        }
+    }
+}
+
+/// One `(row, expert, gating_weight)` assignment targeted at a specific expert-slice holder.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HolderExpertAssignment {
+    pub row: u32,
+    pub expert: u32,
+    pub gating_weight: f32,
+}
+
+pub const HOLDER_DISPATCH_MAGIC: [u8; 4] = *b"DPDS";
+
+/// Per-holder selective token dispatch batch (`"DPDS"`), after DeepEP's `get_dispatch_layout` +
+/// `dispatch` / `low_latency_dispatch`.
+///
+/// Instead of broadcasting every row of `TokenBatchF32` and the full `LayerRouting` JSON to every
+/// holder in the mesh, `HolderDispatchBatch` packs **only the deduplicated rows `r` where
+/// `is_token_in_rank[holder][r]` is true**, along with the holder's filtered `(row, expert, gate)`
+/// assignments. When `holder` serves 0 rows on a step, `included_rows` and `row_data` are empty.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HolderDispatchBatch {
+    pub layer: u32,
+    pub total_rows: u32,
+    pub dim: u32,
+    pub precision: DispatchPrecision,
+    /// Deduplicated batch row indices `0..total_rows` included in this holder's payload, ascending.
+    pub included_rows: Vec<u32>,
+    /// Row vectors for `included_rows` (`included_rows.len() * dim`), exact `f32` or dequantized.
+    pub row_data: Vec<f32>,
+    /// Filtered `(row, expert, gate)` assignments served by this holder, in `(row, expert)` order.
+    pub assignments: Vec<HolderExpertAssignment>,
+}
+
+impl HolderDispatchBatch {
+    /// Builds the selective dispatch packet for `slice` from the trunk output and routing.
+    pub fn for_slice(
+        trunk: &TokenBatchF32,
+        routing: &LayerRouting,
+        slice: &ExpertSliceParams,
+        precision: DispatchPrecision,
+    ) -> Self {
+        let dim = trunk.dim as usize;
+        let mut included_rows = Vec::new();
+        let mut raw_rows = Vec::new();
+        let mut assignments = Vec::new();
+
+        for (row_idx, selections) in routing.rows.iter().enumerate() {
+            let row = row_idx as u32;
+            let mut mine: Vec<&MoERoutedExpertSelection> = selections
+                .iter()
+                .filter(|s| slice.serves(s.expert_id, row))
+                .collect();
+            if mine.is_empty() {
+                continue;
+            }
+            mine.sort_by_key(|s| s.expert_id);
+            included_rows.push(row);
+            raw_rows.extend_from_slice(trunk.row(row_idx));
+            for sel in mine {
+                assignments.push(HolderExpertAssignment {
+                    row,
+                    expert: sel.expert_id,
+                    gating_weight: sel.gating_weight,
+                });
+            }
+        }
+
+        let row_data = match precision {
+            DispatchPrecision::ExactF32 => raw_rows,
+            DispatchPrecision::LowLatencyFp8F32Scale => {
+                PerTokenBlockQuantized::quantize(
+                    &raw_rows,
+                    included_rows.len(),
+                    dim,
+                    DEFAULT_SUBBLOCK_SIZE,
+                    ScaleFormat::ExactF32,
+                )
+                .dequantize()
+            }
+            DispatchPrecision::LowLatencyFp8Ue8m0 => {
+                PerTokenBlockQuantized::quantize(
+                    &raw_rows,
+                    included_rows.len(),
+                    dim,
+                    DEFAULT_SUBBLOCK_SIZE,
+                    ScaleFormat::Ue8m0PowerOfTwo,
+                )
+                .dequantize()
+            }
+        };
+
+        Self {
+            layer: slice.layer,
+            total_rows: trunk.rows,
+            dim: trunk.dim,
+            precision,
+            included_rows,
+            row_data,
+            assignments,
+        }
+    }
+
+    /// Looks up the hidden state slice for `original_row` (`0..total_rows`), if included.
+    pub fn row_slice(&self, original_row: u32) -> Option<&[f32]> {
+        let local_idx = self.included_rows.binary_search(&original_row).ok()?;
+        let dim = self.dim as usize;
+        Some(&self.row_data[local_idx * dim..(local_idx + 1) * dim])
+    }
+
+    /// Evaluates every assignment in this dispatch packet using `LayerReference::expert_contribution`.
+    pub fn evaluate_partials(&self) -> ExpertPartialsBatch {
+        let mut partials = Vec::with_capacity(self.assignments.len());
+        for assign in &self.assignments {
+            if let Some(h) = self.row_slice(assign.row) {
+                partials.push(ExpertPartial {
+                    row: assign.row,
+                    expert: assign.expert,
+                    data: LayerReference::expert_contribution(
+                        h,
+                        self.layer,
+                        assign.expert,
+                        assign.gating_weight,
+                    ),
+                });
+            }
+        }
+        ExpertPartialsBatch {
+            layer: self.layer,
+            rows: self.total_rows,
+            dim: self.dim,
+            partials,
+        }
+    }
+
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        let inc = self.included_rows.len();
+        let dim = self.dim as usize;
+        let mut out = Vec::new();
+        out.extend_from_slice(&HOLDER_DISPATCH_MAGIC);
+        out.extend_from_slice(&[self.precision.tag(), 0, 0, 0]);
+        out.extend_from_slice(&self.layer.to_le_bytes());
+        out.extend_from_slice(&self.total_rows.to_le_bytes());
+        out.extend_from_slice(&self.dim.to_le_bytes());
+        out.extend_from_slice(&(inc as u32).to_le_bytes());
+        out.extend_from_slice(&(self.assignments.len() as u32).to_le_bytes());
+
+        for &r in &self.included_rows {
+            out.extend_from_slice(&r.to_le_bytes());
+        }
+        for a in &self.assignments {
+            out.extend_from_slice(&a.row.to_le_bytes());
+            out.extend_from_slice(&a.expert.to_le_bytes());
+            out.extend_from_slice(&a.gating_weight.to_le_bytes());
+        }
+
+        match self.precision {
+            DispatchPrecision::ExactF32 => {
+                for &v in &self.row_data {
+                    out.extend_from_slice(&v.to_le_bytes());
+                }
+            }
+            DispatchPrecision::LowLatencyFp8F32Scale => {
+                let q = PerTokenBlockQuantized::quantize(
+                    &self.row_data,
+                    inc,
+                    dim,
+                    DEFAULT_SUBBLOCK_SIZE,
+                    ScaleFormat::ExactF32,
+                );
+                for &s in &q.scales {
+                    out.extend_from_slice(&s.to_le_bytes());
+                }
+                for &c in &q.codes {
+                    out.push(c as u8);
+                }
+            }
+            DispatchPrecision::LowLatencyFp8Ue8m0 => {
+                let q = PerTokenBlockQuantized::quantize(
+                    &self.row_data,
+                    inc,
+                    dim,
+                    DEFAULT_SUBBLOCK_SIZE,
+                    ScaleFormat::Ue8m0PowerOfTwo,
+                );
+                for &s in &q.scales {
+                    out.push(ue8m0_biased_byte(s));
+                }
+                for &c in &q.codes {
+                    out.push(c as u8);
+                }
+            }
+        }
+        out
+    }
+
+    pub fn from_le_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < 28 || bytes[0..4] != HOLDER_DISPATCH_MAGIC {
+            return Err("HolderDispatchBatch: missing DPDS header".to_string());
+        }
+        let u32_at = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let precision = DispatchPrecision::from_tag(bytes[4])?;
+        let layer = u32_at(8);
+        let total_rows = u32_at(12);
+        let dim = u32_at(16) as usize;
+        let inc = u32_at(20) as usize;
+        let assign_count = u32_at(24) as usize;
+
+        let meta_end = 28 + inc * 4 + assign_count * 12;
+        if bytes.len() < meta_end {
+            return Err("HolderDispatchBatch: truncated metadata".to_string());
+        }
+        let mut at = 28usize;
+        let mut included_rows = Vec::with_capacity(inc);
+        for _ in 0..inc {
+            included_rows.push(u32_at(at));
+            at += 4;
+        }
+        let mut assignments = Vec::with_capacity(assign_count);
+        for _ in 0..assign_count {
+            let row = u32_at(at);
+            let expert = u32_at(at + 4);
+            let gating_weight =
+                f32::from_le_bytes([bytes[at + 8], bytes[at + 9], bytes[at + 10], bytes[at + 11]]);
+            assignments.push(HolderExpertAssignment {
+                row,
+                expert,
+                gating_weight,
+            });
+            at += 12;
+        }
+
+        let body = &bytes[at..];
+        let row_data = match precision {
+            DispatchPrecision::ExactF32 => {
+                let expected = inc * dim * 4;
+                if body.len() != expected {
+                    return Err(format!(
+                        "HolderDispatchBatch: expected {expected} f32 bytes, got {}",
+                        body.len()
+                    ));
+                }
+                body.chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect()
+            }
+            DispatchPrecision::LowLatencyFp8F32Scale => {
+                let k_blocks = dim.div_ceil(DEFAULT_SUBBLOCK_SIZE);
+                let scale_bytes = inc * k_blocks * 4;
+                let code_bytes = inc * dim;
+                if body.len() != scale_bytes + code_bytes {
+                    return Err("HolderDispatchBatch: truncated FP8+f32 payload".to_string());
+                }
+                let scales: Vec<f32> = body[..scale_bytes]
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                let codes: Vec<i8> = body[scale_bytes..].iter().map(|&b| b as i8).collect();
+                PerTokenBlockQuantized {
+                    rows: inc,
+                    k: dim,
+                    block_size: DEFAULT_SUBBLOCK_SIZE,
+                    format: ScaleFormat::ExactF32,
+                    codes,
+                    scales,
+                }
+                .dequantize()
+            }
+            DispatchPrecision::LowLatencyFp8Ue8m0 => {
+                let k_blocks = dim.div_ceil(DEFAULT_SUBBLOCK_SIZE);
+                let scale_bytes = inc * k_blocks;
+                let code_bytes = inc * dim;
+                if body.len() != scale_bytes + code_bytes {
+                    return Err("HolderDispatchBatch: truncated FP8+UE8M0 payload".to_string());
+                }
+                let scales: Vec<f32> = body[..scale_bytes]
+                    .iter()
+                    .map(|&b| ue8m0_to_f32(b))
+                    .collect();
+                let codes: Vec<i8> = body[scale_bytes..].iter().map(|&b| b as i8).collect();
+                PerTokenBlockQuantized {
+                    rows: inc,
+                    k: dim,
+                    block_size: DEFAULT_SUBBLOCK_SIZE,
+                    format: ScaleFormat::Ue8m0PowerOfTwo,
+                    codes,
+                    scales,
+                }
+                .dequantize()
+            }
+        };
+
+        Ok(Self {
+            layer,
+            total_rows,
+            dim: dim as u32,
+            precision,
+            included_rows,
+            row_data,
+            assignments,
+        })
+    }
+}
+
+pub const LOW_LATENCY_COMBINE_MAGIC: [u8; 4] = *b"DPCM";
+
+/// Low-latency quantized combine envelope (`"DPCM"`), after DeepEP's `low_latency_combine`.
+///
+/// Packs an [`ExpertPartialsBatch`] using fine-grained `1 x DEFAULT_SUBBLOCK_SIZE` quantization
+/// (`ScaleFormat::Ue8m0PowerOfTwo` or `ScaleFormat::ExactF32`), reducing return wire bytes by
+/// nearly 4x compared to `"PART"` `f32` partials.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LowLatencyCombineBatch {
+    pub layer: u32,
+    pub rows: u32,
+    pub dim: u32,
+    pub format: ScaleFormat,
+    /// `(row, expert)` pairs for each partial row in `quantized`.
+    pub meta: Vec<(u32, u32)>,
+    pub quantized: PerTokenBlockQuantized,
+}
+
+impl LowLatencyCombineBatch {
+    pub fn from_partials(batch: &ExpertPartialsBatch, format: ScaleFormat) -> Self {
+        let count = batch.partials.len();
+        let dim = batch.dim as usize;
+        let mut flat = Vec::with_capacity(count * dim);
+        let mut meta = Vec::with_capacity(count);
+        for p in &batch.partials {
+            meta.push((p.row, p.expert));
+            flat.extend_from_slice(&p.data);
+        }
+        let quantized =
+            PerTokenBlockQuantized::quantize(&flat, count, dim, DEFAULT_SUBBLOCK_SIZE, format);
+        Self {
+            layer: batch.layer,
+            rows: batch.rows,
+            dim: batch.dim,
+            format,
+            meta,
+            quantized,
+        }
+    }
+
+    pub fn into_partials_batch(&self) -> ExpertPartialsBatch {
+        let deq = self.quantized.dequantize();
+        let dim = self.dim as usize;
+        let partials = self
+            .meta
+            .iter()
+            .enumerate()
+            .map(|(idx, &(row, expert))| ExpertPartial {
+                row,
+                expert,
+                data: deq[idx * dim..(idx + 1) * dim].to_vec(),
+            })
+            .collect();
+        ExpertPartialsBatch {
+            layer: self.layer,
+            rows: self.rows,
+            dim: self.dim,
+            partials,
+        }
+    }
+
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        let count = self.meta.len();
+        let fmt_tag = match self.format {
+            ScaleFormat::ExactF32 => 0u8,
+            ScaleFormat::Ue8m0PowerOfTwo => 1u8,
+        };
+        let mut out = Vec::new();
+        out.extend_from_slice(&LOW_LATENCY_COMBINE_MAGIC);
+        out.extend_from_slice(&[fmt_tag, 0, 0, 0]);
+        out.extend_from_slice(&self.layer.to_le_bytes());
+        out.extend_from_slice(&self.rows.to_le_bytes());
+        out.extend_from_slice(&self.dim.to_le_bytes());
+        out.extend_from_slice(&(count as u32).to_le_bytes());
+        for &(row, expert) in &self.meta {
+            out.extend_from_slice(&row.to_le_bytes());
+            out.extend_from_slice(&expert.to_le_bytes());
+        }
+        match self.format {
+            ScaleFormat::ExactF32 => {
+                for &s in &self.quantized.scales {
+                    out.extend_from_slice(&s.to_le_bytes());
+                }
+            }
+            ScaleFormat::Ue8m0PowerOfTwo => {
+                for &s in &self.quantized.scales {
+                    out.push(ue8m0_biased_byte(s));
+                }
+            }
+        }
+        for &c in &self.quantized.codes {
+            out.push(c as u8);
+        }
+        out
+    }
+
+    pub fn from_le_bytes(bytes: &[u8]) -> Result<Self, String> {
+        if bytes.len() < 24 || bytes[0..4] != LOW_LATENCY_COMBINE_MAGIC {
+            return Err("LowLatencyCombineBatch: missing DPCM header".to_string());
+        }
+        let u32_at = |at: usize| {
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let format = match bytes[4] {
+            0 => ScaleFormat::ExactF32,
+            1 => ScaleFormat::Ue8m0PowerOfTwo,
+            other => return Err(format!("LowLatencyCombineBatch: unknown format {other}")),
+        };
+        let layer = u32_at(8);
+        let rows = u32_at(12);
+        let dim = u32_at(16) as usize;
+        let count = u32_at(20) as usize;
+        let meta_end = 24 + count * 8;
+        if bytes.len() < meta_end {
+            return Err("LowLatencyCombineBatch: truncated meta".to_string());
+        }
+        let mut meta = Vec::with_capacity(count);
+        for i in 0..count {
+            let at = 24 + i * 8;
+            meta.push((u32_at(at), u32_at(at + 4)));
+        }
+        let body = &bytes[meta_end..];
+        let k_blocks = dim.div_ceil(DEFAULT_SUBBLOCK_SIZE);
+        let scale_bytes = match format {
+            ScaleFormat::ExactF32 => count * k_blocks * 4,
+            ScaleFormat::Ue8m0PowerOfTwo => count * k_blocks,
+        };
+        let code_bytes = count * dim;
+        if body.len() != scale_bytes + code_bytes {
+            return Err("LowLatencyCombineBatch: truncated payload".to_string());
+        }
+        let scales: Vec<f32> = match format {
+            ScaleFormat::ExactF32 => body[..scale_bytes]
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect(),
+            ScaleFormat::Ue8m0PowerOfTwo => body[..scale_bytes]
+                .iter()
+                .map(|&b| ue8m0_to_f32(b))
+                .collect(),
+        };
+        let codes: Vec<i8> = body[scale_bytes..].iter().map(|&b| b as i8).collect();
+        Ok(Self {
+            layer,
+            rows,
+            dim: dim as u32,
+            format,
+            meta,
+            quantized: PerTokenBlockQuantized {
+                rows: count,
+                k: dim,
+                block_size: DEFAULT_SUBBLOCK_SIZE,
+                format,
+                codes,
+                scales,
+            },
+        })
+    }
+}
+
+/// Telemetry from overlapping a background communication/slice task (`RecvHook`) with local
+/// non-dependent compute (e.g., a shared expert or a second micro-batch), after DeepEP's
+/// `return_recv_hook=True`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecvHookOverlapTrace {
+    pub comm_ms: f64,
+    pub local_compute_ms: f64,
+    pub total_wall_ms: f64,
+    pub overlapped_ms: f64,
+    pub exposed_comm_ms: f64,
+    pub zero_sm_occupancy: bool,
+}
+
+/// A background completion hook returned by `spawn_recv_hook`, after DeepEP's `recv_hook`.
+pub struct RecvHook<T> {
+    handle: std::thread::JoinHandle<(T, f64)>,
+}
+
+impl<T: Send + 'static> RecvHook<T> {
+    /// Spawns background dispatch/combine work onto an independent worker thread (`0 SM`
+    /// occupation on the caller's compute stream) and returns a `RecvHook` to complete it.
+    pub fn spawn(background_comm: impl FnOnce() -> T + Send + 'static) -> Self {
+        let handle = std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let out = background_comm();
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            (out, ms)
+        });
+        Self { handle }
+    }
+
+    /// Completes the background transfer and returns `(result, background_ms)`.
+    pub fn complete(self) -> Result<(T, f64), String> {
+        self.handle
+            .join()
+            .map_err(|_| "RecvHook background worker panicked".to_string())
+    }
+}
+
+/// Runs `background_comm` behind a `RecvHook` while `local_compute` (such as the layer's shared
+/// expert or the other micro-batch's attention/trunk) executes concurrently on the caller thread,
+/// then invokes `hook.complete()`.
+pub fn run_with_recv_hook<T, U>(
+    background_comm: impl FnOnce() -> T + Send + 'static,
+    local_compute: impl FnOnce() -> U,
+) -> Result<(T, U, RecvHookOverlapTrace), String>
+where
+    T: Send + 'static,
+{
+    let wall_t0 = Instant::now();
+    let hook = RecvHook::spawn(background_comm);
+
+    let local_t0 = Instant::now();
+    let local_out = local_compute();
+    let local_compute_ms = local_t0.elapsed().as_secs_f64() * 1000.0;
+
+    let (comm_out, comm_ms) = hook.complete()?;
+    let total_wall_ms = wall_t0.elapsed().as_secs_f64() * 1000.0;
+    let overlapped_ms = comm_ms.min(local_compute_ms);
+    let exposed_comm_ms = (total_wall_ms - local_compute_ms).max(0.0);
+
+    Ok((
+        comm_out,
+        local_out,
+        RecvHookOverlapTrace {
+            comm_ms,
+            local_compute_ms,
+            total_wall_ms,
+            overlapped_ms,
+            exposed_comm_ms,
+            zero_sm_occupancy: true,
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,5 +1149,97 @@ mod tests {
             routing
         );
         assert_eq!(LayerReference::routing_cutoffs(256, 0.9), (127, 196));
+    }
+
+    #[test]
+    fn holder_selective_dispatch_and_low_latency_combine_roundtrip_and_overlap_hook() {
+        use crate::ExpertResidencyTier;
+        use kadmium_core::NodeId;
+        use kadmium_sharding::ExpertRowShare;
+
+        let r0 = hidden();
+        let r1: Vec<f32> = (0..64).map(|i| ((i as f32) * 0.07).cos() * 0.6).collect();
+        let r2: Vec<f32> = (0..64).map(|i| ((i as f32) * 0.13).sin() * 0.5).collect();
+        let trunk = TokenBatchF32::from_rows(&[r0.clone(), r1, r2.clone()]).unwrap();
+        let routing = LayerRouting {
+            layer: 4,
+            rows: vec![
+                vec![
+                    MoERoutedExpertSelection {
+                        expert_id: 1,
+                        gating_weight: 0.6,
+                        residency: ExpertResidencyTier::HotVramOrUnified,
+                    },
+                    MoERoutedExpertSelection {
+                        expert_id: 3,
+                        gating_weight: 0.4,
+                        residency: ExpertResidencyTier::HotVramOrUnified,
+                    },
+                ],
+                vec![MoERoutedExpertSelection {
+                    expert_id: 7,
+                    gating_weight: 1.0,
+                    residency: ExpertResidencyTier::WarmSystemRam,
+                }],
+                vec![MoERoutedExpertSelection {
+                    expert_id: 1,
+                    gating_weight: 0.9,
+                    residency: ExpertResidencyTier::HotVramOrUnified,
+                }],
+            ],
+        };
+
+        // Holder serves experts [1, 3]; row 1 selected only expert 7, so row 1 is omitted!
+        // Row 0 selected both 1 and 3 on this holder -> deduplicated to a single row 0 vector!
+        let slice = ExpertSliceParams {
+            model_id: "m".into(),
+            epoch: 1,
+            session_id: "s".into(),
+            layer: 4,
+            rows: 3,
+            holder: NodeId("node-a".into()),
+            resident_experts: vec![1, 3],
+            row_shares: Vec::<ExpertRowShare>::new(),
+        };
+
+        for precision in [
+            DispatchPrecision::ExactF32,
+            DispatchPrecision::LowLatencyFp8F32Scale,
+            DispatchPrecision::LowLatencyFp8Ue8m0,
+        ] {
+            let pkt = HolderDispatchBatch::for_slice(&trunk, &routing, &slice, precision);
+            assert_eq!(pkt.included_rows, vec![0, 2]);
+            assert_eq!(pkt.assignments.len(), 3);
+            assert!(pkt.row_slice(1).is_none());
+            let wire = pkt.to_le_bytes();
+            let decoded = HolderDispatchBatch::from_le_bytes(&wire).unwrap();
+            assert_eq!(decoded, pkt);
+
+            if precision == DispatchPrecision::ExactF32 {
+                assert_eq!(decoded.row_slice(0).unwrap(), r0.as_slice());
+                assert_eq!(decoded.row_slice(2).unwrap(), r2.as_slice());
+                let partials = decoded.evaluate_partials();
+                assert_eq!(partials.partials.len(), 3);
+
+                // Low-latency combine codec round-trip on the partials:
+                for fmt in [ScaleFormat::ExactF32, ScaleFormat::Ue8m0PowerOfTwo] {
+                    let ll_combine = LowLatencyCombineBatch::from_partials(&partials, fmt);
+                    let ll_bytes = ll_combine.to_le_bytes();
+                    assert!(ll_bytes.len() < partials.to_le_bytes().len());
+                    let ll_decoded = LowLatencyCombineBatch::from_le_bytes(&ll_bytes).unwrap();
+                    assert_eq!(ll_decoded, ll_combine);
+                    let recovered = ll_decoded.into_partials_batch();
+                    assert_eq!(recovered.partials.len(), 3);
+                }
+            }
+        }
+
+        // Zero-SM recv_hook overlap: background dispatch/combine runs concurrently with local work.
+        let (comm_val, local_val, trace) =
+            run_with_recv_hook(|| 42u32, || LayerReference::combine(&r0, &[])).unwrap();
+        assert_eq!(comm_val, 42);
+        assert_eq!(local_val.len(), 64);
+        assert!(trace.zero_sm_occupancy);
+        assert!(trace.total_wall_ms >= 0.0);
     }
 }

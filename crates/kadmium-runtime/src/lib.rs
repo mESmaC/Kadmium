@@ -10,6 +10,7 @@ use kadmium_sharding::ClusterShardPlan;
 use serde::{Deserialize, Serialize};
 
 pub mod decode_loop;
+pub mod deep_gemm;
 pub mod diloco;
 pub mod exl3_qtip;
 pub mod fraud_proof;
@@ -30,6 +31,7 @@ pub use fraud_proof::*;
 pub use inference_compute::*;
 pub use kernels::*;
 pub use decode_loop::*;
+pub use deep_gemm::*;
 pub use grid_executor::*;
 pub use kv_replay::*;
 pub use speculative::*;

@@ -526,6 +526,7 @@ impl ShardPlanner {
 pub mod arbitrage;
 pub mod calibration;
 pub mod cloud_shield_watcher;
+pub mod deep_ep;
 pub mod expert_balance;
 pub mod grid_plan;
 pub mod hierarchical_pool;
@@ -542,6 +543,7 @@ pub use calibration::*;
 pub use usage::*;
 pub use verification::*;
 pub use cloud_shield_watcher::*;
+pub use deep_ep::*;
 pub use expert_balance::*;
 pub use grid_plan::*;
 pub use hierarchical_pool::*;
