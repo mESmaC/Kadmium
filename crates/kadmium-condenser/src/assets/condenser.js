@@ -22,6 +22,11 @@
     persistence: true,
     contextPanel: 'run',
     contextWide: false,
+    railWidth: 264,
+    contextWidth: 360,
+    compactContextWidth: 360,
+    expandedContextWidth: 680,
+    paneDrag: null,
     workspace: { root: '', name: 'Workspace', separator: '/' },
     files: {
       path: '', parent: null, selected: null, loaded: false, request: 0, previewRequest: 0,
@@ -32,7 +37,8 @@
     browser: { current: '', history: [], index: -1 },
     activity: null,
     reveal: null,
-    lastElapsed: 0
+    lastElapsed: 0,
+    pendingFiles: []
   };
 
   const $ = (id) => document.getElementById(id);
@@ -227,22 +233,124 @@
     document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === 'view-' + name));
     document.querySelectorAll('.rail-nav').forEach((button) => button.classList.toggle('active', button.dataset.view === name));
     document.body.classList.remove('sessions-open');
+    applyPaneWidths();
     if (name === 'capabilities') loadPlugins();
   }
 
   function saveDockLayout() {
     try {
-      localStorage.setItem('condenser.workspace.dock.v1', JSON.stringify({ panel: state.contextPanel, wide: state.contextWide }));
+      localStorage.setItem('condenser.workspace.dock.v1', JSON.stringify({
+        panel: state.contextPanel,
+        wide: state.contextWide,
+        railWidth: state.railWidth,
+        contextWidth: state.contextWidth,
+        compactContextWidth: state.compactContextWidth,
+        expandedContextWidth: state.expandedContextWidth
+      }));
     } catch (_) { /* The dock remains usable without persistence. */ }
+  }
+
+  function clampWidth(value, min, max) {
+    return Math.min(max, Math.max(min, Number(value) || min));
+  }
+
+  function savedWidth(value, fallback, min, max) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? clampWidth(numeric, min, max) : fallback;
+  }
+
+  function overlayPanes() {
+    return window.matchMedia('(max-width: 980px)').matches;
+  }
+
+  function paneLimits(side) {
+    const shell = document.querySelector('.app-shell');
+    const total = shell ? shell.clientWidth : window.innerWidth;
+    const overlay = overlayPanes();
+    const leftVisible = !overlay && !document.body.classList.contains('sidebar-closed');
+    const rightVisible = !overlay && !document.body.classList.contains('context-closed') && document.body.dataset.view !== 'capabilities';
+    const opposite = side === 'rail' ? (rightVisible ? state.contextWidth : 0) : (leftVisible ? state.railWidth : 0);
+    const minimum = side === 'rail' ? 200 : 300;
+    const preference = side === 'rail' ? 420 : Math.min(760, total * 0.7);
+    return { min: minimum, max: Math.max(minimum, Math.min(preference, total - opposite - 400)) };
+  }
+
+  function applyPaneWidths() {
+    if (overlayPanes()) return;
+    const railLimits = paneLimits('rail');
+    const contextLimits = paneLimits('context');
+    state.railWidth = clampWidth(state.railWidth, railLimits.min, railLimits.max);
+    state.contextWidth = clampWidth(state.contextWidth, contextLimits.min, contextLimits.max);
+    document.body.style.setProperty('--rail-width', Math.round(state.railWidth) + 'px');
+    document.body.style.setProperty('--inspector-width', Math.round(state.contextWidth) + 'px');
+    $('resize-sessions').setAttribute('aria-valuenow', Math.round(state.railWidth));
+    $('resize-sessions').setAttribute('aria-valuemax', Math.round(railLimits.max));
+    $('resize-context').setAttribute('aria-valuenow', Math.round(state.contextWidth));
+    $('resize-context').setAttribute('aria-valuemax', Math.round(contextLimits.max));
+  }
+
+  function finishPaneDrag() {
+    if (!state.paneDrag) return;
+    state.paneDrag = null;
+    document.body.classList.remove('pane-dragging');
+    applyPaneWidths();
+    saveDockLayout();
+  }
+
+  function bindPaneResizer(side, handle) {
+    const key = side === 'rail' ? 'railWidth' : 'contextWidth';
+    const setWidth = (width, persist) => {
+      const limits = paneLimits(side);
+      state[key] = clampWidth(width, limits.min, limits.max);
+      applyPaneWidths();
+      if (persist) saveDockLayout();
+    };
+    handle.addEventListener('pointerdown', (event) => {
+      if (overlayPanes() || event.button !== 0) return;
+      event.preventDefault();
+      state.paneDrag = { side, pointerId: event.pointerId, startX: event.clientX, startWidth: state[key], handle };
+      document.body.classList.add('pane-dragging');
+      try { handle.setPointerCapture(event.pointerId); } catch (_) { /* Synthetic events may not have an active pointer. */ }
+    });
+    handle.addEventListener('pointermove', (event) => {
+      const drag = state.paneDrag;
+      if (!drag || drag.pointerId !== event.pointerId || drag.handle !== handle) return;
+      const delta = event.clientX - drag.startX;
+      setWidth(drag.startWidth + (side === 'rail' ? delta : -delta), false);
+    });
+    handle.addEventListener('pointerup', finishPaneDrag);
+    handle.addEventListener('pointercancel', finishPaneDrag);
+    handle.addEventListener('lostpointercapture', finishPaneDrag);
+    handle.addEventListener('dblclick', () => setWidth(side === 'rail' ? 264 : (state.contextWide ? 680 : 360), true));
+    handle.addEventListener('keydown', (event) => {
+      if (overlayPanes()) return;
+      const limits = paneLimits(side);
+      let next = null;
+      if (event.key === 'Home') next = limits.min;
+      if (event.key === 'End') next = limits.max;
+      if (event.key === 'ArrowLeft') next = state[key] + (side === 'rail' ? -16 : 16);
+      if (event.key === 'ArrowRight') next = state[key] + (side === 'rail' ? 16 : -16);
+      if (next !== null) {
+        event.preventDefault();
+        setWidth(next, true);
+      }
+    });
   }
 
   function loadDockLayout() {
     try {
       const saved = JSON.parse(localStorage.getItem('condenser.workspace.dock.v1') || 'null');
       if (saved && ['run', 'files', 'terminal', 'browser'].includes(saved.panel)) state.contextPanel = saved.panel;
-      if (saved) state.contextWide = Boolean(saved.wide);
+      if (saved) {
+        state.contextWide = Boolean(saved.wide);
+        state.railWidth = savedWidth(saved.railWidth, 264, 200, 420);
+        state.compactContextWidth = savedWidth(saved.compactContextWidth, state.contextWide ? 360 : savedWidth(saved.contextWidth, 360, 300, 760), 300, 760);
+        state.expandedContextWidth = savedWidth(saved.expandedContextWidth, state.contextWide ? savedWidth(saved.contextWidth, 680, 300, 760) : 680, 300, 760);
+        state.contextWidth = savedWidth(saved.contextWidth, state.contextWide ? state.expandedContextWidth : state.compactContextWidth, 300, 760);
+      }
     } catch (_) { /* Ignore invalid or unavailable layout storage. */ }
     document.body.classList.toggle('context-wide', state.contextWide);
+    applyPaneWidths();
   }
 
   function setContextPanel(name, reveal) {
@@ -916,9 +1024,15 @@
     $('composer-context').classList.toggle('hidden', !session.config.system_prompt.trim());
     $('running-indicator').classList.toggle('hidden', !working);
     $('running-detail').textContent = descriptor(session.config.kind).label + ' · up to ' + session.config.max_steps + ' steps · tools ' + (session.config.enable_tools ? 'enabled' : 'disabled');
-    $('send').disabled = state.busy;
+    const mcl4 = session.config.sampling.mcl4_coe || {};
+    $('thinking-control').classList.toggle('hidden', session.config.kind !== 'mcl4-coe');
+    $('thinking-level').value = mcl4.reasoning_effort || 'high';
+    $('thinking-level').disabled = state.busy;
+    $('import-files').disabled = state.busy;
+    $('send').disabled = state.busy || Boolean(state.importing);
     $('send').querySelector('span').textContent = state.busy ? 'Working…' : 'Run task';
     $('provider-button').disabled = state.busy;
+    renderAttachments();
     $('composer-status').classList.toggle('error', status === 'error');
     $('composer-status').textContent = working ? (revealing ? 'Receiving response…' : 'The agent loop is running.') : status === 'error' ? session.lastError : status === 'complete' ? 'Run complete' + (session.lastElapsed ? ' · ' + formatElapsed(session.lastElapsed) : '') + '.' : '';
     updateActivity();
@@ -1199,6 +1313,93 @@
     renderInspector(session);
   }
 
+  function setAttachmentStatus(text, isError) {
+    $('attachment-status').textContent = text || '';
+    $('attachment-status').classList.toggle('error', Boolean(isError));
+    $('attachment-status').classList.toggle('hidden', !text);
+  }
+
+  function renderAttachments() {
+    const container = $('composer-attachments');
+    container.replaceChildren();
+    container.classList.toggle('hidden', !state.pendingFiles.length);
+    state.pendingFiles.forEach((file, index) => {
+      const chip = element('span', 'attachment-chip');
+      chip.title = file.name;
+      chip.append(element('span', 'attachment-chip-name', file.name));
+      chip.append(element('span', 'attachment-chip-size', formatBytes(file.size)));
+      const remove = element('button', 'attachment-remove', '×');
+      remove.type = 'button';
+      remove.disabled = state.busy;
+      remove.setAttribute('aria-label', 'Remove ' + file.name);
+      remove.addEventListener('click', () => {
+        state.pendingFiles.splice(index, 1);
+        setAttachmentStatus('');
+        renderAttachments();
+      });
+      chip.append(remove);
+      container.append(chip);
+    });
+  }
+
+  function supportedTextImport(file) {
+    const name = file.name.toLowerCase();
+    if (/^\.env(?:\..*)?$/.test(name) && !/^\.env\.(example|sample|template)$/.test(name)) return false;
+    if (['dockerfile', 'makefile', '.gitignore'].includes(name)) return true;
+    return /\.(txt|md|markdown|json|jsonc|yaml|yml|toml|xml|csv|tsv|rs|py|js|jsx|ts|tsx|css|html|htm|sql|sh|bash|ps1|bat|cmd|c|h|cpp|hpp|cc|cs|java|go|rb|php|swift|kt|kts|scala|lua|r|m|mm|log|ini|cfg|conf)$/.test(name);
+  }
+
+  async function importTextFiles(fileList) {
+    const candidates = Array.from(fileList || []);
+    if (!candidates.length || state.busy) return;
+    state.importing = true;
+    $('send').disabled = true;
+    const errors = [];
+    for (const file of candidates) {
+      if (state.pendingFiles.length >= 6) {
+        errors.push('A maximum of 6 files can be attached.');
+        break;
+      }
+      if (!supportedTextImport(file)) {
+        errors.push(file.name + ': unsupported or sensitive file type.');
+        continue;
+      }
+      if (file.size > 256 * 1024) {
+        errors.push(file.name + ': exceeds the 256 KiB per-file limit.');
+        continue;
+      }
+      const total = state.pendingFiles.reduce((sum, item) => sum + item.size, 0) + file.size;
+      if (total > 512 * 1024) {
+        errors.push(file.name + ': exceeds the 512 KiB total attachment limit.');
+        continue;
+      }
+      if (state.pendingFiles.some((item) => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) {
+        errors.push(file.name + ': already attached.');
+        continue;
+      }
+      try {
+        const buffer = await file.arrayBuffer();
+        const content = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+        if (content.includes('\0')) throw new Error('binary content');
+        state.pendingFiles.push({ name: file.name, size: file.size, lastModified: file.lastModified, content });
+        renderAttachments();
+      } catch (_) {
+        errors.push(file.name + ': must be valid UTF-8 text without binary content.');
+      }
+    }
+    state.importing = false;
+    setAttachmentStatus(errors.join(' '), Boolean(errors.length));
+    renderTask();
+    $('file-import-input').value = '';
+  }
+
+  function messageWithAttachments(prompt, attachments) {
+    const text = prompt || 'Please review the imported text and help with it.';
+    return text + attachments.map((file, index) =>
+      '\n\n[Begin imported text file ' + (index + 1) + ']\nName: ' + JSON.stringify(file.name) + '\nContent:\n' + file.content + '\n[End imported text file ' + (index + 1) + ']'
+    ).join('');
+  }
+
   function formatElapsed(milliseconds) {
     const seconds = Math.max(0, Math.floor(milliseconds / 1000));
     const hours = Math.floor(seconds / 3600);
@@ -1283,10 +1484,11 @@
   }
 
   async function send() {
-    if (state.busy) return;
+    if (state.busy || state.importing) return;
     const session = currentSession();
     const prompt = $('prompt').value.trim();
-    if (!session || !prompt) return;
+    const attachments = state.pendingFiles.slice();
+    if (!session || (!prompt && !attachments.length)) return;
     if (!session.config.model.trim()) {
       session.status = 'error';
       session.lastError = 'Choose a model in provider settings before running this task.';
@@ -1295,8 +1497,10 @@
       return;
     }
     const sessionId = session.id;
+    const titleSource = prompt || attachments[0].name;
+    const outboundPrompt = messageWithAttachments(prompt, attachments);
     const messages = session.messages.filter((message) => message.role !== 'system');
-    messages.push({ role: 'user', content: prompt, tool_calls: [], is_error: false });
+    messages.push({ role: 'user', content: outboundPrompt, tool_calls: [], is_error: false });
     if (session.config.system_prompt.trim()) {
       messages.unshift({ role: 'system', content: session.config.system_prompt.trim(), tool_calls: [], is_error: false });
     }
@@ -1334,13 +1538,18 @@
         target.status = terminalError ? 'error' : 'complete';
         target.lastError = terminalError;
         target.updatedAt = Date.now();
-        if (target.title === 'Untitled task') target.title = prompt.length > 72 ? prompt.slice(0, 69) + '…' : prompt;
+        if (target.title === 'Untitled task') target.title = titleSource.length > 72 ? titleSource.slice(0, 69) + '…' : titleSource;
         if (!terminalError) {
           const reveal = startTokenReveal(target);
           if (reveal) await reveal;
         }
       }
-      if (state.currentId === sessionId) $('prompt').value = '';
+      if (state.currentId === sessionId) {
+        $('prompt').value = '';
+        state.pendingFiles = [];
+        setAttachmentStatus('');
+        renderAttachments();
+      }
     } catch (error) {
       const target = state.sessions.find((item) => item.id === sessionId);
       if (target) {
@@ -1393,6 +1602,16 @@
     $('prompt').addEventListener('keydown', (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') send();
     });
+    $('thinking-level').addEventListener('change', () => {
+      const session = currentSession();
+      if (!session || session.config.kind !== 'mcl4-coe') return;
+      session.config.sampling.mcl4_coe = Object.assign({}, session.config.sampling.mcl4_coe || {}, { reasoning_effort: $('thinking-level').value });
+      if ($('mcl4-effort')) $('mcl4-effort').value = $('thinking-level').value;
+      session.updatedAt = Date.now();
+      saveSessions();
+    });
+    $('import-files').addEventListener('click', () => $('file-import-input').click());
+    $('file-import-input').addEventListener('change', () => importTextFiles($('file-import-input').files));
     $('enable-tools').addEventListener('change', () => {
       const session = currentSession();
       if (!session) return;
@@ -1450,11 +1669,13 @@
         document.body.classList.remove('sessions-open');
       }
     });
-    $('toggle-context').addEventListener('click', () => document.body.classList.toggle('context-closed'));
-    $('close-context').addEventListener('click', () => document.body.classList.add('context-closed'));
-    $('toggle-sidebar').addEventListener('click', () => document.body.classList.toggle('sidebar-closed'));
+    $('toggle-context').addEventListener('click', () => { document.body.classList.toggle('context-closed'); applyPaneWidths(); });
+    $('close-context').addEventListener('click', () => { document.body.classList.add('context-closed'); applyPaneWidths(); });
+    $('toggle-sidebar').addEventListener('click', () => { document.body.classList.toggle('sidebar-closed'); applyPaneWidths(); });
     $('toggle-sessions').addEventListener('click', () => document.body.classList.toggle('sessions-open'));
     $('session-backdrop').addEventListener('click', () => document.body.classList.remove('sessions-open'));
+    bindPaneResizer('rail', $('resize-sessions'));
+    bindPaneResizer('context', $('resize-context'));
 
     const contextTabs = Array.from(document.querySelectorAll('[data-context-tab]'));
     contextTabs.forEach((button, index) => {
@@ -1473,9 +1694,19 @@
       });
     });
     $('toggle-context-width').addEventListener('click', () => {
-      state.contextWide = !state.contextWide;
+      if (state.contextWide) {
+        state.expandedContextWidth = state.contextWidth;
+        state.contextWide = false;
+        state.contextWidth = state.compactContextWidth;
+      } else {
+        state.compactContextWidth = state.contextWidth;
+        state.contextWide = true;
+        state.contextWidth = state.expandedContextWidth;
+      }
       document.body.classList.toggle('context-wide', state.contextWide);
       $('toggle-context-width').title = state.contextWide ? 'Collapse dock width' : 'Expand dock';
+      $('toggle-context-width').setAttribute('aria-label', state.contextWide ? 'Collapse workspace dock width' : 'Expand workspace dock');
+      applyPaneWidths();
       saveDockLayout();
     });
     $('files-up').addEventListener('click', async () => {
@@ -1574,6 +1805,13 @@
   async function init() {
     loadDockLayout();
     bindEvents();
+    const paneObserver = new ResizeObserver(() => {
+      if (overlayPanes()) finishPaneDrag();
+      else applyPaneWidths();
+    });
+    paneObserver.observe(document.querySelector('.app-shell'));
+    $('toggle-context-width').title = state.contextWide ? 'Collapse dock width' : 'Expand dock';
+    $('toggle-context-width').setAttribute('aria-label', state.contextWide ? 'Collapse workspace dock width' : 'Expand workspace dock');
     setContextPanel(state.contextPanel, false);
     updateBrowserHistory();
     if (window.matchMedia('(max-width: 980px)').matches) document.body.classList.add('context-closed');

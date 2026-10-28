@@ -52,6 +52,7 @@
       <p class="caption">Private by default. Tasks stay in this browser profile and API keys remain memory-only.</p>
       <p class="caption muted">Kadmium Power Plant · plugin protocol v1</p>
     </div>
+    <div id="resize-sessions" class="pane-resizer" role="separator" aria-label="Resize task sidebar" aria-orientation="vertical" aria-controls="session-rail" aria-valuemin="200" aria-valuemax="420" aria-valuenow="264" tabindex="0" title="Drag to resize · Double-click to reset"></div>
   </aside>
   <button id="session-backdrop" class="session-backdrop" aria-label="Close task history"></button>
 
@@ -79,10 +80,15 @@
           <div id="composer-context" class="composer-context hidden">
             <button id="edit-instructions" class="context-chip" title="Edit task instructions">Instructions active</button>
           </div>
+          <div id="composer-attachments" class="composer-attachments hidden"></div>
+          <div id="attachment-status" class="attachment-status hidden"></div>
           <textarea id="prompt" rows="3" placeholder="Ask Blades to code, research, or get things done…" aria-label="Task prompt"></textarea>
           <div class="composer-toolbar">
             <div class="composer-controls">
+              <button id="import-files" class="composer-icon-btn" aria-label="Import text or code files" title="Import UTF-8 text/code files"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+              <input id="file-import-input" class="hidden" type="file" multiple aria-label="Choose text files" accept=".txt,.md,.markdown,.json,.jsonc,.yaml,.yml,.toml,.xml,.csv,.tsv,.rs,.py,.js,.jsx,.ts,.tsx,.css,.html,.htm,.sql,.sh,.bash,.ps1,.bat,.cmd,.c,.h,.cpp,.hpp,.cc,.cs,.java,.go,.rb,.php,.swift,.kt,.kts,.scala,.lua,.r,.m,.mm,.log,.ini,.cfg,.conf">
               <span class="composer-mode"><span class="status-dot"></span>Blades</span>
+              <label id="thinking-control" class="thinking-control" title="Thinking level for MCL4-COE reasoning-capable transport"><span>Thinking</span><select id="thinking-level" aria-label="Thinking level"><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
               <label class="tool-permission" title="Allow this provider to invoke discovered plugin tools">
                 <input id="enable-tools" type="checkbox">
                 <span class="toggle-track"><span></span></span>
@@ -222,6 +228,7 @@
         <iframe id="browser-frame" class="browser-frame hidden" title="Condenser web preview" referrerpolicy="no-referrer" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"></iframe>
       </section>
     </div>
+    <div id="resize-context" class="pane-resizer" role="separator" aria-label="Resize workspace dock" aria-orientation="vertical" aria-controls="context-rail" aria-valuemin="300" aria-valuemax="760" aria-valuenow="360" tabindex="0" title="Drag to resize · Double-click to reset"></div>
   </aside>
 </div>
 
