@@ -17,6 +17,8 @@ pub struct Message {
     pub role: Role,
     #[serde(default)]
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -25,6 +27,15 @@ pub struct Message {
     pub name: Option<String>,
     #[serde(default)]
     pub is_error: bool,
+    /// Provider-specific response content retained for lossless replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_content: Option<ProviderContent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderContent {
+    Anthropic(Vec<serde_json::Value>),
 }
 
 impl Message {
@@ -44,10 +55,12 @@ impl Message {
         Self {
             role,
             content: content.into(),
+            reasoning: None,
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
             is_error: false,
+            provider_content: None,
         }
     }
 
@@ -55,10 +68,12 @@ impl Message {
         Self {
             role: Role::Tool,
             content: content.into(),
+            reasoning: None,
             tool_calls: Vec::new(),
             tool_call_id: Some(call.id.clone()),
             name: Some(call.name.clone()),
             is_error,
+            provider_content: None,
         }
     }
 }
@@ -126,6 +141,8 @@ pub struct SamplingParams {
     pub seed: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stop: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcl4_coe: Option<crate::dsv41_mcl4::Mcl4CoeKnobs>,
 }
 
 impl SamplingParams {
@@ -195,6 +212,8 @@ pub struct ChatResponse {
     pub finish_reason: Option<String>,
     #[serde(default)]
     pub usage: Usage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +240,14 @@ impl ModelInfo {
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     Kadmium,
+    #[serde(
+        rename = "mcl4-coe",
+        alias = "mcl4_coe",
+        alias = "mcl4",
+        alias = "deepseek-v4.1",
+        alias = "dsv41"
+    )]
+    Mcl4Coe,
     Ollama,
     #[serde(alias = "openai-compatible")]
     OpenAi,
@@ -228,11 +255,18 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
-    pub const ALL: [Self; 4] = [Self::Kadmium, Self::Ollama, Self::OpenAi, Self::Anthropic];
+    pub const ALL: [Self; 5] = [
+        Self::Kadmium,
+        Self::Mcl4Coe,
+        Self::Ollama,
+        Self::OpenAi,
+        Self::Anthropic,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Kadmium => "Kadmium",
+            Self::Mcl4Coe => "MCL4-COE / DeepSeek-V4.1",
             Self::Ollama => "Ollama",
             Self::OpenAi => "OpenAI-compatible",
             Self::Anthropic => "Anthropic",
@@ -242,6 +276,7 @@ impl ProviderKind {
     pub fn default_base_url(self) -> &'static str {
         match self {
             Self::Kadmium => "http://127.0.0.1:7848",
+            Self::Mcl4Coe => "http://127.0.0.1:7861",
             Self::Ollama => "http://127.0.0.1:11434",
             Self::OpenAi => "https://api.openai.com",
             Self::Anthropic => "https://api.anthropic.com",
@@ -251,6 +286,7 @@ impl ProviderKind {
     pub fn default_api_key_env(self) -> &'static str {
         match self {
             Self::Kadmium => "KADMIUM_API_KEY",
+            Self::Mcl4Coe => "MCL4_API_KEY",
             Self::Ollama => "OLLAMA_API_KEY",
             Self::OpenAi => "OPENAI_API_KEY",
             Self::Anthropic => "ANTHROPIC_API_KEY",
@@ -260,6 +296,7 @@ impl ProviderKind {
     pub fn default_model(self) -> &'static str {
         match self {
             Self::Kadmium => "deepseek-v3-671b-moe-q4k",
+            Self::Mcl4Coe => "deepseek-v4.1-flash-1017-nvfp4",
             Self::Ollama => "llama3.2",
             Self::OpenAi | Self::Anthropic => "",
         }
@@ -270,6 +307,7 @@ impl fmt::Display for ProviderKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Kadmium => "kadmium",
+            Self::Mcl4Coe => "mcl4-coe",
             Self::Ollama => "ollama",
             Self::OpenAi => "openai",
             Self::Anthropic => "anthropic",
@@ -283,11 +321,14 @@ impl FromStr for ProviderKind {
     fn from_str(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "kadmium" | "kdm" => Ok(Self::Kadmium),
+            "mcl4-coe" | "mcl4_coe" | "mcl4" | "deepseek-v4.1" | "deepseek-v4" | "dsv41" => {
+                Ok(Self::Mcl4Coe)
+            }
             "ollama" | "local" => Ok(Self::Ollama),
             "openai" | "openai-compatible" | "compatible" => Ok(Self::OpenAi),
             "anthropic" | "claude" => Ok(Self::Anthropic),
             other => Err(CondenserError::Config(format!(
-                "unknown provider `{other}`; expected kadmium, ollama, openai, or anthropic"
+                "unknown provider `{other}`; expected kadmium, mcl4-coe, ollama, openai, or anthropic"
             ))),
         }
     }
@@ -427,8 +468,20 @@ mod tests {
             ProviderKind::Kadmium
         );
         assert_eq!(
+            "mcl4-coe".parse::<ProviderKind>().unwrap(),
+            ProviderKind::Mcl4Coe
+        );
+        assert_eq!(
+            "dsv41".parse::<ProviderKind>().unwrap(),
+            ProviderKind::Mcl4Coe
+        );
+        assert_eq!(
             ProviderKind::Kadmium.default_base_url(),
             "http://127.0.0.1:7848"
+        );
+        assert_eq!(
+            ProviderKind::Mcl4Coe.default_base_url(),
+            "http://127.0.0.1:7861"
         );
         assert_eq!(
             ProviderKind::Ollama.default_base_url(),

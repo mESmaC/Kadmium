@@ -49,6 +49,7 @@ fn start_embedded(options: &UiOptions) -> Result<EmbeddedServer> {
     let server_options = ServerOptions {
         port: options.port.unwrap_or(0),
         plugin_roots: options.plugin_roots.clone(),
+        ..ServerOptions::default()
     };
     let (ready_tx, ready_rx) = channel();
     let (stopped_tx, stopped_rx) = channel();

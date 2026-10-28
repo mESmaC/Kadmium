@@ -1,4 +1,5 @@
 use super::{InferenceProvider, decode_json, endpoint};
+use crate::dsv41_mcl4::segment_reasoning_and_answer;
 use crate::types::{
     ChatRequest, ChatResponse, Message, ModelInfo, ProviderConfig, ProviderKind, Role, ToolCall,
     Usage,
@@ -143,32 +144,36 @@ fn parse_chat(value: Value, fallback_model: &str) -> Result<ChatResponse> {
             "response has no message object",
         ));
     }
-    let tool_calls = message["tool_calls"]
-        .as_array()
-        .map(|calls| {
-            calls
-                .iter()
-                .enumerate()
-                .map(|(index, call)| {
-                    let function = &call["function"];
-                    let arguments_json = match &function["arguments"] {
-                        Value::String(raw) => raw.clone(),
-                        Value::Null => "{}".into(),
-                        other => other.to_string(),
-                    };
-                    ToolCall {
-                        id: call["id"]
-                            .as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| super::synthetic_tool_call_id(index)),
-                        name: function["name"].as_str().unwrap_or_default().to_string(),
-                        arguments_json,
-                    }
-                })
-                .filter(|call| !call.name.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let raw_content = message["content"].as_str().unwrap_or_default();
+    let explicit_thinking = message["thinking"]
+        .as_str()
+        .or_else(|| message["reasoning_content"].as_str());
+    let segmented = segment_reasoning_and_answer(raw_content, explicit_thinking, None);
+
+    let mut tool_calls = segmented.dsml_tool_calls;
+    if let Some(calls) = message["tool_calls"].as_array() {
+        for (index, call) in calls.iter().enumerate() {
+            let function = &call["function"];
+            let name = function["name"].as_str().unwrap_or_default().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let arguments_json = match &function["arguments"] {
+                Value::String(raw) => raw.clone(),
+                Value::Null => "{}".into(),
+                other => other.to_string(),
+            };
+            tool_calls.push(ToolCall {
+                id: call["id"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| super::synthetic_tool_call_id(index)),
+                name,
+                arguments_json,
+            });
+        }
+    }
+
     let input_tokens = value["prompt_eval_count"].as_u64().unwrap_or(0);
     let output_tokens = value["eval_count"].as_u64().unwrap_or(0);
     Ok(ChatResponse {
@@ -178,11 +183,13 @@ fn parse_chat(value: Value, fallback_model: &str) -> Result<ChatResponse> {
             .to_string(),
         message: Message {
             role: Role::Assistant,
-            content: message["content"].as_str().unwrap_or_default().to_string(),
+            content: segmented.answer,
+            reasoning: segmented.thought,
             tool_calls,
             tool_call_id: None,
             name: None,
             is_error: false,
+            provider_content: None,
         },
         finish_reason: value["done_reason"].as_str().map(str::to_string),
         usage: Usage {
@@ -190,6 +197,7 @@ fn parse_chat(value: Value, fallback_model: &str) -> Result<ChatResponse> {
             output_tokens,
             total_tokens: input_tokens + output_tokens,
         },
+        telemetry: None,
     })
 }
 

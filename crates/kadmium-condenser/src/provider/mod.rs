@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 mod anthropic;
+mod mcl4_coe;
 mod ollama;
 mod openai;
 
@@ -56,11 +57,14 @@ impl ProviderFactory {
                     ProviderKind::Kadmium => {
                         "Uses the local coordinator's current reference diagnostics, not model-scale generation."
                     }
+                    ProviderKind::Mcl4Coe => {
+                        "Native DeepSeek-V4.1 (NVFP4 .mcl4c / MLA 128+512 / DSML tools) and MCL4-COE (#U$#->#T$#->#A$# / 9-Operator COE) harness."
+                    }
                     ProviderKind::Ollama => {
                         "Runs models already available from a local or remote Ollama daemon."
                     }
                     ProviderKind::OpenAi => {
-                        "Works with hosted OpenAI-compatible APIs and local servers such as LM Studio or llama.cpp."
+                        "Works with hosted OpenAI-compatible APIs and local servers such as DeepInfer, Strata, FreeToken, Colibri, LM Studio, or llama.cpp."
                     }
                     ProviderKind::Anthropic => {
                         "Uses the Anthropic Messages API with your request-scoped API key."
@@ -74,13 +78,29 @@ impl ProviderFactory {
         config.validate_connection()?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(32)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Duration::from_secs(30))
             .user_agent(concat!("Condenser/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| CondenserError::provider(config.kind.label(), error.to_string()))?;
+        Self::build_with_client(config, client)
+    }
+
+    /// Builds a lightweight provider around a caller-owned connection pool.
+    /// The request timeout remains per request so providers with different
+    /// timeouts can safely share one client.
+    pub fn build_with_client(
+        config: ProviderConfig,
+        client: reqwest::Client,
+    ) -> Result<Arc<dyn InferenceProvider>> {
+        config.validate_connection()?;
         match config.kind {
             ProviderKind::Kadmium | ProviderKind::OpenAi => {
                 Ok(Arc::new(openai::OpenAiProvider::new(config, client)))
             }
+            ProviderKind::Mcl4Coe => Ok(Arc::new(mcl4_coe::Mcl4CoeProvider::new(config, client))),
             ProviderKind::Ollama => Ok(Arc::new(ollama::OllamaProvider::new(config, client))),
             ProviderKind::Anthropic => {
                 Ok(Arc::new(anthropic::AnthropicProvider::new(config, client)))
@@ -106,15 +126,36 @@ pub(crate) fn versioned_endpoint(base: &str, path: &str) -> String {
     }
 }
 
+const MAX_PROVIDER_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
 pub(crate) async fn decode_json<T: DeserializeOwned>(
     kind: ProviderKind,
-    response: reqwest::Response,
+    mut response: reqwest::Response,
 ) -> Result<T> {
     let status = response.status();
-    let bytes = response
-        .bytes()
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_PROVIDER_RESPONSE_BYTES as u64)
+    {
+        return Err(CondenserError::provider(
+            kind.label(),
+            format!("provider response exceeds {MAX_PROVIDER_RESPONSE_BYTES} bytes"),
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|error| CondenserError::provider(kind.label(), error.to_string()))?;
+        .map_err(|error| CondenserError::provider(kind.label(), error.to_string()))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_PROVIDER_RESPONSE_BYTES {
+            return Err(CondenserError::provider(
+                kind.label(),
+                format!("provider response exceeds {MAX_PROVIDER_RESPONSE_BYTES} bytes"),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     if !status.is_success() {
         let body = String::from_utf8_lossy(&bytes);
         let message: String = body.chars().take(4_000).collect();
@@ -154,5 +195,36 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("call-"));
         assert!(second.ends_with("-0"));
+    }
+
+    #[tokio::test]
+    async fn provider_response_declared_over_limit_is_rejected_before_body_read() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (close_tx, close_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MAX_PROVIDER_RESPONSE_BYTES + 1
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            let _ = close_rx.await;
+        });
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap();
+        let error = decode_json::<serde_json::Value>(ProviderKind::OpenAi, response)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds"));
+        let _ = close_tx.send(());
+        server.await.unwrap();
     }
 }

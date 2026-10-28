@@ -3,6 +3,7 @@
 
   const STORAGE_KEY = 'condenser.agent.tasks.v1';
   const FALLBACK_PROVIDERS = {
+    'mcl4-coe': { label: 'MCL4-COE (DeepSeek-V4.1)', base: 'http://127.0.0.1:7861', model: 'dsv41-mcl4-step_10000', keyEnv: 'MCL4_API_KEY', note: 'DeepSeek-V4.1-Flash-1017-NVFP4 (40L, 384+1 MoE, MLA 64Hx512, Engram [1,14], Dual-P4608 + MCL4DS41 step_10000) + 9-operator MCL4-COE engine.' },
     kadmium: { label: 'Kadmium', base: 'http://127.0.0.1:7848', model: 'deepseek-v3-671b-moe-q4k', keyEnv: 'KADMIUM_API_KEY', note: 'Kadmium currently provides reference diagnostics, not model-scale generation.' },
     ollama: { label: 'Ollama', base: 'http://127.0.0.1:11434', model: 'llama3.2', keyEnv: 'OLLAMA_API_KEY', note: 'Use models already available from a local or remote Ollama daemon.' },
     openai: { label: 'OpenAI-compatible', base: 'https://api.openai.com', model: '', keyEnv: 'OPENAI_API_KEY', note: 'Use a hosted OpenAI-compatible API or a local server such as LM Studio or llama.cpp.' },
@@ -61,7 +62,7 @@
   }
 
   function defaultConfig(kind) {
-    const item = descriptor(kind || 'kadmium');
+    const item = descriptor(kind || 'mcl4-coe');
     return {
       kind: item.kind,
       model: item.default_model,
@@ -74,7 +75,19 @@
   }
 
   function normalizeConfig(raw) {
-    const kind = raw && FALLBACK_PROVIDERS[raw.kind] ? raw.kind : 'kadmium';
+    let kind = raw && FALLBACK_PROVIDERS[raw.kind] ? raw.kind : 'mcl4-coe';
+    const isLegacyKadmiumDefault =
+      kind === 'kadmium' &&
+      (!raw.base_url || raw.base_url === 'http://127.0.0.1:7848') &&
+      (!raw.model || raw.model === 'deepseek-v3-671b-moe-q4k');
+    if (isLegacyKadmiumDefault) {
+      kind = 'mcl4-coe';
+      raw = Object.assign({}, raw, {
+        kind: 'mcl4-coe',
+        base_url: 'http://127.0.0.1:7861',
+        model: 'dsv41-mcl4-step_10000'
+      });
+    }
     const base = defaultConfig(kind);
     const config = Object.assign(base, raw || {});
     config.kind = kind;
@@ -146,7 +159,7 @@
       updatedAt: now,
       messages: [],
       runs: [],
-      config: previous ? normalizeConfig(previous.config) : defaultConfig('kadmium'),
+      config: previous ? normalizeConfig(previous.config) : defaultConfig('mcl4-coe'),
       status: 'ready',
       lastError: null
     };
@@ -271,6 +284,14 @@
     const meta = element('div', 'event-meta');
     meta.append(element('span', 'event-author', 'Condenser'));
     main.append(meta);
+    if (message.reasoning && String(message.reasoning).trim()) {
+      const trace = element('details', 'reasoning-trace');
+      trace.append(
+        element('summary', '', 'Reasoning trace (#T$# / <think>)'),
+        element('div', 'reasoning-body', String(message.reasoning).trim())
+      );
+      main.append(trace);
+    }
     const toolCalls = message.tool_calls || [];
     const content = message.content || (toolCalls.length
       ? 'Requested ' + toolCalls.length + (toolCalls.length === 1 ? ' tool call.' : ' tool calls.')
@@ -572,6 +593,10 @@
     $('provider-note').classList.toggle('warn', kind === 'kadmium');
     $('model-options').replaceChildren();
     $('models-status').textContent = '';
+    const dsv41Details = $('dsv41-mcl4-settings');
+    if (dsv41Details) {
+      dsv41Details.open = kind === 'mcl4-coe';
+    }
   }
 
   function openSettings() {
@@ -583,6 +608,12 @@
     $('model').value = session.config.model;
     $('temperature').value = session.config.sampling.temperature === undefined ? '' : session.config.sampling.temperature;
     $('max-tokens').value = session.config.sampling.max_tokens === undefined ? '' : session.config.sampling.max_tokens;
+    const mcl4 = session.config.sampling.mcl4_coe || {};
+    if ($('mcl4-mode')) $('mcl4-mode').value = mcl4.mode || 'uta';
+    if ($('mcl4-effort')) $('mcl4-effort').value = mcl4.reasoning_effort || 'high';
+    if ($('mcl4-top-k')) $('mcl4-top-k').value = mcl4.top_k === undefined || mcl4.top_k === null ? '' : String(mcl4.top_k);
+    if ($('mcl4-recurrence')) $('mcl4-recurrence').value = mcl4.recurrence_steps === undefined ? '' : mcl4.recurrence_steps;
+    if ($('mcl4-tabu')) $('mcl4-tabu').value = mcl4.recurrent_coverage_penalty === undefined ? '' : mcl4.recurrent_coverage_penalty;
     $('settings-layer').classList.remove('hidden');
   }
 
@@ -597,6 +628,20 @@
     config.sampling = {};
     if ($('temperature').value !== '') config.sampling.temperature = Number($('temperature').value);
     if ($('max-tokens').value !== '') config.sampling.max_tokens = Number($('max-tokens').value);
+    if (kind === 'mcl4-coe' || (config.model && config.model.toLowerCase().includes('v4.1'))) {
+      const mcl4 = {
+        mode: $('mcl4-mode') ? $('mcl4-mode').value : 'uta',
+        reasoning_effort: $('mcl4-effort') ? $('mcl4-effort').value : 'high',
+        adaptive_recurrent_depth: false,
+        use_windowless_pager: false,
+        thought_prefix: '',
+        answer_prefix: ''
+      };
+      if ($('mcl4-top-k') && $('mcl4-top-k').value !== '') mcl4.top_k = Number($('mcl4-top-k').value);
+      if ($('mcl4-recurrence') && $('mcl4-recurrence').value !== '') mcl4.recurrence_steps = Number($('mcl4-recurrence').value);
+      if ($('mcl4-tabu') && $('mcl4-tabu').value !== '') mcl4.recurrent_coverage_penalty = Number($('mcl4-tabu').value);
+      config.sampling.mcl4_coe = mcl4;
+    }
     if ($('api-key').value) state.credentials[kind] = $('api-key').value;
     else delete state.credentials[kind];
     session.updatedAt = Date.now();
@@ -708,9 +753,10 @@
       const target = state.sessions.find((item) => item.id === sessionId);
       if (target) {
         target.messages = report.messages.filter((message) => message.role !== 'system');
-        target.runs.push({ id: uid(), at: Date.now(), steps: report.steps, usage: report.usage, diagnostics: report.diagnostics });
-        target.status = 'complete';
-        target.lastError = null;
+        const terminalError = report.status === 'completed' ? null : (report.error || ('Run ended: ' + report.status));
+        target.runs.push({ id: uid(), at: Date.now(), steps: report.steps, usage: report.usage, diagnostics: report.diagnostics, status: report.status, error: terminalError });
+        target.status = terminalError ? 'error' : 'complete';
+        target.lastError = terminalError;
         target.updatedAt = Date.now();
         if (target.title === 'Untitled task') target.title = prompt.length > 72 ? prompt.slice(0, 69) + '…' : prompt;
       }

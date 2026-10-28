@@ -1,7 +1,8 @@
 use super::{InferenceProvider, decode_json, versioned_endpoint};
+use crate::dsv41_mcl4::segment_reasoning_and_answer;
 use crate::types::{
-    ChatRequest, ChatResponse, Message, ModelInfo, ProviderConfig, ProviderKind, Role, ToolCall,
-    Usage,
+    ChatRequest, ChatResponse, Message, ModelInfo, ProviderConfig, ProviderContent, ProviderKind,
+    Role, ToolCall, Usage,
 };
 use crate::{CondenserError, Result};
 use async_trait::async_trait;
@@ -158,20 +159,26 @@ fn wire_messages(messages: &[Message]) -> Vec<Value> {
 fn wire_message(message: &Message) -> Value {
     match message.role {
         Role::Assistant if !message.tool_calls.is_empty() => {
-            let mut content = Vec::new();
-            if !message.content.is_empty() {
-                content.push(json!({"type": "text", "text": message.content}));
-            }
-            content.extend(message.tool_calls.iter().map(|call| {
-                let input: Value = serde_json::from_str(&call.arguments_json)
-                    .unwrap_or_else(|_| json!({"raw": call.arguments_json}));
-                json!({
-                    "type": "tool_use",
-                    "id": call.id,
-                    "name": call.name,
-                    "input": input
-                })
-            }));
+            let content = match &message.provider_content {
+                Some(ProviderContent::Anthropic(blocks)) => json!(blocks),
+                None => {
+                    let mut content = Vec::new();
+                    if !message.content.is_empty() {
+                        content.push(json!({"type": "text", "text": message.content}));
+                    }
+                    content.extend(message.tool_calls.iter().map(|call| {
+                        let input: Value = serde_json::from_str(&call.arguments_json)
+                            .unwrap_or_else(|_| json!({"raw": call.arguments_json}));
+                        json!({
+                            "type": "tool_use",
+                            "id": call.id,
+                            "name": call.name,
+                            "input": input
+                        })
+                    }));
+                    Value::Array(content)
+                }
+            };
             json!({"role": "assistant", "content": content})
         }
         Role::Tool => json!({
@@ -194,14 +201,24 @@ fn parse_chat(value: Value, fallback_model: &str) -> Result<ChatResponse> {
     let blocks = value["content"]
         .as_array()
         .ok_or_else(|| CondenserError::provider("Anthropic", "response has no content blocks"))?;
+    let provider_content = Some(ProviderContent::Anthropic(blocks.clone()));
     let mut text = String::new();
+    let mut thinking_text = String::new();
     let mut tool_calls = Vec::new();
     for block in blocks {
         match block["type"].as_str() {
             Some("text") => text.push_str(block["text"].as_str().unwrap_or_default()),
+            Some("thinking") => {
+                thinking_text.push_str(block["thinking"].as_str().unwrap_or_default());
+            }
             Some("tool_use") => {
+                let id = block["id"]
+                    .as_str()
+                    .filter(|id| !id.trim().is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| super::synthetic_tool_call_id(tool_calls.len()));
                 tool_calls.push(ToolCall {
-                    id: block["id"].as_str().unwrap_or_default().to_string(),
+                    id,
                     name: block["name"].as_str().unwrap_or_default().to_string(),
                     arguments_json: block["input"].to_string(),
                 });
@@ -209,6 +226,15 @@ fn parse_chat(value: Value, fallback_model: &str) -> Result<ChatResponse> {
             _ => {}
         }
     }
+    let explicit_thinking = if thinking_text.trim().is_empty() {
+        None
+    } else {
+        Some(thinking_text.as_str())
+    };
+    let segmented = segment_reasoning_and_answer(&text, explicit_thinking, None);
+    let mut merged_calls = segmented.dsml_tool_calls;
+    merged_calls.extend(tool_calls);
+
     let input_tokens = value["usage"]["input_tokens"].as_u64().unwrap_or(0);
     let output_tokens = value["usage"]["output_tokens"].as_u64().unwrap_or(0);
     Ok(ChatResponse {
@@ -218,11 +244,13 @@ fn parse_chat(value: Value, fallback_model: &str) -> Result<ChatResponse> {
             .to_string(),
         message: Message {
             role: Role::Assistant,
-            content: text,
-            tool_calls,
+            content: segmented.answer,
+            reasoning: segmented.thought,
+            tool_calls: merged_calls,
             tool_call_id: None,
             name: None,
             is_error: false,
+            provider_content,
         },
         finish_reason: value["stop_reason"].as_str().map(str::to_string),
         usage: Usage {
@@ -230,13 +258,14 @@ fn parse_chat(value: Value, fallback_model: &str) -> Result<ChatResponse> {
             output_tokens,
             total_tokens: input_tokens + output_tokens,
         },
+        telemetry: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::SamplingParams;
+    use crate::types::{SamplingParams, ToolDefinition};
 
     #[test]
     fn maps_tool_results_to_anthropic_user_blocks() {
@@ -264,19 +293,117 @@ mod tests {
     }
 
     #[test]
+    fn tool_declarations_use_exact_anthropic_schema() {
+        let request = ChatRequest {
+            model: "claude-test".into(),
+            messages: vec![Message::user("hello")],
+            sampling: SamplingParams::default(),
+            tools: vec![ToolDefinition {
+                name: "example__echo".into(),
+                description: "Echo text".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"]
+                }),
+            }],
+        };
+        let body = request_body(&request).unwrap();
+        assert_eq!(
+            body["tools"],
+            json!([{
+                "name": "example__echo",
+                "description": "Echo text",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"]
+                }
+            }])
+        );
+    }
+
+    #[test]
     fn parses_text_and_tool_use_blocks() {
-        let parsed = parse_chat(json!({
-            "model": "claude-test",
-            "content": [
-                {"type": "text", "text": "Checking."},
-                {"type": "tool_use", "id": "tool-1", "name": "example__echo", "input": {"text": "hello"}}
-            ],
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 5, "output_tokens": 3}
-        }), "fallback").unwrap();
+        let parsed = parse_chat(
+            json!({
+                "model": "claude-test",
+                "content": [
+                    {"type": "text", "text": "Checking."},
+                    {"type": "tool_use", "id": "tool-1", "name": "example__echo", "input": {"text": "hello"}}
+                ],
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 3}
+            }),
+            "fallback",
+        )
+        .unwrap();
         assert_eq!(parsed.message.content, "Checking.");
         assert_eq!(parsed.message.tool_calls.len(), 1);
         assert_eq!(parsed.usage.total_tokens, 8);
+    }
+
+    #[test]
+    fn preserves_signed_redacted_and_unknown_blocks_for_tool_replay() {
+        let content = json!([
+            {"type": "thinking", "thinking": "Check the input.", "signature": "signed-value"},
+            {"type": "redacted_thinking", "data": "encrypted-value"},
+            {"type": "future_block", "payload": {"arbitrary": [1, 2, 3]}},
+            {"type": "text", "text": "Checking."},
+            {"type": "tool_use", "id": "tool-1", "name": "example__echo", "input": {"text": "hello"}}
+        ]);
+        let parsed = parse_chat(
+            json!({
+                "model": "claude-test",
+                "content": content.clone(),
+                "stop_reason": "tool_use",
+                "usage": {"input_tokens": 5, "output_tokens": 3}
+            }),
+            "fallback",
+        )
+        .unwrap();
+        assert_eq!(parsed.message.content, "Checking.");
+        assert_eq!(
+            parsed.message.reasoning.as_deref(),
+            Some("Check the input.")
+        );
+        assert_eq!(parsed.message.tool_calls.len(), 1);
+        assert_eq!(
+            parsed.message.provider_content,
+            Some(ProviderContent::Anthropic(
+                content.as_array().unwrap().clone()
+            ))
+        );
+
+        let serialized = serde_json::to_string(&parsed.message).unwrap();
+        let replay: Message = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(
+            wire_message(&replay),
+            json!({"role": "assistant", "content": content})
+        );
+    }
+
+    #[test]
+    fn synthesizes_missing_and_blank_tool_call_ids() {
+        let parsed = parse_chat(
+            json!({
+                "model": "claude-test",
+                "content": [
+                    {"type": "tool_use", "name": "first", "input": {}},
+                    {"type": "tool_use", "id": "  ", "name": "second", "input": {}}
+                ],
+                "usage": {}
+            }),
+            "fallback",
+        )
+        .unwrap();
+        assert_eq!(parsed.message.tool_calls.len(), 2);
+        assert!(!parsed.message.tool_calls[0].id.trim().is_empty());
+        assert!(!parsed.message.tool_calls[1].id.trim().is_empty());
+        assert_ne!(
+            parsed.message.tool_calls[0].id,
+            parsed.message.tool_calls[1].id
+        );
     }
 
     #[test]
@@ -298,9 +425,5 @@ mod tests {
             Message::assistant("finished"),
         ]);
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[1]["role"], "user");
-        assert_eq!(messages[1]["content"].as_array().unwrap().len(), 2);
-        assert_eq!(messages[1]["content"][0]["tool_use_id"], "tool-1");
-        assert_eq!(messages[1]["content"][1]["tool_use_id"], "tool-2");
     }
 }

@@ -18,10 +18,12 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }
 axum.workspace = true
 clap.workspace = true
 async-trait = "0.1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+jsonschema = "0.29"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 wry = "0.57"

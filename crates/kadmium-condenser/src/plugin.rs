@@ -13,11 +13,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdout, Command};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
 
 pub const PLUGIN_MANIFEST_FILE: &str = "condenser-plugin.json";
 const DEFAULT_PLUGIN_TIMEOUT: Duration = Duration::from_secs(30);
+const PLUGIN_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 const MAX_PLUGIN_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +72,12 @@ impl PluginManifest {
                     self.id, tool.name
                 )));
             }
+            jsonschema::validator_for(&tool.input_schema).map_err(|error| {
+                CondenserError::Plugin(format!(
+                    "tool `{}/{}` has an invalid JSON Schema: {error}",
+                    self.id, tool.name
+                ))
+            })?;
         }
         Ok(())
     }
@@ -286,12 +293,7 @@ impl PluginManager {
         arguments: Value,
     ) -> Result<ToolResult> {
         let manifest = &plugin.manifest;
-        let command = resolve_command(&plugin.root, &manifest.command);
-        let args = manifest
-            .args
-            .iter()
-            .map(|arg| substitute_plugin_dir(arg, &plugin.root))
-            .collect::<Vec<_>>();
+        let (command, args) = resolve_command_and_args(&plugin.root, manifest);
         let mut child = Command::new(&command)
             .args(args)
             .current_dir(&plugin.root)
@@ -315,10 +317,9 @@ impl PluginManager {
                 ))
             })?;
 
+        let mut stdin = child.stdin.take().expect("piped plugin stdin");
+        let mut stdout = child.stdout.take().expect("piped plugin stdout");
         let operation = async {
-            let mut stdin = child.stdin.take().expect("piped plugin stdin");
-            let stdout = child.stdout.take().expect("piped plugin stdout");
-            let mut lines = BufReader::new(stdout).lines();
             write_rpc(
                 &mut stdin,
                 &json!({
@@ -329,52 +330,88 @@ impl PluginManager {
                 }),
             )
             .await?;
-            let response = read_rpc(&mut lines, 1).await?;
-            if let Some(error) = response.get("error") {
-                return Err(CondenserError::Plugin(format!(
-                    "{}.{} failed: {}",
-                    manifest.id,
-                    tool_name,
-                    error["message"]
-                        .as_str()
-                        .unwrap_or_else(|| error.as_str().unwrap_or("unknown error"))
-                )));
-            }
-            let result = response.get("result").cloned().unwrap_or(Value::Null);
-            let tool_result = parse_tool_result(result)?;
-            // A shutdown is graceful, but the result has already arrived. The
-            // process is still bounded by the same overall timeout.
-            let _ = write_rpc(
-                &mut stdin,
-                &json!({"jsonrpc": "2.0", "id": 2, "method": "shutdown"}),
-            )
-            .await;
-            drop(stdin);
-            let _ = child.wait().await;
-            Ok(tool_result)
+            let response = read_rpc(&mut stdout, 1).await?;
+            parse_tool_response(response, &manifest.id, tool_name)
         };
 
-        match tokio::time::timeout(self.timeout, operation).await {
+        let result = match tokio::time::timeout(self.timeout, operation).await {
             Ok(result) => result,
-            Err(_) => {
+            Err(_) => Err(CondenserError::Plugin(format!(
+                "{}.{} exceeded the {:?} plugin timeout",
+                manifest.id, tool_name, self.timeout
+            ))),
+        };
+
+        match result {
+            Ok(tool_result) => {
+                // The invocation is already complete. Shutdown gets its own short
+                // grace period and can never turn a valid result into a timeout.
+                let graceful = tokio::time::timeout(PLUGIN_SHUTDOWN_GRACE, async {
+                    let _ = write_rpc(
+                        &mut stdin,
+                        &json!({"jsonrpc": "2.0", "id": 2, "method": "shutdown"}),
+                    )
+                    .await;
+                    drop(stdin);
+                    let _ = child.wait().await;
+                })
+                .await;
+                if graceful.is_err() {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                }
+                Ok(tool_result)
+            }
+            Err(error) => {
+                drop(stdin);
                 let _ = child.kill().await;
-                Err(CondenserError::Plugin(format!(
-                    "{}.{} exceeded the {:?} plugin timeout",
-                    manifest.id, tool_name, self.timeout
-                )))
+                let _ = child.wait().await;
+                Err(error)
             }
         }
     }
 }
 
-fn parse_tool_result(value: Value) -> Result<ToolResult> {
-    if let Ok(result) = serde_json::from_value::<ToolResult>(value.clone()) {
-        return Ok(result);
+fn parse_tool_response(response: Value, plugin_id: &str, tool_name: &str) -> Result<ToolResult> {
+    let object = response
+        .as_object()
+        .ok_or_else(|| CondenserError::Plugin("plugin response is not a JSON-RPC object".into()))?;
+    let has_result = object.contains_key("result");
+    let has_error = object.contains_key("error");
+    if has_result && has_error {
+        return Err(CondenserError::Plugin(
+            "plugin response contains both `result` and `error`".into(),
+        ));
     }
+    if has_error {
+        let error = &response["error"];
+        return Err(CondenserError::Plugin(format!(
+            "{plugin_id}.{tool_name} failed: {}",
+            error["message"]
+                .as_str()
+                .unwrap_or_else(|| error.as_str().unwrap_or("unknown error"))
+        )));
+    }
+    if !has_result || response["result"].is_null() {
+        return Err(CondenserError::Plugin(
+            "plugin response is missing a non-null `result`".into(),
+        ));
+    }
+    parse_tool_result(response["result"].clone())
+}
+
+fn parse_tool_result(value: Value) -> Result<ToolResult> {
     if let Some(text) = value.as_str() {
         return Ok(ToolResult::success(text));
     }
-    Ok(ToolResult::success(value.to_string()))
+    if !value.is_object() {
+        return Err(CondenserError::Plugin(
+            "plugin tool result must be a string or an object".into(),
+        ));
+    }
+    serde_json::from_value::<ToolResult>(value).map_err(|error| {
+        CondenserError::Plugin(format!("plugin returned a malformed tool result: {error}"))
+    })
 }
 
 fn substitute_plugin_dir(value: &str, root: &Path) -> String {
@@ -391,6 +428,64 @@ fn resolve_command(root: &Path, command: &str) -> String {
     }
 }
 
+/// Fast-path resolver for Rust plugins configured with `command = "cargo"` and `args = ["run", ...]`.
+/// When a pre-compiled binary exists in `{plugin_dir}/target/release/` or `{plugin_dir}/target/debug/`
+/// and is at least as new as `src/main.rs` and `Cargo.toml`, invokes the compiled binary directly
+/// without spawning `cargo` on every tool call.
+fn resolve_command_and_args(root: &Path, manifest: &PluginManifest) -> (String, Vec<String>) {
+    let default_cmd = resolve_command(root, &manifest.command);
+    let default_args: Vec<String> = manifest
+        .args
+        .iter()
+        .map(|arg| substitute_plugin_dir(arg, root))
+        .collect();
+
+    if manifest.command.trim() == "cargo"
+        && default_args.first().is_some_and(|a| a == "run")
+    {
+        let bin_stem = format!("condenser-plugin-{}", manifest.id);
+        let exe_name = if cfg!(windows) {
+            format!("{bin_stem}.exe")
+        } else {
+            bin_stem
+        };
+        let src_mtime = root
+            .join("src")
+            .join("main.rs")
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok();
+        let toml_mtime = root
+            .join("Cargo.toml")
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok();
+
+        for profile in ["release", "debug"] {
+            let candidate = root.join("target").join(profile).join(&exe_name);
+            if let Ok(meta) = candidate.metadata() {
+                if meta.is_file() {
+                    let bin_fresh = match (meta.modified().ok(), src_mtime, toml_mtime) {
+                        (Some(bm), Some(sm), Some(tm)) => bm >= sm && bm >= tm,
+                        (Some(bm), Some(sm), None) => bm >= sm,
+                        _ => true,
+                    };
+                    if bin_fresh {
+                        let passthrough_args = default_args
+                            .iter()
+                            .position(|a| a == "--")
+                            .map(|pos| default_args[pos + 1..].to_vec())
+                            .unwrap_or_default();
+                        return (candidate.to_string_lossy().into_owned(), passthrough_args);
+                    }
+                }
+            }
+        }
+    }
+
+    (default_cmd, default_args)
+}
+
 async fn write_rpc<W>(writer: &mut W, value: &Value) -> Result<()>
 where
     W: AsyncWriteExt + Unpin,
@@ -402,31 +497,55 @@ where
     Ok(())
 }
 
-async fn read_rpc(lines: &mut Lines<BufReader<ChildStdout>>, expected_id: u64) -> Result<Value> {
+async fn read_rpc<R>(reader: &mut R, expected_id: u64) -> Result<Value>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut frame = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
     loop {
-        let line = lines.next_line().await?.ok_or_else(|| {
-            CondenserError::Plugin("plugin closed stdout before answering".into())
-        })?;
-        if line.len() > MAX_PLUGIN_RESPONSE_BYTES {
-            return Err(CondenserError::Plugin(format!(
-                "plugin response exceeds {MAX_PLUGIN_RESPONSE_BYTES} bytes"
-            )));
-        }
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: Value = serde_json::from_str(&line).map_err(|error| {
-            CondenserError::Plugin(format!("plugin returned non-JSON stdout: {error}"))
-        })?;
-        if value["jsonrpc"] != "2.0" {
+        let count = reader.read(&mut chunk).await?;
+        if count == 0 {
             return Err(CondenserError::Plugin(
-                "plugin response is not JSON-RPC 2.0".into(),
+                "plugin closed stdout before answering".into(),
             ));
         }
-        if value["id"] == expected_id {
-            return Ok(value);
+        let mut start = 0;
+        while start < count {
+            if let Some(relative_end) = chunk[start..count].iter().position(|byte| *byte == b'\n') {
+                let end = start + relative_end;
+                append_response_bytes(&mut frame, &chunk[start..end])?;
+                if !frame.iter().all(u8::is_ascii_whitespace) {
+                    let value: Value = serde_json::from_slice(&frame).map_err(|error| {
+                        CondenserError::Plugin(format!("plugin returned non-JSON stdout: {error}"))
+                    })?;
+                    if value["jsonrpc"] != "2.0" {
+                        return Err(CondenserError::Plugin(
+                            "plugin response is not JSON-RPC 2.0".into(),
+                        ));
+                    }
+                    if value["id"] == expected_id {
+                        return Ok(value);
+                    }
+                }
+                frame.clear();
+                start = end + 1;
+            } else {
+                append_response_bytes(&mut frame, &chunk[start..count])?;
+                break;
+            }
         }
     }
+}
+
+fn append_response_bytes(frame: &mut Vec<u8>, bytes: &[u8]) -> Result<()> {
+    if bytes.len() > MAX_PLUGIN_RESPONSE_BYTES.saturating_sub(frame.len()) {
+        return Err(CondenserError::Plugin(format!(
+            "plugin response exceeds {MAX_PLUGIN_RESPONSE_BYTES} bytes"
+        )));
+    }
+    frame.extend_from_slice(bytes);
+    Ok(())
 }
 
 fn load_plugin(manifest_path: &Path) -> Result<Plugin> {
@@ -673,6 +792,9 @@ mod tests {
         let mut bad_schema = manifest();
         bad_schema.tools[0].input_schema = json!(true);
         assert!(bad_schema.validate().is_err());
+        let mut invalid_schema = manifest();
+        invalid_schema.tools[0].input_schema = json!({"type": 42});
+        assert!(invalid_schema.validate().is_err());
     }
 
     #[test]
@@ -703,5 +825,50 @@ mod tests {
     fn slugs_are_stable_and_non_destructive() {
         assert_eq!(slugify("  My Useful Plugin  "), "my-useful-plugin");
         assert_eq!(slugify("---"), "");
+    }
+
+    #[test]
+    fn rpc_responses_require_exactly_one_outcome() {
+        for response in [
+            json!({"jsonrpc": "2.0", "id": 1}),
+            json!({"jsonrpc": "2.0", "id": 1, "result": null}),
+            json!({"jsonrpc": "2.0", "id": 1, "result": "ok", "error": null}),
+        ] {
+            assert!(parse_tool_response(response, "example", "echo").is_err());
+        }
+        let error = parse_tool_response(
+            json!({"jsonrpc": "2.0", "id": 1, "error": {"message": "failed"}}),
+            "example",
+            "echo",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("example.echo failed: failed"));
+    }
+
+    #[test]
+    fn tool_results_accept_only_the_protocol_shapes() {
+        let text = parse_tool_result(json!("plain text")).unwrap();
+        assert_eq!(text.content, "plain text");
+        assert!(!text.is_error);
+
+        let object = parse_tool_result(json!({"content": "failed", "is_error": true})).unwrap();
+        assert_eq!(object.content, "failed");
+        assert!(object.is_error);
+        assert!(
+            !parse_tool_result(json!({"content": "default"}))
+                .unwrap()
+                .is_error
+        );
+
+        for malformed in [
+            json!(null),
+            json!(42),
+            json!(["content"]),
+            json!({}),
+            json!({"content": 42}),
+            json!({"content": "bad flag", "is_error": "no"}),
+        ] {
+            assert!(parse_tool_result(malformed).is_err());
+        }
     }
 }

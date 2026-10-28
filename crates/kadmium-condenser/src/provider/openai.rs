@@ -1,4 +1,5 @@
 use super::{InferenceProvider, decode_json, versioned_endpoint};
+use crate::dsv41_mcl4::segment_reasoning_and_answer;
 use crate::types::{
     ChatRequest, ChatResponse, Message, ModelInfo, ProviderConfig, ProviderKind, Role,
     SamplingParams, ToolCall, Usage,
@@ -179,33 +180,37 @@ fn parse_chat(value: Value, fallback_model: &str) -> Result<ChatResponse> {
         .and_then(|choices| choices.first())
         .ok_or_else(|| CondenserError::provider("OpenAI-compatible", "response has no choices"))?;
     let message = &choice["message"];
-    let content = content_text(&message["content"]);
-    let tool_calls = message["tool_calls"]
-        .as_array()
-        .map(|calls| {
-            calls
-                .iter()
-                .enumerate()
-                .map(|(index, call)| {
-                    let function = &call["function"];
-                    let arguments_json = match &function["arguments"] {
-                        Value::String(raw) => raw.clone(),
-                        Value::Null => "{}".into(),
-                        other => other.to_string(),
-                    };
-                    ToolCall {
-                        id: call["id"]
-                            .as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| super::synthetic_tool_call_id(index)),
-                        name: function["name"].as_str().unwrap_or_default().to_string(),
-                        arguments_json,
-                    }
-                })
-                .filter(|call| !call.name.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let raw_content = content_text(&message["content"]);
+    let explicit_reasoning = message["reasoning_content"]
+        .as_str()
+        .or_else(|| message["thinking"].as_str())
+        .or_else(|| message["reasoning"].as_str());
+    let segmented = segment_reasoning_and_answer(&raw_content, explicit_reasoning, None);
+
+    let mut tool_calls = segmented.dsml_tool_calls;
+    if let Some(calls) = message["tool_calls"].as_array() {
+        for (index, call) in calls.iter().enumerate() {
+            let function = &call["function"];
+            let name = function["name"].as_str().unwrap_or_default().to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let arguments_json = match &function["arguments"] {
+                Value::String(raw) => raw.clone(),
+                Value::Null => "{}".into(),
+                other => other.to_string(),
+            };
+            tool_calls.push(ToolCall {
+                id: call["id"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| super::synthetic_tool_call_id(index)),
+                name,
+                arguments_json,
+            });
+        }
+    }
+
     let usage = Usage {
         input_tokens: value["usage"]["prompt_tokens"].as_u64().unwrap_or(0),
         output_tokens: value["usage"]["completion_tokens"].as_u64().unwrap_or(0),
@@ -218,14 +223,17 @@ fn parse_chat(value: Value, fallback_model: &str) -> Result<ChatResponse> {
             .to_string(),
         message: Message {
             role: Role::Assistant,
-            content,
+            content: segmented.answer,
+            reasoning: segmented.thought,
             tool_calls,
             tool_call_id: None,
             name: None,
             is_error: false,
+            provider_content: None,
         },
         finish_reason: choice["finish_reason"].as_str().map(str::to_string),
         usage,
+        telemetry: None,
     })
 }
 
@@ -271,6 +279,30 @@ mod tests {
             "{\"text\":\"hello\"}"
         );
         assert_eq!(parsed.usage.total_tokens, 6);
+    }
+
+    #[test]
+    fn openai_parses_deepseek_reasoning_content_and_dsml_calls() {
+        let parsed = parse_chat(
+            json!({
+                "model": "deepseek-v4.1-flash",
+                "choices": [{"message": {
+                    "role": "assistant",
+                    "reasoning_content": "Let us compute 7 * 8 = 56.",
+                    "content": "Calling tool.\n<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"demo__echo\">\n<｜DSML｜ parameter name=\"text\" string=\"true\">56</｜DSML｜ parameter>\n</｜DSML｜ invoke>\n</｜DSML｜ calls>"
+                }, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 12, "total_tokens": 22}
+            }),
+            "fallback",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.message.reasoning.as_deref(),
+            Some("Let us compute 7 * 8 = 56.")
+        );
+        assert_eq!(parsed.message.content, "Calling tool.");
+        assert_eq!(parsed.message.tool_calls.len(), 1);
+        assert_eq!(parsed.message.tool_calls[0].name, "demo__echo");
     }
 
     #[test]

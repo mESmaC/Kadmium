@@ -1,7 +1,12 @@
+use crate::dsv41_mcl4::{
+    CoeDecisionProbeReport, DeepSeekV41ArchSpec, Dsv41ArenaCachePlan, Dsv41Mcl4cPacketLayout,
+    Mcl4CoeKnobs, discover_local_dsv41_shards_and_checkpoints, mla_context_budget,
+    probe_decision_candidates,
+};
 use crate::plugin::{PluginInventory, PluginManager, default_plugin_roots};
 use crate::provider::ProviderFactory;
-use crate::types::{Message, ModelInfo, ProviderConfig, SamplingParams};
-use crate::{CondenserError, DEFAULT_HTTP_PORT, Harness, HarnessOptions, HarnessReport, Result};
+use crate::types::{Message, ModelInfo, ProviderConfig, ProviderKind, SamplingParams};
+use crate::{CondenserError, DEFAULT_HTTP_PORT, Harness, HarnessOptions, Result, RunControl};
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
@@ -33,6 +38,8 @@ pub struct ServerOptions {
     /// Zero asks the OS for an available loopback port.
     pub port: u16,
     pub plugin_roots: Vec<PathBuf>,
+    /// Bounds resident agent turns so local backends are not overwhelmed.
+    pub max_concurrent_turns: usize,
 }
 
 impl Default for ServerOptions {
@@ -40,6 +47,7 @@ impl Default for ServerOptions {
         Self {
             port: DEFAULT_HTTP_PORT,
             plugin_roots: default_plugin_roots(),
+            max_concurrent_turns: 2,
         }
     }
 }
@@ -47,15 +55,19 @@ impl Default for ServerOptions {
 #[derive(Clone)]
 struct ServerState {
     plugin_roots: Arc<Vec<PathBuf>>,
+    client: reqwest::Client,
+    turn_permits: Arc<tokio::sync::Semaphore>,
 }
 
 pub async fn serve(options: ServerOptions) -> Result<()> {
     let (address, server) = bind(options).await?;
     println!("Condenser {} is ready", env!("CARGO_PKG_VERSION"));
-    println!("  Local UI:      http://{address}/");
-    println!("  Health:        http://{address}/api/v1/health");
-    println!("  Provider API:  http://{address}/api/v1/providers");
-    println!("  Plugin API:    http://{address}/api/v1/plugins");
+    println!("  Local UI:        http://{address}/");
+    println!("  Health:          http://{address}/api/v1/health");
+    println!("  Provider API:    http://{address}/api/v1/providers");
+    println!("  Plugin API:      http://{address}/api/v1/plugins");
+    println!("  DSV4.1 Profile:  http://{address}/api/v1/dsv41/profile");
+    println!("  MCL4 Probe API:  http://{address}/api/v1/mcl4/probe-decision");
     server.await
 }
 
@@ -64,8 +76,23 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
 pub async fn bind(
     options: ServerOptions,
 ) -> Result<(SocketAddr, impl std::future::Future<Output = Result<()>>)> {
+    if options.max_concurrent_turns == 0 {
+        return Err(CondenserError::Config(
+            "max_concurrent_turns must be at least 1".into(),
+        ));
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("Condenser/", env!("CARGO_PKG_VERSION")))
+        .tcp_nodelay(true)
+        .pool_max_idle_per_host(32)
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .tcp_keepalive(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|error| CondenserError::provider("server", error.to_string()))?;
     let state = ServerState {
         plugin_roots: Arc::new(options.plugin_roots),
+        client,
+        turn_permits: Arc::new(tokio::sync::Semaphore::new(options.max_concurrent_turns)),
     };
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, options.port)).await?;
     let address = listener.local_addr()?;
@@ -96,6 +123,8 @@ fn router(state: ServerState) -> Router {
         .route("/api/v1/plugins", get(plugins))
         .route("/api/v1/plugins/invoke", post(invoke_plugin))
         .route("/api/v1/chat", post(chat))
+        .route("/api/v1/dsv41/profile", get(dsv41_profile))
+        .route("/api/v1/mcl4/probe-decision", post(mcl4_probe_decision))
         .with_state(state)
 }
 
@@ -175,14 +204,86 @@ async fn system() -> Result<Json<Value>, ApiError> {
     let node = tokio::task::spawn_blocking(LiveHardwareProfiler::probe_local_host)
         .await
         .map_err(|error| CondenserError::provider("system", error.to_string()))?;
+    let vram_gb = node
+        .memory
+        .fast_accelerator_memory_gb()
+        .max(node.available_fast_memory_gb());
+    let ram_gb = node.memory.system_ram_gb;
+    let dsv41_plan = Dsv41ArenaCachePlan::plan_for_host(vram_gb, ram_gb);
+    let dual_nvme = discover_local_dsv41_shards_and_checkpoints();
     Ok(Json(json!({
         "hostname": node.hostname,
         "device_kind": format!("{:?}", node.device_kind),
         "backend": format!("{:?}", node.backend),
-        "fast_memory_gb": node.available_fast_memory_gb(),
-        "system_ram_gb": node.memory.system_ram_gb,
-        "fp16_tflops": node.effective_fp16_tflops()
+        "fast_memory_gb": vram_gb,
+        "system_ram_gb": ram_gb,
+        "fp16_tflops": node.effective_fp16_tflops(),
+        "dsv41_arena_plan": dsv41_plan,
+        "dual_nvme_shard_inventory": dual_nvme
     })))
+}
+
+async fn dsv41_profile() -> Result<Json<Value>, ApiError> {
+    let node = tokio::task::spawn_blocking(LiveHardwareProfiler::probe_local_host)
+        .await
+        .map_err(|error| CondenserError::provider("system", error.to_string()))?;
+    let arch = DeepSeekV41ArchSpec::deepseek_v41_flash_nvfp4();
+    let layout = Dsv41Mcl4cPacketLayout::new();
+    let vram_gb = node
+        .memory
+        .fast_accelerator_memory_gb()
+        .max(node.available_fast_memory_gb());
+    let arena_plan = Dsv41ArenaCachePlan::plan_for_host(vram_gb, node.memory.system_ram_gb);
+    let dual_nvme = discover_local_dsv41_shards_and_checkpoints();
+    let mla_8k = mla_context_budget(
+        8192,
+        arch.mla_sliding_window,
+        arch.mla_compressed_kv_topk,
+        arch.mla_compression_ratio,
+    );
+    Ok(Json(json!({
+        "architecture": arch,
+        "mcl4c_packet_layout": layout,
+        "host_arena_cache_plan": arena_plan,
+        "dual_nvme_shard_inventory": dual_nvme,
+        "mla_budget_8k": mla_8k,
+        "default_knobs": Mcl4CoeKnobs::deepseek_v41_default()
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeDecisionApiRequest {
+    #[serde(default)]
+    context: String,
+    #[serde(default = "default_probe_question")]
+    question: String,
+    options: Vec<String>,
+    #[serde(default)]
+    knobs: Option<Mcl4CoeKnobs>,
+}
+
+fn default_probe_question() -> String {
+    "Select the best option.".to_string()
+}
+
+async fn mcl4_probe_decision(
+    Json(request): Json<ProbeDecisionApiRequest>,
+) -> Result<Json<CoeDecisionProbeReport>, ApiError> {
+    let knobs = request
+        .knobs
+        .unwrap_or_else(Mcl4CoeKnobs::deepseek_v41_default);
+    let report = tokio::task::spawn_blocking(move || {
+        probe_decision_candidates(
+            &request.context,
+            &request.question,
+            &request.options,
+            &knobs,
+        )
+    })
+    .await
+    .map_err(|error| CondenserError::provider("mcl4-probe", error.to_string()))?
+    .map_err(CondenserError::Config)?;
+    Ok(Json(report))
 }
 
 async fn providers() -> Json<Value> {
@@ -194,9 +295,38 @@ struct ModelsRequest {
     provider: ProviderConfig,
 }
 
-async fn models(Json(request): Json<ModelsRequest>) -> Result<Json<Vec<ModelInfo>>, ApiError> {
-    let provider = ProviderFactory::build(request.provider)?;
-    Ok(Json(provider.list_models().await?))
+fn upgrade_legacy_kadmium_provider(mut config: ProviderConfig) -> ProviderConfig {
+    if config.kind == ProviderKind::Kadmium
+        && config.base_url().trim_end_matches('/') == "http://127.0.0.1:7848"
+        && (config.model.trim().is_empty() || config.model == "deepseek-v3-671b-moe-q4k")
+    {
+        config.kind = ProviderKind::Mcl4Coe;
+        config.base_url = Some("http://127.0.0.1:7861".to_string());
+        config.model = "dsv41-mcl4-step_10000".to_string();
+    }
+    config
+}
+
+async fn models(
+    State(state): State<ServerState>,
+    Json(request): Json<ModelsRequest>,
+) -> Result<Json<Vec<ModelInfo>>, ApiError> {
+    let provider_cfg = upgrade_legacy_kadmium_provider(request.provider);
+    let timeout = provider_cfg.timeout_secs;
+    let kind = provider_cfg.kind;
+    let provider = ProviderFactory::build_with_client(provider_cfg, state.client)?;
+    let models = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout),
+        provider.list_models(),
+    )
+    .await
+    .map_err(|_| {
+        CondenserError::provider(
+            kind.label(),
+            format!("model discovery timed out after {timeout} seconds"),
+        )
+    })??;
+    Ok(Json(models))
 }
 
 async fn plugins(State(state): State<ServerState>) -> Result<Json<PluginInventory>, ApiError> {
@@ -232,6 +362,14 @@ struct ChatApiRequest {
     enable_tools: bool,
     #[serde(default = "default_max_steps")]
     max_steps: usize,
+    #[serde(default = "default_max_calls_per_step")]
+    max_calls_per_step: usize,
+    #[serde(default)]
+    max_run_seconds: Option<u64>,
+    #[serde(default)]
+    max_output_tokens: Option<u64>,
+    #[serde(default)]
+    max_tool_calls: Option<usize>,
     #[serde(default)]
     sampling: SamplingParams,
 }
@@ -240,23 +378,60 @@ fn default_max_steps() -> usize {
     8
 }
 
+fn default_max_calls_per_step() -> usize {
+    16
+}
+
 async fn chat(
     State(state): State<ServerState>,
     Json(request): Json<ChatApiRequest>,
-) -> Result<Json<HarnessReport>, ApiError> {
+) -> Result<Response, ApiError> {
+    let _permit = match state.turn_permits.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return Ok((
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, "1")],
+                Json(json!({
+                    "error": "Condenser is at its concurrent-turn limit; retry shortly"
+                })),
+            )
+                .into_response());
+        }
+    };
+    if request
+        .max_run_seconds
+        .is_some_and(|seconds| seconds == 0 || seconds > 86_400)
+    {
+        return Err(
+            CondenserError::Config("max_run_seconds must be between 1 and 86400".into()).into(),
+        );
+    }
+    let control = RunControl {
+        deadline: request
+            .max_run_seconds
+            .map(|seconds| tokio::time::Instant::now() + std::time::Duration::from_secs(seconds)),
+        max_output_tokens: request.max_output_tokens,
+        max_tool_calls: request.max_tool_calls,
+        ..RunControl::default()
+    };
     let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
-    let harness = Harness::new(request.provider, plugins)?;
+    let provider_cfg = upgrade_legacy_kadmium_provider(request.provider);
+    let harness = Harness::new_with_client(provider_cfg, plugins, state.client)?;
     let report = harness
-        .run(
+        .run_with_control(
             request.messages,
             HarnessOptions {
                 enable_tools: request.enable_tools,
                 max_steps: request.max_steps,
+                max_calls_per_step: request.max_calls_per_step,
                 sampling: request.sampling,
             },
+            control,
+            None,
         )
         .await?;
-    Ok(Json(report))
+    Ok(Json(report).into_response())
 }
 
 struct ApiError(CondenserError);
@@ -301,6 +476,7 @@ mod tests {
         let (address, future) = bind(ServerOptions {
             port: 0,
             plugin_roots: vec![root.clone()],
+            ..ServerOptions::default()
         })
         .await
         .unwrap();
@@ -325,6 +501,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(plugins["plugins"].as_array().unwrap().len(), 0);
+        let dsv41: Value = client
+            .get(format!("http://{address}/api/v1/dsv41/profile"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(dsv41["architecture"]["n_layers"], 40);
+        assert_eq!(dsv41["architecture"]["n_routed_experts"], 384);
+        assert_eq!(
+            dsv41["mcl4c_packet_layout"]["total_packet_bytes"],
+            19_910_656
+        );
+        let probe: Value = client
+            .post(format!("http://{address}/api/v1/mcl4/probe-decision"))
+            .json(&json!({
+                "context": "DeepSeek-V4.1 uses 384 routed NVFP4 experts per layer with top-6 routing.",
+                "question": "Which configuration matches DeepSeek-V4.1?",
+                "options": [
+                    "384 routed NVFP4 experts with top-6 routing",
+                    "8 dense FP32 experts with top-1 routing"
+                ]
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(probe["winner_index"], 0);
         let page = client
             .get(format!("http://{address}/"))
             .send()
