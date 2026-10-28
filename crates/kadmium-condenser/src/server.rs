@@ -7,8 +7,9 @@ use crate::plugin::{PluginInventory, PluginManager, default_plugin_roots};
 use crate::provider::ProviderFactory;
 use crate::types::{Message, ModelInfo, ProviderConfig, ProviderKind, SamplingParams};
 use crate::{CondenserError, DEFAULT_HTTP_PORT, Harness, HarnessOptions, Result, RunControl};
-use axum::extract::State;
-use axum::http::{StatusCode, header};
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -22,16 +23,10 @@ use std::sync::Arc;
 const CONDENSER_HTML: &str = include_str!("assets/condenser.html");
 const CONDENSER_CSS: &str = include_str!("assets/condenser.css");
 const CONDENSER_JS: &str = include_str!("assets/condenser.js");
-const DS_TOKENS_CSS: &str = include_str!("../../../design-system/tokens.css");
-const DS_BUNDLE_CSS: &str = include_str!("../../../design-system/components/bundle.css");
-const DS_WORDMARK: &str =
-    include_str!("../../../design-system/assets/Logos/kadmium-wordmark-dark.svg");
-const DS_MARK: &str = include_str!("../../../design-system/assets/Logos/kadmium-mark-dark.svg");
-const DS_FAVICON: &str = include_str!("../../../design-system/assets/Logos/kadmium-favicon.svg");
-const DS_FONT_ARCHIVO: &[u8] =
-    include_bytes!("../../../design-system/fonts/Archivo-Variable.woff2");
-const DS_FONT_MONO: &[u8] =
-    include_bytes!("../../../design-system/fonts/JetBrainsMono-Variable.woff2");
+const CONDENSER_MARK: &str = include_str!("assets/condenser-mark.svg");
+const CONDENSER_FAVICON: &str = include_str!("assets/condenser-favicon.svg");
+const CONDENSER_FONT_ARCHIVO: &[u8] = include_bytes!("assets/fonts/Archivo-Variable.woff2");
+const CONDENSER_FONT_MONO: &[u8] = include_bytes!("assets/fonts/JetBrainsMono-Variable.woff2");
 
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
@@ -53,10 +48,11 @@ impl Default for ServerOptions {
 }
 
 #[derive(Clone)]
-struct ServerState {
+pub(crate) struct ServerState {
     plugin_roots: Arc<Vec<PathBuf>>,
     client: reqwest::Client,
     turn_permits: Arc<tokio::sync::Semaphore>,
+    pub(crate) workspace: crate::workspace::WorkspaceState,
 }
 
 pub async fn serve(options: ServerOptions) -> Result<()> {
@@ -93,6 +89,7 @@ pub async fn bind(
         plugin_roots: Arc::new(options.plugin_roots),
         client,
         turn_permits: Arc::new(tokio::sync::Semaphore::new(options.max_concurrent_turns)),
+        workspace: crate::workspace::WorkspaceState::from_current_dir()?,
     };
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, options.port)).await?;
     let address = listener.local_addr()?;
@@ -105,17 +102,7 @@ pub async fn bind(
 }
 
 fn router(state: ServerState) -> Router {
-    Router::new()
-        .route("/", get(index))
-        .route("/tokens.css", get(tokens_css))
-        .route("/components/bundle.css", get(bundle_css))
-        .route("/condenser.css", get(condenser_css))
-        .route("/condenser.js", get(condenser_js))
-        .route("/assets/Logos/kadmium-wordmark-dark.svg", get(wordmark))
-        .route("/assets/Logos/kadmium-mark-dark.svg", get(mark))
-        .route("/assets/Logos/kadmium-favicon.svg", get(favicon))
-        .route("/fonts/Archivo-Variable.woff2", get(font_archivo))
-        .route("/fonts/JetBrainsMono-Variable.woff2", get(font_mono))
+    let api = Router::new()
         .route("/api/v1/health", get(health))
         .route("/api/v1/system", get(system))
         .route("/api/v1/providers", get(providers))
@@ -125,19 +112,94 @@ fn router(state: ServerState) -> Router {
         .route("/api/v1/chat", post(chat))
         .route("/api/v1/dsv41/profile", get(dsv41_profile))
         .route("/api/v1/mcl4/probe-decision", post(mcl4_probe_decision))
+        .route("/api/v1/workspace", get(crate::workspace::workspace))
+        .route("/api/v1/files/list", post(crate::workspace::list_files))
+        .route("/api/v1/files/read", post(crate::workspace::read_file))
+        .route("/api/v1/files/write", post(crate::workspace::write_file))
+        .route("/api/v1/files/create", post(crate::workspace::create_file))
+        .route("/api/v1/files/rename", post(crate::workspace::rename_file))
+        .route("/api/v1/files/delete", post(crate::workspace::delete_file))
+        .route(
+            "/api/v1/terminal/execute",
+            post(crate::workspace::execute_terminal),
+        )
+        .layer(middleware::from_fn(loopback_request_guard));
+    Router::new()
+        .route("/", get(index))
+        .route("/condenser.css", get(condenser_css))
+        .route("/condenser.js", get(condenser_js))
+        .route("/assets/condenser-mark.svg", get(condenser_mark))
+        .route("/assets/condenser-favicon.svg", get(condenser_favicon))
+        .route("/fonts/Archivo-Variable.woff2", get(font_archivo))
+        .route("/fonts/JetBrainsMono-Variable.woff2", get(font_mono))
+        .merge(api)
         .with_state(state)
+}
+
+async fn loopback_request_guard(request: Request, next: Next) -> Response {
+    if loopback_headers(request.headers()) {
+        next.run(request).await
+    } else {
+        StatusCode::FORBIDDEN.into_response()
+    }
+}
+
+fn loopback_headers(headers: &HeaderMap) -> bool {
+    let mut hosts = headers.get_all(header::HOST).iter();
+    let valid_host = hosts.next().is_some_and(|host| {
+        hosts.next().is_none()
+            && host
+                .to_str()
+                .ok()
+                .and_then(|host| host.parse::<axum::http::uri::Authority>().ok())
+                .is_some_and(|authority| loopback_authority(&authority))
+    });
+    if !valid_host {
+        return false;
+    }
+
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let Some(origin) = origins.next() else {
+        return true;
+    };
+    if origins.next().is_some() {
+        return false;
+    }
+    origin
+        .to_str()
+        .ok()
+        .and_then(|origin| origin.parse::<axum::http::Uri>().ok())
+        .is_some_and(|uri| {
+            uri.scheme_str()
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http"))
+                && uri
+                    .path_and_query()
+                    .map_or(true, |path| path.as_str() == "/")
+                && uri.authority().is_some_and(|authority| {
+                    !authority.as_str().contains('@') && loopback_authority(authority)
+                })
+        })
+}
+
+fn loopback_authority(authority: &axum::http::uri::Authority) -> bool {
+    let authority = authority.as_str();
+    match authority.rsplit_once(':') {
+        Some((host, port)) => {
+            loopback_host(host)
+                && !port.is_empty()
+                && port.bytes().all(|byte| byte.is_ascii_digit())
+                && port.parse::<u16>().is_ok()
+        }
+        None => loopback_host(authority),
+    }
+}
+
+fn loopback_host(host: &str) -> bool {
+    host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost")
 }
 
 async fn index() -> Html<&'static str> {
     Html(CONDENSER_HTML)
-}
-
-async fn tokens_css() -> Response {
-    text_asset("text/css; charset=utf-8", DS_TOKENS_CSS)
-}
-
-async fn bundle_css() -> Response {
-    text_asset("text/css; charset=utf-8", DS_BUNDLE_CSS)
 }
 
 async fn condenser_css() -> Response {
@@ -148,24 +210,20 @@ async fn condenser_js() -> Response {
     text_asset("application/javascript; charset=utf-8", CONDENSER_JS)
 }
 
-async fn wordmark() -> Response {
-    text_asset("image/svg+xml", DS_WORDMARK)
+async fn condenser_mark() -> Response {
+    text_asset("image/svg+xml", CONDENSER_MARK)
 }
 
-async fn mark() -> Response {
-    text_asset("image/svg+xml", DS_MARK)
-}
-
-async fn favicon() -> Response {
-    text_asset("image/svg+xml", DS_FAVICON)
+async fn condenser_favicon() -> Response {
+    text_asset("image/svg+xml", CONDENSER_FAVICON)
 }
 
 async fn font_archivo() -> Response {
-    binary_asset("font/woff2", DS_FONT_ARCHIVO)
+    binary_asset("font/woff2", CONDENSER_FONT_ARCHIVO)
 }
 
 async fn font_mono() -> Response {
-    binary_asset("font/woff2", DS_FONT_MONO)
+    binary_asset("font/woff2", CONDENSER_FONT_MONO)
 }
 
 fn binary_asset(content_type: &'static str, body: &'static [u8]) -> Response {
@@ -434,7 +492,7 @@ async fn chat(
     Ok(Json(report).into_response())
 }
 
-struct ApiError(CondenserError);
+pub(crate) struct ApiError(CondenserError);
 
 impl<E> From<E> for ApiError
 where
@@ -464,6 +522,44 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
+
+    fn guarded_headers(host: &str, origin: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_str(host).unwrap());
+        if let Some(origin) = origin {
+            headers.insert(header::ORIGIN, HeaderValue::from_str(origin).unwrap());
+        }
+        headers
+    }
+
+    #[test]
+    fn request_guard_requires_loopback_host_and_origin() {
+        assert!(loopback_headers(&guarded_headers("127.0.0.1:7856", None)));
+        assert!(loopback_headers(&guarded_headers("localhost", None)));
+        assert!(loopback_headers(&guarded_headers(
+            "LOCALHOST:7856",
+            Some("http://127.0.0.1:7856")
+        )));
+        assert!(!loopback_headers(&HeaderMap::new()));
+        assert!(!loopback_headers(&guarded_headers("example.com", None)));
+        assert!(!loopback_headers(&guarded_headers(
+            "127.0.0.1:invalid",
+            None
+        )));
+        assert!(!loopback_headers(&guarded_headers(
+            "localhost",
+            Some("https://localhost")
+        )));
+        assert!(!loopback_headers(&guarded_headers(
+            "localhost",
+            Some("http://example.com")
+        )));
+        assert!(!loopback_headers(&guarded_headers(
+            "localhost",
+            Some("null")
+        )));
+    }
 
     #[tokio::test]
     async fn loopback_server_exposes_health_and_plugin_inventory() {

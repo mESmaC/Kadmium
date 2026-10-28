@@ -1,22 +1,15 @@
-//! The Kadmium app tile, rasterized in code so the window and taskbar icon need no image
+//! The Condenser app tile, rasterized in code so the window and taskbar icon need no image
 //! decoder or bundled bitmap.
 //!
-//! Geometry matches `design-system/assets/Logos/kadmium-tile-graphite.svg` (a 128-unit
-//! graphite tile, four cadmium control rods at unequal depths and a light head plate).
+//! Geometry matches `assets/condenser-mark.svg`: a cyan C-ring and one short light rod
+//! on an abyss rounded tile.
 
 /// Square RGBA pixels of the tile at `size` × `size`, anti-aliased with signed distances.
 pub fn tile_rgba(size: u32) -> Vec<u8> {
-    const GRAPHITE: [f32; 3] = [0x16 as f32, 0x19 as f32, 0x1e as f32];
-    const CADMIUM: [f32; 3] = [0xf3 as f32, 0xc0 as f32, 0x20 as f32];
-    const PLATE: [f32; 3] = [0xec as f32, 0xef as f32, 0xf3 as f32];
-    // (x, y_top, y_bottom) of each rod in the 128-unit tile.
-    const RODS: [(f32, f32, f32); 4] = [
-        (46.0, 37.6, 73.6),
-        (58.0, 37.6, 90.4),
-        (70.0, 37.6, 61.6),
-        (82.0, 37.6, 80.8),
-    ];
-    const STROKE_RADIUS: f32 = 4.2;
+    const ABYSS: [f32; 3] = [0x08 as f32, 0x0c as f32, 0x14 as f32];
+    const GLOW: [f32; 3] = [0x4f as f32, 0xd1 as f32, 0xff as f32];
+    const INK: [f32; 3] = [0xe9 as f32, 0xee as f32, 0xf7 as f32];
+    const STROKE_RADIUS: f32 = 6.0;
 
     let scale = 128.0 / size as f32;
     let mut pixels = Vec::with_capacity((size * size * 4) as usize);
@@ -27,18 +20,30 @@ pub fn tile_rgba(size: u32) -> Vec<u8> {
 
             let mut color = [0.0f32; 3];
             let mut alpha = coverage(rounded_square(x, y, 64.0, 28.0), scale);
-            for (c, g) in color.iter_mut().zip(GRAPHITE) {
-                *c = g;
+            for (c, a) in color.iter_mut().zip(ABYSS) {
+                *c = a;
             }
 
-            let rods = RODS
-                .iter()
-                .map(|&(rx, top, bottom)| vertical_capsule(x, y, rx, top, bottom, STROKE_RADIUS))
-                .fold(f32::MAX, f32::min);
-            blend(&mut color, &mut alpha, CADMIUM, coverage(rods, scale));
+            let dx = x - 64.0;
+            let dy = y - 64.0;
+            let ring = ((dx.powi(2) + dy.powi(2)).sqrt() - 34.0).abs() - STROKE_RADIUS;
+            let open_arc = if dx > 0.0 && dy.abs() < dx {
+                f32::MAX
+            } else {
+                ring
+            };
+            let rounded_ends = vertical_capsule(x, y, 88.042, 39.958, 39.958, STROKE_RADIUS).min(
+                vertical_capsule(x, y, 88.042, 88.042, 88.042, STROKE_RADIUS),
+            );
+            blend(
+                &mut color,
+                &mut alpha,
+                GLOW,
+                coverage(open_arc.min(rounded_ends), scale),
+            );
 
-            let plate = horizontal_capsule(x, y, 48.4, 38.8, 89.2, STROKE_RADIUS);
-            blend(&mut color, &mut alpha, PLATE, coverage(plate, scale));
+            let rod = vertical_capsule(x, y, 90.0, 52.0, 76.0, 5.0);
+            blend(&mut color, &mut alpha, INK, coverage(rod, scale));
 
             pixels.extend(color.iter().map(|c| c.round().clamp(0.0, 255.0) as u8));
             pixels.push((alpha * 255.0).round().clamp(0.0, 255.0) as u8);
@@ -82,11 +87,6 @@ fn vertical_capsule(x: f32, y: f32, cx: f32, top: f32, bottom: f32, radius: f32)
     ((x - cx).powi(2) + (y - clamped).powi(2)).sqrt() - radius
 }
 
-fn horizontal_capsule(x: f32, y: f32, cy: f32, left: f32, right: f32, radius: f32) -> f32 {
-    let clamped = x.clamp(left, right);
-    ((x - clamped).powi(2) + (y - cy).powi(2)).sqrt() - radius
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn tile_has_transparent_corners_graphite_ground_and_cadmium_rods() {
+    fn tile_has_transparent_corners_abyss_ground_and_condenser_mark() {
         let size = 128;
         let rgba = tile_rgba(size);
         assert_eq!(rgba.len(), (size * size * 4) as usize);
@@ -108,18 +108,18 @@ mod tests {
         );
         assert_eq!(
             pixel(&rgba, size, 20, 110),
-            [0x16, 0x19, 0x1e, 255],
-            "graphite ground"
+            [0x08, 0x0c, 0x14, 255],
+            "abyss ground"
         );
         assert_eq!(
-            pixel(&rgba, size, 58, 80),
-            [0xf3, 0xc0, 0x20, 255],
-            "deepest rod"
+            pixel(&rgba, size, 64, 30),
+            [0x4f, 0xd1, 0xff, 255],
+            "cyan C-ring"
         );
         assert_eq!(
-            pixel(&rgba, size, 64, 48),
-            [0xec, 0xef, 0xf3, 255],
-            "head plate"
+            pixel(&rgba, size, 90, 64),
+            [0xe9, 0xee, 0xf7, 255],
+            "single light rod"
         );
     }
 }

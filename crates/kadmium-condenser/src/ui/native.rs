@@ -46,7 +46,7 @@ pub fn run(options: UiOptions, server: EmbeddedServer) {
 
 fn build_window(event_loop: &EventLoop<()>) -> Result<Window, String> {
     let builder = WindowBuilder::new()
-        .with_title("Condenser — Kadmium Power Plant")
+        .with_title("Condenser — Agent Workspace")
         .with_inner_size(LogicalSize::new(1280.0, 820.0))
         .with_min_inner_size(LogicalSize::new(960.0, 640.0))
         .with_theme(Some(Theme::Dark))
@@ -75,7 +75,7 @@ fn build_webview(context: &mut WebContext, window: &Window, url: &str) -> wry::R
     let origin = url.trim_end_matches('/').to_string();
     let builder = WebViewBuilder::new_with_web_context(context)
         .with_url(url)
-        .with_background_color((14, 16, 19, 255))
+        .with_background_color((8, 12, 20, 255))
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(move |next| {
             let stay = stays_in_window(&origin, &next);

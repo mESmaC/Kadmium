@@ -19,7 +19,20 @@
     busy: false,
     busySessionId: null,
     selectedTool: null,
-    persistence: true
+    persistence: true,
+    contextPanel: 'run',
+    contextWide: false,
+    workspace: { root: '', name: 'Workspace', separator: '/' },
+    files: {
+      path: '', parent: null, selected: null, loaded: false, request: 0, previewRequest: 0,
+      editMode: false, showDiff: false, originalContent: '', dirty: false, saving: false,
+      version: 0, saveTimer: null, savePromise: null, operation: false
+    },
+    terminal: { cwd: '', running: false, history: [], historyIndex: 0 },
+    browser: { current: '', history: [], index: -1 },
+    activity: null,
+    reveal: null,
+    lastElapsed: 0
   };
 
   const $ = (id) => document.getElementById(id);
@@ -181,6 +194,7 @@
     const session = currentSession();
     if (!session) return;
     if (!window.confirm('Archive this task and its local run history? This does not affect provider state.')) return;
+    if (state.reveal && state.reveal.sessionId === session.id) finishTokenReveal(state.reveal);
     state.sessions = state.sessions.filter((item) => item.id !== session.id);
     if (!state.sessions.length) {
       createTask(false);
@@ -216,6 +230,468 @@
     if (name === 'capabilities') loadPlugins();
   }
 
+  function saveDockLayout() {
+    try {
+      localStorage.setItem('condenser.workspace.dock.v1', JSON.stringify({ panel: state.contextPanel, wide: state.contextWide }));
+    } catch (_) { /* The dock remains usable without persistence. */ }
+  }
+
+  function loadDockLayout() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('condenser.workspace.dock.v1') || 'null');
+      if (saved && ['run', 'files', 'terminal', 'browser'].includes(saved.panel)) state.contextPanel = saved.panel;
+      if (saved) state.contextWide = Boolean(saved.wide);
+    } catch (_) { /* Ignore invalid or unavailable layout storage. */ }
+    document.body.classList.toggle('context-wide', state.contextWide);
+  }
+
+  function setContextPanel(name, reveal) {
+    if (!['run', 'files', 'terminal', 'browser'].includes(name)) return;
+    state.contextPanel = name;
+    document.body.dataset.contextPanel = name;
+    if (reveal !== false) document.body.classList.remove('context-closed');
+    document.querySelectorAll('[data-context-tab]').forEach((button) => {
+      const active = button.dataset.contextTab === name;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', String(active));
+      button.tabIndex = active ? 0 : -1;
+    });
+    document.querySelectorAll('.context-panel').forEach((panel) => { panel.hidden = panel.id !== 'context-' + name; });
+    if (name === 'files' && !state.files.loaded) loadWorkspace();
+    if (name === 'terminal') setTimeout(() => $('terminal-command').focus(), 0);
+    saveDockLayout();
+  }
+
+  function postJson(path, payload) {
+    return api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+  }
+
+  async function loadWorkspace() {
+    try {
+      state.workspace = await api('/api/v1/workspace');
+      $('workspace-name').textContent = state.workspace.name || 'Workspace';
+      $('workspace-name').title = state.workspace.root || '';
+      await loadFiles('');
+    } catch (error) {
+      $('file-list').replaceChildren(element('p', 'panel-empty error', error.message));
+    }
+  }
+
+  async function loadFiles(path) {
+    const request = ++state.files.request;
+    try {
+      const listing = await postJson('/api/v1/files/list', { path: path || '' });
+      if (request !== state.files.request) return;
+      state.files.path = listing.path;
+      state.files.parent = listing.parent;
+      state.files.loaded = true;
+      $('files-path').textContent = '/' + (listing.path || '');
+      $('files-up').disabled = listing.parent === null;
+      renderFileList(listing.entries, listing.truncated);
+    } catch (error) {
+      if (request === state.files.request) $('file-list').replaceChildren(element('p', 'panel-empty error', error.message));
+    }
+  }
+
+  function formatBytes(size) {
+    const value = Number(size) || 0;
+    if (value < 1024) return value + ' B';
+    if (value < 1024 * 1024) return (value / 1024).toFixed(value < 10240 ? 1 : 0) + ' KB';
+    return (value / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  function fileIcon(directory) {
+    const span = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    span.setAttribute('viewBox', '0 0 24 24');
+    span.setAttribute('aria-hidden', 'true');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', directory ? 'M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z' : 'M7 3h7l4 4v14H7V3ZM14 3v5h4');
+    span.append(path);
+    return span;
+  }
+
+  function renderFileList(entries, truncated) {
+    const list = $('file-list');
+    list.replaceChildren();
+    if (!entries.length) list.append(element('p', 'panel-empty', 'This folder is empty.'));
+    entries.forEach((entry) => {
+      const button = element('button', 'file-row ' + entry.kind + (entry.path === state.files.selected ? ' active' : ''));
+      button.append(fileIcon(entry.kind === 'directory'));
+      button.append(element('span', 'file-row-name', entry.name));
+      if (entry.kind === 'file') button.append(element('span', 'file-row-size', formatBytes(entry.size)));
+      button.title = entry.path;
+      button.addEventListener('click', async () => {
+        if (entry.kind === 'directory') {
+          await closeFilePreview();
+          if (!state.files.selected) loadFiles(entry.path);
+        } else openFile(entry.path);
+      });
+      list.append(button);
+    });
+    if (truncated) list.append(element('p', 'panel-empty', 'Showing the first 500 entries.'));
+  }
+
+  function setFileStatus(text, kind) {
+    $('file-save-status').textContent = text;
+    $('file-save-status').className = 'file-save-status' + (kind ? ' ' + kind : '');
+  }
+
+  function updateFileViews() {
+    const files = state.files;
+    $('file-preview-content').classList.toggle('hidden', files.editMode || files.showDiff);
+    $('file-editor').classList.toggle('hidden', !files.editMode || files.showDiff);
+    $('file-diff').classList.toggle('hidden', !files.showDiff);
+    $('edit-file').textContent = files.editMode ? 'Read' : 'Edit';
+    $('edit-file').setAttribute('aria-pressed', String(files.editMode));
+    $('diff-file').setAttribute('aria-pressed', String(files.showDiff));
+    $('save-file').disabled = !files.dirty || files.saving;
+  }
+
+  function resetFileEditor() {
+    const files = state.files;
+    clearTimeout(files.saveTimer);
+    files.editMode = false;
+    files.showDiff = false;
+    files.originalContent = '';
+    files.dirty = false;
+    files.saving = false;
+    files.version = 0;
+    $('edit-file').disabled = false;
+    $('file-editor').value = '';
+    $('file-diff').replaceChildren();
+    $('rename-file-form').classList.add('hidden');
+    setFileStatus('Autosave on');
+    updateFileViews();
+  }
+
+  async function writeCurrentFile() {
+    const files = state.files;
+    if (!files.selected || !files.dirty || files.saving) return;
+    clearTimeout(files.saveTimer);
+    const path = files.selected;
+    const version = files.version;
+    const content = $('file-editor').value;
+    files.saving = true;
+    setFileStatus('Saving…', 'saving');
+    updateFileViews();
+    try {
+      const result = await postJson('/api/v1/files/write', { path, content });
+      if (files.selected !== path) return;
+      $('preview-file-meta').textContent = formatBytes(result.size) + ' · ' + result.path;
+      if (files.version === version) {
+        files.dirty = false;
+        setFileStatus('Saved');
+      } else {
+        setFileStatus('Pending autosave');
+        queueFileSave();
+      }
+      if (!files.editMode) $('file-preview-content').textContent = content;
+    } catch (error) {
+      if (files.selected === path) setFileStatus(error.message, 'error');
+    } finally {
+      if (files.selected === path) {
+        files.saving = false;
+        updateFileViews();
+        if (files.showDiff) renderFileDiff();
+      }
+    }
+  }
+
+  function saveFile() {
+    const files = state.files;
+    if (!files.selected || !files.dirty) return Promise.resolve();
+    if (files.savePromise) return files.savePromise;
+    const operation = writeCurrentFile();
+    files.savePromise = operation;
+    return operation.finally(() => {
+      if (files.savePromise === operation) files.savePromise = null;
+    });
+  }
+
+  function queueFileSave() {
+    const files = state.files;
+    clearTimeout(files.saveTimer);
+    files.saveTimer = setTimeout(saveFile, 800);
+  }
+
+  async function flushFileEdit() {
+    const files = state.files;
+    if (files.savePromise) await files.savePromise;
+    if (files.dirty) await saveFile();
+    return !files.dirty;
+  }
+
+  function setFileEditMode(enabled) {
+    const files = state.files;
+    if (enabled === files.editMode) return;
+    if (!enabled) {
+      flushFileEdit();
+      $('file-preview-content').textContent = $('file-editor').value;
+    } else {
+      $('file-editor').value = $('file-preview-content').textContent;
+    }
+    files.editMode = enabled;
+    files.showDiff = false;
+    updateFileViews();
+    if (enabled) $('file-editor').focus();
+  }
+
+  function appendDiffLine(container, kind, number, sign, content) {
+    const row = element('div', 'diff-line ' + kind);
+    row.append(element('span', 'diff-line-number', number || ''));
+    row.append(element('span', 'diff-line-sign', sign));
+    row.append(element('span', 'diff-line-code', content));
+    container.append(row);
+  }
+
+  function renderFileDiff() {
+    const before = state.files.originalContent.split('\n');
+    const current = state.files.editMode ? $('file-editor').value : $('file-preview-content').textContent;
+    const after = current.split('\n');
+    let prefix = 0;
+    while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix += 1;
+    let suffix = 0;
+    while (suffix < before.length - prefix && suffix < after.length - prefix && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix += 1;
+    const removed = before.slice(prefix, before.length - suffix);
+    const added = after.slice(prefix, after.length - suffix);
+    const container = $('file-diff');
+    container.replaceChildren();
+    const summary = element('div', 'diff-summary');
+    summary.append(element('span', 'removed', '−' + removed.length + ' removed'));
+    summary.append(document.createTextNode(' · '));
+    summary.append(element('span', 'added', '+' + added.length + ' added'));
+    container.append(summary);
+    if (!removed.length && !added.length) {
+      container.append(element('p', 'panel-empty', 'No changes from the opened version.'));
+      return;
+    }
+    before.slice(Math.max(0, prefix - 3), prefix).forEach((line, index, lines) => appendDiffLine(container, 'context', prefix - lines.length + index + 1, ' ', line));
+    removed.slice(0, 400).forEach((line, index) => appendDiffLine(container, 'removed', prefix + index + 1, '−', line));
+    added.slice(0, 400).forEach((line, index) => appendDiffLine(container, 'added', prefix + index + 1, '+', line));
+    if (removed.length > 400 || added.length > 400) container.append(element('div', 'diff-gap', 'Large change block truncated in this view'));
+    after.slice(after.length - suffix, after.length - suffix + 3).forEach((line, index) => appendDiffLine(container, 'context', after.length - suffix + index + 1, ' ', line));
+  }
+
+  function setFileOperationStatus(text, isError) {
+    $('file-operation-status').textContent = text || '';
+    $('file-operation-status').classList.toggle('error', Boolean(isError));
+    $('file-operation-status').classList.toggle('hidden', !text);
+  }
+
+  function showNewFileForm() {
+    setFileOperationStatus('');
+    $('rename-file-form').classList.add('hidden');
+    const prefix = state.files.path ? state.files.path + '/' : '';
+    $('new-file-path').value = prefix + 'untitled.txt';
+    $('new-file-form').classList.remove('hidden');
+    $('new-file-path').focus();
+    $('new-file-path').setSelectionRange(prefix.length, prefix.length + 8);
+  }
+
+  async function createFile() {
+    const files = state.files;
+    const path = $('new-file-path').value.trim();
+    if (!path || files.operation) return;
+    files.operation = true;
+    try {
+      const result = await postJson('/api/v1/files/create', { path, content: '' });
+      $('new-file-form').classList.add('hidden');
+      await loadFiles(files.path);
+      await openFile(result.path);
+      setFileEditMode(true);
+      setFileOperationStatus('Created ' + result.path);
+    } catch (error) {
+      setFileOperationStatus(error.message, true);
+    } finally {
+      files.operation = false;
+    }
+  }
+
+  function showRenameFileForm() {
+    if (!state.files.selected) return;
+    setFileOperationStatus('');
+    $('new-file-form').classList.add('hidden');
+    $('rename-file-path').value = state.files.selected;
+    $('rename-file-form').classList.remove('hidden');
+    $('rename-file-path').focus();
+    $('rename-file-path').select();
+  }
+
+  async function renameSelectedFile() {
+    const files = state.files;
+    const newPath = $('rename-file-path').value.trim();
+    const path = files.selected;
+    if (!path || !newPath || files.operation) return;
+    if (newPath === path) {
+      $('rename-file-form').classList.add('hidden');
+      return;
+    }
+    if (!await flushFileEdit()) return;
+    files.operation = true;
+    try {
+      const result = await postJson('/api/v1/files/rename', { path, new_path: newPath });
+      $('rename-file-form').classList.add('hidden');
+      await loadFiles(files.path);
+      await openFile(result.path);
+      setFileOperationStatus('Renamed to ' + result.path);
+    } catch (error) {
+      setFileOperationStatus(error.message, true);
+    } finally {
+      files.operation = false;
+    }
+  }
+
+  async function deleteSelectedFile() {
+    const files = state.files;
+    const path = files.selected;
+    if (!path || files.operation) return;
+    if (!await flushFileEdit()) return;
+    files.operation = true;
+    try {
+      const result = await postJson('/api/v1/files/delete', { path });
+      await closeFilePreview();
+      await loadFiles(files.path);
+      setFileOperationStatus('Moved to ' + result.trash_path);
+    } catch (error) {
+      setFileOperationStatus(error.message, true);
+    } finally {
+      files.operation = false;
+    }
+  }
+
+  async function closeFilePreview() {
+    if (!await flushFileEdit()) return;
+    resetFileEditor();
+    state.files.previewRequest += 1;
+    state.files.selected = null;
+    $('context-files').classList.remove('has-preview');
+    $('file-preview').hidden = true;
+    document.querySelectorAll('.file-row.active').forEach((row) => row.classList.remove('active'));
+  }
+
+  async function openFile(path) {
+    if (!await flushFileEdit()) return;
+    resetFileEditor();
+    const request = ++state.files.previewRequest;
+    state.files.selected = path;
+    document.querySelectorAll('.file-row').forEach((row) => row.classList.toggle('active', row.title === path));
+    $('context-files').classList.add('has-preview');
+    $('file-preview').hidden = false;
+    $('preview-file-name').textContent = path.split('/').pop();
+    $('preview-file-meta').textContent = path;
+    $('file-preview-content').textContent = 'Loading…';
+    try {
+      const file = await postJson('/api/v1/files/read', { path });
+      if (request !== state.files.previewRequest) return;
+      state.files.originalContent = file.content;
+      $('preview-file-meta').textContent = formatBytes(file.size) + (file.truncated ? ' · preview truncated at 1 MiB' : ' · ' + file.path);
+      $('file-preview-content').textContent = file.content;
+      $('file-editor').value = file.content;
+      $('edit-file').disabled = file.truncated;
+      setFileStatus(file.truncated ? 'Preview only · 1 MiB limit' : 'Autosave on');
+      $('file-preview-content').scrollTop = 0;
+    } catch (error) {
+      if (request === state.files.previewRequest) {
+        $('file-preview-content').textContent = error.message;
+        $('edit-file').disabled = true;
+      }
+    }
+  }
+
+  function terminalPath() {
+    return '/' + (state.terminal.cwd || '');
+  }
+
+  function appendTerminalOutput(command, cwd, result) {
+    const entry = element('div', 'terminal-entry');
+    entry.append(element('div', 'terminal-command-line', '/' + (cwd || '') + ' › ' + command));
+    if (result) {
+      if (result.stdout) entry.append(element('pre', 'terminal-stream', result.stdout));
+      if (result.stderr) entry.append(element('pre', 'terminal-stream stderr', result.stderr));
+      const failed = result.timed_out || result.exit_code !== 0;
+      let detail = result.timed_out ? 'Stopped after 20 s' : 'Exit ' + result.exit_code + ' · ' + result.duration_ms + ' ms';
+      if (result.stdout_truncated || result.stderr_truncated) detail += ' · output truncated at 128 KiB';
+      entry.append(element('div', 'terminal-meta' + (failed ? ' error' : ''), detail));
+    }
+    $('terminal-output').append(entry);
+    $('terminal-output').scrollTop = $('terminal-output').scrollHeight;
+  }
+
+  async function executeTerminal() {
+    if (state.terminal.running) return;
+    const command = $('terminal-command').value.trim();
+    if (!command) return;
+    const cwd = state.terminal.cwd;
+    state.terminal.history.push(command);
+    state.terminal.historyIndex = state.terminal.history.length;
+    state.terminal.running = true;
+    $('terminal-run').disabled = true;
+    $('terminal-command').value = '';
+    $('terminal-status').className = 'terminal-status running';
+    $('terminal-status').textContent = 'Running…';
+    try {
+      const result = await postJson('/api/v1/terminal/execute', { command, cwd });
+      state.terminal.cwd = result.cwd || '';
+      $('terminal-cwd').textContent = terminalPath();
+      $('terminal-cwd').title = state.workspace.root ? state.workspace.root + state.workspace.separator + state.terminal.cwd.replaceAll('/', state.workspace.separator) : terminalPath();
+      appendTerminalOutput(command, cwd, result);
+      $('terminal-status').className = 'terminal-status' + (result.timed_out || result.exit_code !== 0 ? ' error' : '');
+      $('terminal-status').textContent = result.timed_out ? 'Command timed out' : 'Finished with exit code ' + result.exit_code;
+    } catch (error) {
+      appendTerminalOutput(command, cwd, { stdout: '', stderr: error.message, exit_code: null, timed_out: false, duration_ms: 0 });
+      $('terminal-status').className = 'terminal-status error';
+      $('terminal-status').textContent = error.message;
+    } finally {
+      state.terminal.running = false;
+      $('terminal-run').disabled = false;
+      $('terminal-command').focus();
+    }
+  }
+
+  function normalizeBrowserUrl(raw) {
+    const value = raw.trim();
+    if (!value) return null;
+    const explicitScheme = /^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value) && !/^[^/]+:\d+(?:\/|$)/.test(value);
+    const localAddress = /^(localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(value);
+    const candidate = explicitScheme ? value : (localAddress ? 'http://' : 'https://') + value;
+    const url = new URL(candidate);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Enter an HTTP(S) address without embedded credentials.');
+    return url.href;
+  }
+
+  function updateBrowserHistory() {
+    $('browser-back').disabled = !state.browser.current;
+    $('browser-forward').disabled = !state.browser.current;
+    $('browser-reload').disabled = !state.browser.current;
+    $('browser-external').disabled = !state.browser.current;
+  }
+
+  function navigateBrowser(raw, remember) {
+    let url;
+    try {
+      url = normalizeBrowserUrl(raw);
+    } catch (error) {
+      $('browser-status').classList.remove('hidden');
+      $('browser-status').textContent = error.message;
+      return;
+    }
+    if (!url) return;
+    state.browser.current = url;
+    if (remember !== false) {
+      state.browser.history = state.browser.history.slice(0, state.browser.index + 1);
+      state.browser.history.push(url);
+      if (state.browser.history.length > 40) state.browser.history.shift();
+      state.browser.index = state.browser.history.length - 1;
+    }
+    $('browser-url').value = url;
+    $('browser-home').classList.add('hidden');
+    $('browser-frame').classList.remove('hidden');
+    $('browser-status').classList.remove('hidden');
+    $('browser-status').textContent = 'Loading ' + url;
+    $('browser-frame').src = url;
+    updateBrowserHistory();
+  }
+
   function timeAgo(timestamp) {
     const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
     if (seconds < 60) return 'now';
@@ -228,7 +704,15 @@
     $('task-count').textContent = state.sessions.length;
     const list = $('session-list');
     list.replaceChildren();
-    state.sessions.slice().sort((a, b) => b.updatedAt - a.updatedAt).forEach((session) => {
+    const query = ($('session-search').value || '').trim().toLowerCase();
+    const sessions = state.sessions
+      .filter((session) => !query || (session.title + ' ' + descriptor(session.config.kind).label).toLowerCase().includes(query))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    if (!sessions.length) {
+      list.append(element('p', 'session-search-empty', query ? 'No tasks match your search.' : 'Your next task will appear here.'));
+      return;
+    }
+    sessions.forEach((session) => {
       const button = element('button', 'session-card' + (session.id === state.currentId ? ' active' : ''));
       button.dataset.session = session.id;
       button.append(element('span', 'session-title', session.title));
@@ -277,12 +761,12 @@
     const event = element('article', 'event agent-event');
     const avatar = element('div', 'event-avatar');
     const mark = element('img');
-    mark.src = 'assets/Logos/kadmium-mark-dark.svg';
+    mark.src = 'assets/condenser-mark.svg';
     mark.alt = '';
     avatar.append(mark);
     const main = element('div', 'event-main');
     const meta = element('div', 'event-meta');
-    meta.append(element('span', 'event-author', 'Condenser'));
+    meta.append(element('span', 'event-author', 'Blades'));
     main.append(meta);
     if (message.reasoning && String(message.reasoning).trim()) {
       const trace = element('details', 'reasoning-trace');
@@ -293,10 +777,13 @@
       main.append(trace);
     }
     const toolCalls = message.tool_calls || [];
-    const content = message.content || (toolCalls.length
+    const revealing = state.reveal && state.reveal.message === message;
+    const content = revealing ? state.reveal.visibleText : message.content || (toolCalls.length
       ? 'Requested ' + toolCalls.length + (toolCalls.length === 1 ? ' tool call.' : ' tool calls.')
       : 'No text returned.');
-    main.append(element('div', 'event-text', content));
+    const text = element('div', 'event-text' + (revealing ? ' streaming-text' : ''), content);
+    if (revealing) state.reveal.node = text;
+    main.append(text);
     event.append(avatar, main);
     const nodes = [event];
     toolCalls.forEach((call) => {
@@ -332,21 +819,24 @@
     const timeline = $('timeline');
     timeline.replaceChildren();
     const visible = session.messages.filter((message) => message.role === 'user' || message.role === 'assistant');
+    timeline.closest('.agent-stage').classList.toggle('is-empty', !visible.length);
     if (!visible.length) {
       const empty = element('div', 'empty-harness');
       const mark = element('div', 'empty-agent-mark');
       const image = element('img');
-      image.src = 'assets/Logos/kadmium-mark-dark.svg';
+      image.src = 'assets/condenser-mark.svg';
       image.alt = '';
       mark.append(image);
       empty.append(mark);
-      empty.append(element('h1', '', 'What should we work on?'));
-      empty.append(element('p', 'body', 'Condenser can reason with your chosen provider, call explicitly enabled tools, and keep every run inspectable.'));
+      empty.append(element('p', 'empty-kicker label', 'BLADES · YOUR EVERYDAY AGENT'));
+      empty.append(element('h1', '', 'What will we get done?'));
+      empty.append(element('p', 'body', 'One focused workspace for code, research, computer workflows, and everything in between.'));
       const starters = element('div', 'starter-grid');
       starters.append(
-        starterCard('Design a runtime', 'Compare local and hosted execution paths.', 'Help me design an inference runtime that can move between local and hosted providers.'),
-        starterCard('Debug a provider', 'Build a systematic diagnosis plan.', 'Help me diagnose a model provider connection and design a practical test plan.'),
-        starterCard('Plan agent tools', 'Turn a capability into a plugin.', 'Help me design a Condenser plugin that adds a useful agent capability.')
+        starterCard('Build & debug', 'Work through a coding problem.', 'Help me break down and solve a coding problem with a clear, practical implementation plan.'),
+        starterCard('Research', 'Compare ideas and find a direction.', 'Help me research a topic, compare the important tradeoffs, and organize what I learn.'),
+        starterCard('Computer workflows', 'Plan a repeatable desktop task.', 'Help me design a computer-use workflow with clear steps, checkpoints, and safe tool permissions.'),
+        starterCard('Everyday tasks', 'Turn a loose idea into next steps.', 'Help me organize a task, clarify the outcome, and turn it into a practical set of next steps.')
       );
       empty.append(starters);
       timeline.append(empty);
@@ -414,6 +904,7 @@
     const session = currentSession();
     if (!session) return;
     const working = state.busy && state.busySessionId === session.id;
+    const revealing = working && state.reveal && state.reveal.sessionId === session.id;
     const status = working ? 'running' : session.status;
     if (document.activeElement !== $('task-title')) $('task-title').value = session.title;
     $('task-kicker').textContent = 'TASK / ' + session.id.slice(0, 8);
@@ -429,7 +920,8 @@
     $('send').querySelector('span').textContent = state.busy ? 'Working…' : 'Run task';
     $('provider-button').disabled = state.busy;
     $('composer-status').classList.toggle('error', status === 'error');
-    $('composer-status').textContent = working ? 'The agent loop is running.' : status === 'error' ? session.lastError : status === 'complete' ? 'Run complete.' : '';
+    $('composer-status').textContent = working ? (revealing ? 'Receiving response…' : 'The agent loop is running.') : status === 'error' ? session.lastError : status === 'complete' ? 'Run complete' + (session.lastElapsed ? ' · ' + formatElapsed(session.lastElapsed) : '') + '.' : '';
+    updateActivity();
     renderTimeline(session);
     renderInspector(session);
   }
@@ -707,6 +1199,89 @@
     renderInspector(session);
   }
 
+  function formatElapsed(milliseconds) {
+    const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainder = seconds % 60;
+    const two = (value) => String(value).padStart(2, '0');
+    return hours ? two(hours) + ':' + two(minutes) + ':' + two(remainder) : two(minutes) + ':' + two(remainder);
+  }
+
+  function updateActivity() {
+    const activity = state.activity;
+    if (!activity || activity.sessionId !== state.currentId) return;
+    const elapsed = Date.now() - activity.startedAt;
+    const phases = ['Thinking...', 'Deducing...', 'Plotting...', 'Reasoning...', 'Decoding...'];
+    const revealing = state.reveal && state.reveal.sessionId === activity.sessionId;
+    $('activity-label').textContent = revealing ? 'Generating...' : phases[Math.floor(elapsed / 2400) % phases.length];
+    $('activity-timer').textContent = '[' + formatElapsed(elapsed) + ']';
+  }
+
+  function startActivity(sessionId) {
+    if (state.activity) clearInterval(state.activity.interval);
+    state.lastElapsed = 0;
+    state.activity = { sessionId, startedAt: Date.now(), interval: null };
+    state.activity.interval = setInterval(updateActivity, 250);
+    updateActivity();
+  }
+
+  function stopActivity() {
+    if (!state.activity) return;
+    state.lastElapsed = Date.now() - state.activity.startedAt;
+    const session = state.sessions.find((item) => item.id === state.activity.sessionId);
+    if (session) session.lastElapsed = state.lastElapsed;
+    clearInterval(state.activity.interval);
+    state.activity = null;
+  }
+
+  function finishTokenReveal(reveal) {
+    if (!reveal || reveal.finished) return;
+    reveal.finished = true;
+    clearInterval(reveal.interval);
+    reveal.visibleText = reveal.fullText;
+    if (reveal.node && reveal.node.isConnected) reveal.node.textContent = reveal.fullText;
+    $('timeline').setAttribute('aria-busy', 'false');
+    if (state.reveal === reveal) state.reveal = null;
+    reveal.resolve();
+  }
+
+  function startTokenReveal(session) {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    const message = session.messages.slice().reverse().find((item) => item.role === 'assistant' && item.content && item.content.trim());
+    if (!message) return null;
+    const tokens = message.content.match(/\S+\s*|\s+/g) || [];
+    if (tokens.length < 2) return null;
+    const reveal = {
+      sessionId: session.id,
+      message,
+      fullText: message.content,
+      visibleText: '',
+      tokens,
+      node: null,
+      interval: null,
+      resolve: null,
+      finished: false
+    };
+    state.reveal = reveal;
+    const promise = new Promise((resolve) => { reveal.resolve = resolve; });
+    const rate = Math.min(180, Math.max(45, tokens.length / 8));
+    const startedAt = performance.now();
+    const tick = () => {
+      if (reveal.finished) return;
+      const count = Math.min(tokens.length, Math.floor((performance.now() - startedAt) * rate / 1000));
+      reveal.visibleText = tokens.slice(0, count).join('');
+      if (reveal.node && reveal.node.isConnected) reveal.node.textContent = reveal.visibleText;
+      if (count >= tokens.length) finishTokenReveal(reveal);
+    };
+    reveal.interval = setInterval(tick, 32);
+    $('timeline').setAttribute('aria-busy', 'true');
+    renderAll();
+    updateActivity();
+    tick();
+    return promise;
+  }
+
   async function send() {
     if (state.busy) return;
     const session = currentSession();
@@ -736,6 +1311,7 @@
     state.busySessionId = sessionId;
     session.status = 'running';
     session.lastError = null;
+    startActivity(sessionId);
     saveSessions();
     renderAll();
     try {
@@ -759,6 +1335,10 @@
         target.lastError = terminalError;
         target.updatedAt = Date.now();
         if (target.title === 'Untitled task') target.title = prompt.length > 72 ? prompt.slice(0, 69) + '…' : prompt;
+        if (!terminalError) {
+          const reveal = startTokenReveal(target);
+          if (reveal) await reveal;
+        }
       }
       if (state.currentId === sessionId) $('prompt').value = '';
     } catch (error) {
@@ -770,6 +1350,8 @@
         target.runs.push({ id: uid(), at: Date.now(), steps: [], usage: {}, error: error.message });
       }
     } finally {
+      if (state.reveal && state.reveal.sessionId === sessionId) finishTokenReveal(state.reveal);
+      stopActivity();
       state.busy = false;
       state.busySessionId = null;
       saveSessions();
@@ -839,7 +1421,7 @@
       setTimeout(() => { $('save-instructions').textContent = 'Apply'; }, 1200);
     });
     $('edit-instructions').addEventListener('click', () => {
-      document.body.classList.remove('context-closed');
+      setContextPanel('run');
       $('system-prompt').focus();
     });
     $('provider-button').addEventListener('click', openSettings);
@@ -854,8 +1436,14 @@
       if (button) openToolConsole(button.dataset.plugin, button.dataset.tool);
     });
     $('invoke-tool').addEventListener('click', invokeSelectedTool);
+    $('session-search').addEventListener('input', renderSessions);
     document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => closeLayer(button.dataset.close)));
     document.addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        if (window.matchMedia('(max-width: 980px)').matches) document.body.classList.add('sessions-open');
+        $('session-search').focus();
+      }
       if (event.key === 'Escape') {
         closeLayer('settings');
         closeLayer('tool');
@@ -864,7 +1452,111 @@
     });
     $('toggle-context').addEventListener('click', () => document.body.classList.toggle('context-closed'));
     $('close-context').addEventListener('click', () => document.body.classList.add('context-closed'));
+    $('toggle-sidebar').addEventListener('click', () => document.body.classList.toggle('sidebar-closed'));
     $('toggle-sessions').addEventListener('click', () => document.body.classList.toggle('sessions-open'));
+    $('session-backdrop').addEventListener('click', () => document.body.classList.remove('sessions-open'));
+
+    const contextTabs = Array.from(document.querySelectorAll('[data-context-tab]'));
+    contextTabs.forEach((button, index) => {
+      button.addEventListener('click', () => setContextPanel(button.dataset.contextTab));
+      button.addEventListener('keydown', (event) => {
+        let next = null;
+        if (event.key === 'ArrowRight') next = (index + 1) % contextTabs.length;
+        if (event.key === 'ArrowLeft') next = (index + contextTabs.length - 1) % contextTabs.length;
+        if (event.key === 'Home') next = 0;
+        if (event.key === 'End') next = contextTabs.length - 1;
+        if (next !== null) {
+          event.preventDefault();
+          setContextPanel(contextTabs[next].dataset.contextTab);
+          contextTabs[next].focus();
+        }
+      });
+    });
+    $('toggle-context-width').addEventListener('click', () => {
+      state.contextWide = !state.contextWide;
+      document.body.classList.toggle('context-wide', state.contextWide);
+      $('toggle-context-width').title = state.contextWide ? 'Collapse dock width' : 'Expand dock';
+      saveDockLayout();
+    });
+    $('files-up').addEventListener('click', async () => {
+      if (state.files.parent !== null) {
+        await closeFilePreview();
+        if (!state.files.selected) loadFiles(state.files.parent);
+      }
+    });
+    $('files-refresh').addEventListener('click', () => loadFiles(state.files.path));
+    $('new-file').addEventListener('click', showNewFileForm);
+    $('new-file-form').addEventListener('submit', (event) => { event.preventDefault(); createFile(); });
+    $('cancel-new-file').addEventListener('click', () => $('new-file-form').classList.add('hidden'));
+    $('rename-file').addEventListener('click', showRenameFileForm);
+    $('rename-file-form').addEventListener('submit', (event) => { event.preventDefault(); renameSelectedFile(); });
+    $('cancel-rename-file').addEventListener('click', () => $('rename-file-form').classList.add('hidden'));
+    $('delete-file').addEventListener('click', deleteSelectedFile);
+    $('close-file-preview').addEventListener('click', closeFilePreview);
+    $('toggle-file-wrap').addEventListener('click', () => {
+      $('file-preview-content').classList.toggle('wrap');
+      $('file-editor').classList.toggle('wrap');
+    });
+    $('edit-file').addEventListener('click', () => setFileEditMode(!state.files.editMode));
+    $('diff-file').addEventListener('click', () => {
+      state.files.showDiff = !state.files.showDiff;
+      if (state.files.showDiff) renderFileDiff();
+      updateFileViews();
+    });
+    $('save-file').addEventListener('click', saveFile);
+    $('file-editor').addEventListener('input', () => {
+      state.files.dirty = true;
+      state.files.version += 1;
+      setFileStatus('Pending autosave');
+      updateFileViews();
+      queueFileSave();
+    });
+    $('file-editor').addEventListener('keydown', (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        saveFile();
+      }
+    });
+    window.addEventListener('beforeunload', () => {
+      const files = state.files;
+      if (!files.selected || !files.dirty || files.saving) return;
+      const payload = JSON.stringify({ path: files.selected, content: $('file-editor').value });
+      navigator.sendBeacon('/api/v1/files/write', new Blob([payload], { type: 'application/json' }));
+    });
+
+    $('terminal-form').addEventListener('submit', (event) => { event.preventDefault(); executeTerminal(); });
+    $('terminal-clear').addEventListener('click', () => {
+      $('terminal-output').replaceChildren();
+      $('terminal-status').className = 'terminal-status';
+      $('terminal-status').textContent = 'Ready';
+      $('terminal-command').focus();
+    });
+    $('terminal-command').addEventListener('keydown', (event) => {
+      if (!['ArrowUp', 'ArrowDown'].includes(event.key) || !state.terminal.history.length) return;
+      event.preventDefault();
+      if (event.key === 'ArrowUp') state.terminal.historyIndex = Math.max(0, state.terminal.historyIndex - 1);
+      else state.terminal.historyIndex = Math.min(state.terminal.history.length, state.terminal.historyIndex + 1);
+      $('terminal-command').value = state.terminal.history[state.terminal.historyIndex] || '';
+    });
+
+    $('browser-form').addEventListener('submit', (event) => { event.preventDefault(); navigateBrowser($('browser-url').value, true); });
+    $('browser-back').addEventListener('click', () => {
+      if (state.browser.current) $('browser-frame').contentWindow.history.back();
+    });
+    $('browser-forward').addEventListener('click', () => {
+      if (state.browser.current) $('browser-frame').contentWindow.history.forward();
+    });
+    $('browser-reload').addEventListener('click', () => {
+      if (!state.browser.current) return;
+      try { $('browser-frame').contentWindow.location.reload(); }
+      catch (_) { navigateBrowser(state.browser.current, false); }
+    });
+    $('browser-external').addEventListener('click', () => {
+      if (state.browser.current) window.open(state.browser.current, '_blank', 'noopener,noreferrer');
+    });
+    $('browser-frame').addEventListener('load', () => {
+      $('browser-status').classList.add('hidden');
+    });
   }
 
   async function loadProviders() {
@@ -880,7 +1572,10 @@
   }
 
   async function init() {
+    loadDockLayout();
     bindEvents();
+    setContextPanel(state.contextPanel, false);
+    updateBrowserHistory();
     if (window.matchMedia('(max-width: 980px)').matches) document.body.classList.add('context-closed');
     await loadProviders();
     loadSessions();

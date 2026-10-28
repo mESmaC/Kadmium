@@ -13,6 +13,7 @@ pub mod provider;
 pub mod server;
 pub mod types;
 pub mod ui;
+pub mod workspace;
 
 pub use dsv41_mcl4::{
     CoeDecisionCandidate, CoeDecisionProbeReport, CompactionStats, DeepSeekV41ArchSpec,

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <title>Condenser</title>
+  <defs>
+    <linearGradient id="condenser-cyan" x1="38" y1="30" x2="94" y2="100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4FD1FF"/>
+      <stop offset="1" stop-color="#0284C7"/>
+    </linearGradient>
+    <filter id="condenser-glow" x="8" y="8" width="112" height="112" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feFlood flood-color="#4FD1FF" flood-opacity="0.22"/>
+      <feComposite in2="blur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <path d="M88.042 39.958A34 34 0 1 0 88.042 88.042" stroke="url(#condenser-cyan)" stroke-width="12" stroke-linecap="round" filter="url(#condenser-glow)"/>
+  <path d="M90 52V76" stroke="#E9EEF7" stroke-width="10" stroke-linecap="round"/>
+</svg>
