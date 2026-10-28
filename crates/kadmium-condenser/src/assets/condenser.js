@@ -2,6 +2,10 @@
   'use strict';
 
   const STORAGE_KEY = 'condenser.agent.tasks.v1';
+  const MAX_INTERVIEW_QUESTIONS = 6;
+  const INTERVIEW_READY = '[[READY]]';
+  const INTERVIEW_QUESTION_INSTRUCTION = 'Conduct a clarifying interview before the final response. Ask exactly ONE concise, high-leverage question about the original task, using the previous Q/A context. Return only that question: no task answer, preamble, or list. If you already have enough context to answer well, return exactly [[READY]].';
+  const INTERVIEW_FINAL_INSTRUCTION = 'The clarifying interview is complete. Answer the original task now using all Q/A context. Ask no more questions.';
   const FALLBACK_PROVIDERS = {
     'mcl4-coe': { label: 'MCL4-COE (DeepSeek-V4.1)', base: 'http://127.0.0.1:7861', model: 'dsv41-mcl4-step_10000', keyEnv: 'MCL4_API_KEY', note: 'DeepSeek-V4.1-Flash-1017-NVFP4 (40L, 384+1 MoE, MLA 64Hx512, Engram [1,14], Dual-P4608 + MCL4DS41 step_10000) + 9-operator MCL4-COE engine.' },
     kadmium: { label: 'Kadmium', base: 'http://127.0.0.1:7848', model: 'deepseek-v3-671b-moe-q4k', keyEnv: 'KADMIUM_API_KEY', note: 'Kadmium currently provides reference diagnostics, not model-scale generation.' },
@@ -37,6 +41,7 @@
     browser: { current: '', history: [], index: -1 },
     activity: null,
     reveal: null,
+    interviews: new Map(),
     lastElapsed: 0,
     pendingFiles: []
   };
@@ -87,6 +92,7 @@
       model: item.default_model,
       base_url: item.default_base_url,
       enable_tools: false,
+      interview: false,
       max_steps: 8,
       system_prompt: '',
       sampling: {}
@@ -112,6 +118,7 @@
     config.kind = kind;
     config.max_steps = Math.max(1, Math.min(32, Number(config.max_steps) || 8));
     config.enable_tools = Boolean(config.enable_tools);
+    config.interview = Boolean(config.interview);
     config.system_prompt = typeof config.system_prompt === 'string' ? config.system_prompt : '';
     config.sampling = config.sampling && typeof config.sampling === 'object' ? config.sampling : {};
     return config;
@@ -201,6 +208,7 @@
     if (!session) return;
     if (!window.confirm('Archive this task and its local run history? This does not affect provider state.')) return;
     if (state.reveal && state.reveal.sessionId === session.id) finishTokenReveal(state.reveal);
+    state.interviews.delete(session.id);
     state.sessions = state.sessions.filter((item) => item.id !== session.id);
     if (!state.sessions.length) {
       createTask(false);
@@ -1013,28 +1021,39 @@
     if (!session) return;
     const working = state.busy && state.busySessionId === session.id;
     const revealing = working && state.reveal && state.reveal.sessionId === session.id;
+    const interview = state.interviews.get(session.id);
+    const awaitingAnswer = Boolean(interview && interview.awaitingAnswer && !working);
     const status = working ? 'running' : session.status;
     if (document.activeElement !== $('task-title')) $('task-title').value = session.title;
     $('task-kicker').textContent = 'TASK / ' + session.id.slice(0, 8);
-    $('task-status').className = 'run-status ' + status;
-    $('task-status').textContent = status === 'running' ? 'Working' : status === 'complete' ? 'Complete' : status === 'error' ? 'Needs attention' : 'Ready';
+    $('task-status').className = 'run-status ' + (awaitingAnswer ? 'ready' : status);
+    $('task-status').textContent = awaitingAnswer ? 'Awaiting answer' : status === 'running' ? 'Working' : status === 'complete' ? 'Complete' : status === 'error' ? 'Needs attention' : 'Ready';
     $('enable-tools').checked = session.config.enable_tools;
     $('tool-permission-label').textContent = session.config.enable_tools ? 'Tools on · ' + pluginTools() : 'Tools off';
+    $('interview-mode').checked = session.config.interview;
+    $('interview-mode').disabled = state.busy || Boolean(interview);
     if (document.activeElement !== $('step-budget')) $('step-budget').value = session.config.max_steps;
     $('composer-context').classList.toggle('hidden', !session.config.system_prompt.trim());
+    $('interview-progress').classList.toggle('hidden', !interview);
+    if (interview) {
+      $('interview-progress-label').textContent = 'Q/A ' + Math.max(1, Math.min(interview.questionCount, MAX_INTERVIEW_QUESTIONS)) + '/' + MAX_INTERVIEW_QUESTIONS;
+      $('finish-interview').disabled = state.busy;
+    }
     $('running-indicator').classList.toggle('hidden', !working);
     $('running-detail').textContent = descriptor(session.config.kind).label + ' · up to ' + session.config.max_steps + ' steps · tools ' + (session.config.enable_tools ? 'enabled' : 'disabled');
     const mcl4 = session.config.sampling.mcl4_coe || {};
     $('thinking-control').classList.toggle('hidden', session.config.kind !== 'mcl4-coe');
     $('thinking-level').value = mcl4.reasoning_effort || 'high';
     $('thinking-level').disabled = state.busy;
-    $('import-files').disabled = state.busy;
+    $('import-files').disabled = state.busy || Boolean(interview);
     $('send').disabled = state.busy || Boolean(state.importing);
-    $('send').querySelector('span').textContent = state.busy ? 'Working…' : 'Run task';
+    $('send').querySelector('span').textContent = state.busy ? 'Working…' : awaitingAnswer ? 'Answer' : 'Run task';
+    $('send').setAttribute('aria-label', awaitingAnswer ? 'Answer Blades’ question' : 'Run task');
+    $('prompt').placeholder = awaitingAnswer ? 'Answer Blades’ question…' : 'Ask Blades to code, research, or get things done…';
     $('provider-button').disabled = state.busy;
     renderAttachments();
     $('composer-status').classList.toggle('error', status === 'error');
-    $('composer-status').textContent = working ? (revealing ? 'Receiving response…' : 'The agent loop is running.') : status === 'error' ? session.lastError : status === 'complete' ? 'Run complete' + (session.lastElapsed ? ' · ' + formatElapsed(session.lastElapsed) : '') + '.' : '';
+    $('composer-status').textContent = working ? (revealing ? 'Receiving response…' : 'The agent loop is running.') : status === 'error' ? session.lastError : awaitingAnswer ? 'One answer, then the next question—or finish Q/A now.' : status === 'complete' ? 'Run complete' + (session.lastElapsed ? ' · ' + formatElapsed(session.lastElapsed) : '') + '.' : '';
     updateActivity();
     renderTimeline(session);
     renderInspector(session);
@@ -1330,7 +1349,7 @@
       chip.append(element('span', 'attachment-chip-size', formatBytes(file.size)));
       const remove = element('button', 'attachment-remove', '×');
       remove.type = 'button';
-      remove.disabled = state.busy;
+      remove.disabled = state.busy || Boolean(currentSession() && state.interviews.has(currentSession().id));
       remove.setAttribute('aria-label', 'Remove ' + file.name);
       remove.addEventListener('click', () => {
         state.pendingFiles.splice(index, 1);
@@ -1483,27 +1502,12 @@
     return promise;
   }
 
-  async function send() {
-    if (state.busy || state.importing) return;
-    const session = currentSession();
-    const prompt = $('prompt').value.trim();
-    const attachments = state.pendingFiles.slice();
-    if (!session || (!prompt && !attachments.length)) return;
-    if (!session.config.model.trim()) {
-      session.status = 'error';
-      session.lastError = 'Choose a model in provider settings before running this task.';
-      renderTask();
-      openSettings();
-      return;
-    }
+  async function chatRequest(session, input, transientInstruction, titleSource) {
     const sessionId = session.id;
-    const titleSource = prompt || attachments[0].name;
-    const outboundPrompt = messageWithAttachments(prompt, attachments);
     const messages = session.messages.filter((message) => message.role !== 'system');
-    messages.push({ role: 'user', content: outboundPrompt, tool_calls: [], is_error: false });
-    if (session.config.system_prompt.trim()) {
-      messages.unshift({ role: 'system', content: session.config.system_prompt.trim(), tool_calls: [], is_error: false });
-    }
+    if (input !== null) messages.push({ role: 'user', content: input, tool_calls: [], is_error: false });
+    const systemPrompt = [session.config.system_prompt.trim(), transientInstruction].filter(Boolean).join('\n\n');
+    if (systemPrompt) messages.unshift({ role: 'system', content: systemPrompt, tool_calls: [], is_error: false });
     const provider = {
       kind: session.config.kind,
       model: session.config.model,
@@ -1511,6 +1515,79 @@
       api_key: state.credentials[session.config.kind] || null,
       timeout_secs: 300
     };
+    const report = await api('/api/v1/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider,
+        messages,
+        enable_tools: session.config.enable_tools,
+        max_steps: session.config.max_steps,
+        sampling: session.config.sampling
+      })
+    });
+    const target = state.sessions.find((item) => item.id === sessionId);
+    if (!target) return { target: null, error: null, ready: false };
+    target.messages = report.messages.filter((message) => message.role !== 'system');
+    const terminalError = report.status === 'completed' ? null : (report.error || ('Run ended: ' + report.status));
+    target.runs.push({ id: uid(), at: Date.now(), steps: report.steps, usage: report.usage, diagnostics: report.diagnostics, status: report.status, error: terminalError });
+    target.status = terminalError ? 'error' : 'complete';
+    target.lastError = terminalError;
+    target.updatedAt = Date.now();
+    if (titleSource && target.title === 'Untitled task') target.title = titleSource.length > 72 ? titleSource.slice(0, 69) + '…' : titleSource;
+    const lastMessage = target.messages[target.messages.length - 1];
+    const ready = Boolean(transientInstruction === INTERVIEW_QUESTION_INSTRUCTION && lastMessage && lastMessage.role === 'assistant' && String(lastMessage.content || '').trim() === INTERVIEW_READY);
+    if (ready) target.messages.pop();
+    if (!terminalError && !ready) {
+      const reveal = startTokenReveal(target);
+      if (reveal) await reveal;
+    }
+    return { target, error: terminalError, ready };
+  }
+
+  async function send(options) {
+    if (state.busy || state.importing) return;
+    const finishOnly = Boolean(options && options.finish);
+    const session = currentSession();
+    if (!session) return;
+    const sessionId = session.id;
+    const prompt = $('prompt').value.trim();
+    const attachments = state.pendingFiles.slice();
+    let interview = state.interviews.get(sessionId) || null;
+    const continuingInterview = Boolean(interview);
+    let outboundPrompt = null;
+    if (interview) {
+      if (!interview.retry && !finishOnly) {
+        if (!interview.awaitingAnswer || !prompt) return;
+        outboundPrompt = prompt;
+      }
+    } else {
+      if (!prompt && !attachments.length) return;
+      outboundPrompt = messageWithAttachments(prompt, attachments);
+      if (session.config.interview) {
+        interview = { questionCount: 0, next: 'question', awaitingAnswer: false, retry: false };
+        state.interviews.set(sessionId, interview);
+      }
+    }
+    if (finishOnly && !interview) return;
+    if (!session.config.model.trim()) {
+      if (interview && !continuingInterview) state.interviews.delete(sessionId);
+      session.status = 'error';
+      session.lastError = 'Choose a model in provider settings before running this task.';
+      renderTask();
+      openSettings();
+      return;
+    }
+    const titleSource = continuingInterview ? null : (prompt || (attachments[0] && attachments[0].name));
+    if (interview) {
+      if (finishOnly) interview.next = 'final';
+      if (outboundPrompt !== null) {
+        session.messages.push({ role: 'user', content: outboundPrompt, tool_calls: [], is_error: false });
+        interview.next = interview.questionCount >= MAX_INTERVIEW_QUESTIONS ? 'final' : 'question';
+      }
+      interview.awaitingAnswer = false;
+      interview.retry = false;
+    }
     state.busy = true;
     state.busySessionId = sessionId;
     session.status = 'running';
@@ -1518,41 +1595,48 @@
     startActivity(sessionId);
     saveSessions();
     renderAll();
+    const clearComposer = () => {
+      if (state.currentId !== sessionId) return;
+      $('prompt').value = '';
+      state.pendingFiles = [];
+      setAttachmentStatus('');
+      renderAttachments();
+    };
     try {
-      const report = await api('/api/v1/chat', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          provider,
-          messages,
-          enable_tools: session.config.enable_tools,
-          max_steps: session.config.max_steps,
-          sampling: session.config.sampling
-        })
-      });
-      const target = state.sessions.find((item) => item.id === sessionId);
-      if (target) {
-        target.messages = report.messages.filter((message) => message.role !== 'system');
-        const terminalError = report.status === 'completed' ? null : (report.error || ('Run ended: ' + report.status));
-        target.runs.push({ id: uid(), at: Date.now(), steps: report.steps, usage: report.usage, diagnostics: report.diagnostics, status: report.status, error: terminalError });
-        target.status = terminalError ? 'error' : 'complete';
-        target.lastError = terminalError;
-        target.updatedAt = Date.now();
-        if (target.title === 'Untitled task') target.title = titleSource.length > 72 ? titleSource.slice(0, 69) + '…' : titleSource;
-        if (!terminalError) {
-          const reveal = startTokenReveal(target);
-          if (reveal) await reveal;
+      while (state.sessions.some((item) => item.id === sessionId)) {
+        const phase = interview ? interview.next : null;
+        const instruction = phase === 'question' ? INTERVIEW_QUESTION_INSTRUCTION : phase === 'final' ? INTERVIEW_FINAL_INSTRUCTION : null;
+        const result = await chatRequest(session, interview ? null : outboundPrompt, instruction, titleSource);
+        if (!result.target) return;
+        if (result.error) {
+          if (interview) interview.retry = true;
+          break;
         }
-      }
-      if (state.currentId === sessionId) {
-        $('prompt').value = '';
-        state.pendingFiles = [];
-        setAttachmentStatus('');
-        renderAttachments();
+        if (!interview) {
+          clearComposer();
+          break;
+        }
+        if (phase === 'final') {
+          state.interviews.delete(sessionId);
+          result.target.config.interview = false;
+          clearComposer();
+          break;
+        }
+        if (result.ready) {
+          interview.next = 'final';
+          continue;
+        }
+        interview.questionCount += 1;
+        interview.next = 'question';
+        interview.awaitingAnswer = true;
+        interview.retry = false;
+        clearComposer();
+        break;
       }
     } catch (error) {
       const target = state.sessions.find((item) => item.id === sessionId);
       if (target) {
+        if (interview) interview.retry = true;
         target.status = 'error';
         target.lastError = error.message;
         target.updatedAt = Date.now();
@@ -1598,9 +1682,18 @@
       saveSessions();
       renderSessions();
     });
-    $('send').addEventListener('click', send);
+    $('send').addEventListener('click', () => send());
+    $('finish-interview').addEventListener('click', () => send({ finish: true }));
     $('prompt').addEventListener('keydown', (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') send();
+    });
+    $('interview-mode').addEventListener('change', () => {
+      const session = currentSession();
+      if (!session || state.busy || state.interviews.has(session.id)) return;
+      session.config.interview = $('interview-mode').checked;
+      session.updatedAt = Date.now();
+      saveSessions();
+      renderTask();
     });
     $('thinking-level').addEventListener('change', () => {
       const session = currentSession();

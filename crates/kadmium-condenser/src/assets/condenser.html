@@ -80,6 +80,10 @@
           <div id="composer-context" class="composer-context hidden">
             <button id="edit-instructions" class="context-chip" title="Edit task instructions">Instructions active</button>
           </div>
+          <div id="interview-progress" class="interview-progress hidden">
+            <span id="interview-progress-label">Q/A 1/6</span>
+            <button id="finish-interview" type="button">Finish Q/A</button>
+          </div>
           <div id="composer-attachments" class="composer-attachments hidden"></div>
           <div id="attachment-status" class="attachment-status hidden"></div>
           <textarea id="prompt" rows="3" placeholder="Ask Blades to code, research, or get things done…" aria-label="Task prompt"></textarea>
@@ -93,6 +97,10 @@
                 <input id="enable-tools" type="checkbox">
                 <span class="toggle-track"><span></span></span>
                 <span id="tool-permission-label">Tools off</span>
+              </label>
+              <label class="interview-control" title="Let Blades ask one clarifying question at a time before the final response">
+                <input id="interview-mode" type="checkbox">
+                <span>Q/A</span>
               </label>
               <label class="budget-control" title="Maximum model and tool steps for one turn">
                 <span>Steps</span><input id="step-budget" type="number" min="1" max="32" value="8" aria-label="Step budget">
