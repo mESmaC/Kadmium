@@ -23,8 +23,9 @@ use kadmium_core::{
     HardwareNode, NodeId, NodeRole, PoliteState, sample_personal_cluster,
 };
 use kadmium_data::{
-    Fts3PagePatchEngine, KTB_PAGE_ALIGNMENT_BYTES, KtbBankPacker, KtbBankReader, KtbMerkleTree,
-    MerkleInclusionProof, TensorEncoding, compute_fnv1a64_checksum,
+    ExpertLoadRequest, ExpertLoadResponse, ExpertLoader, Fts3PagePatchEngine,
+    KTB_PAGE_ALIGNMENT_BYTES, KtbBankPacker, KtbBankReader, KtbMerkleTree, MerkleInclusionProof,
+    TensorEncoding, compute_fnv1a64_checksum,
 };
 use kadmium_grid::LayerDigest;
 use kadmium_network::{
@@ -54,6 +55,13 @@ pub const WIRE_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Reply deadline for latency-sensitive control calls (heartbeat ping, KV-cache page migration).
 pub const WIRE_CONTROL_CALL_TIMEOUT: Duration = Duration::from_millis(2500);
+
+/// Bound expert-load/read/encode/write work across every worker connection.
+pub const MAX_IN_FLIGHT_EXPERT_LOADS: usize = 2;
+/// Large expert transfers need longer than control calls on consumer links.
+pub const EXPERT_LOAD_CALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// A slow peer may backpressure a write, but cannot hold a shared load slot forever.
+pub const EXPERT_LOAD_WRITE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Builds a real 64 KiB page-aligned `.ktb` weight bank in memory for a worker node using
 /// `KtbBankPacker` and computes its `KtbMerkleTree` root hash.
@@ -1461,6 +1469,10 @@ pub struct WorkerFrameContext {
     pub served_forward_stages: Arc<AtomicU64>,
     pub served_training_steps: Arc<AtomicU64>,
     pub served_fts3_pages: Arc<AtomicU64>,
+    /// Registered model sources and their shared bounded expert cache.
+    pub expert_loader: ExpertLoader,
+    /// Held from request start through the socket write, bounding queued KDEX responses.
+    pub expert_load_slots: Arc<tokio::sync::Semaphore>,
     /// Executors for generic grid work units, by app kind.
     pub executors: ExecutorRegistry,
     pub served_work_units: Arc<AtomicU64>,
@@ -1561,6 +1573,45 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                 );
                 return Some(reply);
             }
+        }
+        WireFrameKind::ExpertLoad => {
+            let (model_id, source_fingerprint, response) =
+                match ExpertLoadRequest::decode(&frame.payload) {
+                    Ok(request) => {
+                        let model_id = request.model_id.clone();
+                        let source_fingerprint = request.source_fingerprint;
+                        let response =
+                            ctx.expert_loader
+                                .load_request(&request)
+                                .unwrap_or_else(|error| {
+                                    ExpertLoadResponse::error(
+                                        model_id.clone(),
+                                        source_fingerprint,
+                                        public_expert_load_error(&error),
+                                    )
+                                });
+                        (model_id, source_fingerprint, response)
+                    }
+                    Err(error) => (
+                        "unknown".to_string(),
+                        0,
+                        ExpertLoadResponse::error(
+                            "unknown",
+                            0,
+                            format!("malformed expert load request: {error}"),
+                        ),
+                    ),
+                };
+            let payload = response.encode().unwrap_or_else(|error| {
+                ExpertLoadResponse::error(model_id, source_fingerprint, error)
+                    .encode()
+                    .expect("encode small expert error response")
+            });
+            return Some(WireFrame::new(
+                WireFrameKind::ExpertLoad,
+                frame.epoch,
+                payload,
+            ));
         }
         WireFrameKind::Fts3KtbChunkStream => {
             if let Ok(req) = serde_json::from_slice::<LiveFts3ChunkStreamRequest>(&frame.payload) {
@@ -1920,6 +1971,22 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
     None
 }
 
+fn public_expert_load_error(error: &str) -> String {
+    if error.contains("fingerprint mismatch") {
+        "checkpoint fingerprint mismatch".to_string()
+    } else if error.contains("no expert source registered") {
+        "model is not registered for expert loading".to_string()
+    } else if error.contains("changed after it was opened") {
+        "checkpoint changed; reload the expert source".to_string()
+    } else if error.contains("was not found") {
+        "requested expert was not found".to_string()
+    } else if error.contains("split the request") {
+        error.to_string()
+    } else {
+        "expert load failed".to_string()
+    }
+}
+
 /// Reply for a frame `handle_worker_frame` could not serve: same kind and epoch with a small JSON
 /// error body, so a typed client fails fast on the body instead of waiting out its timeout.
 fn unhandled_frame_reply(kind: WireFrameKind, epoch: u32) -> WireFrame {
@@ -1948,12 +2015,16 @@ pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerF
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(tokio::io::BufReader::new(read_half));
     let writer = Arc::new(tokio::sync::Mutex::new(FrameWriter::new(write_half)));
+    let connection_failed = Arc::new(tokio::sync::Notify::new());
     loop {
-        let frame = match reader.read_frame().await {
-            Ok(frame) => frame,
-            // EOF, reset, a malformed header, or a delta frame that cannot be rebuilt: nothing
-            // more can be read from this connection.
-            Err(_) => break,
+        let frame = tokio::select! {
+            result = reader.read_frame() => match result {
+                Ok(frame) => frame,
+                // EOF, reset, a malformed header, or a delta frame that cannot be rebuilt.
+                Err(_) => break,
+            },
+            // A timed-out or failed write may be partial; never reuse this byte stream.
+            _ = connection_failed.notified() => break,
         };
         if frame.kind == WireFrameKind::DeltaHello {
             let mut w = writer.lock().await;
@@ -1968,15 +2039,55 @@ pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerF
             }
             continue;
         }
+        // Acquire before spawning so a saturated worker backpressures each reader instead of
+        // building an unbounded queue of tasks and request frames.
+        let expert_load_permit = if frame.kind == WireFrameKind::ExpertLoad {
+            Some(
+                Arc::clone(&ctx.expert_load_slots)
+                    .acquire_owned()
+                    .await
+                    .expect("expert load slots are never closed"),
+            )
+        } else {
+            None
+        };
         let ctx = ctx.clone();
         let writer = Arc::clone(&writer);
+        let connection_failed = Arc::clone(&connection_failed);
         tokio::spawn(async move {
             let (kind, epoch, request_id) = (frame.kind, frame.epoch, frame.request_id);
-            let reply = handle_worker_frame(frame, &ctx)
-                .unwrap_or_else(|| unhandled_frame_reply(kind, epoch))
-                .with_request_id(request_id);
+            let _expert_load_permit = expert_load_permit;
+            let reply = if matches!(
+                kind,
+                WireFrameKind::ExpertLoad | WireFrameKind::WorkDispatch
+            ) {
+                let blocking_ctx = ctx.clone();
+                tokio::task::spawn_blocking(move || handle_worker_frame(frame, &blocking_ctx))
+                    .await
+                    .unwrap_or_else(|_| Some(unhandled_frame_reply(kind, epoch)))
+            } else {
+                handle_worker_frame(frame, &ctx)
+            }
+            .unwrap_or_else(|| unhandled_frame_reply(kind, epoch))
+            .with_request_id(request_id);
             let mut writer = writer.lock().await;
-            let _ = writer.write_frame(&reply).await;
+            let write_result = if kind == WireFrameKind::ExpertLoad {
+                match tokio::time::timeout(
+                    EXPERT_LOAD_WRITE_TIMEOUT,
+                    writer.write_frame(&reply),
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => Err("expert reply write timed out".to_string()),
+                }
+            } else {
+                writer.write_frame(&reply).await
+            };
+            drop(writer);
+            if write_result.is_err() {
+                connection_failed.notify_one();
+            }
         });
     }
 }
@@ -1995,6 +2106,8 @@ pub struct LiveNodeWorkerServer {
     /// TCP connections accepted since the server started (one persistent `PeerChannel` per
     /// coordinator is the expected steady state).
     pub accepted_connections: Arc<AtomicU64>,
+    /// Register model sources after spawning to serve local and remote expert loads.
+    pub expert_loader: ExpertLoader,
     /// Executors for generic grid work units; register more after spawning to extend the worker.
     pub executors: ExecutorRegistry,
     pub served_work_units: Arc<AtomicU64>,
@@ -2052,6 +2165,8 @@ impl LiveNodeWorkerServer {
         let accepted_counter = Arc::new(AtomicU64::new(0));
         let work_counter = Arc::new(AtomicU64::new(0));
         let executors = ExecutorRegistry::with_defaults();
+        let expert_loader = ExpertLoader::default();
+        let expert_load_slots = Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_EXPERT_LOADS));
 
         let ctx_template = WorkerFrameContext {
             node: Arc::clone(&node_arc),
@@ -2061,6 +2176,8 @@ impl LiveNodeWorkerServer {
             served_forward_stages: Arc::clone(&fwd_counter),
             served_training_steps: Arc::clone(&trn_counter),
             served_fts3_pages: Arc::clone(&fts_counter),
+            expert_loader: expert_loader.clone(),
+            expert_load_slots,
             executors: executors.clone(),
             served_work_units: Arc::clone(&work_counter),
             peer_addr: local_addr,
@@ -2089,6 +2206,7 @@ impl LiveNodeWorkerServer {
             served_training_steps: trn_counter,
             served_fts3_pages: fts_counter,
             accepted_connections: accepted_counter,
+            expert_loader,
             executors,
             served_work_units: work_counter,
         })
@@ -2210,6 +2328,13 @@ impl DistributedLanExecutor {
         POOL.get_or_init(|| PeerChannelPool::with_delta_link(DeltaLinkConfig::from_env()))
     }
 
+    /// Dedicated plain bulk-data channels keep large expert replies off control sockets and avoid
+    /// delta-hashing unique tensor payloads while other connection kinds retain delta support.
+    fn expert_channel_pool() -> &'static PeerChannelPool {
+        static POOL: OnceLock<PeerChannelPool> = OnceLock::new();
+        POOL.get_or_init(PeerChannelPool::new)
+    }
+
     /// Pings a worker's TCP `WireFrame` socket (`WireFrameKind::HeartbeatTelemetry`) and returns
     /// the worker's `LiveHeartbeatPong` along with the measured round-trip latency in milliseconds.
     pub async fn ping_worker_tcp(
@@ -2260,6 +2385,35 @@ impl DistributedLanExecutor {
         let ack: WorkerUpdatePushAck = serde_json::from_slice(&reply.payload)
             .map_err(|e| format!("Malformed WorkerUpdatePushAck: {e}"))?;
         Ok(ack)
+    }
+
+    /// Loads a batch of checkpoint-bound expert packets over the dedicated bulk peer channel.
+    /// Tensor payloads use the binary `KDEX` section directly; no JSON byte-array transcoding.
+    pub async fn load_experts_tcp(
+        worker_tcp_addr: &str,
+        epoch: u64,
+        request: &ExpertLoadRequest,
+    ) -> Result<ExpertLoadResponse, String> {
+        let reply = Self::expert_channel_pool()
+            .call_with_connect_timeout(
+                worker_tcp_addr,
+                Duration::from_millis(3000),
+                WireFrameKind::ExpertLoad,
+                epoch as u32,
+                request.encode()?,
+                EXPERT_LOAD_CALL_TIMEOUT,
+            )
+            .await
+            .map_err(|e| format!("TCP expert load from {worker_tcp_addr} failed: {e}"))?;
+        if reply.kind != WireFrameKind::ExpertLoad {
+            return Err(format!(
+                "expert load from {worker_tcp_addr} returned {:?}",
+                reply.kind
+            ));
+        }
+        let response = ExpertLoadResponse::decode(&reply.payload)?;
+        response.validate_for_request(request)?;
+        Ok(response)
     }
 
     /// Streams a 64 KiB `.ktb` page and its $O(\log N)$ `MerkleInclusionProof` over TCP
