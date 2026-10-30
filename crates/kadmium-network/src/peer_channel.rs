@@ -12,13 +12,22 @@
 //!
 //! The API is deliberately generic (a `WireFrameKind` plus opaque payload bytes): phase 3 of the
 //! grid plan dispatches `kadmium-grid` work units over exactly this channel.
+//!
+//! A channel opened with [`PeerChannel::connect_with`] (as a pool built with
+//! [`PeerChannelPool::with_delta_link`] does) first negotiates a [`crate::delta_link`], so frames
+//! in both directions carry only the chunks the other side does not already hold. A peer from
+//! before delta links gets an ordinary channel.
 
+use crate::delta_link::{
+    ChunkPlan, DeltaDecoder, DeltaEncoder, DeltaHello, DeltaLinkConfig, DeltaLinkSnapshot,
+    DeltaLinkStats, FrameReader, FrameWriter,
+};
 use crate::{WireFrame, WireFrameKind};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::BufReader;
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::oneshot;
@@ -100,7 +109,7 @@ impl ChannelShared {
 }
 
 /// Runs on its own task for the lifetime of the connection: reads replies and demultiplexes them.
-async fn run_reader(mut reader: BufReader<OwnedReadHalf>, shared: Arc<ChannelShared>) {
+async fn run_reader(mut reader: FrameReader<BufReader<OwnedReadHalf>>, shared: Arc<ChannelShared>) {
     /// Fails pending calls even when this task is cancelled (runtime shutdown, channel drop).
     struct FailPendingOnDrop(Arc<ChannelShared>);
     impl Drop for FailPendingOnDrop {
@@ -111,7 +120,7 @@ async fn run_reader(mut reader: BufReader<OwnedReadHalf>, shared: Arc<ChannelSha
     let _guard = FailPendingOnDrop(Arc::clone(&shared));
 
     loop {
-        match WireFrame::read_from_stream(&mut reader).await {
+        match reader.read_frame().await {
             Ok(frame) => shared.dispatch_reply(frame),
             Err(e) => {
                 shared.fail_all(format!("connection closed: {e}"));
@@ -130,9 +139,27 @@ async fn run_reader(mut reader: BufReader<OwnedReadHalf>, shared: Arc<ChannelSha
 /// in-flight call fails and the channel reports unhealthy; it is never reused after that.
 pub struct PeerChannel {
     shared: Arc<ChannelShared>,
-    writer: tokio::sync::Mutex<OwnedWriteHalf>,
+    writer: tokio::sync::Mutex<FrameWriter<OwnedWriteHalf>>,
     next_request_id: AtomicU64,
     reader_task: JoinHandle<()>,
+    /// Outbound and inbound byte counts, when a delta link was negotiated.
+    delta: Option<(Arc<DeltaLinkStats>, Arc<DeltaLinkStats>)>,
+}
+
+/// Fails the channel if a delta-encoded frame is dropped before it is fully written: the encoder
+/// already counts its chunks as held by the peer, so the stream cannot continue.
+struct UnwrittenFrameGuard<'a> {
+    shared: &'a ChannelShared,
+    armed: bool,
+}
+
+impl Drop for UnwrittenFrameGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.shared
+                .fail_all("a delta-encoded frame was cancelled before it was written".into());
+        }
+    }
 }
 
 impl std::fmt::Debug for PeerChannel {
@@ -141,6 +168,7 @@ impl std::fmt::Debug for PeerChannel {
             .field("addr", &self.shared.addr)
             .field("healthy", &self.is_healthy())
             .field("in_flight", &self.in_flight())
+            .field("delta_link", &self.delta_link_active())
             .finish()
     }
 }
@@ -148,11 +176,56 @@ impl std::fmt::Debug for PeerChannel {
 impl PeerChannel {
     /// Connects to `addr` within `connect_timeout` and starts the reply reader task.
     pub async fn connect(addr: &str, connect_timeout: Duration) -> Result<Arc<Self>, String> {
-        let stream = tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
+        let stream = Self::dial(addr, connect_timeout).await?;
+        Ok(Self::from_stream(addr, stream))
+    }
+
+    /// Connects to `addr` and, when `delta` is enabled, negotiates a delta link first.
+    ///
+    /// A peer from before delta links closes the connection on the unknown hello frame, and a
+    /// peer that does not answer within `connect_timeout` is treated the same way: the channel
+    /// reconnects and comes back as an ordinary one. A peer that declines keeps the connection
+    /// as an ordinary channel.
+    pub async fn connect_with(
+        addr: &str,
+        connect_timeout: Duration,
+        delta: &DeltaLinkConfig,
+    ) -> Result<Arc<Self>, String> {
+        if !delta.enabled {
+            return Self::connect(addr, connect_timeout).await;
+        }
+        let stream = Self::dial(addr, connect_timeout).await?;
+        let _ = stream.set_nodelay(true);
+        let (read_half, write_half) = stream.into_split();
+        let mut reader = FrameReader::new(BufReader::new(read_half));
+        let mut writer = FrameWriter::new(write_half);
+        let hello = async {
+            writer.write_plain(&DeltaHello::request(delta)).await?;
+            let reply = reader.read_frame().await?;
+            if reply.kind != WireFrameKind::DeltaHello {
+                return Err(format!("peer answered DeltaHello with {:?}", reply.kind));
+            }
+            DeltaHello::from_bytes(&reply.payload)
+        };
+        match tokio::time::timeout(connect_timeout, hello).await {
+            Ok(Ok(agreed)) => {
+                // Never trust a reply that raises the budget this side proposed.
+                let budget = agreed.store_bytes.min(delta.store_bytes);
+                if budget > 0 {
+                    reader.enable_delta(DeltaDecoder::new(budget));
+                    writer.enable_delta(DeltaEncoder::new(budget));
+                }
+                Ok(Self::from_halves(addr, reader, writer))
+            }
+            _ => Self::connect(addr, connect_timeout).await,
+        }
+    }
+
+    async fn dial(addr: &str, connect_timeout: Duration) -> Result<TcpStream, String> {
+        tokio::time::timeout(connect_timeout, TcpStream::connect(addr))
             .await
             .map_err(|_| format!("TCP connect timeout to peer {addr} after {connect_timeout:?}"))?
-            .map_err(|e| format!("TCP connect error to peer {addr}: {e}"))?;
-        Ok(Self::from_stream(addr, stream))
+            .map_err(|e| format!("TCP connect error to peer {addr}: {e}"))
     }
 
     /// Wraps an already-connected stream. Must run inside a Tokio runtime: it spawns the reader.
@@ -160,19 +233,45 @@ impl PeerChannel {
         // Request/reply traffic is latency-bound: never let Nagle hold a small frame back.
         let _ = stream.set_nodelay(true);
         let (read_half, write_half) = stream.into_split();
+        Self::from_halves(
+            addr,
+            FrameReader::new(BufReader::new(read_half)),
+            FrameWriter::new(write_half),
+        )
+    }
+
+    fn from_halves(
+        addr: &str,
+        reader: FrameReader<BufReader<OwnedReadHalf>>,
+        writer: FrameWriter<OwnedWriteHalf>,
+    ) -> Arc<Self> {
+        let delta = writer.delta_stats().zip(reader.delta_stats());
         let shared = Arc::new(ChannelShared {
             addr: addr.to_string(),
             pending: Mutex::new(HashMap::new()),
             healthy: AtomicBool::new(true),
             close_reason: Mutex::new(None),
         });
-        let reader_task = tokio::spawn(run_reader(BufReader::new(read_half), Arc::clone(&shared)));
+        let reader_task = tokio::spawn(run_reader(reader, Arc::clone(&shared)));
         Arc::new(Self {
             shared,
-            writer: tokio::sync::Mutex::new(write_half),
+            writer: tokio::sync::Mutex::new(writer),
             next_request_id: AtomicU64::new(1),
             reader_task,
+            delta,
         })
+    }
+
+    /// `true` when this channel negotiated a delta link.
+    pub fn delta_link_active(&self) -> bool {
+        self.delta.is_some()
+    }
+
+    /// Byte counts of the delta link as `(outbound, inbound)`, or `None` on an ordinary channel.
+    pub fn delta_link_stats(&self) -> Option<(DeltaLinkSnapshot, DeltaLinkSnapshot)> {
+        self.delta
+            .as_ref()
+            .map(|(tx, rx)| (tx.snapshot(), rx.snapshot()))
     }
 
     /// Address this channel was connected to.
@@ -224,9 +323,13 @@ impl PeerChannel {
             ));
         }
         let request_id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
+        // Chunking hashes the whole payload, so do it before taking the writer: concurrent calls
+        // then serialize only on the store lookups and the write itself.
+        let plan = self
+            .delta_link_active()
+            .then(|| ChunkPlan::new(&frame.payload));
         let (tx, rx) = oneshot::channel();
         self.shared.pending().insert(request_id, tx);
-        let encoded = frame.encode_with_request_id(request_id);
         let deadline = tokio::time::Instant::now() + timeout;
 
         // Taking the writer is cancel-safe: nothing has touched the socket yet.
@@ -237,9 +340,16 @@ impl PeerChannel {
                 frame.kind
             ));
         };
+        let encoded = writer.encode(frame, request_id, plan.as_ref());
+        let mut unwritten = UnwrittenFrameGuard {
+            shared: &self.shared,
+            armed: writer.delta_active(),
+        };
         // A partially written frame would desynchronize the stream, so a write that fails or
         // times out ends the whole channel rather than just this call.
-        match tokio::time::timeout_at(deadline, writer.write_all(&encoded)).await {
+        let written = tokio::time::timeout_at(deadline, writer.write_encoded(&encoded)).await;
+        unwritten.armed = false;
+        match written {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 drop(writer);
@@ -286,6 +396,7 @@ type ChannelSlot = Arc<tokio::sync::Mutex<Option<Arc<PeerChannel>>>>;
 
 struct PoolInner {
     connect_timeout: Duration,
+    delta: DeltaLinkConfig,
     slots: Mutex<HashMap<String, ChannelSlot>>,
 }
 
@@ -323,12 +434,28 @@ impl PeerChannelPool {
 
     /// A pool that bounds every new connection attempt by `connect_timeout`.
     pub fn with_connect_timeout(connect_timeout: Duration) -> Self {
+        Self::with_options(connect_timeout, DeltaLinkConfig::disabled())
+    }
+
+    /// A pool whose new channels negotiate a delta link under `delta` (see
+    /// [`PeerChannel::connect_with`]).
+    pub fn with_delta_link(delta: DeltaLinkConfig) -> Self {
+        Self::with_options(DEFAULT_PEER_CONNECT_TIMEOUT, delta)
+    }
+
+    pub fn with_options(connect_timeout: Duration, delta: DeltaLinkConfig) -> Self {
         Self {
             inner: Arc::new(PoolInner {
                 connect_timeout,
+                delta,
                 slots: Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    /// Delta-link settings applied to new channels.
+    pub fn delta_link(&self) -> DeltaLinkConfig {
+        self.inner.delta
     }
 
     /// Connect timeout applied by [`PeerChannelPool::get_or_connect`] and [`PeerChannelPool::call`].
@@ -364,7 +491,7 @@ impl PeerChannelPool {
         {
             return Ok(Arc::clone(channel));
         }
-        let fresh = PeerChannel::connect(addr, connect_timeout).await?;
+        let fresh = PeerChannel::connect_with(addr, connect_timeout, &self.inner.delta).await?;
         *guard = Some(Arc::clone(&fresh));
         Ok(fresh)
     }
@@ -480,6 +607,15 @@ mod tests {
     }
 
     async fn spawn_jitter_server(frames_per_connection: Option<usize>) -> JitterServer {
+        spawn_jitter_server_with(frames_per_connection, None).await
+    }
+
+    /// [`spawn_jitter_server`] that accepts delta links under `delta`. With `None` it behaves
+    /// like a server from before delta links: a `DeltaHello` makes it hang up.
+    async fn spawn_jitter_server_with(
+        frames_per_connection: Option<usize>,
+        delta: Option<DeltaLinkConfig>,
+    ) -> JitterServer {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind loopback");
@@ -495,16 +631,33 @@ mod tests {
                 let order = Arc::clone(&order_ref);
                 tokio::spawn(async move {
                     let (read_half, write_half) = stream.into_split();
-                    let mut reader = BufReader::new(read_half);
-                    let writer = Arc::new(tokio::sync::Mutex::new(write_half));
+                    let mut reader = FrameReader::new(BufReader::new(read_half));
+                    let writer = Arc::new(tokio::sync::Mutex::new(FrameWriter::new(write_half)));
                     let mut served = 0usize;
                     loop {
                         if frames_per_connection.is_some_and(|limit| served >= limit) {
                             break;
                         }
-                        let Ok(frame) = WireFrame::read_from_stream(&mut reader).await else {
+                        let Ok(frame) = reader.read_frame().await else {
                             break;
                         };
+                        if frame.kind == WireFrameKind::DeltaHello {
+                            let Some(config) = delta else {
+                                break;
+                            };
+                            let mut w = writer.lock().await;
+                            let accepted = crate::delta_link::accept_delta_hello(
+                                &frame,
+                                &config,
+                                &mut reader,
+                                &mut w,
+                            )
+                            .await;
+                            if accepted.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
                         served += 1;
                         let writer = Arc::clone(&writer);
                         let order = Arc::clone(&order);
@@ -517,7 +670,7 @@ mod tests {
                                 WireFrame::new(WireFrameKind::WorkResult, frame.epoch, echoed)
                                     .with_request_id(frame.request_id);
                             let mut w = writer.lock().await;
-                            let _ = reply.write_to_stream(&mut *w).await;
+                            let _ = w.write_frame(&reply).await;
                             order.lock().expect("order lock").push(frame.request_id);
                         });
                     }
@@ -659,5 +812,141 @@ mod tests {
             .await
             .expect_err("unreachable peer must fail");
         assert!(err.contains("connect"), "{err}");
+    }
+
+    /// 1 MiB payload that differs per call only in its first 8 bytes, like a work unit whose
+    /// header changes while its weights do not.
+    fn mostly_shared_payload(i: u64) -> Vec<u8> {
+        let mut payload: Vec<u8> = (0..1u32 << 20)
+            .map(|n| (n.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        payload[..8].copy_from_slice(&i.to_le_bytes());
+        payload
+    }
+
+    #[tokio::test]
+    async fn test_delta_channel_demultiplexes_concurrent_calls_and_reuses_shared_chunks() {
+        let server = spawn_jitter_server_with(None, Some(DeltaLinkConfig::default())).await;
+        let addr = server.addr.to_string();
+        let channel =
+            PeerChannel::connect_with(&addr, Duration::from_secs(5), &DeltaLinkConfig::default())
+                .await
+                .expect("connect");
+        assert!(channel.delta_link_active());
+
+        let mut tasks = Vec::new();
+        for i in 0..32u64 {
+            let ch = Arc::clone(&channel);
+            tasks.push(tokio::spawn(async move {
+                let payload = mostly_shared_payload(i);
+                let reply = ch
+                    .call(
+                        WireFrameKind::WorkDispatch,
+                        i as u32,
+                        payload.clone(),
+                        Duration::from_secs(10),
+                    )
+                    .await
+                    .expect("call");
+                let mut expected = payload;
+                expected.reverse();
+                assert_eq!(reply.kind, WireFrameKind::WorkResult);
+                assert_eq!(reply.epoch, i as u32);
+                assert_eq!(reply.payload, expected);
+            }));
+        }
+        for task in tasks {
+            task.await.expect("call task");
+        }
+        assert_eq!(server.reply_order.lock().unwrap().len(), 32);
+
+        let (outbound, inbound) = channel.delta_link_stats().expect("delta stats");
+        assert_eq!(outbound.logical_bytes, 32 << 20);
+        assert_eq!(inbound.logical_bytes, 32 << 20);
+        // Each direction sends about one payload's worth of literal chunks, then references.
+        for stats in [outbound, inbound] {
+            assert!(
+                stats.wire_bytes < 4 << 20,
+                "32 MiB took {} wire bytes",
+                stats.wire_bytes
+            );
+        }
+        assert_eq!(server.accepted.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_delta_channel_falls_back_to_a_peer_without_delta_links() {
+        // A peer from before delta links hangs up on the hello; the channel redials plainly.
+        let legacy = spawn_jitter_server(None).await;
+        let addr = legacy.addr.to_string();
+        let channel =
+            PeerChannel::connect_with(&addr, Duration::from_secs(5), &DeltaLinkConfig::default())
+                .await
+                .expect("connect");
+        assert!(!channel.delta_link_active());
+        assert!(channel.delta_link_stats().is_none());
+        let reply = channel
+            .call(
+                WireFrameKind::WorkDispatch,
+                1,
+                vec![1, 2, 3],
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("plain call");
+        assert_eq!(reply.payload, vec![3, 2, 1]);
+        assert_eq!(legacy.accepted.load(Ordering::SeqCst), 2);
+
+        // A peer that understands the hello but declines keeps the first connection.
+        let declining = spawn_jitter_server_with(None, Some(DeltaLinkConfig::disabled())).await;
+        let channel = PeerChannel::connect_with(
+            &declining.addr.to_string(),
+            Duration::from_secs(5),
+            &DeltaLinkConfig::default(),
+        )
+        .await
+        .expect("connect");
+        assert!(!channel.delta_link_active());
+        let reply = channel
+            .call(
+                WireFrameKind::WorkDispatch,
+                1,
+                vec![4, 5],
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("plain call");
+        assert_eq!(reply.payload, vec![5, 4]);
+        assert_eq!(declining.accepted.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_delta_pool_reconnects_with_fresh_stores_after_the_peer_hangs_up() {
+        // The server hangs up after two frames per connection. The redialed channel starts with
+        // empty stores on both sides, so the resent payload must go out literally and still
+        // arrive intact.
+        let server = spawn_jitter_server_with(Some(2), Some(DeltaLinkConfig::default())).await;
+        let addr = server.addr.to_string();
+        let pool = PeerChannelPool::with_delta_link(DeltaLinkConfig::default());
+        let timeout = Duration::from_secs(10);
+        for i in 0..5u64 {
+            let payload = mostly_shared_payload(i);
+            let reply = pool
+                .call(
+                    &addr,
+                    WireFrameKind::WorkDispatch,
+                    1,
+                    payload.clone(),
+                    timeout,
+                )
+                .await
+                .expect("pooled call");
+            let mut expected = payload;
+            expected.reverse();
+            assert_eq!(reply.payload, expected);
+        }
+        let channel = pool.get_or_connect(&addr).await.expect("channel");
+        assert!(channel.delta_link_active());
+        assert!(server.accepted.load(Ordering::SeqCst) >= 3);
     }
 }
