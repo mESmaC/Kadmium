@@ -425,12 +425,14 @@ pub mod importer;
 pub mod integrations;
 pub mod merkle;
 pub mod range_pull;
+pub mod safetensors_manifest;
 pub mod transcoder;
 
 pub use importer::*;
 pub use integrations::*;
 pub use merkle::*;
 pub use range_pull::*;
+pub use safetensors_manifest::*;
 pub use transcoder::*;
 
 #[cfg(test)]
