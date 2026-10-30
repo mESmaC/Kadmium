@@ -631,7 +631,8 @@ impl Harness {
                     continue;
                 }
 
-                let Some((tool, validator)) = registry.get_with_validator(&tools, &call.name) else {
+                let Some((tool, validator)) = registry.get_with_validator(&tools, &call.name)
+                else {
                     diagnostics.push(format!(
                         "model requested unregistered or ambiguous tool `{}`; returned an error tool result",
                         call.name
@@ -667,9 +668,7 @@ impl Harness {
                         continue;
                     }
                 };
-                let schema_valid = validator
-                    .map(|v| v.is_valid(&arguments))
-                    .unwrap_or(false);
+                let schema_valid = validator.map(|v| v.is_valid(&arguments)).unwrap_or(false);
                 if !schema_valid {
                     record_tool_result(
                         &tool.plugin_id,

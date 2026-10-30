@@ -368,7 +368,10 @@ impl PhoneFarmBoxController {
             ],
             trust_tier: NodeTrustTier::TrustedCore,
             gpu_name: "20x Qualcomm Adreno Mobile GPU Array".into(),
-            cpu_name: format!("20x Snapdragon Kryo ({} ARM64 Cores)", spec.aggregate_cpu_cores),
+            cpu_name: format!(
+                "20x Snapdragon Kryo ({} ARM64 Cores)",
+                spec.aggregate_cpu_cores
+            ),
             npu_name: Some("20x Qualcomm Hexagon NPU Array".into()),
             npu_tops: (spec.aggregate_int4_tops * 0.65 * 10.0).round() / 10.0,
             fp16_tflops: spec.aggregate_fp16_tflops,

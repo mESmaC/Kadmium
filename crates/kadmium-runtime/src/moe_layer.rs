@@ -526,7 +526,9 @@ impl DispatchPrecision {
             0 => Ok(Self::ExactF32),
             1 => Ok(Self::LowLatencyFp8F32Scale),
             2 => Ok(Self::LowLatencyFp8Ue8m0),
-            other => Err(format!("HolderDispatchBatch: unknown precision tag {other}")),
+            other => Err(format!(
+                "HolderDispatchBatch: unknown precision tag {other}"
+            )),
         }
     }
 }
@@ -598,26 +600,22 @@ impl HolderDispatchBatch {
 
         let row_data = match precision {
             DispatchPrecision::ExactF32 => raw_rows,
-            DispatchPrecision::LowLatencyFp8F32Scale => {
-                PerTokenBlockQuantized::quantize(
-                    &raw_rows,
-                    included_rows.len(),
-                    dim,
-                    DEFAULT_SUBBLOCK_SIZE,
-                    ScaleFormat::ExactF32,
-                )
-                .dequantize()
-            }
-            DispatchPrecision::LowLatencyFp8Ue8m0 => {
-                PerTokenBlockQuantized::quantize(
-                    &raw_rows,
-                    included_rows.len(),
-                    dim,
-                    DEFAULT_SUBBLOCK_SIZE,
-                    ScaleFormat::Ue8m0PowerOfTwo,
-                )
-                .dequantize()
-            }
+            DispatchPrecision::LowLatencyFp8F32Scale => PerTokenBlockQuantized::quantize(
+                &raw_rows,
+                included_rows.len(),
+                dim,
+                DEFAULT_SUBBLOCK_SIZE,
+                ScaleFormat::ExactF32,
+            )
+            .dequantize(),
+            DispatchPrecision::LowLatencyFp8Ue8m0 => PerTokenBlockQuantized::quantize(
+                &raw_rows,
+                included_rows.len(),
+                dim,
+                DEFAULT_SUBBLOCK_SIZE,
+                ScaleFormat::Ue8m0PowerOfTwo,
+            )
+            .dequantize(),
         };
 
         Self {

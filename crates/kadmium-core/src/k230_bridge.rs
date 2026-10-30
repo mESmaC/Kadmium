@@ -588,16 +588,18 @@ impl K230UsbComputeBridge {
 
             return K230DistributedExecutionProof {
                 executed_on_physical_silicon: true,
-                workload_name: "KDMF INT8 4x4 MatMul + SwiGLU + ulab RVV 64x64 GEMM + /sdcard .ktb Witness"
-                    .to_string(),
-                transport_channel: format!(
-                    "Live USB CDC-ACM ({port} — {pnp_instance})"
-                ),
+                workload_name:
+                    "KDMF INT8 4x4 MatMul + SwiGLU + ulab RVV 64x64 GEMM + /sdcard .ktb Witness"
+                        .to_string(),
+                transport_channel: format!("Live USB CDC-ACM ({port} — {pnp_instance})"),
                 riscv_core_signature: format!(
                     "T-Head Xuantie C908 64-bit RISC-V @ 1.6 GHz ({} / {} {})",
                     hw.sysname, hw.machine, hw.release
                 ),
-                nncase_kpu_version: format!("nncase v{} (6 TOPS 3rd-Gen KPU Ready)", hw.nncase_version),
+                nncase_kpu_version: format!(
+                    "nncase v{} (6 TOPS 3rd-Gen KPU Ready)",
+                    hw.nncase_version
+                ),
                 matrix_dimensions: (4, 4, 4),
                 host_reference_checksum_fnv1a: host_hash,
                 k230_hardware_checksum_fnv1a: hw.fnv1a_u64,
@@ -611,11 +613,7 @@ impl K230UsbComputeBridge {
                 } else {
                     3.79
                 },
-                kpu_npu_throughput_fps: if hw.kpu_fps > 0.0 {
-                    hw.kpu_fps
-                } else {
-                    263.6
-                },
+                kpu_npu_throughput_fps: if hw.kpu_fps > 0.0 { hw.kpu_fps } else { 263.6 },
                 ai2d_plus_kpu_chained_ms: 5.48,
                 fastspeech_transformer_50tok_ms: 31.82,
                 ktb_64k_sdcard_write_ms: 13.98,
@@ -635,18 +633,15 @@ impl K230UsbComputeBridge {
                     } else {
                         3.79
                     },
-                    if hw.kpu_fps > 0.0 {
-                        hw.kpu_fps
-                    } else {
-                        263.6
-                    }
+                    if hw.kpu_fps > 0.0 { hw.kpu_fps } else { 263.6 }
                 ),
             };
         }
 
         K230DistributedExecutionProof {
             executed_on_physical_silicon: false,
-            workload_name: "KDMF INT8 4x4 MatMul + Gated SwiGLU Activation Micro-Kernel".to_string(),
+            workload_name: "KDMF INT8 4x4 MatMul + Gated SwiGLU Activation Micro-Kernel"
+                .to_string(),
             transport_channel: format!("USB 2.0 High-Speed ({stage:?} — {pnp_instance})"),
             riscv_core_signature:
                 "T-Head Xuantie C908 64-bit RISC-V @ 1.6 GHz (RVV 1.0) + 6 TOPS KPU".to_string(),
@@ -850,12 +845,7 @@ for line in text.splitlines():
         let expr = format!("kdm_verde({start_layer}, {target_layer}, {fault_val}, {init_json})");
         let resp_str = Self::eval_resident_k230(port, &expr)?;
         let parsed = serde_json::from_str::<K230LiveVerdeJson>(&resp_str).ok()?;
-        Some((
-            parsed.sample,
-            parsed.sum,
-            parsed.digest_u64,
-            parsed.exec_ms,
-        ))
+        Some((parsed.sample, parsed.sum, parsed.digest_u64, parsed.exec_ms))
     }
 
     /// Dispatches a live `Dream-RSI` PUCT MCTS policy search rollout (`sims` simulations)

@@ -226,7 +226,8 @@ impl Mcl4CoeProvider {
                                 let generated_tokens = frame
                                     .get("generated_tokens")
                                     .and_then(|v| v.as_u64())
-                                    .unwrap_or(0) as usize;
+                                    .unwrap_or(0)
+                                    as usize;
                                 let tok_per_s = frame.get("tok_per_s").and_then(|v| v.as_f64());
                                 let _ = tx.send(StreamedTokenDelta {
                                     delta,

@@ -532,14 +532,10 @@ async fn chat_stream(
         );
     }
     if !(1..=32).contains(&request.max_steps) {
-        return Err(
-            CondenserError::Config("max_steps must be between 1 and 32".into()).into(),
-        );
+        return Err(CondenserError::Config("max_steps must be between 1 and 32".into()).into());
     }
     if request.max_calls_per_step == 0 {
-        return Err(
-            CondenserError::Config("max_calls_per_step must be at least 1".into()).into(),
-        );
+        return Err(CondenserError::Config("max_calls_per_step must be at least 1".into()).into());
     }
     request.sampling.validate()?;
 
@@ -571,17 +567,18 @@ async fn chat_stream(
     });
 
     let cancel_guard = StreamCancelOnDrop(cancel_token);
-    let stream = futures_util::stream::unfold(
-        (rx, cancel_guard),
-        |(mut rx, cancel_guard)| async move {
+    let stream =
+        futures_util::stream::unfold((rx, cancel_guard), |(mut rx, cancel_guard)| async move {
             let event = rx.recv().await?;
             let line = format!(
                 "data: {}\n\n",
                 serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
             );
-            Some((Ok::<String, std::convert::Infallible>(line), (rx, cancel_guard)))
-        },
-    );
+            Some((
+                Ok::<String, std::convert::Infallible>(line),
+                (rx, cancel_guard),
+            ))
+        });
 
     Ok((
         [

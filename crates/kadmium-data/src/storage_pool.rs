@@ -354,11 +354,8 @@ impl DecentralizedStoragePoolEngine {
         let dropped_indices = vec![1usize, 2, 4, 6, k + 1];
         let ungrounded_survives = false;
 
-        let mut live_p2p_data: Vec<Option<Vec<u8>>> = original_data_shards
-            .iter()
-            .cloned()
-            .map(Some)
-            .collect();
+        let mut live_p2p_data: Vec<Option<Vec<u8>>> =
+            original_data_shards.iter().cloned().map(Some).collect();
         for &d_idx in &[1usize, 2, 4, 6] {
             if d_idx < k {
                 live_p2p_data[d_idx] = None;
@@ -508,10 +505,7 @@ impl DecentralizedStoragePoolEngine {
         let normalized_uri = if object_uri.starts_with("kdm://") {
             object_uri.to_string()
         } else {
-            format!(
-                "kdm://pool-bucket/{}",
-                object_uri.trim_start_matches('/')
-            )
+            format!("kdm://pool-bucket/{}", object_uri.trim_start_matches('/'))
         };
         let k = data_shards_k.max(1);
         let m = parity_shards_m.max(1);
@@ -588,8 +582,8 @@ impl DecentralizedStoragePoolEngine {
         let mut total_seed_uplink_gbps = 0.0f64;
 
         for nd in nodes {
-            let raw_wire_ram = (nd.memory.fast_accelerator_memory_gb() * 0.10)
-                + (nd.memory.system_ram_gb * 0.20);
+            let raw_wire_ram =
+                (nd.memory.fast_accelerator_memory_gb() * 0.10) + (nd.memory.system_ram_gb * 0.20);
             let wire_ram = raw_wire_ram.max(0.25);
             let pledged_disk = (nd.memory.nvme_cache_gb * 0.85).max(4.0);
             let disk_bw = nd.memory.nvme_read_bw_gbps.max(0.05);
@@ -660,16 +654,12 @@ impl DecentralizedStoragePoolEngine {
         for obj in custom_objects {
             let k = obj.data_shards_k.max(1);
             let parity_m = obj.parity_shards_m.max(1);
-            let phys_gb =
-                ((obj.logical_size_gb * ((k + parity_m) as f64 / (k as f64))) * 100.0).round()
-                    / 100.0;
+            let phys_gb = ((obj.logical_size_gb * ((k + parity_m) as f64 / (k as f64))) * 100.0)
+                .round()
+                / 100.0;
             let superblocks = ((obj.logical_size_gb * 1024.0) / 64.0).ceil().max(1.0) as usize;
-            let holders = Self::select_hrw_shard_holders(
-                &obj.object_uri,
-                0,
-                &contributions,
-                k + parity_m,
-            );
+            let holders =
+                Self::select_hrw_shard_holders(&obj.object_uri, 0, &contributions, k + parity_m);
             for sb in 0..superblocks.min(64) {
                 let sb_holders = Self::select_hrw_shard_holders(
                     &obj.object_uri,
@@ -716,7 +706,9 @@ impl DecentralizedStoragePoolEngine {
                     },
                     sync_policy: GroundingSyncPolicy::AsyncWriteBehindMerkleDelta,
                     priority_tier: (idx as u8).saturating_add(1),
-                    capacity_tb: ((nd.memory.nvme_cache_gb / 1024.0) * 100.0).round().max(1.0)
+                    capacity_tb: ((nd.memory.nvme_cache_gb / 1024.0) * 100.0)
+                        .round()
+                        .max(1.0)
                         / 100.0,
                     sustained_bandwidth_gbps: ((nd.memory.nvme_read_bw_gbps * 8.0) * 10.0).round()
                         / 10.0,
@@ -811,8 +803,8 @@ impl DecentralizedStoragePoolEngine {
 
         for nd in nodes {
             // Each node pledges ~15% of its RAM/UMA to the Wire Carousel and 85% of its NVMe/UFS/SD cache to the Pool Bucket
-            let raw_wire_ram = (nd.memory.fast_accelerator_memory_gb() * 0.10)
-                + (nd.memory.system_ram_gb * 0.20);
+            let raw_wire_ram =
+                (nd.memory.fast_accelerator_memory_gb() * 0.10) + (nd.memory.system_ram_gb * 0.20);
             let wire_ram = if apply_synthetic_floors {
                 raw_wire_ram.max(2.0)
             } else {
@@ -1016,7 +1008,12 @@ mod tests {
         // 100 nodes pooling NVMe + PhoneFarm UFS flash easily exceed 40,000 GiB (~40 TiB)!
         assert!(report.total_pooled_disk_capacity_gb > 40_000.0);
         assert!(report.wire_token_carousel.bandwidth_scaling_multiplier_x > 25.0);
-        assert_eq!(report.wire_token_carousel.wire_carousel_data_stall_ms_per_step, 0.0);
+        assert_eq!(
+            report
+                .wire_token_carousel
+                .wire_carousel_data_stall_ms_per_step,
+            0.0
+        );
         assert!(report.bucket_grounding.grounding_enabled);
         assert!(!report.bucket_grounding.ungrounded_survives_mass_dropout);
         assert!(report.bucket_grounding.grounded_survives_mass_dropout);

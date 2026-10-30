@@ -14,10 +14,10 @@ pub mod deep_gemm;
 pub mod diloco;
 pub mod exl3_qtip;
 pub mod fraud_proof;
+pub mod grid_executor;
 pub mod inference_compute;
 pub mod kernels;
 pub mod kv_replay;
-pub mod grid_executor;
 pub mod live_worker;
 pub mod moe_layer;
 pub mod repops;
@@ -25,18 +25,18 @@ pub mod speculative;
 pub mod throughput_boost;
 pub mod training_compute;
 pub mod training_framework;
+pub use decode_loop::*;
+pub use deep_gemm::*;
 pub use diloco::*;
 pub use exl3_qtip::*;
 pub use fraud_proof::*;
+pub use grid_executor::*;
 pub use inference_compute::*;
 pub use kernels::*;
-pub use decode_loop::*;
-pub use deep_gemm::*;
-pub use grid_executor::*;
 pub use kv_replay::*;
-pub use speculative::*;
 pub use live_worker::*;
 pub use moe_layer::*;
+pub use speculative::*;
 pub use throughput_boost::*;
 pub use training_compute::*;
 pub use training_framework::*;
@@ -242,7 +242,8 @@ impl DeMoDctCompressor {
                         if k == 0 {
                             c * scale0
                         } else {
-                            c * scale_k * repops::cos(std::f32::consts::PI * i_half * (k as f32) / n_f)
+                            c * scale_k
+                                * repops::cos(std::f32::consts::PI * i_half * (k as f32) / n_f)
                         }
                     })
                     .collect();
@@ -784,8 +785,7 @@ mod tests {
 
         let sub_cluster = vec![cluster[0].clone(), cluster[1].clone(), cluster[5].clone()];
         let model = ModelSpec::deepseek_v3_671b_moe();
-        let inf_plan =
-            ShardPlanner::compute_plan(1, &model, WorkloadKind::Inference, &sub_cluster);
+        let inf_plan = ShardPlanner::compute_plan(1, &model, WorkloadKind::Inference, &sub_cluster);
 
         let (inf_report, hops) = DistributedLanExecutor::execute_live_pipeline(
             &inf_plan,
@@ -806,13 +806,9 @@ mod tests {
             WorkloadKind::DistributedTraining,
             &sub_cluster,
         );
-        let trn_report = DistributedLanExecutor::execute_live_training_step(
-            &trn_plan,
-            1,
-            0.05,
-            &live_workers,
-        )
-        .await;
+        let trn_report =
+            DistributedLanExecutor::execute_live_training_step(&trn_plan, 1, 0.05, &live_workers)
+                .await;
         assert_eq!(trn_report.stages.len(), 2);
         assert!(trn_report.mean_loss_after < trn_report.mean_loss_before);
         assert!(trn_report.mean_wire_compression_ratio >= 10.0);
@@ -889,7 +885,10 @@ mod tests {
         let deq = q.dequantize();
         for (r, &yf) in y_fast.iter().enumerate() {
             let y_ref: f32 = (0..cols).map(|c| deq[r * cols + c] * x[c]).sum();
-            assert!((yf - y_ref).abs() < 1e-3, "matvec mismatch: {yf} vs {y_ref}");
+            assert!(
+                (yf - y_ref).abs() < 1e-3,
+                "matvec mismatch: {yf} vs {y_ref}"
+            );
         }
     }
 
@@ -1178,12 +1177,8 @@ mod tests {
 
         let cluster = vec![desktop_node.clone(), cm4_node.clone()];
         let model = ModelSpec::deepseek_v3_671b_exl3();
-        let train_plan = ShardPlanner::compute_plan(
-            2,
-            &model,
-            WorkloadKind::DistributedTraining,
-            &cluster,
-        );
+        let train_plan =
+            ShardPlanner::compute_plan(2, &model, WorkloadKind::DistributedTraining, &cluster);
         let inf_plan = ShardPlanner::compute_plan(2, &model, WorkloadKind::Inference, &cluster);
 
         // 7. Live Distributed QLoRA + Nous DeMo DCT + DiLoCo Nesterov Training Step on reTerminal CM4
@@ -1258,9 +1253,8 @@ mod tests {
                 })
                 .collect();
             let col_signs = FastWalshHadamardTransform::rademacher_signs(cols, 777 + 1);
-            let hessian = OnTheFlyHessianLdl::from_calibration_activations(
-                &cal_rows, cols, &col_signs, 0.05,
-            );
+            let hessian =
+                OnTheFlyHessianLdl::from_calibration_activations(&cal_rows, cols, &col_signs, 0.05);
 
             for &bpw in &[2.5f32, 3.0f32, 4.0f32] {
                 let q_tensor = Exl3TrellisQuantizer::quantize_matrix(
@@ -1465,12 +1459,8 @@ mod tests {
         let cluster = vec![desktop_node.clone(), m4_node.clone(), cm4_node.clone()];
         let model = ModelSpec::deepseek_v3_671b_exl3();
         let inf_plan = ShardPlanner::compute_plan(3, &model, WorkloadKind::Inference, &cluster);
-        let train_plan = ShardPlanner::compute_plan(
-            3,
-            &model,
-            WorkloadKind::DistributedTraining,
-            &cluster,
-        );
+        let train_plan =
+            ShardPlanner::compute_plan(3, &model, WorkloadKind::DistributedTraining, &cluster);
 
         // 1. Live 3-Device Pipeline Inference (Windows x86_64 -> Apple M4 Metal 4 -> reTerminal CM4 NEON)
         let (inf_report, hops) = DistributedLanExecutor::execute_live_pipeline(
@@ -1591,15 +1581,14 @@ mod tests {
             let parity: Vec<u8> = (0..256)
                 .map(|i| s0[i] ^ s1[i] ^ s2[i] ^ s3_lost[i])
                 .collect();
-            let (recovered, _fnv, xor_ms) =
-                M4MacMiniLanBridge::execute_raid5_xor_recovery_on_m4(
-                    DEFAULT_M4_MAC_MINI_IP,
-                    &parity,
-                    &s0,
-                    &s1,
-                    &s2,
-                )
-                .expect("execute live NEON RAID-5 XOR recovery on Apple M4");
+            let (recovered, _fnv, xor_ms) = M4MacMiniLanBridge::execute_raid5_xor_recovery_on_m4(
+                DEFAULT_M4_MAC_MINI_IP,
+                &parity,
+                &s0,
+                &s1,
+                &s2,
+            )
+            .expect("execute live NEON RAID-5 XOR recovery on Apple M4");
             assert_eq!(recovered, s3_lost);
 
             // 10. Live Cross-ISA EXL3 / QTIP FWHT + Bitshift Trellis MatVec (x86_64 vs Apple M4 Accelerate vDSP + NEON)
@@ -1859,7 +1848,10 @@ mod tests {
                 &cm4_probe.board_model,
                 &cm4_probe.telemetry.i2c_peripherals,
             );
-            assert_eq!(detected_cm4_carrier, Cm4CarrierFormFactor::SeeedReTerminalHmi);
+            assert_eq!(
+                detected_cm4_carrier,
+                Cm4CarrierFormFactor::SeeedReTerminalHmi
+            );
 
             // 6b. Live 5-Point Gensyn Verde Fault-Localization Sweep across Layer Boundaries (L0, L11, L19, L37, L63) on Apple M4
             let initial_act = vec![0.125, -0.35, 0.72, 0.19, -0.61, 0.44, 0.88, -0.27];
@@ -1880,9 +1872,10 @@ mod tests {
                 LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, desktop_node.clone(), false)
                     .await
                     .expect("spawn desktop worker");
-            let w_m4 = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, m4_node.clone(), false)
-                .await
-                .expect("spawn M4 worker");
+            let w_m4 =
+                LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, m4_node.clone(), false)
+                    .await
+                    .expect("spawn M4 worker");
             let w_cm4 =
                 LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, cm4_node.clone(), false)
                     .await
@@ -1981,14 +1974,8 @@ mod tests {
                 let x_vec: Vec<f32> = (0..cols)
                     .map(|i| ((i as f32) * 0.13 + (seed as f32) * 0.005).cos() * 0.35)
                     .collect();
-                let q_tile = Exl3TrellisQuantizer::quantize_matrix(
-                    &raw_w,
-                    rows,
-                    cols,
-                    2.55,
-                    None,
-                    seed,
-                );
+                let q_tile =
+                    Exl3TrellisQuantizer::quantize_matrix(&raw_w, rows, cols, 2.55, None, seed);
                 let y_x86 = q_tile.matvec_f32(&x_vec);
                 let y_x86_f64: Vec<f64> = y_x86.iter().map(|&v| v as f64).collect();
                 let x86_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&y_x86_f64);
@@ -2398,8 +2385,8 @@ mod tests {
         let flat: Vec<f32> = (0..(rows * dim))
             .map(|i| ((i as f32) * 0.05).sin() * (1.0 + (i / dim) as f32))
             .collect();
-        let batch = TokenBatchInt8::quantize(&flat, rows as u32, dim as u32, 16)
-            .expect("quantize batch");
+        let batch =
+            TokenBatchInt8::quantize(&flat, rows as u32, dim as u32, 16).expect("quantize batch");
         assert_eq!(batch.tensor.total_elements, rows * dim);
         assert_eq!(batch.tensor.absmax_scales.len(), 10);
 

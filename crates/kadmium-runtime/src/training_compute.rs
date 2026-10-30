@@ -282,8 +282,9 @@ impl GaLoreMuonHybridOptimizer {
         self.v_max_sqrt = max_v_sqrt;
         for idx in 0..(r * self.cols) {
             self.m_int8[idx] = ((m_fp[idx] / max_m) * 127.0).round().clamp(-127.0, 127.0) as i8;
-            self.v_uint8[idx] =
-                ((v_fp[idx].sqrt() / max_v_sqrt) * 255.0).round().clamp(0.0, 255.0) as u8;
+            self.v_uint8[idx] = ((v_fp[idx].sqrt() / max_v_sqrt) * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
         }
 
         // 3. Apply Muon 5-step Newton-Schulz orthogonalization to the preconditioned momentum in subspace:
@@ -341,7 +342,11 @@ impl GaLoreMuonHybridOptimizer {
         let mut opt = Self::new(rows, cols, rank, 0.08, 1.0);
         let (initial_loss, grad0) = eval_loss_and_grad(&weights);
         let ortho_sample = Self::muon_newton_schulz_5step(&grad0[..(rank * cols)], rank, cols);
-        let post_frob = ortho_sample.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().sqrt();
+        let post_frob = ortho_sample
+            .iter()
+            .map(|&v| (v as f64) * (v as f64))
+            .sum::<f64>()
+            .sqrt();
 
         opt.step(&mut weights, &grad0);
         for _ in 1..12 {
@@ -353,8 +358,7 @@ impl GaLoreMuonHybridOptimizer {
         // Memory comparison for a full 4096 x 4096 projection matrix scaled from (rows, cols, rank):
         let scale_factor = (4096 / rows.max(1)) * (4096 / cols.max(1));
         let std_adamw_bytes = rows * cols * 12 * scale_factor; // FP32 m_t (4B) + v_t (4B) + master_copy (4B)
-        let galore_int8_bytes =
-            (rows * rank * 4 + rank * cols * 2 + 64) * scale_factor.max(1); // FP32 P_t + INT8 m_t + UINT8 v_t
+        let galore_int8_bytes = (rows * rank * 4 + rank * cols * 2 + 64) * scale_factor.max(1); // FP32 P_t + INT8 m_t + UINT8 v_t
         let vram_red = (1.0 - (galore_int8_bytes as f64 / std_adamw_bytes as f64)) * 100.0;
         let loss_red = ((initial_loss - final_loss) / initial_loss.max(1e-9)) * 100.0;
 
@@ -523,8 +527,7 @@ impl SequencePackerAndChunkedCrossEntropy {
 
                 let target_v = targets[t].min(vocab_size - 1);
                 let lse = max_logit + sum_exp.ln();
-                let target_logit =
-                    chunk_logits[local_t * vocab_size + target_v].ln() + max_logit;
+                let target_logit = chunk_logits[local_t * vocab_size + target_v].ln() + max_logit;
                 total_loss += (lse - target_logit) as f64;
 
                 // Fused analytical backward pass for token `t`: grad_h[t] += sum_v (p_v - 1_{v==y}) * W_v / N
@@ -699,7 +702,11 @@ impl HadamardFp8TrainingEngine {
 
         // 1. Compare tensor-wide FP8 E4M3 quantization error on `x` with vs. without FWHT rotation:
         let naive_deq = Self::tensor_wide_fp8_e4m3_roundtrip(&x);
-        let x_norm = x.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().sqrt();
+        let x_norm = x
+            .iter()
+            .map(|&v| (v as f64) * (v as f64))
+            .sum::<f64>()
+            .sqrt();
         let naive_err = x
             .iter()
             .zip(naive_deq.iter())
@@ -753,7 +760,11 @@ impl HadamardFp8TrainingEngine {
         }
 
         let cos_sim = |a: &[f32], b: &[f32]| -> f64 {
-            let dot: f64 = a.iter().zip(b.iter()).map(|(&u, &v)| (u as f64) * (v as f64)).sum();
+            let dot: f64 = a
+                .iter()
+                .zip(b.iter())
+                .map(|(&u, &v)| (u as f64) * (v as f64))
+                .sum();
             let na = a.iter().map(|&u| (u as f64).powi(2)).sum::<f64>().sqrt();
             let nb = b.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
             (dot / (na * nb).max(1e-12)).clamp(-1.0, 1.0)
@@ -845,8 +856,9 @@ impl SkipPipeAndOffloadCoordinator {
         // Without SkipPipe: every straggler spike stalls the entire synchronous 1F1B pipeline
         let baseline_compute_ms = (mb as f64) * base_stage_ms;
         let baseline_opt_step_ms = 95.0; // Synchronous optimizer + DeMo DCT step at end of batch
-        let stalled_total_ms =
-            baseline_compute_ms + (straggler_events as f64) * straggler_spike_ms + baseline_opt_step_ms;
+        let stalled_total_ms = baseline_compute_ms
+            + (straggler_events as f64) * straggler_spike_ms
+            + baseline_opt_step_ms;
 
         // With SkipPipe + Async PhoneFarm/CPU/UMA Offload:
         // Interior straggler micro-batches bypass the congested stage (+2.5 ms routing hop instead of 140 ms stall),
@@ -958,7 +970,13 @@ impl TrainingComputeAcceleratorSuite {
         let wsd_epoch = DistributedTrainingEpochRunner::run_resilient_epoch_simulation();
 
         let sample_act: Vec<f32> = (0..256)
-            .map(|i| if i % 37 == 0 { 8.5 } else { ((i % 13) as f32 - 6.0) * 0.2 })
+            .map(|i| {
+                if i % 37 == 0 {
+                    8.5
+                } else {
+                    ((i % 13) as f32 - 6.0) * 0.2
+                }
+            })
             .collect();
         let zb_train = ZeroBubblePipelineScheduler::evaluate_zbh1_schedule(6, 24, &sample_act);
 
@@ -976,48 +994,33 @@ impl TrainingComputeAcceleratorSuite {
 
         for nd in &nodes {
             let (role, base_tok_s, watts, mem_saved) = match nd.device_kind {
-                DeviceKind::DesktopWorkstation => (
-                    "ZB-H1 Backbone + FWHT-FP8 GEMM",
-                    4_850.0,
-                    380.0,
-                    11.4,
-                ),
-                DeviceKind::AppleSiliconMac => (
-                    "UMA Middle Stage + GaLore-Muon Basis",
-                    1_920.0,
-                    52.0,
-                    22.8,
-                ),
-                DeviceKind::GamingLaptop => (
-                    "SkipPipe Elastic Stage + INT8 Ckpt",
-                    1_340.0,
-                    95.0,
-                    4.2,
-                ),
+                DeviceKind::DesktopWorkstation => {
+                    ("ZB-H1 Backbone + FWHT-FP8 GEMM", 4_850.0, 380.0, 11.4)
+                }
+                DeviceKind::AppleSiliconMac => {
+                    ("UMA Middle Stage + GaLore-Muon Basis", 1_920.0, 52.0, 22.8)
+                }
+                DeviceKind::GamingLaptop => {
+                    ("SkipPipe Elastic Stage + INT8 Ckpt", 1_340.0, 95.0, 4.2)
+                }
                 DeviceKind::PhoneFarmChassis => (
                     "20-Slot Async GaLore/DeMo + GRPO Rollouts",
                     2_680.0,
                     115.0,
                     64.0,
                 ),
-                DeviceKind::LinuxSbc => (
-                    "WASI Reward Verifier + Varlen Pre-Packer",
-                    420.0,
-                    18.0,
-                    3.8,
-                ),
+                DeviceKind::LinuxSbc => {
+                    ("WASI Reward Verifier + Varlen Pre-Packer", 420.0, 18.0, 3.8)
+                }
                 DeviceKind::HomeNas => (
                     "DeMo DCT Aggregator + .ktb Checkpoint Vault",
                     580.0,
                     65.0,
                     18.5,
                 ),
-                DeviceKind::CloudBurstGpu => (
-                    "H100 FP8 TensorCore Burst Stage",
-                    16_400.0,
-                    700.0,
-                    38.6,
-                ),
+                DeviceKind::CloudBurstGpu => {
+                    ("H100 FP8 TensorCore Burst Stage", 16_400.0, 700.0, 38.6)
+                }
                 _ => ("CPU Offload + Canary Referee", 510.0, 65.0, 6.4),
             };
 
@@ -1161,10 +1164,12 @@ mod tests {
     fn test_skippipe_residual_bypass_and_full_hyper_training_suite() {
         let x = vec![1.0f32, 2.0, -1.0, 0.5];
         let fx = vec![0.2f32, -0.4, 0.1, 0.2];
-        let bypassed = SkipPipeAndOffloadCoordinator::apply_skippipe_residual_stage(&x, &fx, 0.2, true);
+        let bypassed =
+            SkipPipeAndOffloadCoordinator::apply_skippipe_residual_stage(&x, &fx, 0.2, true);
         assert_eq!(bypassed, x);
 
-        let active = SkipPipeAndOffloadCoordinator::apply_skippipe_residual_stage(&x, &fx, 0.2, false);
+        let active =
+            SkipPipeAndOffloadCoordinator::apply_skippipe_residual_stage(&x, &fx, 0.2, false);
         assert!((active[0] - (1.0 + 0.2 / 0.8)).abs() < 1e-6);
 
         let suite = TrainingComputeAcceleratorSuite::run_full_suite(None);

@@ -260,8 +260,7 @@ impl SwarmRaidStriper {
         }
 
         // Compute latency metrics:
-        let single_link_baseline_ms =
-            65.0 + (total_logical_payload_mb * 8.0 / 28.0) * 1000.0;
+        let single_link_baseline_ms = 65.0 + (total_logical_payload_mb * 8.0 / 28.0) * 1000.0;
         let raid0_straggler_bound_ms = output_stripes[0..k]
             .iter()
             .map(|p| p.arrival_latency_ms)
@@ -309,7 +308,11 @@ impl SwarmRaidStriper {
         let page_len = data_pages[0].len();
         let mut parity = vec![0u8; page_len];
         for page in data_pages {
-            assert_eq!(page.len(), page_len, "all pages in stripe must have equal size");
+            assert_eq!(
+                page.len(),
+                page_len,
+                "all pages in stripe must have equal size"
+            );
             for (p, &b) in parity.iter_mut().zip(page.iter()) {
                 *p ^= b;
             }
@@ -404,7 +407,10 @@ impl MultiPathInterfaceStriper {
             assigned_so_far += chunks;
 
             allocations.push(MultiPathChannelAllocation {
-                interface_name: format!("{}->{}:{:?}", link.from_node.0, link.to_node.0, link.transport),
+                interface_name: format!(
+                    "{}->{}:{:?}",
+                    link.from_node.0, link.to_node.0, link.transport
+                ),
                 transport: link.transport,
                 bandwidth_gbps: link.bandwidth_gbps,
                 rtt_ms: link.rtt_latency_ms,
@@ -429,7 +435,10 @@ impl MultiPathInterfaceStriper {
     }
 
     /// Convenience helper that builds a realistic multi-homed channel schedule for a node cluster.
-    pub fn benchmark_cluster_multipath(nodes: &[HardwareNode], payload_mb: f64) -> MultiPathStripedSchedule {
+    pub fn benchmark_cluster_multipath(
+        nodes: &[HardwareNode],
+        payload_mb: f64,
+    ) -> MultiPathStripedSchedule {
         let matrix = crate::build_mesh_link_matrix(nodes);
         Self::schedule_multipath_stripes(&matrix, payload_mb)
     }

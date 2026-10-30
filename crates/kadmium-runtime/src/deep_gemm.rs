@@ -55,11 +55,7 @@ pub const FP8_E4M3_MAX: f32 = 448.0;
 /// Ceiling integer division `ceil(a / b)`, DeepGEMM's `ceil_div`.
 #[inline]
 pub const fn ceil_div(a: usize, b: usize) -> usize {
-    if b == 0 {
-        0
-    } else {
-        a.div_ceil(b)
-    }
+    if b == 0 { 0 } else { a.div_ceil(b) }
 }
 
 /// Rounds `a` up to the next multiple of `align`.
@@ -432,14 +428,8 @@ pub fn gemm_fp8_fp8_bf16_nt(
             let nb = col_n / block_size;
             let rhs_scales = &rhs.scales[nb * k_blocks..(nb + 1) * k_blocks];
             let b_codes = rhs.row_codes(col_n);
-            out[row_m * n + col_n] = two_level_scaled_dot(
-                a_codes,
-                &lhs_scales_row,
-                b_codes,
-                rhs_scales,
-                k,
-                block_size,
-            );
+            out[row_m * n + col_n] =
+                two_level_scaled_dot(a_codes, &lhs_scales_row, b_codes, rhs_scales, k, block_size);
         }
     }
     out
@@ -492,14 +482,8 @@ pub fn m_grouped_gemm_fp8_fp8_bf16_nt_contiguous(
             let nb = col_n / block_size;
             let rhs_scales = &rhs.scales[nb * k_blocks..(nb + 1) * k_blocks];
             let b_codes = rhs.row_codes(col_n);
-            out[row_m * n + col_n] = two_level_scaled_dot(
-                a_codes,
-                &lhs_scales_row,
-                b_codes,
-                rhs_scales,
-                k,
-                block_size,
-            );
+            out[row_m * n + col_n] =
+                two_level_scaled_dot(a_codes, &lhs_scales_row, b_codes, rhs_scales, k, block_size);
         }
     }
     out
@@ -797,9 +781,7 @@ impl DeepGemmExpertPool {
         for (group_idx, expert) in self.experts.iter().enumerate() {
             let mut group_count = 0usize;
             for (row_idx, selections) in routing.iter().enumerate() {
-                if let Some(sel) = selections
-                    .iter()
-                    .find(|s| s.expert_id == expert.expert_id)
+                if let Some(sel) = selections.iter().find(|s| s.expert_id == expert.expert_id)
                     && let Some(x) = rows.get(row_idx)
                 {
                     let slot = m_indices.len();
@@ -895,9 +877,7 @@ impl DeepGemmExpertPool {
             let mut group_x = vec![0.0f32; max_m * self.hidden_dim];
             let mut count = 0usize;
             for (row_idx, selections) in routing.iter().enumerate() {
-                if let Some(sel) = selections
-                    .iter()
-                    .find(|s| s.expert_id == expert.expert_id)
+                if let Some(sel) = selections.iter().find(|s| s.expert_id == expert.expert_id)
                     && let Some(x) = rows.get(row_idx)
                     && count < max_m
                 {

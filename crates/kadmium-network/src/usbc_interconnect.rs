@@ -247,7 +247,11 @@ impl UsbCDirectInterconnectScanner {
             kadmium_multistream_striped_gbps: striped_goodput_gbps,
             sustained_throughput_gb_per_sec: sustained_gb_per_sec,
             parallel_socket_lanes: parallel_lanes,
-            negotiated_mtu_bytes: if clamped_rated >= 10.0 { 65_536 } else { 16_384 },
+            negotiated_mtu_bytes: if clamped_rated >= 10.0 {
+                65_536
+            } else {
+                16_384
+            },
             activation_64kb_transfer_us,
             kv_window_512mb_drain_ms,
             full_shard_2gb_drain_ms,
@@ -435,8 +439,7 @@ impl UsbCDirectInterconnectScanner {
 
         UsbCDaisyChainTopologyPlan {
             topology_mode: if count >= 3 {
-                "Switchless USB4 Ring / Daisy-Chain (Zero-Switch 169.254.x.x Point-to-Point)"
-                    .into()
+                "Switchless USB4 Ring / Daisy-Chain (Zero-Switch 169.254.x.x Point-to-Point)".into()
             } else {
                 "Direct Host-to-Host USB4 / Thunderbolt DMA Cable (Point-to-Point)".into()
             },
@@ -625,9 +628,7 @@ mod tests {
         assert_eq!(bench.rated_cable_gbps, 30.0);
         // Multi-stream striping must significantly beat naive single-stream 1500B MTU TCP
         assert!(bench.kadmium_multistream_striped_gbps >= 25.0);
-        assert!(
-            bench.kadmium_multistream_striped_gbps > bench.single_stream_1500_mtu_gbps * 2.0
-        );
+        assert!(bench.kadmium_multistream_striped_gbps > bench.single_stream_1500_mtu_gbps * 2.0);
         // Must beat 1GbE by >25x and 2.5GbE by >10x
         assert!(bench.vs_1gbe_patch_cable_speedup >= 25.0);
         assert!(bench.vs_2_5gbe_patch_cable_speedup >= 10.0);

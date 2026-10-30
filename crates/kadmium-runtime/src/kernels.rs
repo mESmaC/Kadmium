@@ -311,7 +311,12 @@ impl QuantizedKvPageBlock {
             let round_bit = (mant >> 12) & 1;
             let sticky = if (mant & 0x0FFF) != 0 { 1 } else { 0 };
             let m10 = (mant >> 13) as u16;
-            let rounded = m10 + (if round_bit == 1 && (sticky == 1 || (m10 & 1) == 1) { 1 } else { 0 });
+            let rounded = m10
+                + (if round_bit == 1 && (sticky == 1 || (m10 & 1) == 1) {
+                    1
+                } else {
+                    0
+                });
             sign | (((exp as u16) << 10) + rounded)
         }
     }

@@ -440,9 +440,7 @@ fn resolve_command_and_args(root: &Path, manifest: &PluginManifest) -> (String, 
         .map(|arg| substitute_plugin_dir(arg, root))
         .collect();
 
-    if manifest.command.trim() == "cargo"
-        && default_args.first().is_some_and(|a| a == "run")
-    {
+    if manifest.command.trim() == "cargo" && default_args.first().is_some_and(|a| a == "run") {
         let bin_stem = format!("condenser-plugin-{}", manifest.id);
         let exe_name = if cfg!(windows) {
             format!("{bin_stem}.exe")

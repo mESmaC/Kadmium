@@ -5,9 +5,7 @@ use kadmium_core::{
     ClosetSiliconLongevityGovernor, OsSwapchainHysteresisEngine, SubClusterRbacEngine,
     SupplyLeasePolicy, SupplyPayoutMode, SupplySettlementEngine, sample_personal_cluster,
 };
-use kadmium_data::{
-    DecentralizedStoragePoolEngine, HfByteRangeSlicer, SafetensorsToKtbTranscoder,
-};
+use kadmium_data::{DecentralizedStoragePoolEngine, HfByteRangeSlicer, SafetensorsToKtbTranscoder};
 use kadmium_network::{
     MultiPathInterfaceStriper, NatTraversalCoordinator, SwarmRaidStriper, ZeroClickLanPairingEngine,
 };
@@ -67,13 +65,18 @@ pub fn run_lease(hours: f64, payout: &str) {
             .cooling_water_saved_liters_per_month,
         snap.datacenter_avoidance.embodied_carbon_avoided_kg_co2e
     );
-    println!(
-        "  * ⚠️  {}",
-        snap.battery_and_power_safety_advisory
-    );
+    println!("  * ⚠️  {}", snap.battery_and_power_safety_advisory);
     println!(
         "\n{:<22} {:<30} {:>10} {:>10} {:>7} {:>10} {:>11} {:>10} {:>11}",
-        "HOSTNAME", "HARDWARE PROFILE", "BUYER/HR", "HOST ACT", "DUTY%", "EFF $/HR", "GROSS/MO", "POWER/MO", "NET PROFIT"
+        "HOSTNAME",
+        "HARDWARE PROFILE",
+        "BUYER/HR",
+        "HOST ACT",
+        "DUTY%",
+        "EFF $/HR",
+        "GROSS/MO",
+        "POWER/MO",
+        "NET PROFIT"
     );
     println!("{}", "-".repeat(128));
     for q in &snap.node_quotes {
@@ -92,7 +95,9 @@ pub fn run_lease(hours: f64, payout: &str) {
         );
     }
     println!("{}", "-".repeat(128));
-    println!("  [Transparent 5-Factor Formula Breakdown per Node (Mem + BW + TFLOPS + Storage/Uplink x Reliability - 25% Kadmium Fee)]:");
+    println!(
+        "  [Transparent 5-Factor Formula Breakdown per Node (Mem + BW + TFLOPS + Storage/Uplink x Reliability - 25% Kadmium Fee)]:"
+    );
     for q in &snap.node_quotes {
         println!(
             "    * {:<20}: {}",
@@ -114,17 +119,23 @@ pub fn run_lease(hours: f64, payout: &str) {
     println!(
         "  * Company Sustainability Proof: Buyer Billings=${:.2}/mo | Host USD Liability=${:.2}/mo | Kadmium Net Platform Margin=${:.2}/mo (25.0% USD / {:.1}% Credits / {:.1}% Blended | Zero Unfunded Subsidy={})",
         snap.company_sustainability.gross_monthly_buyer_billings_usd,
-        snap.company_sustainability.host_direct_usd_payout_liability_usd,
-        snap.company_sustainability.kadmium_net_revenue_on_usd_payout_usd,
-        snap.company_sustainability.kadmium_gross_margin_on_credit_payout_pct,
+        snap.company_sustainability
+            .host_direct_usd_payout_liability_usd,
+        snap.company_sustainability
+            .kadmium_net_revenue_on_usd_payout_usd,
+        snap.company_sustainability
+            .kadmium_gross_margin_on_credit_payout_pct,
         snap.company_sustainability.blended_company_gross_margin_pct,
-        snap.company_sustainability.zero_unfunded_subsidy_invariant_verified
+        snap.company_sustainability
+            .zero_unfunded_subsidy_invariant_verified
     );
     println!(
         "  * Cost-Plus Steward Split:      {:.0}% Host Compute Payout | {:.0}% Fair Living-Wage Headcount & Relay Infra | {:.0}% Local STEM & Small-Biz Grants",
         snap.company_sustainability.host_compute_share_pct,
-        snap.company_sustainability.headcount_and_infra_cost_plus_pct,
-        snap.company_sustainability.community_stem_and_small_biz_grant_pct
+        snap.company_sustainability
+            .headcount_and_infra_cost_plus_pct,
+        snap.company_sustainability
+            .community_stem_and_small_biz_grant_pct
     );
     println!(
         "  * People-Powered Thesis:        \"{}\"",
@@ -245,20 +256,32 @@ pub fn run_lease(hours: f64, payout: &str) {
         reactor.sla_fault_tolerance.ring_checkpoint_payload_kb,
         reactor.sla_fault_tolerance.dropped_node_hostname,
         reactor.sla_fault_tolerance.failure_injected_at_layer,
-        reactor.sla_fault_tolerance.nearest_upstream_ring_checkpoint_layer,
-        reactor.sla_fault_tolerance.wire_ring_mid_pass_recovery_latency_ms,
-        reactor.sla_fault_tolerance.naive_full_pass_restart_latency_ms,
+        reactor
+            .sla_fault_tolerance
+            .nearest_upstream_ring_checkpoint_layer,
+        reactor
+            .sla_fault_tolerance
+            .wire_ring_mid_pass_recovery_latency_ms,
+        reactor
+            .sla_fault_tolerance
+            .naive_full_pass_restart_latency_ms,
         reactor.sla_fault_tolerance.mid_pass_recovery_speedup_x
     );
     println!(
         "    * Blind FWHT Honey-Token Canary:   {:.1}% rate (Wire CosSim={:.4}) | 1-Pass Poisoning Host Caught={} | Tail-Hedged p99: {:.1} ms -> {:.1} ms",
         reactor.sla_fault_tolerance.blind_canary_injection_rate_pct,
-        reactor.sla_fault_tolerance.canary_wire_indistinguishability_cos_sim,
-        reactor.sla_fault_tolerance.single_pass_poisoning_host_caught,
+        reactor
+            .sla_fault_tolerance
+            .canary_wire_indistinguishability_cos_sim,
+        reactor
+            .sla_fault_tolerance
+            .single_pass_poisoning_host_caught,
         reactor.sla_fault_tolerance.unhedged_p99_latency_ms,
         reactor.sla_fault_tolerance.hedged_p99_latency_ms
     );
-    println!("  [3/4] Closet-Silicon & E-Waste Longevity Governor (Zero Battery Swell & Zero Flash Wear):");
+    println!(
+        "  [3/4] Closet-Silicon & E-Waste Longevity Governor (Zero Battery Swell & Zero Flash Wear):"
+    );
     for p in &reactor.closet_silicon_longevity.protected_profiles {
         println!(
             "    - {:<68} | {} | {:.1}°C (+{:.1}% GFLOPS/W) | Flash Wear: {:.2} -> {:.2} TBW/yr (-{:.2}%, {:.1} yr life)",
@@ -275,7 +298,9 @@ pub fn run_lease(hours: f64, payout: &str) {
     println!(
         "  [4/4] {} — ${:.0} Cost-Plus Retail (BOM ~${:.0}, {} GB LPDDR5, 16W Battery-Free):",
         reactor.embedded_reactor_box.product_name,
-        reactor.embedded_reactor_box.honest_cost_plus_retail_price_usd,
+        reactor
+            .embedded_reactor_box
+            .honest_cost_plus_retail_price_usd,
         reactor.embedded_reactor_box.estimated_bom_cost_usd,
         reactor.embedded_reactor_box.unified_memory_gb
     );
@@ -451,25 +476,37 @@ pub async fn run_bench() {
         matrix.speculative_tree_report.total_tree_nodes_evaluated,
         matrix.speculative_tree_report.accepted_length,
         matrix.speculative_tree_report.decode_speedup_multiplier,
-        matrix.speculative_tree_report.gain_over_linear_speculative_pct
+        matrix
+            .speculative_tree_report
+            .gain_over_linear_speculative_pct
     );
     println!(
         "  * Continuous Chunked Prefill ({} tok / {} chunks + {} decode streams): AI {:.1} -> {:.1} FLOP/B | Jitter {:.1} ms (vs {:.1} ms stall)",
         matrix.chunked_prefill_report.total_prefill_tokens,
         matrix.chunked_prefill_report.num_fused_batches,
         matrix.chunked_prefill_report.piggybacked_decode_streams,
-        matrix.chunked_prefill_report.unbatched_decode_arithmetic_intensity,
-        matrix.chunked_prefill_report.fused_batch_arithmetic_intensity,
+        matrix
+            .chunked_prefill_report
+            .unbatched_decode_arithmetic_intensity,
+        matrix
+            .chunked_prefill_report
+            .fused_batch_arithmetic_intensity,
         matrix.chunked_prefill_report.chunked_p99_decode_jitter_ms,
         matrix.chunked_prefill_report.unchunked_prefill_stall_ms
     );
     println!(
         "  * Zero-Bubble ZB-H1 Split-B/W Training: Bubble {:.2}% -> {:.2}% (-{:.1}% Bubble, +{:.1}% Throughput) | FWHT INT8 Checkpoint: -{:.1}% VRAM",
         matrix.zero_bubble_training_report.standard_1f1b_bubble_pct,
-        matrix.zero_bubble_training_report.zero_bubble_zbh1_bubble_pct,
+        matrix
+            .zero_bubble_training_report
+            .zero_bubble_zbh1_bubble_pct,
         matrix.zero_bubble_training_report.bubble_reduction_pct,
-        matrix.zero_bubble_training_report.training_throughput_gain_pct,
-        matrix.zero_bubble_training_report.fwht_int8_checkpoint_memory_saved_pct
+        matrix
+            .zero_bubble_training_report
+            .training_throughput_gain_pct,
+        matrix
+            .zero_bubble_training_report
+            .fwht_int8_checkpoint_memory_saved_pct
     );
 
     println!(
@@ -477,7 +514,14 @@ pub async fn run_bench() {
     );
     println!(
         "{:<28} {:<20} {:>9} {:>10} {:>10} {:>11} {:>11} {:>12}",
-        "NODE / SYSTEM", "DEVICE KIND", "MEM (GB)", "BW (GB/S)", "BF16 TOK/S", "Q4_K TOK/S", "EXL3 TOK/S", "TOK / WH"
+        "NODE / SYSTEM",
+        "DEVICE KIND",
+        "MEM (GB)",
+        "BW (GB/S)",
+        "BF16 TOK/S",
+        "Q4_K TOK/S",
+        "EXL3 TOK/S",
+        "TOK / WH"
     );
     println!("{}", "-".repeat(120));
     for row in &matrix.system_rows {
@@ -513,54 +557,96 @@ pub async fn run_bench() {
         "  * Varlen Best-Fit Sequence Packing ({} seqs -> {} bins): Padding Waste {:.1}% -> {:.1}% ({:.2}x Effective Token Speedup)",
         hyper_train.packing_and_chunked_ce_report.total_sequences,
         hyper_train.packing_and_chunked_ce_report.packed_bin_count,
-        hyper_train.packing_and_chunked_ce_report.unpacked_padding_waste_pct,
-        hyper_train.packing_and_chunked_ce_report.packed_padding_waste_pct,
-        hyper_train.packing_and_chunked_ce_report.effective_packing_speedup
+        hyper_train
+            .packing_and_chunked_ce_report
+            .unpacked_padding_waste_pct,
+        hyper_train
+            .packing_and_chunked_ce_report
+            .packed_padding_waste_pct,
+        hyper_train
+            .packing_and_chunked_ce_report
+            .effective_packing_speedup
     );
     println!(
         "  * Liger Fused Chunked Cross-Entropy (V=128,256): Peak Logit VRAM {:.1} MB -> {:.1} MB (-{:.1}% VRAM, MaxGradDiff={:.2e})",
-        hyper_train.packing_and_chunked_ce_report.standard_ce_peak_logit_vram_mb,
-        hyper_train.packing_and_chunked_ce_report.fused_chunked_ce_peak_vram_mb,
-        hyper_train.packing_and_chunked_ce_report.logit_vram_savings_pct,
+        hyper_train
+            .packing_and_chunked_ce_report
+            .standard_ce_peak_logit_vram_mb,
+        hyper_train
+            .packing_and_chunked_ce_report
+            .fused_chunked_ce_peak_vram_mb,
+        hyper_train
+            .packing_and_chunked_ce_report
+            .logit_vram_savings_pct,
         hyper_train.packing_and_chunked_ce_report.max_loss_grad_diff
     );
     println!(
         "  * FWHT-Rotated FP8 (E4M3 Fwd / E5M2 Bwd): Outlier L2 Err {:.4} -> {:.4} | Fwd CosSim {:.5} | Bwd CosSim {:.5} ({:.2}x GEMM)",
         hyper_train.hadamard_fp8_report.naive_fp8_e4m3_rel_error,
-        hyper_train.hadamard_fp8_report.fwht_rotated_fp8_e4m3_rel_error,
-        hyper_train.hadamard_fp8_report.forward_gemm_cosine_similarity,
-        hyper_train.hadamard_fp8_report.backward_e5m2_gemm_cosine_similarity,
+        hyper_train
+            .hadamard_fp8_report
+            .fwht_rotated_fp8_e4m3_rel_error,
+        hyper_train
+            .hadamard_fp8_report
+            .forward_gemm_cosine_similarity,
+        hyper_train
+            .hadamard_fp8_report
+            .backward_e5m2_gemm_cosine_similarity,
         hyper_train.hadamard_fp8_report.fp8_training_compute_speedup
     );
     println!(
         "  * SkipPipe Straggler Bypass + Async PhoneFarm/UMA Offload: Step {:.1} ms -> {:.1} ms ({:.1}% Pipeline Util, {:.2}x Speedup)",
         hyper_train.skippipe_offload_report.stalled_pipeline_step_ms,
         hyper_train.skippipe_offload_report.skippipe_active_step_ms,
-        hyper_train.skippipe_offload_report.skippipe_pipeline_utilization_pct,
-        hyper_train.skippipe_offload_report.skippipe_and_offload_speedup
+        hyper_train
+            .skippipe_offload_report
+            .skippipe_pipeline_utilization_pct,
+        hyper_train
+            .skippipe_offload_report
+            .skippipe_and_offload_speedup
     );
     println!(
         "  * Zig-Zag Causal Ring Attention ({} nodes, {}K ctx): Imbalance {:.1}% -> {:.1}% ({:.2}x Speedup, LSE Err={:.2e})",
         hyper_train.zigzag_ring_report.num_ring_nodes,
         hyper_train.zigzag_ring_report.total_context_tokens / 1024,
-        hyper_train.zigzag_ring_report.naive_ring_causal_imbalance_pct,
-        hyper_train.zigzag_ring_report.zigzag_ring_causal_imbalance_pct,
+        hyper_train
+            .zigzag_ring_report
+            .naive_ring_causal_imbalance_pct,
+        hyper_train
+            .zigzag_ring_report
+            .zigzag_ring_causal_imbalance_pct,
         hyper_train.zigzag_ring_report.zigzag_load_balance_speedup,
         hyper_train.zigzag_ring_report.online_lse_ring_max_abs_error
     );
     println!(
         "  * Aux-Loss-Free MoE Dynamic Bias: Max/Mean Load {:.2}x -> {:.2}x (-{:.1}% Imbalance, 0.0 Aux Grad, -{:.1}% All-to-All)",
-        hyper_train.aux_loss_free_moe_report.initial_max_to_mean_load_ratio,
-        hyper_train.aux_loss_free_moe_report.final_max_to_mean_load_ratio,
-        hyper_train.aux_loss_free_moe_report.load_imbalance_reduction_pct,
-        hyper_train.aux_loss_free_moe_report.hierarchical_all_to_all_traffic_reduction_pct
+        hyper_train
+            .aux_loss_free_moe_report
+            .initial_max_to_mean_load_ratio,
+        hyper_train
+            .aux_loss_free_moe_report
+            .final_max_to_mean_load_ratio,
+        hyper_train
+            .aux_loss_free_moe_report
+            .load_imbalance_reduction_pct,
+        hyper_train
+            .aux_loss_free_moe_report
+            .hierarchical_all_to_all_traffic_reduction_pct
     );
     println!(
         "  * Weiszfeld Byzantine-Robust Async DiLoCo: Rejected {:?} | Naive Err {:.3} -> Robust Err {:.4} ({:.2}x Async Speedup)",
-        hyper_train.byzantine_async_diloco_report.detected_poisoned_island_indices,
-        hyper_train.byzantine_async_diloco_report.naive_mean_corruption_l2_error,
-        hyper_train.byzantine_async_diloco_report.robust_weiszfeld_l2_error,
-        hyper_train.byzantine_async_diloco_report.async_staleness_damped_speedup
+        hyper_train
+            .byzantine_async_diloco_report
+            .detected_poisoned_island_indices,
+        hyper_train
+            .byzantine_async_diloco_report
+            .naive_mean_corruption_l2_error,
+        hyper_train
+            .byzantine_async_diloco_report
+            .robust_weiszfeld_l2_error,
+        hyper_train
+            .byzantine_async_diloco_report
+            .async_staleness_damped_speedup
     );
     println!(
         "  * WSD Loop + .ktb Spike Rollback Guard: {} steps | Loss {:.4} -> {:.4} (-{:.1}%, {} Spike Rollback at step {})\n",
@@ -568,8 +654,12 @@ pub async fn run_bench() {
         hyper_train.wsd_epoch_execution_report.initial_loss,
         hyper_train.wsd_epoch_execution_report.final_loss,
         hyper_train.wsd_epoch_execution_report.loss_reduction_pct,
-        hyper_train.wsd_epoch_execution_report.spike_rollbacks_recovered,
-        hyper_train.wsd_epoch_execution_report.injected_corrupted_batch_step
+        hyper_train
+            .wsd_epoch_execution_report
+            .spike_rollbacks_recovered,
+        hyper_train
+            .wsd_epoch_execution_report
+            .injected_corrupted_batch_step
     );
     println!(
         "{:<28} {:<38} {:>11} {:>12} {:>10} {:>12}",
@@ -608,56 +698,94 @@ pub async fn run_bench() {
         hyper_inf.kivi_2bit_report.kv_compression_ratio_x,
         hyper_inf.kivi_2bit_report.naive_per_token_key_rel_error,
         hyper_inf.kivi_2bit_report.kivi_asymmetric_rel_error,
-        hyper_inf.kivi_2bit_report.attention_output_cosine_similarity
+        hyper_inf
+            .kivi_2bit_report
+            .attention_output_cosine_similarity
     );
     println!(
         "  * Flash-Decoding Parallel Split-KV ({}K ctx, {} splits): Hardware Util {:.1}% -> {:.1}% ({:.2}x Decode Speedup, LSE Err={:.2e})",
         hyper_inf.flash_decoding_report.context_seq_len / 1024,
         hyper_inf.flash_decoding_report.num_parallel_kv_splits,
-        hyper_inf.flash_decoding_report.unsplit_decode_hardware_utilization_pct,
-        hyper_inf.flash_decoding_report.split_kv_hardware_utilization_pct,
+        hyper_inf
+            .flash_decoding_report
+            .unsplit_decode_hardware_utilization_pct,
+        hyper_inf
+            .flash_decoding_report
+            .split_kv_hardware_utilization_pct,
         hyper_inf.flash_decoding_report.flash_decoding_speedup_x,
         hyper_inf.flash_decoding_report.split_kv_max_abs_error
     );
     println!(
         "  * PowerInfer Contextual Sparsity + T-MAC 81-State LUT Ternary: -{:.1}% FFN BW (CosSim {:.5}, {:.2}x FFN) | LUT Diff={:.2e} ({:.2}x CPU/NPU)",
-        hyper_inf.sparsity_and_lut_report.ffn_memory_bandwidth_saved_pct,
-        hyper_inf.sparsity_and_lut_report.sparse_ffn_cosine_similarity,
+        hyper_inf
+            .sparsity_and_lut_report
+            .ffn_memory_bandwidth_saved_pct,
+        hyper_inf
+            .sparsity_and_lut_report
+            .sparse_ffn_cosine_similarity,
         hyper_inf.sparsity_and_lut_report.powerinfer_ffn_speedup_x,
-        hyper_inf.sparsity_and_lut_report.tmac_lut_ternary_max_abs_diff,
+        hyper_inf
+            .sparsity_and_lut_report
+            .tmac_lut_ternary_max_abs_diff,
         hyper_inf.sparsity_and_lut_report.tmac_lut_cpu_npu_speedup_x
     );
     println!(
         "  * Lookahead Jacobi Wavefront (W={}, {} stages): Stage Util {:.1}% -> {:.1}% | {:.2} Accepted Tok/Step ({:.2}x Lossless Decode)",
         hyper_inf.lookahead_jacobi_report.lookahead_window_w,
         hyper_inf.lookahead_jacobi_report.pipeline_stages_k,
-        hyper_inf.lookahead_jacobi_report.sequential_single_token_stage_util_pct,
-        hyper_inf.lookahead_jacobi_report.lookahead_wavefront_stage_util_pct,
-        hyper_inf.lookahead_jacobi_report.accepted_tokens_per_jacobi_step,
-        hyper_inf.lookahead_jacobi_report.distributed_decode_speedup_x
+        hyper_inf
+            .lookahead_jacobi_report
+            .sequential_single_token_stage_util_pct,
+        hyper_inf
+            .lookahead_jacobi_report
+            .lookahead_wavefront_stage_util_pct,
+        hyper_inf
+            .lookahead_jacobi_report
+            .accepted_tokens_per_jacobi_step,
+        hyper_inf
+            .lookahead_jacobi_report
+            .distributed_decode_speedup_x
     );
     println!(
         "  * Radix LPM ({:.1}% Hit) + CacheBlend ({:.0}% HKVD, CosSim {:.4}) + MInference (-{:.1}% FLOPs, {:.1}% Mass): TTFT {:.0} ms -> {:.0} ms ({:.2}x)",
         hyper_inf.prefill_ttft_report.radix_lpm_prefix_hit_rate_pct,
-        hyper_inf.prefill_ttft_report.cacheblend_hkvd_recompute_fraction_pct,
-        hyper_inf.prefill_ttft_report.cacheblend_attention_cosine_similarity,
-        hyper_inf.prefill_ttft_report.minference_vertical_slash_flops_saved_pct,
-        hyper_inf.prefill_ttft_report.minference_attention_mass_preserved_pct,
+        hyper_inf
+            .prefill_ttft_report
+            .cacheblend_hkvd_recompute_fraction_pct,
+        hyper_inf
+            .prefill_ttft_report
+            .cacheblend_attention_cosine_similarity,
+        hyper_inf
+            .prefill_ttft_report
+            .minference_vertical_slash_flops_saved_pct,
+        hyper_inf
+            .prefill_ttft_report
+            .minference_attention_mass_preserved_pct,
         hyper_inf.prefill_ttft_report.baseline_dense_ttft_ms,
         hyper_inf.prefill_ttft_report.boosted_ttft_ms,
         hyper_inf.prefill_ttft_report.ttft_speedup_x
     );
     println!(
         "  * 2-Layer-Ahead MoE Router Probe (h_{{l-2}} * W_gate): {:.1}% Top-K Hit | DMA Stall {:.1} ms -> {:.2} ms (-{:.1}% Stall, {:.2}x MoE Speedup)\n",
-        hyper_inf.moe_prefetch_report.two_layer_ahead_expert_hit_rate_pct,
+        hyper_inf
+            .moe_prefetch_report
+            .two_layer_ahead_expert_hit_rate_pct,
         hyper_inf.moe_prefetch_report.unprefetched_moe_dma_stall_ms,
-        hyper_inf.moe_prefetch_report.lookahead_prefetched_dma_stall_ms,
+        hyper_inf
+            .moe_prefetch_report
+            .lookahead_prefetched_dma_stall_ms,
         hyper_inf.moe_prefetch_report.moe_expert_stall_reduction_pct,
         hyper_inf.moe_prefetch_report.moe_decode_speedup_x
     );
     println!(
         "{:<26} {:<56} {:>9} {:>10} {:>8} {:>9} {:>10}",
-        "NODE / SYSTEM", "ACTIVE HYPER-INFERENCE ACCELERATORS", "BASE TOK/S", "BOOST TOK/S", "SPEEDUP", "TTFT (MS)", "INF TOK/WH"
+        "NODE / SYSTEM",
+        "ACTIVE HYPER-INFERENCE ACCELERATORS",
+        "BASE TOK/S",
+        "BOOST TOK/S",
+        "SPEEDUP",
+        "TTFT (MS)",
+        "INF TOK/WH"
     );
     println!("{}", "-".repeat(134));
     for r in &hyper_inf.node_inference_rows {
@@ -681,7 +809,13 @@ pub async fn run_bench() {
     );
     println!(
         "{:<38} {:>8} {:>9} {:>12} {:>11} {:>14} {:>14}",
-        "POOL SCALE TIER", "CELLS", "TREE HOPS", "LINK RAM RED", "TREE SYNC", "INF TOK/S", "TRAIN TOK/S"
+        "POOL SCALE TIER",
+        "CELLS",
+        "TREE HOPS",
+        "LINK RAM RED",
+        "TREE SYNC",
+        "INF TOK/S",
+        "TRAIN TOK/S"
     );
     println!("{}", "-".repeat(118));
     for t in &pool_scale.evaluated_tiers {
@@ -715,30 +849,63 @@ pub async fn run_bench() {
         "  * Systematic RS(k={}, m={}) Erasure Coding ({:.2}x Overhead vs 3.0x Rep): Dropped {:?} -> Reconstructed Exact={} (Diff={} B)",
         storage_pool.erasure_coding_verification.data_shards_k,
         storage_pool.erasure_coding_verification.parity_shards_m,
-        storage_pool.erasure_coding_verification.storage_overhead_ratio,
-        storage_pool.erasure_coding_verification.simulated_dropped_shard_indices,
-        storage_pool.erasure_coding_verification.exact_bit_identical_recovery,
-        storage_pool.erasure_coding_verification.reconstruction_max_byte_diff
+        storage_pool
+            .erasure_coding_verification
+            .storage_overhead_ratio,
+        storage_pool
+            .erasure_coding_verification
+            .simulated_dropped_shard_indices,
+        storage_pool
+            .erasure_coding_verification
+            .exact_bit_identical_recovery,
+        storage_pool
+            .erasure_coding_verification
+            .reconstruction_max_byte_diff
     );
     println!(
         "  * 'Living on the Wire' Token Carousel ({:.1}T Tokens): {:.1} Gbps Wire Feed ({:.1}x vs {:.1} Gbps 1-NAS) | Step Data Stall: {:.1} ms -> {:.1} ms ({:.1}% Wire Hit)",
-        storage_pool.wire_token_carousel.dataset_total_tokens_billions / 1000.0,
-        storage_pool.wire_token_carousel.decentralized_pool_carousel_gbps,
-        storage_pool.wire_token_carousel.bandwidth_scaling_multiplier_x,
-        storage_pool.wire_token_carousel.centralized_nas_bottleneck_gbps,
-        storage_pool.wire_token_carousel.centralized_data_stall_ms_per_step,
-        storage_pool.wire_token_carousel.wire_carousel_data_stall_ms_per_step,
-        storage_pool.wire_token_carousel.pre_staged_on_wire_hit_rate_pct
+        storage_pool
+            .wire_token_carousel
+            .dataset_total_tokens_billions
+            / 1000.0,
+        storage_pool
+            .wire_token_carousel
+            .decentralized_pool_carousel_gbps,
+        storage_pool
+            .wire_token_carousel
+            .bandwidth_scaling_multiplier_x,
+        storage_pool
+            .wire_token_carousel
+            .centralized_nas_bottleneck_gbps,
+        storage_pool
+            .wire_token_carousel
+            .centralized_data_stall_ms_per_step,
+        storage_pool
+            .wire_token_carousel
+            .wire_carousel_data_stall_ms_per_step,
+        storage_pool
+            .wire_token_carousel
+            .pre_staged_on_wire_hit_rate_pct
     );
     println!(
         "  * Bucket Grounding (NAS + Donated SAN + S3/R2): 50% Mass Dropout {:?} (Ungrounded={}) -> Grounded Recovery={} (Diff={} B, {:.1}% P2P / {:.1}% Spillover, -{}% p99)",
         storage_pool.bucket_grounding.simulated_mass_dropout_indices,
-        storage_pool.bucket_grounding.ungrounded_survives_mass_dropout,
+        storage_pool
+            .bucket_grounding
+            .ungrounded_survives_mass_dropout,
         storage_pool.bucket_grounding.grounded_survives_mass_dropout,
-        storage_pool.bucket_grounding.grounded_recovery_max_byte_diff,
-        storage_pool.bucket_grounding.steady_state_p2p_swarm_read_share_pct,
-        storage_pool.bucket_grounding.steady_state_ground_spillover_share_pct,
-        storage_pool.bucket_grounding.p99_tail_read_latency_reduction_pct
+        storage_pool
+            .bucket_grounding
+            .grounded_recovery_max_byte_diff,
+        storage_pool
+            .bucket_grounding
+            .steady_state_p2p_swarm_read_share_pct,
+        storage_pool
+            .bucket_grounding
+            .steady_state_ground_spillover_share_pct,
+        storage_pool
+            .bucket_grounding
+            .p99_tail_read_latency_reduction_pct
     );
     for anchor in &storage_pool.bucket_grounding.configured_anchors {
         println!(
@@ -754,7 +921,12 @@ pub async fn run_bench() {
     }
     println!(
         "\n{:<52} {:<24} {:>9} {:>10} {:>12} {:>12}",
-        "VIRTUAL BUCKET URI (DRAG-AND-DROP)", "OBJECT KIND", "LOG (GB)", "PHYS (GB)", "BLOCKS", "READ (GBPS)"
+        "VIRTUAL BUCKET URI (DRAG-AND-DROP)",
+        "OBJECT KIND",
+        "LOG (GB)",
+        "PHYS (GB)",
+        "BLOCKS",
+        "READ (GBPS)"
     );
     println!("{}", "-".repeat(124));
     for obj in &storage_pool.bucket_objects {
