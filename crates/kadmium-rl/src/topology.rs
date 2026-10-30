@@ -145,9 +145,7 @@ impl RlTopologyPlanner {
                 | DeviceKind::MobilePhone
                 | DeviceKind::PhoneFarmChassis
                 | DeviceKind::LegacyLaptop
-                | DeviceKind::HomeNas => {
-                    ((node.cpu_threads as f64) * rho).floor() as u32
-                }
+                | DeviceKind::HomeNas => ((node.cpu_threads as f64) * rho).floor() as u32,
                 _ => ((node.cpu_threads as f64) * 0.35 * rho).floor() as u32,
             };
 

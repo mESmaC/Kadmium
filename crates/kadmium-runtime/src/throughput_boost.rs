@@ -80,7 +80,11 @@ impl SpeculativeDraftTreeVerifier {
         prompt_seed: u64,
         tree_depth: usize,
         branching_factor: usize,
-    ) -> (Vec<DraftTreeNode>, Vec<Vec<u8>>, SpeculativeTreeVerificationReport) {
+    ) -> (
+        Vec<DraftTreeNode>,
+        Vec<Vec<u8>>,
+        SpeculativeTreeVerificationReport,
+    ) {
         let depth = tree_depth.clamp(2, 5);
         let branch = branching_factor.clamp(2, 3);
 
@@ -107,7 +111,8 @@ impl SpeculativeDraftTreeVerifier {
                     let conf = (0.91 - (d as f32) * 0.06 - (b as f32) * 0.08).clamp(0.45, 0.95);
                     // At each depth, at least one branch matches the target model's distribution:
                     let parent_ok = nodes[parent].target_verified;
-                    let branch_matches_target = parent_ok && ((parent + b) % branch == (d % branch));
+                    let branch_matches_target =
+                        parent_ok && ((parent + b) % branch == (d % branch));
 
                     nodes.push(DraftTreeNode {
                         node_idx: idx,
@@ -127,10 +132,10 @@ impl SpeculativeDraftTreeVerifier {
         let n = nodes.len();
         let mut mask = vec![vec![0u8; n]; n];
         let mut ones_count = 0usize;
-        for i in 0..n {
+        for (i, row) in mask.iter_mut().enumerate().take(n) {
             let mut cursor = Some(i);
             while let Some(anc) = cursor {
-                mask[i][anc] = 1;
+                row[anc] = 1;
                 ones_count += 1;
                 cursor = nodes[anc].parent_idx;
             }
@@ -152,7 +157,8 @@ impl SpeculativeDraftTreeVerifier {
         }
         trajectory.reverse();
         // Target model verification always yields +1 bonus token from the final verified node's logits:
-        let bonus_token = ((prompt_seed.wrapping_add(trajectory.len() as u64 * 43) % 32_000) + 256) as u32;
+        let bonus_token =
+            ((prompt_seed.wrapping_add(trajectory.len() as u64 * 43) % 32_000) + 256) as u32;
         trajectory.push(bonus_token);
 
         let accepted_length = trajectory.len();
@@ -161,9 +167,9 @@ impl SpeculativeDraftTreeVerifier {
         let density_pct = (ones_count as f64 / ((n * n) as f64)) * 100.0;
         // Tree verification adds ~12% compute overhead on the GPU/UMA but produces `accepted_length` tokens in 1 RTT:
         let speedup = (accepted_length as f64) / 1.12;
-        let gain_over_linear_pct =
-            (((accepted_length as f64) - (linear_accepted as f64)) / (linear_accepted as f64))
-                * 100.0;
+        let gain_over_linear_pct = (((accepted_length as f64) - (linear_accepted as f64))
+            / (linear_accepted as f64))
+            * 100.0;
 
         let report = SpeculativeTreeVerificationReport {
             tree_depth: depth,
@@ -398,7 +404,9 @@ impl CrossSystemComputeHarness {
     /// Profiles a heterogeneous cluster (automatically including a 20-Slot Phone Farm Box and
     /// a Spot Burst GPU alongside the personal cluster if not already present) and evaluates
     /// all inference and training compute accelerators.
-    pub fn run_full_matrix(custom_nodes: Option<Vec<HardwareNode>>) -> CrossSystemBenchmarkSuiteReport {
+    pub fn run_full_matrix(
+        custom_nodes: Option<Vec<HardwareNode>>,
+    ) -> CrossSystemBenchmarkSuiteReport {
         let mut nodes = custom_nodes.unwrap_or_else(sample_personal_cluster);
         if !nodes
             .iter()
@@ -464,10 +472,17 @@ impl CrossSystemComputeHarness {
         }
 
         let (_, _, spec_tree) = SpeculativeDraftTreeVerifier::verify_draft_tree(0xCD48_2026, 4, 2);
-        let chunked_prefill = ChunkedPrefillMicroBatcher::schedule_fused_batches(4096, 512, 8, 440.0);
+        let chunked_prefill =
+            ChunkedPrefillMicroBatcher::schedule_fused_batches(4096, 512, 8, 440.0);
 
         let sample_act: Vec<f32> = (0..256)
-            .map(|i| if i % 37 == 0 { 8.5 } else { ((i % 13) as f32 - 6.0) * 0.2 })
+            .map(|i| {
+                if i % 37 == 0 {
+                    8.5
+                } else {
+                    ((i % 13) as f32 - 6.0) * 0.2
+                }
+            })
             .collect();
         let zb_train = ZeroBubblePipelineScheduler::evaluate_zbh1_schedule(6, 24, &sample_act);
 
@@ -477,12 +492,10 @@ impl CrossSystemComputeHarness {
         let total_inf_speedup = ((boosted_decode / baseline_decode) * 100.0).round() / 100.0;
 
         let baseline_train = 14.2;
-        let boosted_train = (baseline_train
-            * (1.0 + zb_train.training_throughput_gain_pct / 100.0)
-            * 1.26
-            * 10.0)
-            .round()
-            / 10.0;
+        let boosted_train =
+            (baseline_train * (1.0 + zb_train.training_throughput_gain_pct / 100.0) * 1.26 * 10.0)
+                .round()
+                / 10.0;
 
         let scorecard = format!(
             "╔══════════════════════════════════════════════════════════════════════════╗\n\
@@ -548,7 +561,13 @@ mod tests {
     #[test]
     fn test_zero_bubble_zbh1_scheduler_fwht_int8_checkpoint_and_cross_system_matrix() {
         let act: Vec<f32> = (0..256)
-            .map(|i| if i == 17 { 12.0 } else { (i as f32 - 128.0) * 0.03 })
+            .map(|i| {
+                if i == 17 {
+                    12.0
+                } else {
+                    (i as f32 - 128.0) * 0.03
+                }
+            })
             .collect();
         let zb = ZeroBubblePipelineScheduler::evaluate_zbh1_schedule(6, 24, &act);
         assert!(zb.zero_bubble_zbh1_bubble_pct < zb.standard_1f1b_bubble_pct * 0.35);
@@ -561,6 +580,10 @@ mod tests {
         assert!(
             suite.boosted_training_samples_per_sec > suite.baseline_training_samples_per_sec * 1.3
         );
-        assert!(suite.shareable_scorecard_markdown.contains("KADMIUM (Cd-48)"));
+        assert!(
+            suite
+                .shareable_scorecard_markdown
+                .contains("KADMIUM (Cd-48)")
+        );
     }
 }

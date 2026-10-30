@@ -198,14 +198,12 @@ impl LocalModelDiskImporter {
                     end_layer,
                 )?
             }
-            ImportedModelSourceFormat::GgufV3Binary => {
-                GgufToKtbTranscoder::transcode_shard_to_ktb(
-                    model_id,
-                    &raw_source_bytes,
-                    start_layer,
-                    end_layer,
-                )?
-            }
+            ImportedModelSourceFormat::GgufV3Binary => GgufToKtbTranscoder::transcode_shard_to_ktb(
+                model_id,
+                &raw_source_bytes,
+                start_layer,
+                end_layer,
+            )?,
         };
 
         let ktb_path = out_dir.join(format!("{slug}.L{start_layer:02}-L{end_layer:02}.ktb"));

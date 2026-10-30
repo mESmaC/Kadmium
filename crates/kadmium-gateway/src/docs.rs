@@ -15,7 +15,8 @@ pub(crate) const DOC_SUBCLUSTERS_CLOUD_MD: &str =
 pub(crate) const DOC_INTEGRATIONS_MD: &str =
     include_str!("../../../docs/guides/integrations-hf-github.md");
 pub(crate) const DOC_MCP_MD: &str = include_str!("../../../docs/guides/mcp-server.md");
-pub(crate) const DOC_CONDENSER_MD: &str = include_str!("../../../docs/guides/condenser-workspace.md");
+pub(crate) const DOC_CONDENSER_MD: &str =
+    include_str!("../../../docs/guides/condenser-workspace.md");
 pub(crate) const DOC_SPECSHEET_ROADMAP_MD: &str =
     include_str!("../../../docs/SPECSHEET_AND_ROADMAP.md");
 pub(crate) const DOC_ARCHITECTURE_MD: &str = include_str!("../../../docs/ARCHITECTURE.md");

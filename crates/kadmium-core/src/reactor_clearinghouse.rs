@@ -342,7 +342,8 @@ impl ReactorEscrowAndStewardLedgerEngine {
             }
 
             let hours = dur_sec / 3600.0;
-            let power_usd = ((watts * hours / 1000.0) * electricity_rate_kwh * 10000.0).round() / 10000.0;
+            let power_usd =
+                ((watts * hours / 1000.0) * electricity_rate_kwh * 10000.0).round() / 10000.0;
             let host_gross = (gross_usd * 0.75 * 10000.0).round() / 10000.0;
             let ops_alloc = (gross_usd * 0.20 * 10000.0).round() / 10000.0;
             let grant_alloc = ((gross_usd - host_gross - ops_alloc) * 10000.0).round() / 10000.0;
@@ -429,7 +430,8 @@ impl ReactorEscrowAndStewardLedgerEngine {
         ];
 
         ReactorClearinghouseLedgerReport {
-            accounting_period_label: "Monthly Regional Clearinghouse Snapshot (450 Nodes / 3 Staff)".into(),
+            accounting_period_label:
+                "Monthly Regional Clearinghouse Snapshot (450 Nodes / 3 Staff)".into(),
             active_team_headcount,
             monthly_living_wage_per_person_usd,
             monthly_core_relay_and_grounding_infra_usd,
@@ -470,13 +472,15 @@ impl ReactorSlaFaultToleranceEngine {
         let total_pipeline_layers = 64u32;
         let checkpoint_ring_stride_layers = 4u32;
         let failure_injected_at_layer = 42u32;
-        let nearest_upstream_ring_checkpoint_layer =
-            (failure_injected_at_layer / checkpoint_ring_stride_layers) * checkpoint_ring_stride_layers; // Layer 40
+        let nearest_upstream_ring_checkpoint_layer = (failure_injected_at_layer
+            / checkpoint_ring_stride_layers)
+            * checkpoint_ring_stride_layers; // Layer 40
 
         // Simulate actual activation tensor recovery from Layer 40 -> Layer 42 (only 2 layers recomputed vs 42 layers!)
         let per_layer_compute_ms = 6.8;
         let ring_handoff_ms = 2.8;
-        let recomputed_layers = (failure_injected_at_layer - nearest_upstream_ring_checkpoint_layer) as f64;
+        let recomputed_layers =
+            (failure_injected_at_layer - nearest_upstream_ring_checkpoint_layer) as f64;
         let wire_ring_mid_pass_recovery_latency_ms =
             ((recomputed_layers * per_layer_compute_ms + ring_handoff_ms) * 10.0).round() / 10.0; // 16.4 ms
         let naive_full_pass_restart_latency_ms = 450.0;
@@ -486,7 +490,10 @@ impl ReactorSlaFaultToleranceEngine {
                 / 100.0;
 
         // Verify blind canary detection math:
-        let clean_canary_norm: f64 = (0..64).map(|i| ((i as f64) * 0.13).sin().powi(2)).sum::<f64>().sqrt();
+        let clean_canary_norm: f64 = (0..64)
+            .map(|i| ((i as f64) * 0.13).sin().powi(2))
+            .sum::<f64>()
+            .sqrt();
         let poisoned_canary_diff: f64 = (0..64).map(|_| 0.01f64.powi(2)).sum::<f64>().sqrt();
         let relative_drift = poisoned_canary_diff / clean_canary_norm.max(1e-9);
         let single_pass_poisoning_host_caught = relative_drift > 0.005;
@@ -521,7 +528,9 @@ impl ClosetSiliconLongevityGovernor {
     pub fn evaluate_longevity_governor() -> ClosetSiliconLongevityReport {
         let protected_profiles = vec![
             ClosetSiliconDeviceProtectionProfile {
-                device_label: "Closet Smartphone (Snapdragon 865 / 8 Gen 2 · 12GB LPDDR5 + 256GB UFS 3.1)".into(),
+                device_label:
+                    "Closet Smartphone (Snapdragon 865 / 8 Gen 2 · 12GB LPDDR5 + 256GB UFS 3.1)"
+                        .into(),
                 silicon_category: "Upcycled Mobile Phone (USB-C OTG / Charge-Limit Mode)".into(),
                 power_supply_mode: "55% SoC BMS Storage-Hold (Zero Lithium Cathode Stress)".into(),
                 battery_soc_clamp_pct: 55,
@@ -533,9 +542,11 @@ impl ClosetSiliconLongevityGovernor {
                 estimated_hardware_lifespan_years: 12.5,
             },
             ClosetSiliconDeviceProtectionProfile {
-                device_label: "20-Slot Phone Farm Box (20x Stripped S20 Boards · 160GB LPDDR5)".into(),
+                device_label: "20-Slot Phone Farm Box (20x Stripped S20 Boards · 160GB LPDDR5)"
+                    .into(),
                 silicon_category: "Battery-Free Direct 4.2V BMS Rail Array".into(),
-                power_supply_mode: "0% Battery (Direct 4.2V Regulated PSU + Dual 120mm Fans)".into(),
+                power_supply_mode: "0% Battery (Direct 4.2V Regulated PSU + Dual 120mm Fans)"
+                    .into(),
                 battery_soc_clamp_pct: 0,
                 target_dvfs_sweet_spot_temp_c: 54.5,
                 sustained_gflops_per_watt_gain_pct: 42.0,

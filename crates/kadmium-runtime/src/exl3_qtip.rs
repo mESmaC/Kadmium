@@ -87,11 +87,7 @@ impl FastWalshHadamardTransform {
 
     /// Forward randomized Hadamard transform on a 1D vector: $\tilde{x} = H_d \operatorname{diag}(s) x$.
     pub fn forward_vector(x: &[f32], signs: &[f32]) -> Vec<f32> {
-        let mut out: Vec<f32> = x
-            .iter()
-            .zip(signs.iter())
-            .map(|(&v, &s)| v * s)
-            .collect();
+        let mut out: Vec<f32> = x.iter().zip(signs.iter()).map(|(&v, &s)| v * s).collect();
         Self::fwht_in_place(&mut out);
         out
     }
@@ -336,7 +332,9 @@ impl Exl3TrellisQuantizer {
         // Mix state + symbol bits so each symbol centers on its Gaussian quadrant while `prev_state` dithers across all 2^(L+k) quantiles
         let low_mask = (1u32 << l_bits) - 1;
         let rev_state = (prev_state as u32).reverse_bits() >> (32 - (l_bits as u32).max(1));
-        let dither = (rev_state ^ (1u32 << l_bits.saturating_sub(1)) ^ (symbol as u32).wrapping_mul(5)) & low_mask;
+        let dither =
+            (rev_state ^ (1u32 << l_bits.saturating_sub(1)) ^ (symbol as u32).wrapping_mul(5))
+                & low_mask;
         let mixed_idx = ((symbol as u32) << l_bits) | dither;
         let u = ((mixed_idx as f32) + 0.5) / (total_levels as f32); // u in (0, 1)
 
@@ -434,9 +432,8 @@ impl Exl3TrellisQuantizer {
                         let max_back = c.min(4);
                         for b in 1..=max_back {
                             let prev_col = c - b;
-                            feedback += 0.15
-                                * h.l_matrix[c * cols + prev_col]
-                                * state_recent_err[s][b - 1];
+                            feedback +=
+                                0.15 * h.l_matrix[c * cols + prev_col] * state_recent_err[s][b - 1];
                         }
                     }
                     let adjusted_target = target_norm + feedback;
@@ -496,7 +493,8 @@ impl Exl3TrellisQuantizer {
             }
         }
 
-        let total_symbol_bits: usize = col_bit_schedule.iter().map(|&b| b as usize).sum::<usize>() * rows;
+        let total_symbol_bits: usize =
+            col_bit_schedule.iter().map(|&b| b as usize).sum::<usize>() * rows;
         let scale_bits = rows * 16; // FP16 row scales in .ktb
         let effective_bpw = ((total_symbol_bits + scale_bits) as f32) / ((rows * cols) as f32);
 
@@ -571,7 +569,7 @@ impl Exl3QuantizedTensor {
         let x_tilde = FastWalshHadamardTransform::forward_vector(x, &col_signs);
         let mut y_tilde = vec![0.0f32; self.rows];
 
-        for r in 0..self.rows {
+        for (r, y_out) in y_tilde.iter_mut().enumerate().take(self.rows) {
             let scale = self.row_scales[r];
             let mut state = 0usize;
             let mut acc = 0.0f32;
@@ -588,7 +586,7 @@ impl Exl3QuantizedTensor {
                 acc += z * xt;
                 state = next_state;
             }
-            y_tilde[r] = acc * scale;
+            *y_out = acc * scale;
         }
 
         FastWalshHadamardTransform::inverse_vector(&y_tilde, &row_signs)
@@ -666,7 +664,8 @@ impl DistributedExl3ConversionEngine {
         for r in 0..rows {
             for c in 0..cols {
                 let idx = r * cols + c;
-                let base = ((idx as f32) * 0.37).sin() * 0.22 + ((r * 7 + c * 3) as f32 * 0.19).cos() * 0.14;
+                let base = ((idx as f32) * 0.37).sin() * 0.22
+                    + ((r * 7 + c * 3) as f32 * 0.19).cos() * 0.14;
                 let outlier = if c == 7 {
                     if r % 2 == 0 { 1.35 } else { -1.35 }
                 } else {
@@ -678,8 +677,9 @@ impl DistributedExl3ConversionEngine {
 
         let row_signs = FastWalshHadamardTransform::rademacher_signs(rows, 0xCD48_2026);
         let col_signs = FastWalshHadamardTransform::rademacher_signs(cols, 0xCD48_2027);
-        let w_tilde =
-            FastWalshHadamardTransform::forward_matrix(&weights, rows, cols, &row_signs, &col_signs);
+        let w_tilde = FastWalshHadamardTransform::forward_matrix(
+            &weights, rows, cols, &row_signs, &col_signs,
+        );
 
         let pre_fwht_peak_to_rms = FastWalshHadamardTransform::incoherence_peak_to_rms(&weights);
         let post_fwht_peak_to_rms = FastWalshHadamardTransform::incoherence_peak_to_rms(&w_tilde);
@@ -735,7 +735,11 @@ impl DistributedExl3ConversionEngine {
             .iter()
             .filter(|n| n.fp16_tflops >= 5.0 && n.available_fast_memory_gb() >= 4.0)
             .collect();
-        let total_tflops: f64 = capable_nodes.iter().map(|n| n.fp16_tflops).sum::<f64>().max(1.0);
+        let total_tflops: f64 = capable_nodes
+            .iter()
+            .map(|n| n.fp16_tflops)
+            .sum::<f64>()
+            .max(1.0);
 
         let mut assigned_so_far = 0u32;
         let mut node_shards = Vec::with_capacity(capable_nodes.len());
@@ -755,20 +759,13 @@ impl DistributedExl3ConversionEngine {
                 continue;
             }
             let layer_frac = (layers as f64) / (model.num_layers.max(1) as f64);
-            let est_secs =
-                (total_compute_tflop_seconds * layer_frac) / node.fp16_tflops.max(1.0);
+            let est_secs = (total_compute_tflop_seconds * layer_frac) / node.fp16_tflops.max(1.0);
             max_node_seconds = max_node_seconds.max(est_secs);
 
             let (attn_bpw, expert_bpw) = if model.is_moe {
-                (
-                    (clamped_bpw + 1.45).min(6.0),
-                    (clamped_bpw - 0.15).max(2.0),
-                )
+                ((clamped_bpw + 1.45).min(6.0), (clamped_bpw - 0.15).max(2.0))
             } else {
-                (
-                    (clamped_bpw + 0.5).min(6.0),
-                    clamped_bpw,
-                )
+                ((clamped_bpw + 0.5).min(6.0), clamped_bpw)
             };
 
             node_shards.push(Exl3NodeConversionShard {

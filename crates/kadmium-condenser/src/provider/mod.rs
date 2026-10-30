@@ -1,8 +1,8 @@
 use crate::types::{ChatRequest, ChatResponse, ModelInfo, ProviderConfig, ProviderKind};
 use crate::{CondenserError, Result};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;

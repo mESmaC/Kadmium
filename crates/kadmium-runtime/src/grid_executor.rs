@@ -622,9 +622,14 @@ impl StageForwardExecutor {
     /// The stage's output batch from the rows' boundary tensors: the exact codes and scales
     /// each row produced, concatenated, when rows are whole blocks; a flat re-quantization of
     /// the dequantized rows otherwise.
-    fn output_batch(batch: &TokenBatchInt8, runs: &[StageRowRun]) -> Result<TokenBatchInt8, String> {
-        let boundaries: Vec<BlockwiseInt8Tensor> =
-            runs.iter().map(|(r, _)| r.boundary_output.clone()).collect();
+    fn output_batch(
+        batch: &TokenBatchInt8,
+        runs: &[StageRowRun],
+    ) -> Result<TokenBatchInt8, String> {
+        let boundaries: Vec<BlockwiseInt8Tensor> = runs
+            .iter()
+            .map(|(r, _)| r.boundary_output.clone())
+            .collect();
         if batch.rows == 1 || (batch.dim as usize).is_multiple_of(LAYER_BOUNDARY_BLOCK) {
             return TokenBatchInt8::from_row_tensors(batch.dim, &boundaries);
         }
@@ -693,7 +698,9 @@ type StageRowRun = (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>);
 
 /// Folds per-row layer chains into one chain for the batch: per layer, the rows' digests in
 /// row order, as [`LayerReference::batch_boundary_digest`] folds a batch.
-pub(crate) fn fold_layer_chains<'a>(rows: impl Iterator<Item = &'a [LayerDigest]>) -> Vec<LayerDigest> {
+pub(crate) fn fold_layer_chains<'a>(
+    rows: impl Iterator<Item = &'a [LayerDigest]>,
+) -> Vec<LayerDigest> {
     let rows: Vec<&[LayerDigest]> = rows.collect();
     let Some(first) = rows.first() else {
         return Vec::new();
@@ -962,12 +969,8 @@ impl WorkExecutor for TrunkForwardExecutor {
             ),
         ];
         for slice in &params.slices {
-            let dispatch = HolderDispatchBatch::for_slice(
-                &out,
-                &routing,
-                slice,
-                DispatchPrecision::ExactF32,
-            );
+            let dispatch =
+                HolderDispatchBatch::for_slice(&out, &routing, slice, DispatchPrecision::ExactF32);
             outputs.push((
                 StepGraphBuilder::holder_dispatch_ref(graph_id, &unit.id, &slice.holder),
                 dispatch.to_le_bytes(),
@@ -1009,8 +1012,7 @@ impl WorkExecutor for ExpertSliceExecutor {
             dispatch.evaluate_partials()
         } else {
             let (_, trunk_bytes) = activation_input(unit, inputs, |id| id.ends_with("/out"))?;
-            let (_, routing_bytes) =
-                activation_input(unit, inputs, |id| id.ends_with("/routing"))?;
+            let (_, routing_bytes) = activation_input(unit, inputs, |id| id.ends_with("/routing"))?;
             let trunk = TokenBatchF32::from_le_bytes(trunk_bytes)?;
             let routing = LayerRouting::from_json_bytes(routing_bytes)?;
             if routing.rows.len() != trunk.rows as usize {
@@ -1403,9 +1405,8 @@ fn referee_trace(
 
 /// Which unit a scheduler event is about.
 fn event_unit_id(event: &SchedulerEvent) -> Option<WorkUnitId> {
-    let from_instance = |i: &InstanceId| {
-        WorkUnitId::new(i.0.rsplit_once('#').map_or(i.0.as_str(), |(u, _)| u))
-    };
+    let from_instance =
+        |i: &InstanceId| WorkUnitId::new(i.0.rsplit_once('#').map_or(i.0.as_str(), |(u, _)| u));
     Some(match event {
         SchedulerEvent::Submitted { unit }
         | SchedulerEvent::Released { unit }
@@ -1719,9 +1720,9 @@ impl<'a> GridRunner<'a> {
                     dispatched_at_ms: outcome.dispatched_at_ms,
                     returned_at_ms: outcome.returned_at_ms,
                 });
-                let validation = self
-                    .queue
-                    .report_result(&outcome.instance_id, record, now_unix_ms());
+                let validation =
+                    self.queue
+                        .report_result(&outcome.instance_id, record, now_unix_ms());
                 if let Ok(ValidationOutcome::DisputeOpened { nodes }) = validation {
                     GridDispatcher::referee_dispute(
                         &mut self.queue,
@@ -1949,8 +1950,7 @@ impl<'a> GridRunner<'a> {
             .collect();
 
         // Books: credit for every validated unit, a penalty for every invalidated instance.
-        let mut ledger =
-            CreditLedger::new(self.config.credit_policy.clone().unwrap_or_default());
+        let mut ledger = CreditLedger::new(self.config.credit_policy.clone().unwrap_or_default());
         if self.config.credit_policy.is_some() {
             let now = now_unix_ms();
             for status in &statuses {
@@ -1997,7 +1997,6 @@ impl<'a> GridRunner<'a> {
         }
     }
 }
-
 
 pub struct GridDispatcher;
 
@@ -2279,7 +2278,7 @@ impl GridDispatcher {
                         transport,
                         wall_ms,
                         &outcome,
-                    ms_since(config.clock_origin),
+                        ms_since(config.clock_origin),
                     ));
                     if let Ok(payload) = &outcome
                         && payload.header.ok
@@ -2324,7 +2323,7 @@ impl GridDispatcher {
                         transport,
                         wall_ms,
                         &outcome,
-                    ms_since(config.clock_origin),
+                        ms_since(config.clock_origin),
                     ));
                     match outcome {
                         Ok(payload) if payload.header.ok => {
@@ -2369,7 +2368,7 @@ impl GridDispatcher {
                     transport,
                     wall_ms,
                     &outcome,
-                ms_since(config.clock_origin),
+                    ms_since(config.clock_origin),
                 ));
                 verdict = match outcome {
                     Ok(payload) if payload.header.ok => {
@@ -2427,7 +2426,7 @@ impl GridDispatcher {
                 transport,
                 wall_ms,
                 &outcome,
-            ms_since(config.clock_origin),
+                ms_since(config.clock_origin),
             ));
             verdict = match outcome {
                 Ok(payload) if payload.header.ok => {
@@ -2658,7 +2657,10 @@ mod tests {
             outbound.wire_bytes * 4 < outbound.logical_bytes,
             "{outbound:?}"
         );
-        assert!(inbound.wire_bytes * 4 < inbound.logical_bytes, "{inbound:?}");
+        assert!(
+            inbound.wire_bytes * 4 < inbound.logical_bytes,
+            "{inbound:?}"
+        );
     }
 
     #[test]
@@ -3019,9 +3021,8 @@ mod fanout_tests {
             registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
         );
         let model = toy_moe();
-        let seed =
-            TokenBatchInt8::quantize(&prompt_seed_hidden("replica serving", 64), 1, 64, 16)
-                .unwrap();
+        let seed = TokenBatchInt8::quantize(&prompt_seed_hidden("replica serving", 64), 1, 64, 16)
+            .unwrap();
         let (chain_report, chain_bytes) = run_shape(
             ExecutionStrategy::PipelineChain,
             &model,
@@ -3038,12 +3039,9 @@ mod fanout_tests {
             .filter(|a| a.app == "StageForward")
             .collect();
         assert!(!routed.is_empty());
-        assert!(
-            routed
-                .iter()
-                .all(|a| ModelContentNames::parse_expert(&a.content_id)
-                    .is_some_and(|(m, _, _)| m == model.id))
-        );
+        assert!(routed.iter().all(|a| {
+            ModelContentNames::parse_expert(&a.content_id).is_some_and(|(m, _, _)| m == model.id)
+        }));
         let routed_hits: u64 = routed.iter().map(|a| a.hits).sum();
         assert_eq!(
             routed_hits,
@@ -3067,8 +3065,7 @@ mod fanout_tests {
             .expect("a replicated expert")
             .clone();
         let replica = replicated.holders[1].clone();
-        let serving = placement
-            .serving_assignment(|n| Some(if *n == replica { 1.0 } else { 9.0 }));
+        let serving = placement.serving_assignment(|n| Some(if *n == replica { 1.0 } else { 9.0 }));
         assert!(serving.contains_key(&(replicated.layer, replicated.expert)));
         let graph = StepGraphBuilder::decode_step_served(
             &model,
@@ -3100,7 +3097,9 @@ mod fanout_tests {
             &graph.id,
             &format!("L{:03}-experts-{}", replicated.layer, replica.0),
         );
-        let trace = report.trace_for(&leaf).expect("the replica ran a slice unit");
+        let trace = report
+            .trace_for(&leaf)
+            .expect("the replica ran a slice unit");
         assert!(trace.ok);
         assert_eq!(trace.node_id, replica);
         assert!(
@@ -3361,7 +3360,10 @@ mod fanout_tests {
             ExecutionStrategy::ExpertParallel,
             Some(&heat),
         );
-        assert!(balanced.replicated_experts > 0, "the toy mesh has room for copies");
+        assert!(
+            balanced.replicated_experts > 0,
+            "the toy mesh has room for copies"
+        );
         for (strategy, heat) in [
             (ExecutionStrategy::PipelineChain, None),
             (ExecutionStrategy::ExpertParallel, None),
@@ -3384,15 +3386,17 @@ mod fanout_tests {
                 assert_eq!(out.rows, 1);
                 alone.push(out.tensor.to_le_bytes());
             }
-            assert!(alone.windows(2).all(|w| w[0] != w[1]), "distinct rows decode differently");
+            assert!(
+                alone.windows(2).all(|w| w[0] != w[1]),
+                "distinct rows decode differently"
+            );
 
             for (b, batch) in batches.iter().enumerate() {
                 let values: Vec<f32> = batch
                     .iter()
                     .flat_map(|&i| rows[i].iter().copied())
                     .collect();
-                let seed =
-                    TokenBatchInt8::quantize(&values, batch.len() as u32, 64, 16).unwrap();
+                let seed = TokenBatchInt8::quantize(&values, batch.len() as u32, 64, 16).unwrap();
                 let (report, bytes) = run_shape_with_heat(
                     strategy,
                     &model,
@@ -3720,8 +3724,11 @@ impl WorkExecutor for VerdeAuditExecutor {
                     return Err("an opened audit state is a vector of f64".to_string());
                 }
                 bytes
-                    .chunks_exact(8)
-                    .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .copied()
+                    .map(f64::from_le_bytes)
                     .collect()
             }
             None => {

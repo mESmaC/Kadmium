@@ -317,10 +317,7 @@ impl RepinPlanner {
         );
         proposal.replica_changes = report.changes.clone();
         if !report.changes.is_empty() {
-            proposal.rationale = format!(
-                "{}; {}",
-                proposal.rationale, report.rationale
-            );
+            proposal.rationale = format!("{}; {}", proposal.rationale, report.rationale);
         }
         proposal.balance = Some(report);
         proposal
@@ -736,19 +733,19 @@ mod tests {
         let nodes = sample_personal_cluster();
         let model = toy_moe();
         let heat = ExpertPopularity::power_law(model.num_layers, model.experts_per_layer, 1.0);
-        let mut placement = ExpertPlacementPlanner::plan(
-            &model,
-            &nodes,
-            ExecutionStrategy::ExpertParallel,
-            None,
-        );
+        let mut placement =
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::ExpertParallel, None);
         assert_eq!(placement.replicated_experts, 0);
         let segments = LinkSegments::derive(&nodes);
         let policy = RepinPolicy::default();
         let proposal =
             RepinPlanner::propose_balanced(&placement, &model, &nodes, &heat, &segments, &policy);
         assert!(proposal.change_count() <= policy.max_swaps);
-        assert!(!proposal.replica_changes.is_empty(), "{}", proposal.rationale);
+        assert!(
+            !proposal.replica_changes.is_empty(),
+            "{}",
+            proposal.rationale
+        );
         assert!(proposal.replica_changes.iter().all(|c| c.add));
         let balance = proposal.balance.as_ref().unwrap();
         assert!(matches!(balance.mode, BalanceMode::Incremental { .. }));
@@ -760,9 +757,17 @@ mod tests {
         assert_eq!(jobs.len(), proposal.replica_changes.len());
         assert!(jobs.iter().all(|j| j.pin && j.target_tier.is_fast()));
         assert_eq!(placement.replicated_experts, proposal.replica_changes.len());
-        assert_ne!(placement.digest(), digest_before, "a copy on another node is a new placement");
+        assert_ne!(
+            placement.digest(),
+            digest_before,
+            "a copy on another node is a new placement"
+        );
         for change in &proposal.replica_changes {
-            assert!(placement.holders_of(change.layer, change.expert).contains(&change.node));
+            assert!(
+                placement
+                    .holders_of(change.layer, change.expert)
+                    .contains(&change.node)
+            );
             let rule = placement
                 .rules
                 .iter()
@@ -775,7 +780,8 @@ mod tests {
         }
 
         // The chain shape has no copies to balance: the boundary is the swaps alone.
-        let chain = ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
+        let chain =
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
         let chain_proposal =
             RepinPlanner::propose_balanced(&chain, &model, &nodes, &heat, &segments, &policy);
         assert!(chain_proposal.replica_changes.is_empty());

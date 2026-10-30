@@ -30,6 +30,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Open the Condenser native UI (default command).
     Ui(UiArgs),

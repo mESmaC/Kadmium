@@ -571,9 +571,7 @@ pub async fn run_decode_loop(
             .collect::<Vec<_>>()
             .join("+")
     );
-    let report: GridRunReport;
-
-    if !pipelined {
+    let report = if !pipelined {
         let mut all_traces = Vec::new();
         let mut merged: Option<GridRunReport> = None;
         for (index, plan) in plans.iter().enumerate() {
@@ -652,7 +650,7 @@ pub async fn run_decode_loop(
         }) {
             m.wall_ms = round3(last - first);
         }
-        report = m;
+        m
     } else {
         let mut runner = GridRunner::new(workers, catalog, live_workers, local, config);
         // Per session: the graphs submitted so far and the outcomes collected.
@@ -739,8 +737,8 @@ pub async fn run_decode_loop(
         for (i, plan) in plans.iter().enumerate() {
             sessions.push(session_report(plan, std::mem::take(&mut outcomes[i])));
         }
-        report = runner.report_all(&combined_id);
-    }
+        runner.report_all(&combined_id)
+    };
 
     let gaps: Vec<f64> = sessions
         .iter()

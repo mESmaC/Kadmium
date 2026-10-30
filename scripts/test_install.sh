@@ -4,6 +4,7 @@ set -eu
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -p "$repo_root/target"
 test_root=$(mktemp -d "$repo_root/target/installer-shell.XXXXXXXX")
+trap 'rm -rf -- "$test_root"' EXIT
 fixture="$test_root/fixture"
 fixture_platform=linux-x86_64
 mkdir "$fixture"
