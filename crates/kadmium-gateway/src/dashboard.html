@@ -294,8 +294,8 @@
     @media (min-width: 1001px) { .cr-brand .mark { display: none; } }
     @media (max-width: 720px) {
       .cr { grid-template-columns: 1fr; }
-      .cr-side { position: fixed; left: 0; top: 0; bottom: 0; width: 240px; z-index: 35; transform: translateX(-100%); transition: transform .18s ease; }
-      .cr-side.open { transform: none; }
+      .cr-side { position: fixed; left: 0; top: 0; bottom: 0; width: 240px; z-index: 35; visibility: hidden; transform: translateX(-100%); transition: transform .18s ease; }
+      .cr-side.open { visibility: visible; transform: none; }
       :root { --cr-side: 240px; }
       .cr-brand .cd, .cr-nav-group, .cr-side-foot, .cr-nav a .count { display: initial; }
       .cr-nav a .lbl { position: static; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; }
@@ -423,16 +423,22 @@
   }
 
   /* ---------- data layer: one cache, many subscribers, light polling ---------- */
-  const cache = {}, listeners = {}, inflight = {};
+  const cache = {}, listeners = {}, inflight = {}, apiErrors = {}, retryTimers = {};
+  const errorSubs = new Set();
+  function publishErrors() { errorSubs.forEach(fn => fn(Object.assign({}, apiErrors))); }
   let connUp = true, connFails = 0; const connSubs = new Set();
   function markConn(ok) { connFails = ok ? 0 : connFails + 1; const next = ok ? true : (connFails >= 2 ? false : connUp); if (next !== connUp) { connUp = next; connSubs.forEach(fn => fn(next)); } }
   function useConn() { const [up, setUp] = useState(connUp); useEffect(() => { connSubs.add(setUp); return () => { connSubs.delete(setUp); }; }, []); return up; }
   function load(path) {
     if (inflight[path]) return inflight[path];
-    inflight[path] = fetch(path).then(r => { markConn(true); if (!r.ok) throw new Error(r.status + ' ' + path); return r.json(); }, e => { markConn(false); throw e; })
-      .then(d => { cache[path] = d; (listeners[path] || []).forEach(fn => fn(d)); return d; })
-      .catch(e => { console.warn('load failed', path, e); return cache[path] || null; })
-      .finally(() => { delete inflight[path]; });
+    clearTimeout(retryTimers[path]);
+    inflight[path] = fetch(path).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(d => { delete apiErrors[path]; publishErrors(); markConn(true); cache[path] = d; (listeners[path] || []).forEach(fn => fn(d)); return d; })
+      .catch(e => { markConn(false); apiErrors[path] = e.message || 'Request failed'; publishErrors(); return cache[path] || null; })
+      .finally(() => {
+        delete inflight[path];
+        if (apiErrors[path] && (listeners[path] || []).length) retryTimers[path] = setTimeout(() => load(path), 3000);
+      });
     return inflight[path];
   }
   function useApi(path, pollMs) {
@@ -441,18 +447,29 @@
       if (!path) return undefined;
       const fn = d => setData(d);
       (listeners[path] = listeners[path] || []).push(fn);
-      if (cache[path]) setData(cache[path]); else load(path);
+      setData(cache[path] || null);
+      if (!cache[path] || apiErrors[path]) load(path);
+      publishErrors();
       const t = pollMs ? setInterval(() => { if (!document.hidden) load(path); }, pollMs) : null;
-      return () => { listeners[path] = (listeners[path] || []).filter(f => f !== fn); if (t) clearInterval(t); };
+      return () => { listeners[path] = (listeners[path] || []).filter(f => f !== fn); if (t) clearInterval(t); if (!listeners[path].length) { clearTimeout(retryTimers[path]); delete apiErrors[path]; publishErrors(); } };
     }, [path, pollMs]);
     return data;
+  }
+  function ApiErrors() {
+    const [errors, setErrors] = useState(Object.assign({}, apiErrors));
+    useEffect(() => { errorSubs.add(setErrors); return () => errorSubs.delete(setErrors); }, []);
+    const paths = Object.keys(errors).filter(path => (listeners[path] || []).length);
+    if (!paths.length) return null;
+    return h('div', { className: 'cr-banner', role: 'alert' },
+      h('span', null, 'Some panels could not load. Retrying automatically. ', paths.map(path => path + ': ' + errors[path]).join('; ')),
+      h(K.Button, { size: 'sm', onClick: () => paths.forEach(load) }, 'Retry failed panels'));
   }
   function refresh(paths) { return Promise.all((paths || Object.keys(cache)).map(load)); }
   const CLUSTER_PATHS = ['/api/v1/cluster/overview', '/api/v1/cluster/workers', '/api/v1/update/status', '/api/v1/companion/status'];
   function post(path, body, opts) {
     opts = opts || {};
     return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
-      .then(r => r.text().then(t => { let j = null; try { j = t ? JSON.parse(t) : null; } catch (e) { j = null; } if (!r.ok) throw new Error((j && (j.error || j.message)) || (t && t.length < 240 ? t : 'HTTP ' + r.status + ' from ' + path)); return j; }))
+      .then(r => r.text().then(t => { let j = null; try { j = t ? JSON.parse(t) : null; } catch (e) { j = null; } if (!r.ok) throw new Error((j && (j.error && (j.error.message || j.error) || j.message)) || (t && t.length < 240 ? t : 'HTTP ' + r.status + ' from ' + path)); return j; }))
       .then(j => { if (opts.into) { cache[opts.into] = j; (listeners[opts.into] || []).forEach(fn => fn(j)); } refresh(opts.refresh || CLUSTER_PATHS); return j; });
   }
 
@@ -560,16 +577,16 @@
     shard: 'A slice of the model (a run of consecutive layers) placed on one machine. The shard plan says which machine holds what.',
     ktb: '.ktb is Kadmium’s weight-bank file: model weights packed into 64 KiB pages, each with its own checksum, so a machine can load them straight from disk.',
     tflops: 'Trillions of operations per second: a rough measure of how much maths the hardware can do. TFLOPS counts 16-bit floating point; TOPS counts low-precision integer maths (INT8, INT4) and NPUs.',
-    toks: 'Tokens per second: how fast the model writes. A token is roughly three quarters of a word.',
+    toks: 'Reference tokens per second: throughput for small diagnostic tensors, not language-model answer speed.',
     rtt: 'Round-trip time: how long a message takes to reach another machine and come back.',
     fastmem: 'Fast memory is GPU memory (VRAM) or the unified memory of Apple-style chips. Layers that fit there run fastest; the rest spill to system RAM or stream from NVMe disk.',
     tiers: 'Where a machine keeps its layers: hot in VRAM or unified memory, warm in system RAM, cold streamed from NVMe disk.',
     qstar: 'q* is the share of a machine’s layers served from fast memory, set by comparing its fast-memory bandwidth with its host memory. Closer to 1 means more runs on the fast path.',
     merkle: 'A fingerprint of the whole file built from the checksum of every page. Change one byte anywhere and the fingerprint changes.',
-    rs: 'Erasure coding: each file is cut into k data pieces plus m spare (parity) pieces. Any k of them rebuild the file, so it survives m machines going offline.',
+    rs: 'Erasure coding plans k data pieces plus m parity pieces. Node-loss tolerance requires verified bytes on distinct independent holders. Live placement metadata alone does not establish it.',
     hrw: 'Rendezvous hashing picks which machines hold each piece, weighted by their free space, without a central index.',
-    carousel: 'Training data kept circulating in spare RAM across your machines, so each step reads from the network instead of waiting on one NAS.',
-    anchor: 'A durable copy outside your machines (a NAS or a cloud bucket) that receives every change, so the bucket survives even if most machines disappear at once.',
+    carousel: 'A model of circulating training data in spare RAM. Displayed capacity and throughput are estimates, not measurements of a running carousel.',
+    anchor: 'A configured storage destination. Live reports do not verify synchronized bytes or independent failure domains; adding an anchor does not create a durable copy.',
     fts3: 'The transfer queue: machines copy weights straight to each other in parallel streams. The coordinator schedules; it never relays the bytes.',
     onefoneb: '1F1B (one forward, one backward) is the pipeline schedule that interleaves forward and backward passes so every machine stays busy.',
     bubble: 'The share of a training step machines spend idle, waiting on their neighbours. Lower is better.',
@@ -709,11 +726,11 @@
     overview: { nav: 'Overview', title: 'Overview', hint: 'everything at a glance', lede: 'Your cluster at a glance: the machines in it, the model they run, and what changed. Pick a task to get started, or read the live numbers below.' },
     nodes: { nav: 'Machines', title: 'Machines', hint: 'add, inspect and pause computers', lede: 'Every computer in your cluster. Add one with a single command, open a machine to see its hardware and the part of the model it holds, or pause it when you need it back.' },
     platforms: { nav: 'Boards & devices', title: 'Boards & devices', hint: 'attach Apple M4, Raspberry Pi CM4, K230 and more', lede: 'Small boards and special hardware Kadmium can drive: Apple M4 Macs, Raspberry Pi CM4, Kendryte K230, Tegra X1 and phone farms. Attach one that is plugged in, or add a profile to plan around hardware you don’t have yet.' },
-    models: { nav: 'Models', title: 'Models', hint: 'choose a model and run it', lede: 'Choose a model and load it. Kadmium splits it across your machines by how much memory each one has; then send it a prompt to check it works, or connect your apps.' },
-    data: { nav: 'Storage', title: 'Storage', hint: 'the shared bucket and copies between machines', lede: 'One shared bucket, kdm://pool-bucket/, made from spare disk on your machines. See what is stored and where its pieces live, add entries, and watch copies move between machines.' },
+    models: { nav: 'Models', title: 'Models', hint: 'plan a model and test reference execution', lede: 'Choose a preset to plan placement, compile a synthetic fixture, or run reference diagnostics. These actions do not load a language model or generate answers.' },
+    data: { nav: 'Storage', title: 'Storage', hint: 'the shared bucket and copies between machines', lede: 'Inspect metadata and estimated placement in kdm://pool-bucket/. Entries and configured anchors do not prove uploaded bytes, verified copies, or node-loss protection.' },
     training: { nav: 'Training', title: 'Training', hint: 'fine-tune, save and resume checkpoints', lede: 'Fine-tune a model across your machines. Run training steps, save a checkpoint whenever you want a restore point, and resume from any saved checkpoint.' },
     rl: { nav: 'Reinforcement learning', title: 'Reinforcement learning', hint: 'improve a model by trial and checking', lede: 'Improve a model by trial and checking: machines run attempts, a verifier scores each one, and the model learns from the better ones. Dream-RSI replays recorded runs offline at no GPU cost.' },
-    gateway: { nav: 'API & playground', title: 'API & playground', hint: 'try prompts and connect your apps', lede: 'Send the model a prompt in the playground, then point your own apps here. Kadmium speaks the OpenAI and Anthropic APIs, and MCP for AI tools like Claude Code and Cursor.' },
+    gateway: { nav: 'API & playground', title: 'API & playground', hint: 'try prompts and connect your apps', lede: 'Exercise the limited OpenAI/Anthropic-shaped diagnostic routes and MCP tools. Chat returns fixed reference text, and embeddings are reference vectors, not semantic embeddings.' },
     slices: { nav: 'Slices', title: 'Slices', hint: 'split a big pool into smaller clusters', lede: 'Split a large pool of machines into smaller clusters, each with its own model, limits and API address.' },
     cloud: { nav: 'Kadmium Cloud', title: 'Kadmium Cloud', hint: 'optional burst GPUs, standby and leasing', lede: 'Optional extras on top of self-hosting: burst GPUs when you need more, a standby that takes over if your site goes down, and leasing your idle hardware for credits.' },
     settings: { nav: 'Settings', title: 'Settings', hint: 'updates, theme and links', lede: 'Roll out updates to every machine, choose the theme, and see what this coordinator reports.' }
@@ -728,9 +745,37 @@
 
   function Sidebar(props) {
     const { route, overview, workers, companion, counts, theme, open, onClose } = props;
+    const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 720px)').matches);
+    const sideRef = useRef(null), closeRef = useRef(onClose);
+    closeRef.current = onClose;
+    useEffect(() => {
+      const media = window.matchMedia('(max-width: 720px)');
+      const change = () => setMobile(media.matches);
+      media.addEventListener('change', change);
+      return () => media.removeEventListener('change', change);
+    }, []);
+    useEffect(() => {
+      if (!mobile || !open) return undefined;
+      const side = sideRef.current, main = document.querySelector('.cr-main');
+      const toggle = document.querySelector('.cr-menu[aria-controls="cr-side"]');
+      if (main) main.inert = true;
+      const focusable = () => Array.from(side.querySelectorAll('a[href],button:not([disabled])'));
+      const items = focusable(); if (items[0]) items[0].focus();
+      const key = e => {
+        if (e.key === 'Escape') { e.preventDefault(); closeRef.current(); }
+        if (e.key === 'Tab') {
+          const items = focusable(), first = items[0], last = items[items.length - 1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+        }
+      };
+      side.addEventListener('keydown', key);
+      return () => { side.removeEventListener('keydown', key); if (main) main.inert = false; if (toggle) toggle.focus(); };
+    }, [mobile, open]);
     const leader = overview ? overview.coordinator_quorum.active_leader : '…';
     const cloudMode = companion && companion.mode && companion.mode.KadmiumCloudManaged;
-    return h('aside', { className: 'cr-side' + (open ? ' open' : ''), id: 'cr-side' },
+    return h('aside', { className: 'cr-side' + (open ? ' open' : ''), id: 'cr-side', ref: sideRef, inert: mobile && !open ? '' : undefined, 'aria-hidden': mobile && !open ? true : undefined, role: mobile && open ? 'dialog' : undefined, 'aria-modal': mobile && open ? true : undefined, 'aria-label': 'Navigation' },
+      mobile ? h('button', { className: 'cr-menu', onClick: onClose, 'aria-label': 'Close navigation' }, 'Close navigation') : null,
       h('div', { className: 'cr-brand' },
         h('img', { src: theme === 'dark' ? '/assets/Logos/kadmium-wordmark-dark.svg' : '/assets/Logos/kadmium-wordmark-light.svg', alt: 'Kadmium' }),
         h('span', { className: 'mark' }, h(K.Mark, { size: 26 })),
@@ -817,7 +862,7 @@
   new MutationObserver(queueScrollables).observe(document.body, { childList: true, subtree: true });
   window.addEventListener('resize', queueScrollables);
 
-  window.CR = { useTab, TabPanel, K, h, F, fmt, nodeKind, isCloudNode, nodePlacement, nodeStatus, shortLabel, hardwareLine, nodeMeters, findAssignment, railNodes, shardText, useApi, useConn, refresh, post, act, toast, Toasts, useRoute, go, I, Panel, Stat, Table, KV, Seg, Empty, Loading, Note, Confirm, Term, T, TipLayer, GLOSSARY, Drawer, Code, StatusBadge, copyText, Sparkline, Gantt, Sidebar, Topbar, PageHead, NodeDrawer, CLUSTER_PATHS, PAGES, TITLES, pages: {} };
+  window.CR = { ApiErrors, useTab, TabPanel, K, h, F, fmt, nodeKind, isCloudNode, nodePlacement, nodeStatus, shortLabel, hardwareLine, nodeMeters, findAssignment, railNodes, shardText, useApi, useConn, refresh, post, act, toast, Toasts, useRoute, go, I, Panel, Stat, Table, KV, Seg, Empty, Loading, Note, Confirm, Term, T, TipLayer, GLOSSARY, Drawer, Code, StatusBadge, copyText, Sparkline, Gantt, Sidebar, Topbar, PageHead, NodeDrawer, CLUSTER_PATHS, PAGES, TITLES, pages: {} };
 })();
 
 /* ============================================================
@@ -905,15 +950,15 @@
     const base = (workers && workers.coordinator_http_url) || window.location.origin;
     const stages = inf.assignments.filter(a => a.layer_count > 0).length;
     const runLivePass = () => act(post('/api/v1/pipeline/live', {}), d => (d.live_hops || []).length ? 'Test pass ran across ' + plural(d.live_hops.length, 'machine') + ' · ' + fmt.num(d.effective_tokens_per_sec, 1) + ' tok/s (' + fmt.ms(d.total_pipeline_latency_ms) + ')' : 'Nothing ran: no machine holds layers of ' + inf.model_id + ' yet', 'ok').catch(() => {});
-    const loadRecommended = () => act(post('/api/v1/cluster/model', { inference_model_id: inf.model_id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Loaded ' + inf.model_id + ' across your machines').catch(() => {});
+    const loadRecommended = () => act(post('/api/v1/cluster/model', { inference_model_id: inf.model_id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Planned ' + inf.model_id + ' across your machines').catch(() => {});
     const setFleet = v => act(post('/api/v1/cluster/mode', { live_only: v === 'off' }, { into: '/api/v1/cluster/workers' }), v === 'off' ? 'Showing your real hardware only' : 'Added simulated demo machines next to your real ones', 'ok').catch(() => {});
     return h(F, null,
       h('section', { 'aria-labelledby': 'cr-start' },
         h('h2', { className: 'cr-label', id: 'cr-start' }, 'Start here'),
         h('div', { className: 'cr-tasks' },
           h(TaskCard, { to: 'nodes/add', icon: I('plus', 20), title: 'Add a machine', desc: 'Join another computer to the cluster with one command.', status: resident + ' of ' + plural(nodes.length, 'machine') + ' ready', statusTone: offline ? 'warn' : '' }),
-          h(TaskCard, { to: 'models', icon: I('models', 20), title: 'Run a model', desc: 'Choose a model and load it across your machines.', status: modelLoaded ? 'Running ' + inf.model_id : 'Nothing loaded yet', statusTone: modelLoaded ? '' : 'idle' }),
-          h(TaskCard, { to: 'gateway', icon: I('chat', 20), title: 'Try a prompt', desc: 'Chat with the model and see which machines answered.', status: measuredTps ? fmt.num(measuredTps, 1) + ' tok/s on the last run' : 'No prompts sent yet', statusTone: measuredTps ? '' : 'idle' }),
+          h(TaskCard, { to: 'models', icon: I('models', 20), title: 'Plan a model', desc: 'Choose a model preset and inspect its placement plan.', status: modelLoaded ? 'Planned ' + inf.model_id : 'No preset selected yet', statusTone: modelLoaded ? '' : 'idle' }),
+          h(TaskCard, { to: 'gateway', icon: I('chat', 20), title: 'Try a prompt', desc: 'Run a reference diagnostic and inspect which machines took part.', status: measuredTps ? fmt.num(measuredTps, 1) + ' tok/s on the last run' : 'No prompts sent yet', statusTone: measuredTps ? '' : 'idle' }),
           h(TaskCard, { to: 'training', icon: I('training', 20), title: 'Train a model', desc: 'Run training steps, save checkpoints, and resume where you left off.', status: trainActive ? 'Step ' + fmt.num(tt.current_step) + (saved.length ? ' · ' + plural(saved.length, 'checkpoint') : '') : (saved.length ? plural(saved.length, 'saved checkpoint') : 'Not started'), statusTone: trainActive ? '' : 'idle' }),
           h(TaskCard, { to: 'data/bucket', icon: I('data', 20), title: 'Store files', desc: 'Add to the shared bucket and see which machines hold each piece.', status: bucket ? plural(objs.length, 'item') + ' · ' + fmt.gb(bucket.total_pooled_disk_capacity_gb) + ' pooled' : 'kdm://pool-bucket/', statusTone: objs.length ? '' : 'idle' }),
           h(TaskCard, { to: 'gateway/connect', icon: I('plug', 20), title: 'Connect an app', desc: 'Call the OpenAI or Anthropic API, or MCP tools, from your own code.', status: base.replace(/^https?:\/\//, '') + '/v1' }))),
@@ -925,7 +970,7 @@
           h(Stat, { label: C.T('fastmem', 'Memory'), value: fmt.gb(fastMemGb + sysRamGb), meta: fmt.gb(fastMemGb) + ' fast (VRAM/unified) · ' + fmt.gb(sysRamGb) + ' RAM · ' + fmt.gb(nvmeGb) + ' NVMe' }),
           h(Stat, { label: C.T(null, 'Shared storage', 'Spare disk your machines pool into the shared bucket, kdm://pool-bucket/. Open Storage to see what it holds.'), value: fmt.gb(bucket ? bucket.total_pooled_disk_capacity_gb : nvmeGb * 0.85), meta: plural(objs.length, 'item') + ' in kdm://pool-bucket/ · ' + importedBanks.length + ' .ktb bank' + (importedBanks.length === 1 ? '' : 's') }),
           h(Stat, { label: C.T('rtt', 'Network'), value: fmt.ms(avgRtt), meta: 'round trip · fastest ' + fmt.ms(minRtt) + ' · ' + fmt.num(estBwGbps, 1) + ' Gbps between machines' }),
-          h(Stat, { label: C.T('toks', 'Inference'), value: !modelLoaded ? 'Idle' : (measuredTps ? fmt.num(measuredTps, 1) : 'Ready'), unit: (modelLoaded && measuredTps) ? 'tok/s' : '', meta: !modelLoaded ? 'No model loaded · ' + fmt.gb(fastMemGb) + ' fast memory free' : (measuredTps ? inf.model_id + ' · ' + plural(overview.executed_inference_requests, 'run') + ' · ' + fmt.ms(measuredLatMs || 0) : inf.model_id + ' · ' + inf.total_layers + ' layers on ' + plural(stages, 'machine')), tone: modelLoaded ? 'cadmium' : '' }),
+          h(Stat, { label: C.T('toks', 'Reference execution'), value: !modelLoaded ? 'Idle' : (measuredTps ? fmt.num(measuredTps, 1) : 'Ready'), unit: (modelLoaded && measuredTps) ? 'tok/s' : '', meta: !modelLoaded ? 'No preset selected · ' + fmt.gb(fastMemGb) + ' fast memory free' : (measuredTps ? inf.model_id + ' · ' + plural(overview.executed_inference_requests, 'run') + ' · ' + fmt.ms(measuredLatMs || 0) : inf.model_id + ' · ' + inf.total_layers + ' layers on ' + plural(stages, 'machine')), tone: modelLoaded ? 'cadmium' : '' }),
           h(Stat, { label: C.T(null, 'Training', 'The current training step and its loss: how wrong the model’s guesses still are. Lower is better.'), value: trainActive ? fmt.num(tt.current_step) : 'Idle', unit: trainActive && tt.total_steps ? '/ ' + fmt.num(tt.total_steps) : '', meta: trainActive ? tt.model_id + ' · loss ' + fmt.num(tt.loss, 3) + ' · lr ' + tt.learning_rate : 'No training running' }),
           h(Stat, { label: C.T(null, 'Cloud spend', 'What rented cloud GPUs cost per hour right now. A self-hosted cluster pays nothing.'), value: cloudActive ? fmt.usd(burn) : '$0', unit: '/ hr', meta: cloudNodes ? cloudNodes + ' burst GPU' + (cloudNodes > 1 ? 's' : '') + ' attached' : (cloudMode ? 'linked to Kadmium Cloud · idle' : 'self-hosted: nothing rented'), tone: burn > 0 ? 'cloud' : '' }))),
       h(ShiftStrip, { shift: overview.last_shift }),
@@ -933,7 +978,7 @@
         h('div', { className: 'kd-stack', style: { gap: 'var(--space-5)' } },
           h(Panel, {
               title: 'Where the model runs',
-              sub: modelLoaded ? inf.model_display_name + ' · ' + inf.total_layers + ' layers' : 'nothing loaded',
+              sub: modelLoaded ? inf.model_display_name + ' · ' + inf.total_layers + ' layers' : 'no preset selected',
               desc: modelLoaded ? 'Each rod is a machine; its length is the share of the model’s layers it holds, sized to its memory.' : null,
               tools: h('div', { className: 'cr-rowwrap' },
                 modelLoaded ? h(K.Button, { size: 'sm', variant: 'primary', icon: I('play', 16), onClick: runLivePass, title: 'Runs one real pass across the machines that hold layers and measures the speed' }, 'Run a test pass') : null,
@@ -944,9 +989,9 @@
               h('div', { className: 'cr-rowwrap cr-muted', style: { fontFamily: 'var(--font-mono)', fontSize: '11.5px' } }, fmt.gb(inf.total_model_weight_gb) + ' of ', C.T('ktb', '.ktb'), ' weights · ' + plural(stages, 'pipeline stage') + ' · ' + (measuredTps ? fmt.num(measuredTps, 1) + ' tok/s measured over ' + plural(overview.executed_inference_requests, 'run') : 'run a test pass to measure the speed')))
             : h(Empty, {
                 action: h('div', { className: 'cr-rowwrap', style: { justifyContent: 'center' } },
-                  h(K.Button, { size: 'sm', variant: 'primary', onClick: loadRecommended }, 'Load ' + inf.model_id + ' (' + fmt.gb(inf.total_model_weight_gb) + ')'),
+                  h(K.Button, { size: 'sm', variant: 'primary', onClick: loadRecommended }, 'Plan ' + inf.model_id + ' (' + fmt.gb(inf.total_model_weight_gb) + ')'),
                   h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => go('models') }, 'Choose another'))
-              }, 'No model is loaded, so your machines are idle. ' + inf.model_display_name + ' is the best fit for your ' + fmt.gb(fastMemGb) + ' of fast memory.')),
+              }, 'No preset is selected. ' + inf.model_display_name + ' is the best fit for your ' + fmt.gb(fastMemGb) + ' of fast memory.')),
           h('div', { className: 'cr-two' },
             h(Panel, { title: 'Links between machines', sub: plural(links.length, 'measured link'), flush: true },
               h(Table, { label: 'Links between machines', empty: 'One machine only: nothing to link yet.', cols: [{ key: 'p', label: 'between', render: l => h('div', null, h('div', null, l.from_node.replace('node-', '') + ' → ' + l.to_node.replace('node-', '')), h('div', { className: 'cr-muted', style: { fontSize: '11px' } }, transportName(l.transport))) }, { key: 'bw', label: 'speed', num: true, render: l => l.bandwidth_gbps + ' Gbps' }, { key: 'rtt', label: C.T('rtt', 'round trip'), num: true, render: l => fmt.num(l.rtt_latency_ms, 1) + ' ms' }], rows: links.slice().sort((a, b) => b.bandwidth_gbps - a.bandwidth_gbps).slice(0, 6) })),
@@ -1203,31 +1248,33 @@
     const fit = w => w <= capacity ? ['fits in memory', 'ok'] : w <= capacity + nvme ? ['streams from disk', 'warn'] : ['needs more machines', 'danger'];
     const holders = inf.assignments.filter(a => a.layer_count > 0);
     const refreshAll = C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models', '/api/v1/runtime/kernels']);
-    const load = id => { setBusy(id); act(post('/api/v1/cluster/model', { inference_model_id: id }, { into: '/api/v1/cluster/overview', refresh: refreshAll }), d => { const n = (d.inference_plan.assignments || []).filter(a => a.layer_count > 0).length; return n ? 'Loaded ' + id + ' across ' + n + ' machine' + (n === 1 ? '' : 's') : 'Loaded ' + id + ', but no machine has room for its layers yet'; }).catch(() => {}).finally(() => setBusy(null)); };
-    const unload = () => act(post('/api/v1/cluster/model', { unload: true }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), 'Unloaded ' + inf.model_id + ': your machines are idle again', 'warn').catch(() => {});
+    const load = id => { setBusy(id); act(post('/api/v1/cluster/model', { inference_model_id: id }, { into: '/api/v1/cluster/overview', refresh: refreshAll }), d => { const n = (d.inference_plan.assignments || []).filter(a => a.layer_count > 0).length; return n ? 'Planned ' + id + ' across ' + n + ' machine' + (n === 1 ? '' : 's') : 'Planned ' + id + ', but no machine has room for its layers yet'; }).catch(() => {}).finally(() => setBusy(null)); };
+    const unload = () => act(post('/api/v1/cluster/model', { unload: true }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), 'Cleared plan for ' + inf.model_id + ': your machines are idle again', 'warn').catch(() => {});
     const runTrace = () => act(post('/api/v1/pipeline/live', {}).then(d => { setTrace(d.report); return d.report; }), t => (t.stages || []).length ? 'Traced one step across ' + t.stages.length + ' machines · ' + fmt.num(t.effective_tokens_per_sec, 1) + ' tok/s' : 'Nothing ran: no machine holds layers of ' + inf.model_id + ' yet').catch(() => {});
-    const importLocalKtb = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), m => 'Compiled ' + m.model_id + ' to ' + m.compiled_ktb_path + ' (' + m.ktb_page_count + ' pages of 64 KiB)', 'ok').catch(() => {});
-    const send = () => { setBusy('send'); act(post('/v1/chat/completions', { model: inf.model_id, messages: [{ role: 'user', content: prompt }] }, { refresh: ['/api/v1/cluster/overview'] }), r => r.kadmium_fabric ? 'Answered across ' + r.kadmium_fabric.execution_trace.stages.length + ' machines at ' + fmt.num(r.kadmium_fabric.estimated_tokens_per_sec, 1) + ' tok/s' : 'Answered').then(setReply).catch(() => {}).finally(() => setBusy(null)); };
+    const importLocalKtb = () => act(post('/api/v1/models/import', { model_id: inf.model_id, demo_fixture: true }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), m => 'Compiled synthetic fixture for ' + m.model_id + ' to ' + m.compiled_ktb_path + ' (' + m.ktb_page_count + ' pages of 64 KiB)', 'ok').catch(() => {});
+    const send = () => { setBusy('send'); act(post('/v1/chat/completions', { model: inf.model_id, messages: [{ role: 'user', content: prompt }] }, { refresh: ['/api/v1/cluster/overview'] }), r => r.kadmium_fabric ? 'Reference diagnostic across ' + r.kadmium_fabric.execution_trace.stages.length + ' machines at ' + fmt.num(r.kadmium_fabric.estimated_tokens_per_sec, 1) + ' tok/s' : 'Reference diagnostic complete').then(setReply).catch(() => {}).finally(() => setBusy(null)); };
     const replyText = reply && reply.choices && reply.choices[0] ? reply.choices[0].message.content : null;
     return h(F, null,
+      h(C.Note, null, 'States: planned preset; reference execution; imported file on disk; synthetic fixture. None of these confirms a loaded language model.'),
+      (overview.imported_models || []).length ? h(Panel, { title: 'Files on this coordinator', sub: 'on disk, not loaded for generation' }, (overview.imported_models || []).map(m => h('div', { key: m.compiled_ktb_path, className: 'cr-rowwrap' }, h(K.Badge, { tone: m.synthetic_fixture ? 'warn' : 'neutral' }, m.synthetic_fixture ? 'synthetic fixture' : 'imported file'), h('code', null, m.compiled_ktb_path)))) : null,
       h('div', { className: 'cr-steps' },
-        h(Panel, { className: 'cr-step', title: 'Choose a model', sub: modelLoaded ? 'running: ' + inf.model_display_name : 'nothing loaded',
-            desc: takers.length ? 'Click a model to load it. The badge says whether it fits in the ' + fmt.gb(capacity) + ' of memory on machines that take layers, has to stream part of itself from disk, or needs more machines.' : 'Click a model to load it. None of your machines takes model layers yet (that needs a GPU or unified memory), so every model needs more machines for now. Add one on the Machines page.',
+        h(Panel, { className: 'cr-step', title: 'Choose a model', sub: modelLoaded ? 'planned: ' + inf.model_display_name : 'no preset selected',
+            desc: takers.length ? 'Click a preset to plan its placement. This does not load weights. The badge says whether it fits in the ' + fmt.gb(capacity) + ' of memory on machines that take layers, has to stream part of itself from disk, or needs more machines.' : 'Click a preset to plan its placement. This does not load weights. None of your machines takes model layers yet (that needs a GPU or unified memory), so every model needs more machines for now. Add one on the Machines page.',
             tools: h('div', { className: 'cr-rowwrap' },
-              h(K.Button, { size: 'sm', onClick: importLocalKtb, title: 'Packs the weights into 64 KiB pages with checksums so machines can load them straight from disk' }, 'Compile weights to .ktb'),
-              modelLoaded ? h(K.Button, { size: 'sm', variant: 'ghost', onClick: unload }, 'Unload') : null) },
+              h(K.Button, { size: 'sm', onClick: importLocalKtb, title: 'Creates synthetic sample tensors in a .ktb file; does not import model weights' }, 'Compile reference fixture'),
+              modelLoaded ? h(K.Button, { size: 'sm', variant: 'ghost', onClick: unload }, 'Clear selection') : null) },
           models ? h('ul', { className: 'cr-grid cr-plain', style: { gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))' }, 'aria-label': 'Models' }, shardable.map(m => {
             const kf = m.kadmium_fabric || {}, active = modelLoaded && m.id === inf.model_id, recommended = !modelLoaded && m.id === inf.model_id, f = fit(kf.weight_gb || 0);
             return h('li', { key: m.id }, h('button', { type: 'button', className: 'cr-modelcard' + (active ? ' active' : ''), 'aria-pressed': active, disabled: !!busy && busy === m.id, onClick: () => active ? go('models/plan') : load(m.id) },
               h('span', { className: 'n' }, m.id),
               h('span', { className: 'm' }, (kf.display_name || m.owned_by) + ' · ' + fmt.gb(kf.weight_gb || 0) + ' · ' + kf.total_layers + ' layers'),
-              h('span', { className: 'row' }, active ? h(K.Badge, { tone: 'local', dot: true }, 'loaded') : h(K.Badge, { tone: f[1] }, f[0]),
-                h('span', { className: 'cta' }, busy === m.id ? 'Loading…' : active ? (measuredTps ? fmt.num(measuredTps, 1) + ' tok/s · see where it runs' : 'send it a prompt below') : recommended ? 'best fit · load it' : 'load it'))));
+              h('span', { className: 'row' }, active ? h(K.Badge, { tone: 'local', dot: true }, 'planned') : h(K.Badge, { tone: f[1] }, f[0]),
+                h('span', { className: 'cta' }, busy === m.id ? 'Loading…' : active ? (measuredTps ? fmt.num(measuredTps, 1) + ' tok/s · see where it runs' : 'run a reference diagnostic below') : recommended ? 'best fit · plan it' : 'plan it'))));
           })) : Loading('Reading the model list…'),
-          services.length ? h('p', { className: 'cr-desc' }, 'Also served through the API, without splitting: ', services.map((m, i) => h(F, { key: m.id }, i ? ', ' : '', h('code', null, m.id))), '.') : null),
-        h(Panel, { className: 'cr-step', title: 'Try it', sub: modelLoaded ? inf.model_id : 'loads the best fit first',
-            desc: 'Send a prompt to check the model answers. The reply shows how many machines took part and how fast it ran.' },
-          !modelLoaded ? h(C.Note, null, 'Nothing is loaded yet, so sending a prompt loads ', h('b', null, inf.model_id), ' first.') : null,
+          services.length ? h('p', { className: 'cr-desc' }, 'Reference diagnostic services: ', services.map((m, i) => h(F, { key: m.id }, i ? ', ' : '', h('code', null, m.id))), '.') : null),
+        h(Panel, { className: 'cr-step', title: 'Try it', sub: modelLoaded ? inf.model_id : 'uses the current plan',
+            desc: 'Runs small reference tensors and returns fixed diagnostic text, not a generated model answer. Throughput measures reference execution.' },
+          h(C.Note, null, 'Reference execution uses the plan for ', h('b', null, inf.model_id), '. No language-model weights are loaded by Send.'),
           h('div', { className: 'cr-ask' },
             h(K.Input, { label: 'Prompt', value: prompt, onChange: e => setPrompt(e.target.value), onKeyDown: e => { if (e.key === 'Enter' && prompt.trim() && busy !== 'send') send(); } }),
             h(K.Button, { variant: 'primary', icon: I('chat', 16), disabled: busy === 'send' || !prompt.trim(), onClick: send }, busy === 'send' ? 'Sending…' : 'Send')),
@@ -1239,13 +1286,13 @@
       h(K.Tabs, { label: 'Model details', value: tab, onChange: setTab, items: [{ id: 'plan', label: 'Where it runs', count: modelLoaded ? holders.length : undefined }, { id: 'dataflow', label: 'Dataflow' }, { id: 'kernels', label: 'Kernels' }, { id: 'trace', label: 'Trace one step' }] }),
       tab === 'plan' ? h(C.TabPanel, { id: 'plan', label: 'Where it runs' },
         h('div', { className: 'cr-stats' },
-          h(Stat, { label: C.T('toks', 'Speed'), value: !modelLoaded ? 'Idle' : (measuredTps ? fmt.num(measuredTps, 1) : 'Ready'), unit: (modelLoaded && measuredTps) ? 'tok/s' : '', meta: !modelLoaded ? 'No model loaded' : (measuredTps ? overview.executed_inference_requests + ' runs so far' : 'send a prompt to measure it'), tone: modelLoaded ? 'cadmium' : '' }),
+          h(Stat, { label: C.T('toks', 'Reference speed'), value: !modelLoaded ? 'Idle' : (measuredTps ? fmt.num(measuredTps, 1) : 'Ready'), unit: (modelLoaded && measuredTps) ? 'tok/s' : '', meta: !modelLoaded ? 'No preset selected' : (measuredTps ? overview.executed_inference_requests + ' runs so far' : 'send a prompt to measure it'), tone: modelLoaded ? 'cadmium' : '' }),
           h(Stat, { label: C.T('layers', 'Layers'), value: modelLoaded ? inf.total_layers : '0', meta: modelLoaded ? 'split across ' + holders.length + ' machine' + (holders.length === 1 ? '' : 's') : 'Best fit: ' + inf.model_id + ' (' + inf.total_layers + ' layers)' }),
-          h(Stat, { label: 'Weights in memory', value: modelLoaded ? fmt.gb(inf.total_model_weight_gb) : '0 GB', meta: modelLoaded ? 'in 64 KiB .ktb pages' : 'Load a model to place its weights' }),
+          h(Stat, { label: 'Planned weight footprint', value: modelLoaded ? fmt.gb(inf.total_model_weight_gb) : '0 GB', meta: modelLoaded ? 'estimate, not resident weights' : 'Select a preset to preview placement' }),
           h(Stat, { label: C.T('ktb', 'Compiled .ktb files'), value: (overview.imported_models || []).length, unit: 'on disk', meta: (overview.imported_models || []).length ? overview.imported_models[overview.imported_models.length - 1].compiled_ktb_path : 'None compiled yet' })),
-        h(Panel, { title: 'Layers per machine', sub: modelLoaded ? inf.model_display_name : 'preview: ' + inf.model_display_name + ' (not loaded)', desc: modelLoaded ? 'Each rod is a machine; its length is its share of the layers.' : null },
-          modelLoaded ? h(K.ShardRail, { label: 'Layers per machine for ' + inf.model_id, depth: 128, pitch: 72, nodes: C.railNodes(nodes, inf) }) : h(Empty, { action: h(K.Button, { size: 'sm', variant: 'primary', onClick: () => load(inf.model_id) }, 'Load ' + inf.model_id + ' (' + fmt.gb(inf.total_model_weight_gb) + ')') }, 'Nothing is loaded. Load ' + inf.model_display_name + ' to split it across your ' + nodes.length + ' machine' + (nodes.length === 1 ? '' : 's') + '.')),
-        modelLoaded ? h(Panel, { title: 'Assignments', sub: 'per machine', flush: true, desc: h(F, null, 'Which layers each machine holds and where they sit in its memory: ', C.T('tiers', 'hot, warm or cold'), '.') },
+        h(Panel, { title: 'Layers per machine', sub: modelLoaded ? inf.model_display_name : 'preview: ' + inf.model_display_name + ' (plan preview)', desc: modelLoaded ? 'Each rod shows the machine?s planned share of layers, not resident weights.' : null },
+          modelLoaded ? h(K.ShardRail, { label: 'Layers per machine for ' + inf.model_id, depth: 128, pitch: 72, nodes: C.railNodes(nodes, inf) }) : h(Empty, { action: h(K.Button, { size: 'sm', variant: 'primary', onClick: () => load(inf.model_id) }, 'Plan ' + inf.model_id + ' (' + fmt.gb(inf.total_model_weight_gb) + ')') }, 'No preset is selected. Plan ' + inf.model_display_name + ' to split it across your ' + nodes.length + ' machine' + (nodes.length === 1 ? '' : 's') + '.')),
+        modelLoaded ? h(Panel, { title: 'Assignments', sub: 'per machine', flush: true, desc: h(F, null, 'Planned layers and memory tiers for each machine: ', C.T('tiers', 'hot, warm or cold'), '.') },
           h(Table, { label: 'Assignments', rows: inf.assignments.slice().sort((a, b) => (a.pipeline_stage_index == null ? 99 : a.pipeline_stage_index) - (b.pipeline_stage_index == null ? 99 : b.pipeline_stage_index)), rowKey: a => a.node_id, cols: [
             { key: 's', label: 'stage', render: a => a.pipeline_stage_index == null ? h('span', { className: 'cr-muted' }, 'helper') : 'S' + a.pipeline_stage_index },
             { key: 'n', label: 'machine', render: a => h('span', { className: 'sans', style: { fontWeight: 600 } }, a.hostname) },
@@ -1272,7 +1319,7 @@
             { key: 'n', label: 'machine', render: s => h('span', { className: 'sans', style: { fontWeight: 600 } }, s.hostname) }, { key: 'l', label: 'layers', render: s => 'L' + s.start_layer + '–L' + s.end_layer },
             { key: 'e', label: 'experts used', cls: 'wrap', render: s => Badges((s.routed_experts_sample || []).map(e => h(K.Badge, { key: e.expert_id, tone: e.residency === 'HotVramOrUnified' ? 'local' : 'neutral' }, '#' + e.expert_id + ' ' + fmt.num(e.gating_weight, 2)))) },
             { key: 'c', label: 'fetched from disk', num: true, render: s => s.cold_nvme_expert_fetches }, { key: 'b', label: 'sent on', num: true, render: s => s.boundary_int8_payload_bytes + ' B' }, { key: 'lat', label: 'time', num: true, render: s => fmt.ms(s.stage_latency_ms) }] }))
-          : h(Empty, null, modelLoaded ? 'Run a trace to follow one step through every machine.' : 'Load a model first; the trace follows one step through the machines that hold it.'))) : null);
+          : h(Empty, null, modelLoaded ? 'Run a trace to follow one step through every machine.' : 'Select a plan first; the trace follows one step through the machines that hold it.'))) : null);
   }
   C.pages.models = Models;
 })();
@@ -1396,7 +1443,7 @@
     const runReplay = () => act(post('/api/v1/rl/dream-replay', { world_id: (ga && ga.dream_rsi_world_registry && ga.dream_rsi_world_registry[0] && (ga.dream_rsi_world_registry[0].world_id || ga.dream_rsi_world_registry[0].world_slug)) || 'dream-rsi-cuda-q4k-kernel-synth-v1', mcts_simulations: 64 }, { refresh: [] }), r => 'Replay finished: best strategy ' + fmt.num(r.best_evolved_speedup, 2) + '× faster, from ' + r.total_mcts_simulations + ' simulated tries and no GPU time', 'ok').then(setReplay).catch(() => {});
     return h(F, null,
       h('div', { className: 'cr-stats' },
-        h(Stat, { label: C.T('grpo', 'Method'), value: rlActive ? algoName(rl.algorithm) : '—', meta: rlActive ? (suite.display_name || suite.suite_id || '—') : 'starts when a model is loaded' }),
+        h(Stat, { label: C.T('grpo', 'Method'), value: rlActive ? algoName(rl.algorithm) : '—', meta: rlActive ? (suite.display_name || suite.suite_id || '—') : 'starts with a selected reference plan' }),
         h(Stat, { label: 'Attempts', value: rlActive ? fmt.num(rl.estimated_cluster_episodes_per_min, 0) : '—', unit: rlActive ? '/ min' : '', meta: rlActive ? rl.total_vectorized_env_slots + ' run side by side' : '—', tone: rlActive ? 'cadmium' : '' }),
         h(Stat, { label: C.T('dreamrsi', 'Saved by replay'), value: replay ? fmt.pct(78.4, 1) : (rep ? fmt.pct(rep.cost_savings_pct, 1) : '—'), meta: replay ? 'best ' + fmt.num(replay.best_evolved_speedup, 2) + '× · ' + replay.total_mcts_simulations + ' simulated tries' : (rep ? 'best ' + rep.peak_speedup_achieved + '× · generation ' + rep.generation : '—') }),
         h(Stat, { label: C.T(null, 'Staleness', 'How many steps behind the newest model an attempt may be and still count.'), value: rlActive ? rl.max_staleness_steps : '—', unit: rlActive ? 'steps' : '', meta: rlActive ? 'model shared every ' + rl.policy_sync_interval_steps + ' steps' : '—' })),
@@ -1414,7 +1461,7 @@
           (replay.worker_runs || []).map(w => h('div', { key: w.hostname }, h('div', { className: 'cr-chip', style: { marginBottom: '6px' } }, h('span', { className: 'cr-dot' }), w.hostname, w.simulations_run != null ? ' · ' + w.simulations_run + ' sims' : ''), Code(w.best_discovered_kernel_snippet || '', 'best discovered kernel · ' + w.hostname, 'rust')))) : null,
         (rlActive && dream && dream.evolution_report && dream.evolution_report.evolved_meta_prompt_directive) ? Code(dream.evolution_report.evolved_meta_prompt_directive, 'guidance passed to the next online run', 'text') : null) : null,
       tab === 'grpo' ? h(C.TabPanel, { id: 'grpo', label: 'Scored attempts' }, h(Panel, { title: 'One scored group', sub: (rlActive && grpo) ? grpo.group_size + ' attempts · average reward ' + fmt.num(grpo.mean_group_reward, 3) : '—', flush: true, desc: h(F, null, 'Several attempts at the same task, each checked by a verifier. With ', C.T('grpo', 'GRPO'), ' the model moves toward attempts that beat the group average (a positive advantage).'), foot: (rlActive && grpo) ? h('span', { className: 'sans' }, grpo.task_description) : null },
-        grpo ? h(Table, { label: 'Scored attempts', empty: 'No attempts yet. They appear once a model is loaded and training runs.', rows: rlActive ? (grpo.rollouts || []) : [], rowKey: (r, i) => r.rollout_id || i, cols: [
+        grpo ? h(Table, { label: 'Scored attempts', empty: 'No attempts yet. They appear once a reference plan is selected and training diagnostics run.', rows: rlActive ? (grpo.rollouts || []) : [], rowKey: (r, i) => r.rollout_id || i, cols: [
           { key: 'id', label: 'attempt', render: r => h(F, null, r.rollout_id, r.rollout_id === grpo.best_rollout_id ? h(F, null, ' ', h(K.Badge, { tone: 'local' }, 'best')) : null) },
           { key: 'n', label: 'checked on', render: r => r.verifier_hostname || r.sandbox_node || r.hostname || '—' },
           { key: 'ok', label: 'verdict', render: r => h(K.Badge, { tone: r.verified || r.passed || r.tests_passed ? 'ok' : 'danger', dot: true }, r.verified || r.passed || r.tests_passed ? 'verified' : 'failed') },
@@ -1447,11 +1494,10 @@
     const base = (workers && workers.coordinator_http_url) || (window.location.origin);
     const list = (models && models.data) || [];
     const activeModel = model || (overview && overview.inference_plan.model_id) || (list[0] && list[0].id);
-    const send = () => { setBusy(true); act(post('/v1/chat/completions', { model: activeModel, messages: [{ role: 'user', content: prompt }], vision_offload: vision || undefined }, { refresh: ['/api/v1/cluster/overview'] }), r => 'Answered across ' + (r.kadmium_fabric ? r.kadmium_fabric.execution_trace.stages.length + ' machines · ' + fmt.num(r.kadmium_fabric.estimated_tokens_per_sec, 1) + ' tok/s' : 'your machines')).then(setReply).catch(() => {}).finally(() => setBusy(false)); };
+    const send = () => { setBusy(true); act(post('/v1/chat/completions', { model: activeModel, messages: [{ role: 'user', content: prompt }], vision_offload: vision || undefined }, { refresh: ['/api/v1/cluster/overview'] }), r => 'Reference diagnostic across ' + (r.kadmium_fabric ? r.kadmium_fabric.execution_trace.stages.length + ' machines · ' + fmt.num(r.kadmium_fabric.estimated_tokens_per_sec, 1) + ' tok/s' : 'your machines')).then(setReply).catch(() => {}).finally(() => setBusy(false)); };
     const sendLive = () => { setBusy(true); act(post('/api/v1/pipeline/live', { prompt, max_tokens: 16 }), r => 'Live workers: ' + r.live_hops.length + ' hops · ' + fmt.ms(r.total_pipeline_latency_ms) + (r.all_stages_bit_identical ? ' · bit-identical' : ' · results differ')).then(setLive).catch(() => {}).finally(() => setBusy(false)); };
     const sendEmbed = () => act(post('/v1/embeddings', { model: 'kadmium-embed-v1', input: [prompt], dimensions: 16 }, { refresh: [] }), r => 'Embedded ' + ((r.data || []).length) + ' input' + ((r.data || []).length === 1 ? '' : 's')).then(setEmbed).catch(() => {});
     const callTool = (name, args) => act(post('/mcp', { jsonrpc: '2.0', id: Date.now(), method: 'tools/call', params: { name, arguments: args || {} } }, { refresh: [] }), 'Called ' + name).then(setMcpReply).catch(() => {});
-    const loaded = !!(overview && overview.active_model_loaded);
     const curl = '$ curl ' + base + '/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"' + activeModel + '","messages":[{"role":"user","content":"Hello"}]}\'';
     const py = 'from openai import OpenAI\nclient = OpenAI(base_url="' + base + '/v1", api_key="kdm_local")\nr = client.chat.completions.create(model="' + activeModel + '",\n    messages=[{"role": "user", "content": "Hello"}])\nprint(r.choices[0].message.content)';
     const anthropic = '$ export ANTHROPIC_BASE_URL=' + base + '\n$ curl ' + base + '/v1/messages \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"' + activeModel + '","max_tokens":256,"messages":[{"role":"user","content":"Hello"}]}\'';
@@ -1463,14 +1509,14 @@
         h(Stat, { label: 'Models', value: list.length, meta: list.map(m => m.id).join(' · ') })),
       h(K.Tabs, { label: 'API and playground views', value: tab, onChange: setTab, items: [{ id: 'playground', label: 'Playground' }, { id: 'connect', label: 'Connect an app' }, { id: 'mcp', label: 'MCP tools', count: mcp ? mcp.tools.length : undefined }, { id: 'keys', label: 'API keys', count: (!liveOnly && ga) ? ga.scoped_api_keys.length : undefined }] }),
       tab === 'playground' ? h(C.TabPanel, { id: 'playground', label: 'Playground' }, h('div', { className: 'cr-main-aside' },
-        h(Panel, { title: 'Playground', sub: 'runs on your machines', tools: h('select', { className: 'cr-select', value: activeModel || '', onChange: e => setModel(e.target.value), 'aria-label': 'Model' }, list.map(m => h('option', { key: m.id, value: m.id }, m.id))) },
-          !loaded ? h(C.Note, null, 'No model is loaded yet. Sending a prompt loads ', h('b', null, activeModel || 'the best fit'), ' first, or ', h('a', { href: '#/models' }, 'choose a model'), '.') : null,
+        h(Panel, { title: 'Playground', sub: 'reference diagnostics · no language-model generation', tools: h('select', { className: 'cr-select', value: activeModel || '', onChange: e => setModel(e.target.value), 'aria-label': 'Diagnostic response label (does not select the plan)' }, list.map(m => h('option', { key: m.id, value: m.id }, m.id))) },
+          h(C.Note, null, 'Send returns fixed diagnostic text, not a model answer. The selector labels the response only. Executed plan: ', h('b', null, overview && overview.inference_plan.model_id), '. ', h('a', { href: '#/models' }, 'Change the executed plan'), '.'),
           h('textarea', { className: 'cr-textarea', value: prompt, onChange: e => setPrompt(e.target.value), rows: 4, 'aria-label': 'Prompt' }),
           h('div', { className: 'cr-rowwrap' },
             h(K.Button, { variant: 'primary', icon: I('chat', 16), disabled: busy, title: 'POST /v1/chat/completions', onClick: send }, busy ? 'Running…' : 'Send'),
             h(K.Button, { disabled: busy, title: 'POST /api/v1/pipeline/live: runs over TCP on the live worker processes', onClick: sendLive }, 'Send through live workers'),
-            h(K.Button, { variant: 'ghost', title: 'POST /v1/embeddings', onClick: sendEmbed }, 'Get an embedding'),
-            h('label', { className: 'cr-chip', style: { marginLeft: 'auto', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: vision, onChange: e => setVision(e.target.checked) }), 'send images to the vision model')),
+            h(K.Button, { variant: 'ghost', title: 'POST /v1/embeddings', onClick: sendEmbed }, 'Get a reference vector'),
+            h('label', { className: 'cr-chip', style: { marginLeft: 'auto', cursor: 'pointer' } }, h('input', { type: 'checkbox', checked: vision, onChange: e => setVision(e.target.checked) }), 'run reference vision offload')),
           !reply && !live && !embed ? h(Empty, null, 'Send a prompt to see the reply, which machines took part and how fast it ran.') : null,
           reply ? h(F, null, h('div', { className: 'cr-reply' }, reply.choices && reply.choices[0] ? reply.choices[0].message.content : JSON.stringify(reply)),
             reply.kadmium_fabric ? h('div', { className: 'cr-rowwrap' }, h(K.Badge, { tone: 'ok', dot: true }, fmt.num(reply.kadmium_fabric.estimated_tokens_per_sec, 1) + ' tok/s'), h(K.Badge, null, 'epoch ' + reply.kadmium_fabric.epoch), reply.kadmium_fabric.execution_trace && reply.kadmium_fabric.execution_trace.speculative_verification ? h(K.Badge, { tone: 'local' }, 'drafts ' + fmt.num(reply.kadmium_fabric.execution_trace.speculative_verification.acceptance_rate * 100, 0) + ' % accepted · ' + fmt.num(reply.kadmium_fabric.execution_trace.speculative_verification.effective_speedup_multiplier, 2) + '×') : null, h(K.Badge, null, reply.id)) : null) : null,
@@ -1480,7 +1526,7 @@
         h('div', { className: 'kd-stack', style: { gap: 'var(--space-5)' } },
           h(Panel, { title: 'This computer', sub: probe ? h(F, null, 'runs the coordinator · ', C.T('qstar', 'q*'), ' ' + probe.q_star_ratio) : '…' },
             probe ? h(K.NodeCard, { name: probe.local_node.hostname, hardware: C.hardwareLine(probe.local_node), kind: C.nodeKind(probe.local_node), placement: 'local', status: 'resident', shards: 'coordinator · ' + base.replace(/^https?:\/\//, ''), meters: C.nodeMeters(probe.local_node, null) }) : Loading()),
-          h(Panel, { title: 'Use it from your tools', desc: 'Any OpenAI-compatible tool works: Cursor, Claude Code, OpenWebUI, LangChain and more.' }, Code('$ export OPENAI_BASE_URL=' + base + '/v1\n$ export OPENAI_API_KEY=kdm_local', 'shell'))))) : null,
+          h(Panel, { title: 'Use it from your tools', desc: 'These limited diagnostic routes are not a complete OpenAI or Anthropic implementation. See the API reference before integrating.' }, Code('$ export OPENAI_BASE_URL=' + base + '/v1\n$ export OPENAI_API_KEY=kdm_local', 'shell'))))) : null,
       tab === 'connect' ? h(C.TabPanel, { id: 'connect', label: 'Connect an app' },
         h(C.Note, null, 'Copy one of these into your app. Each one points at this coordinator, ', h('b', null, base), '.'),
         h('div', { className: 'cr-two' }, Code(curl, 'curl · OpenAI-compatible'), Code(py, 'Python · OpenAI SDK', 'text'), Code(anthropic, 'Anthropic Messages API'), Code('$ kadmium serve --port 7848\n# control room  ' + base + '\n# metrics       ' + base + '/metrics   (Prometheus)\n# w&b           ' + base + '/api/v1/telemetry/wandb', 'where everything lives'))) : null,
@@ -1534,8 +1580,8 @@
     const totalGb = tx.reduce((s, t) => s + (t.volume_gb || 0), 0);
     const runStream = () => act(post('/api/v1/fts3/stream', {}), r => 'Sent ' + r.shard_name + ' · ' + fmt.num(r.ktb_total_bytes / 1024, 0) + ' KiB at ' + fmt.num(r.aggregate_goodput_mbps, 0) + ' Mbps · ' + r.target_receipts.length + ' pages checked').then(setStream).catch(() => {});
     const put = (body, okText) => act(post('/api/v1/storage/pool-bucket/object', body, { into: bucketPath, refresh: C.CLUSTER_PATHS.concat([bucketPath]) }), okText || (r => 'Bucket updated: ' + (r.bucket_objects || []).length + ' item(s) across ' + r.total_participating_nodes + ' machine(s)'), 'ok').catch(() => {});
-    const addAnchor = (body, what) => act(post('/api/v1/storage/pool-bucket/anchor', body, { into: bucketPath, refresh: [bucketPath] }), 'Added a durable copy on ' + what, 'ok').catch(() => {});
-    const compileAndStage = () => act(post('/api/v1/models/import', { model_id: inf.model_id }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models', bucketPath]) }), m => 'Compiled ' + m.model_id + ' to a .ktb file (' + (m.ktb_page_count || m.page_count_64k || 0) + ' pages of 64 KiB) and added it to the bucket', 'ok').catch(() => {});
+    const addAnchor = (body, what) => act(post('/api/v1/storage/pool-bucket/anchor', body, { into: bucketPath, refresh: [bucketPath] }), 'Configured an unverified anchor on ' + what, 'ok').catch(() => {});
+    const compileAndStage = () => act(post('/api/v1/models/import', { model_id: inf.model_id, demo_fixture: true }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models', bucketPath]) }), m => 'Compiled synthetic fixture for ' + m.model_id + ' to a .ktb file (' + (m.ktb_page_count || m.page_count_64k || 0) + ' pages of 64 KiB) and added it to the bucket', 'ok').catch(() => {});
     const hf = (!liveOnly && integ) ? integ.sample_hf_pull_plan : null, gh = (!liveOnly && integ) ? integ.sample_github_ci_run : null;
     const ec = bucket && bucket.erasure_coding_verification;
     const wc = bucket && bucket.wire_token_carousel;
@@ -1552,33 +1598,31 @@
     const setF = patch => setForm(Object.assign({}, form, patch));
     return h(F, null,
       h('div', { className: 'cr-stats' },
-        h(Stat, { label: 'Pooled space', value: bucket ? fmt.gb(bucket.total_pooled_disk_capacity_gb) : '—', meta: bucket ? 'from ' + bucket.total_participating_nodes + ' machine' + (bucket.total_participating_nodes === 1 ? '' : 's') + ' · ' + fmt.gb(bucket.total_pooled_disk_capacity_gb / (ec ? ec.storage_overhead_ratio : 1.25)) + ' usable after spares' : '—', tone: 'cadmium' }),
-        h(Stat, { label: 'In the bucket', value: objs.length, unit: objs.length === 1 ? 'item' : 'items', meta: objs.length ? fmt.gb(logicalSum) + ' of data · ' + fmt.gb(physSum) + ' stored with spares' : 'empty: add something below' }),
-        h(Stat, { label: C.T('carousel', 'Data on the wire'), value: bucket ? fmt.gb(bucket.total_wire_ram_carousel_gb) : '—', meta: wc ? wc.decentralized_pool_carousel_gbps + ' Gbps between machines · ' + wc.bandwidth_scaling_multiplier_x + '× a single NAS' : '—' }),
-        h(Stat, { label: C.T('anchor', 'Durable copies'), value: anchors.length, unit: anchors.length === 1 ? 'copy' : 'copies', meta: anchors.length ? 'survives losing half the machines: ' + (bg && bg.grounded_survives_mass_dropout ? 'yes' : 'no') : 'none yet: add a NAS or cloud bucket' }),
+        h(Stat, { label: 'Estimated pooled space', value: bucket ? fmt.gb(bucket.total_pooled_disk_capacity_gb) : '—', meta: bucket ? 'from ' + bucket.total_participating_nodes + ' machine' + (bucket.total_participating_nodes === 1 ? '' : 's') + ' · ' + fmt.gb(bucket.total_pooled_disk_capacity_gb / (ec ? ec.storage_overhead_ratio : 1.25)) + ' usable after spares' : '—', tone: 'cadmium' }),
+        h(Stat, { label: 'In the bucket', value: objs.length, unit: objs.length === 1 ? 'item' : 'items', meta: objs.length ? fmt.gb(logicalSum) + ' of data · ' + fmt.gb(physSum) + ' estimated with spares' : 'empty: add something below' }),
+        h(Stat, { label: C.T('carousel', 'Carousel estimate'), value: bucket ? fmt.gb(bucket.total_wire_ram_carousel_gb) : '—', meta: wc ? wc.decentralized_pool_carousel_gbps + ' Gbps between machines · ' + wc.bandwidth_scaling_multiplier_x + '× a single NAS' : '—' }),
+        h(Stat, { label: C.T('anchor', 'Configured anchors'), value: anchors.length, unit: anchors.length === 1 ? 'destination' : 'destinations', meta: 'No verified copies or independent failure domains' }),
         h(Stat, { label: C.T('fts3', 'Copies in flight'), value: tx.length, unit: tx.length === 1 ? 'transfer' : 'transfers', meta: tx.length ? fmt.gb(totalGb) + ' between machines' : (overview.imported_models || []).length + ' compiled .ktb file' + ((overview.imported_models || []).length === 1 ? '' : 's') + ' on this machine' })),
       h(K.Tabs, { label: 'Storage views', value: tab, onChange: setTab, items: [{ id: 'bucket', label: 'Files', count: objs.length || undefined }, { id: 'transfers', label: 'Copies between machines', count: tx.length || undefined }, { id: 'sources', label: 'Sources', count: integ ? integ.connectors.length : undefined }, { id: 'hf', label: 'Hugging Face' }, { id: 'gh', label: 'GitHub' }] }),
       tab === 'bucket' ? h(C.TabPanel, { id: 'bucket', label: 'Files' },
         h(Panel, { title: 'Files in the bucket', sub: 'kdm://pool-bucket/', flush: true,
-            desc: h(F, null, 'Each item is cut into ', h('b', null, k + ' pieces plus ' + m + ' spares'), ' spread across your machines, so it survives ' + m + ' of them going offline (', C.T('rs', 'erasure coding'), ').'),
-            tools: ec ? Badges([
-              h(K.Badge, { key: 'ec', tone: ec.exact_bit_identical_recovery ? 'ok' : 'danger', dot: true, title: 'Rebuilt from the pieces and compared byte for byte' }, ec.exact_bit_identical_recovery ? 'rebuild test passed' : 'rebuild test failed'),
-              bg ? h(K.Badge, { key: 'gr', tone: bg.grounded_survives_mass_dropout ? 'local' : 'warn', title: 'Whether the bucket survives half the machines vanishing at once' }, 'half the machines lost: ' + (bg.grounded_survives_mass_dropout ? 'survives' : 'data lost')) : null]) : null },
+            desc: bucket ? bucket.protection_status : 'Placement estimate; data protection unverified.',
+            tools: h(K.Badge, { tone: 'warn' }, 'durability unverified') },
           objs.length ? h(Table, { label: 'Files in the bucket', rows: objs, rowKey: o => o.object_uri, cols: [
               { key: 'u', label: 'name', render: o => h('div', null, h('div', { className: 'sans', style: { fontWeight: 600 } }, o.display_name), h('div', { className: 'cr-muted', style: { fontSize: '11.5px' } }, o.object_uri)) },
               { key: 'k', label: 'type', render: o => h(K.Badge, { tone: /Model|Compiled/i.test(o.object_kind) ? 'local' : 'neutral' }, kindLabel(o.object_kind)) },
-              { key: 'sz', label: 'size → stored', num: true, render: o => fmt.gb(o.logical_size_gb) + ' → ' + fmt.gb(o.physical_erasure_coded_gb) },
+              { key: 'sz', label: 'size → estimated footprint', num: true, render: o => fmt.gb(o.logical_size_gb) + ' → ' + fmt.gb(o.physical_erasure_coded_gb) },
               { key: 'ec', label: C.T('rs', 'pieces'), num: true, render: o => o.data_shards_k + ' + ' + o.parity_shards_m + ' spare' },
-              { key: 'bw', label: 'read speed', num: true, render: o => fmt.num(o.parallel_read_bandwidth_gbps, 1) + ' Gbps' },
+              { key: 'bw', label: 'estimated read speed', num: true, render: o => fmt.num(o.parallel_read_bandwidth_gbps, 1) + ' Gbps' },
               { key: 'm', label: C.T('merkle', 'fingerprint'), render: o => fmt.hex(o.merkle_root_fnv64, 12) },
-              { key: 'h', label: C.T('hrw', 'stored on'), cls: 'wrap', render: o => Badges((o.sample_stripe_holder_nodes || []).map(n => h(K.Badge, { key: n }, strip(n)))) },
+              { key: 'h', label: C.T('hrw', 'planned holders'), cls: 'wrap', render: o => Badges((o.sample_stripe_holder_nodes || []).map(n => h(K.Badge, { key: n }, strip(n)))) },
               { key: 'act', label: '', sr: 'Remove', render: o => h(C.Confirm, { label: 'Remove', ariaLabel: 'Remove ' + o.display_name, question: 'Remove it from the bucket?', yes: 'Remove', yesVariant: 'danger', onConfirm: () => put({ delete_uri: o.object_uri }, 'Removed ' + o.display_name + ' from the bucket') }) }
             ] })
             : h(Empty, {
                 action: h('div', { className: 'cr-rowwrap', style: { justifyContent: 'center' } },
                   h(K.Button, { size: 'sm', variant: 'primary', onClick: () => put({ preset: 'active-model' }, 'Staged ' + inf.model_id + ' in the bucket') }, 'Stage ' + inf.model_id + ' (' + fmt.gb(inf.total_model_weight_gb) + ')'),
-                  h(K.Button, { size: 'sm', variant: 'ghost', onClick: compileAndStage }, 'Compile weights to .ktb'))
-              }, 'The bucket is empty. Stage the model you’re running, compile its weights to a .ktb file, or add an entry below.')),
+                  h(K.Button, { size: 'sm', variant: 'ghost', onClick: compileAndStage }, 'Compile reference fixture'))
+              }, 'The bucket is empty. Add model metadata, compile a synthetic reference fixture, or add an entry below.')),
         h(Panel, { id: 'cr-add', title: 'Add to the bucket', desc: 'Adding an entry records it in the bucket and plans which machines hold each piece. It doesn’t upload anything from this browser; compiling weights writes a real .ktb file on this machine.' },
           h('div', { className: 'cr-form' },
             h(K.Input, { id: 'cr-add-name', label: 'Name', value: form.name, onChange: e => setF({ name: e.target.value }) }),
@@ -1588,41 +1632,41 @@
             h(K.Input, { label: 'Size (GB)', mono: true, inputMode: 'decimal', value: form.size, onChange: e => setF({ size: e.target.value.replace(/[^0-9.]/g, '') }) }),
             h(K.Button, { variant: 'primary', icon: I('plus', 16), disabled: !canAdd, onClick: addEntry }, 'Add to bucket')),
           h('div', { className: 'cr-rowwrap' }, h('span', { className: 'cr-chip' }, 'Quick add:'),
-            h(K.Button, { size: 'sm', onClick: () => put({ preset: 'active-model' }, 'Staged ' + inf.model_id + ' in the bucket') }, 'The running model (' + inf.model_id + ')'),
-            h(K.Button, { size: 'sm', onClick: compileAndStage }, 'Compile weights to .ktb'),
+            h(K.Button, { size: 'sm', onClick: () => put({ preset: 'active-model' }, 'Staged ' + inf.model_id + ' in the bucket') }, 'The planned model (' + inf.model_id + ')'),
+            h(K.Button, { size: 'sm', onClick: compileAndStage }, 'Compile reference fixture'),
             h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => put({ preset: 'dataset-stream' }, 'Added a sample training dataset') }, 'Sample training dataset'),
             h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => put({ preset: 'shared-workspace' }, 'Added a sample workspace bundle') }, 'Sample workspace bundle'))),
         h('div', { className: 'cr-two' },
-          h(Panel, { title: 'Machines lending space', sub: contribs.length + ' machine' + (contribs.length === 1 ? '' : 's'), flush: true, desc: 'Each machine lends most of its free disk and a little RAM to the bucket.' },
+          h(Panel, { title: 'Machines lending space', sub: contribs.length + ' machine' + (contribs.length === 1 ? '' : 's'), flush: true, desc: 'Estimated capacity from machine profiles; no storage allocation or held bytes are verified.' },
             bucket ? h(Table, { label: 'Machines lending space', rows: contribs, rowKey: c => c.node_id, cols: [
               { key: 'n', label: 'machine', render: c => h('div', null, h('div', { className: 'sans', style: { fontWeight: 600 } }, c.hostname), h('div', { className: 'cr-muted', style: { fontSize: '11px' } }, fmt.words(c.device_kind))) },
               { key: 'd', label: 'disk · RAM lent', num: true, render: c => fmt.gb(c.pledged_disk_gb) + ' · ' + fmt.gb(c.pledged_wire_ram_gb) },
               { key: 'dbw', label: 'reads at', num: true, render: c => fmt.num(c.disk_read_bw_gbps, 1) + ' GB/s' },
               { key: 'sh', label: 'pieces', num: true, render: c => h(K.Badge, { tone: c.hosted_shard_count > 0 ? 'local' : 'neutral' }, c.hosted_shard_count) }] }) : Loading()),
           h('div', { className: 'kd-stack', style: { gap: 'var(--space-5)' } },
-            h(Panel, { title: 'Durable copies', sub: 'outside your machines', flush: true, desc: C.GLOSSARY.anchor,
+            h(Panel, { title: 'Configured anchors', sub: 'unverified destinations', flush: true, desc: C.GLOSSARY.anchor,
                 tools: h('div', { className: 'cr-rowwrap' },
                   h(K.Button, { size: 'sm', variant: 'ghost', icon: I('plus', 14), onClick: () => addAnchor({ anchor_kind: 'LocalNasZfsVault', anchor_uri: 'nas://local-truenas/zpool-kadmium-ground', capacity_tb: 8.0, sustained_bandwidth_gbps: 10.0 }, 'a local NAS') }, 'NAS'),
                   h(K.Button, { size: 'sm', variant: 'ghost', icon: I('plus', 14), onClick: () => addAnchor({ anchor_kind: 'CloudObjectBucketS3R2', anchor_uri: 'r2://kadmium-ground-vault/merkle-deltas', capacity_tb: 50.0, sustained_bandwidth_gbps: 25.0 }, 'a cloud bucket') }, 'Cloud bucket (S3 / R2)')) },
-              !bucket ? Loading() : anchors.length ? h(Table, { label: 'Durable copies', rows: anchors, rowKey: a => a.anchor_id, cols: [
+              !bucket ? Loading() : anchors.length ? h(Table, { label: 'Configured anchors', rows: anchors, rowKey: a => a.anchor_id, cols: [
                   { key: 'u', label: 'where', cls: 'clip', render: a => h('div', { title: a.anchor_uri + ' · ' + fmt.words(a.sync_policy) }, h('div', { style: { fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' } }, a.anchor_uri), h('div', { className: 'cr-muted', style: { fontSize: '11px' } }, fmt.words(a.anchor_kind))) },
                   { key: 'c', label: 'capacity', num: true, render: a => fmt.num(a.capacity_tb, 2) + ' TiB' },
                   { key: 'bw', label: 'speed', num: true, render: a => fmt.num(a.sustained_bandwidth_gbps, 1) + ' Gbps' },
-                  { key: 'm', label: 'covered', num: true, render: a => fmt.pct(a.merkle_grounded_coverage_pct, 0) }] })
-                : h(Empty, null, 'No durable copy yet. Add a NAS or a cloud bucket so the bucket survives losing most machines at once.')),
-            wc && ec ? h(Panel, { title: 'Data on the wire', sub: 'training data kept in spare RAM', desc: C.GLOSSARY.carousel },
+                  { key: 'm', label: 'verified coverage', num: true, render: a => fmt.pct(a.merkle_grounded_coverage_pct, 0) }] })
+                : h(Empty, null, 'No anchors configured. Adding a destination records metadata only; no bytes have been synchronized or verified.')),
+            wc && ec ? h(Panel, { title: 'Carousel estimate', sub: 'modelled capacity and bandwidth', desc: C.GLOSSARY.carousel },
               h(KV, { items: [
-                ['in RAM now', fmt.gb(wc.active_wire_ring_buffer_gb) + ' across ' + wc.pool_node_count + ' machines'],
+                ['modelled RAM capacity', fmt.gb(wc.active_wire_ring_buffer_gb) + ' across ' + wc.pool_node_count + ' machines'],
                 ['speed vs one NAS', wc.decentralized_pool_carousel_gbps + ' Gbps between machines vs ' + wc.centralized_nas_bottleneck_gbps + ' Gbps from a NAS (' + wc.bandwidth_scaling_multiplier_x + '×)'],
-                ['wait per step', wc.centralized_data_stall_ms_per_step + ' ms → ' + wc.wire_carousel_data_stall_ms_per_step + ' ms (' + wc.pre_staged_on_wire_hit_rate_pct + '% already on the wire)'],
-                ['spares', k + ' data + ' + m + ' spare pieces · ' + ec.storage_overhead_ratio + '× the space · rebuilt with ' + ec.reconstruction_max_byte_diff + ' bytes different'],
-                ['half the machines lost', 'without a durable copy: ' + (bg.ungrounded_survives_mass_dropout ? 'survives' : 'data lost') + ' · with one: ' + (bg.grounded_survives_mass_dropout ? 'survives' : 'data lost')]
+                ['unmeasured wait per step', wc.centralized_data_stall_ms_per_step + ' ms → ' + wc.wire_carousel_data_stall_ms_per_step + ' ms (' + wc.pre_staged_on_wire_hit_rate_pct + '% already on the wire)'],
+                ['planned spares', k + ' data + ' + m + ' spare pieces · ' + ec.storage_overhead_ratio + '× estimated space'],
+                ['data protection', 'Unverified; no stored-byte recovery test or anchor sync receipts']
               ] })) : null)),
         h(Panel, { title: 'How it scales', sub: 'a preview, not your cluster', desc: 'See how the same bucket behaves on a bigger pool of machines. This runs a model of the pool; it doesn’t change your bucket.',
             tools: showScale ? h(Seg, { label: 'Pool size', value: scaleTier, onChange: setScaleTier, items: [{ id: 'small', label: '10 machines' }, { id: 'large', label: '50 machines' }, { id: 'enterprise', label: '100 machines' }] }) : h(K.Button, { size: 'sm', onClick: () => setShowScale(true) }, 'Preview a bigger pool') },
           showScale ? (scale ? h('div', { className: 'cr-stats' },
-            h(Stat, { label: 'Pooled space', value: fmt.gb(scale.total_pooled_disk_capacity_gb), meta: scale.total_participating_nodes + ' machines' }),
-            h(Stat, { label: 'Data on the wire', value: fmt.gb(scale.total_wire_ram_carousel_gb), meta: scale.wire_token_carousel ? scale.wire_token_carousel.decentralized_pool_carousel_gbps + ' Gbps between machines' : '—' }),
+            h(Stat, { label: 'Estimated pooled space', value: fmt.gb(scale.total_pooled_disk_capacity_gb), meta: scale.total_participating_nodes + ' machines' }),
+            h(Stat, { label: 'Carousel estimate', value: fmt.gb(scale.total_wire_ram_carousel_gb), meta: scale.wire_token_carousel ? scale.wire_token_carousel.decentralized_pool_carousel_gbps + ' Gbps between machines' : '—' }),
             h(Stat, { label: 'Read speed', value: fmt.num(scale.aggregate_disk_read_bw_gbps, 0), unit: 'GB/s', meta: 'all disks together' }),
             h(Stat, { label: 'Spare overhead', value: scale.erasure_coding_verification ? scale.erasure_coding_verification.storage_overhead_ratio + '×' : '—', meta: scale.erasure_coding_verification ? scale.erasure_coding_verification.data_shards_k + ' data + ' + scale.erasure_coding_verification.parity_shards_m + ' spare pieces' : '—' })) : Loading('Modelling a bigger pool…')) : null)) : null,
       tab === 'transfers' ? h(C.TabPanel, { id: 'transfers', label: 'Copies between machines' },
@@ -1837,6 +1881,7 @@
         up ? null : h('div', { className: 'cr-banner', role: 'alert' }, I('alert', 18), h('span', null, 'Lost the connection to the coordinator at ', h('b', null, window.location.host), '. Retrying every few seconds; the numbers below may be out of date.')),
         h('main', { className: 'cr-content', id: 'cr-main', tabIndex: -1, key: page },
           h(C.PageHead, { page, actions }),
+          h(C.ApiErrors),
           h(Page, { overview, workers, companion, route, theme, setTheme, selected, selectNode: setSelected }))),
       selectedNode ? h(C.NodeDrawer, { node: selectedNode, overview, workers, onClose: () => setSelected(null) }) : null,
       h(C.TipLayer),

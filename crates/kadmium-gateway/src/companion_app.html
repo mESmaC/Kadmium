@@ -433,7 +433,7 @@
     const text = await res.text();
     let body = null;
     try { body = text ? JSON.parse(text) : null; } catch (e) { body = null; }
-    if (!res.ok) throw new Error((body && (body.error || body.message)) || 'The coordinator answered ' + res.status + ' for ' + path + '.');
+    if (!res.ok) throw new Error((body && (body.error && (body.error.message || body.error) || body.message)) || 'The coordinator answered ' + res.status + ' for ' + path + '.');
     return body;
   }
   const getJSON = path => request(path);
@@ -1026,8 +1026,8 @@
             h(Field, { label: 'Source format' }, h(Select, { value: imp.format_hint, onChange: v => setImp(Object.assign({}, imp, { format_hint: v })), options: [{ value: 'gguf', label: 'GGUF v3 (.gguf)' }, { value: 'safetensors', label: 'SafeTensors (.safetensors)' }] })),
             h(K.Input, { label: 'First layer', mono: true, inputMode: 'numeric', value: imp.start_layer, onChange: e => setImp(Object.assign({}, imp, { start_layer: e.target.value.replace(/[^0-9]/g, '') })) }),
             h(K.Input, { label: 'Last layer', mono: true, inputMode: 'numeric', value: imp.end_layer, onChange: e => setImp(Object.assign({}, imp, { end_layer: e.target.value.replace(/[^0-9]/g, '') })) })),
-          h(K.Input, { label: 'Source file on this machine', mono: true, placeholder: 'leave empty to compile a small test bank', hint: 'A path the coordinator can read. Relative paths start in the folder Kadmium was started from.', value: imp.source_path, onChange: e => setImp(Object.assign({}, imp, { source_path: e.target.value })) }),
-          h('div', { className: 'cp-row end' }, h(K.Button, { disabled: busy === 'import' || !imp.model_id.trim(), onClick: importModel }, busy === 'import' ? 'Compiling…' : 'Compile .ktb bank')),
+          h(K.Input, { label: 'Source file on this machine', mono: true, placeholder: 'path to an existing model file', hint: 'A path the coordinator can read. Relative paths start in the folder Kadmium was started from.', value: imp.source_path, onChange: e => setImp(Object.assign({}, imp, { source_path: e.target.value })) }),
+          h('div', { className: 'cp-row end' }, h(K.Button, { disabled: busy === 'import' || !imp.model_id.trim() || !imp.source_path.trim(), onClick: importModel }, busy === 'import' ? 'Compiling…' : 'Compile .ktb bank')),
           imported ? KV([
             ['Bank', h('code', null, imported.compiled_ktb_path)],
             ['Size', bytes(imported.ktb_size_bytes) + ' · ' + plural(imported.ktb_page_count, 'page') + ' of 64 KiB', true],

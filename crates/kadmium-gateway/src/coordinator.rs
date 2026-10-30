@@ -340,6 +340,11 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         }
     }
 
+    // Live-mode initialization clears demo progress; restore after it, before readiness.
+    // Abort on a bad journal so a later request cannot overwrite recoverable state.
+    if gw_state.load_persistent_state()? {
+        println!("  [State] Restored cluster journal");
+    }
     let overview = gw_state.workers_overview();
     let announcement = LanCoordinatorAnnouncement {
         coordinator_id: gw_state.coordinator_quorum.active_leader.clone(),

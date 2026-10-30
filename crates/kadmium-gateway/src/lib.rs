@@ -206,6 +206,8 @@ pub struct GatewayState {
 /// so active models, training progress, checkpoints, and OTA versions survive restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistentClusterStateJournal {
+    #[serde(default = "journal_version")]
+    pub schema_version: u32,
     pub epoch: u64,
     pub inference_model_id: String,
     pub training_model_id: String,
@@ -220,6 +222,10 @@ pub struct PersistentClusterStateJournal {
     pub bucket_objects: Vec<PoolBucketObjectEntry>,
     #[serde(default)]
     pub bucket_anchors: Vec<GroundingAnchorTarget>,
+}
+
+fn journal_version() -> u32 {
+    1
 }
 
 impl Default for GatewayState {
@@ -442,11 +448,19 @@ impl GatewayState {
 
     /// Writes a crash-safe JSON state journal to `target/kadmium-state/cluster_state.json`.
     pub fn save_persistent_state(&self) -> Result<String, String> {
-        let dir = std::path::Path::new("target/kadmium-state");
+        self.save_persistent_state_to(std::path::Path::new(
+            "target/kadmium-state/cluster_state.json",
+        ))
+    }
+
+    pub fn save_persistent_state_to(&self, path: &std::path::Path) -> Result<String, String> {
+        let dir = path
+            .parent()
+            .ok_or("State journal needs a parent directory")?;
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("Failed to create state directory: {e}"))?;
-        let path = dir.join("cluster_state.json");
         let journal = PersistentClusterStateJournal {
+            schema_version: journal_version(),
             epoch: self.epoch,
             inference_model_id: self.inference_model.id.clone(),
             training_model_id: self.training_model.id.clone(),
@@ -462,8 +476,94 @@ impl GatewayState {
         };
         let bytes = serde_json::to_vec_pretty(&journal)
             .map_err(|e| format!("Failed to serialize state journal: {e}"))?;
-        std::fs::write(&path, bytes).map_err(|e| format!("Failed to write state journal: {e}"))?;
+        let temp = path.with_extension("json.tmp");
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&temp).map_err(|e| e.to_string())?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(&temp, path)
+            .map_err(|e| format!("Failed to replace state journal: {e}"))?;
         Ok(path.display().to_string())
+    }
+
+    pub fn resolve_model(&self, id: &str) -> Option<ModelSpec> {
+        self.imported_models
+            .iter()
+            .find(|m| m.model_id == id)
+            .map(|m| m.derived_model_spec.clone())
+            .or_else(|| ModelSpec::try_from_id(id))
+    }
+
+    /// Missing journals mean a fresh workspace. Corrupt or incompatible ones abort startup.
+    pub fn load_persistent_state(&mut self) -> Result<bool, String> {
+        self.load_persistent_state_from(std::path::Path::new(
+            "target/kadmium-state/cluster_state.json",
+        ))
+    }
+
+    pub fn load_persistent_state_from(&mut self, path: &std::path::Path) -> Result<bool, String> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => {
+                return Err(format!(
+                    "Cannot read cluster journal {}: {e}",
+                    path.display()
+                ));
+            }
+        };
+        let journal: PersistentClusterStateJournal =
+            serde_json::from_slice(&bytes).map_err(|e| {
+                format!(
+                    "Cannot restore cluster journal {}: {e}; original file preserved",
+                    path.display()
+                )
+            })?;
+        if journal.schema_version != journal_version() {
+            return Err(format!(
+                "Unsupported cluster journal version {}; original file preserved",
+                journal.schema_version
+            ));
+        }
+        let resolve = |id: &str| {
+            journal
+                .imported_models
+                .iter()
+                .find(|m| m.model_id == id)
+                .map(|m| m.derived_model_spec.clone())
+                .or_else(|| ModelSpec::try_from_id(id))
+                .ok_or_else(|| {
+                    format!("Unsupported saved model {id:?}; original journal preserved")
+                })
+        };
+        let inference = resolve(&journal.inference_model_id)?;
+        let training = resolve(&journal.training_model_id)?;
+        for object in &journal.bucket_objects {
+            kadmium_data::DecentralizedStoragePoolEngine::validate_shard_counts(
+                object.data_shards_k,
+                object.parity_shards_m,
+            )?;
+        }
+        self.epoch = journal.epoch;
+        self.inference_model = inference;
+        self.training_model = training;
+        self.user_selected_model = true;
+        // Restoring a plan/import is not loading resident weights or reconnecting workers.
+        self.active_model_loaded = false;
+        self.training_step_counter = journal.training_step_counter;
+        self.last_training_loss = journal.last_training_loss;
+        self.training_loss_history = journal.training_loss_history;
+        self.active_cluster_version = journal.active_cluster_version;
+        self.active_ktb_merkle_root_fnv64 = journal.active_ktb_merkle_root_fnv64;
+        self.last_checkpoint_step = journal.last_checkpoint_step;
+        self.imported_models = journal.imported_models;
+        self.bucket_objects = journal.bucket_objects;
+        self.bucket_anchors = journal.bucket_anchors;
+        self.recompute_plans();
+        Ok(true)
     }
 
     /// Recomputes `coordinator_quorum`, `inference_plan`, `training_plan`, and `fts3_transfers`

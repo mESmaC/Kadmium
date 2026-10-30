@@ -27,6 +27,9 @@ pub enum ImportedModelSourceFormat {
 /// into a 64 KiB page-aligned `.ktb` weight bank on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportedModelManifest {
+    /// True only for explicitly requested synthetic reference fixtures.
+    #[serde(default)]
+    pub synthetic_fixture: bool,
     pub model_id: String,
     pub source_format: ImportedModelSourceFormat,
     pub source_file_path: String,
@@ -47,7 +50,7 @@ pub struct LocalModelDiskImporter;
 
 impl LocalModelDiskImporter {
     /// Imports a `.gguf` or `.safetensors` file from `source_path` (or creates a real binary
-    /// `.gguf` / `.safetensors` file in `target/kadmium-models/` if `source_path` does not exist yet),
+    /// `.gguf` / `.safetensors` fixture in `target/kadmium-models/` if `source_path` is omitted),
     /// transcodes layers `start_layer..=end_layer` into a 64 KiB page-aligned `.ktb` archive in
     /// `output_dir`, verifies its `KtbMerkleTree` root and page alignment, and returns an `ImportedModelManifest`.
     pub fn import_or_transcode_to_disk(
@@ -58,6 +61,9 @@ impl LocalModelDiskImporter {
         end_layer: u32,
         output_dir: Option<&Path>,
     ) -> Result<ImportedModelManifest, String> {
+        if start_layer > end_layer {
+            return Err("start_layer must not exceed end_layer".into());
+        }
         let out_dir = output_dir
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("target/kadmium-ktb"));
@@ -77,9 +83,15 @@ impl LocalModelDiskImporter {
                 .or_else(|| format_hint.map(|f| f.eq_ignore_ascii_case("safetensors")))
                 .unwrap_or(false);
 
+        if use_exl3 && source_path.is_some() {
+            return Err(
+                "EXL3 conversion currently supports synthetic reference fixtures only".into(),
+            );
+        }
+
         let slug = model_id.replace(['/', ':', ' '], "-");
         let (resolved_source_path, raw_source_bytes, source_format) = match source_path {
-            Some(p) if Path::new(p).exists() => {
+            Some(p) => {
                 let bytes = std::fs::read(p)
                     .map_err(|e| format!("Failed to read model file '{p}': {e}"))?;
                 let fmt = if use_exl3 {
@@ -91,7 +103,7 @@ impl LocalModelDiskImporter {
                 };
                 (PathBuf::from(p), bytes, fmt)
             }
-            _ => {
+            None => {
                 if use_safetensors {
                     let st_path = models_dir.join(format!("{slug}.safetensors"));
                     let t_attn = vec![0x24u8; 16_384];
@@ -220,6 +232,7 @@ impl LocalModelDiskImporter {
         let merkle = KtbMerkleTree::from_ktb_bytes(&ktb_bytes);
 
         Ok(ImportedModelManifest {
+            synthetic_fixture: source_path.is_none(),
             model_id: model_id.to_string(),
             source_format,
             source_file_path: resolved_source_path.display().to_string(),
@@ -232,7 +245,11 @@ impl LocalModelDiskImporter {
             end_layer,
             merkle_root_fnv64: merkle.root_hash,
             zero_copy_alignment_verified: alignment_ok,
-            derived_model_spec: ModelSpec::from_id(model_id),
+            derived_model_spec: {
+                let mut spec = ModelSpec::from_id(model_id);
+                spec.id = model_id.to_string();
+                spec
+            },
         })
     }
 }
