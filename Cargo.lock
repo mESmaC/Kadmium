@@ -1534,6 +1534,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "futures-util",
  "jsonschema",
  "kadmium-core",
  "reqwest",

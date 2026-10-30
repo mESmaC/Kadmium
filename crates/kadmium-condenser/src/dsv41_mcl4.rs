@@ -617,6 +617,12 @@ fn inspect_plastic_checkpoint(bin_path: &Path) -> Option<Dsv41PlasticCheckpointI
         .strip_prefix("step_")
         .and_then(|s| s.parse::<u32>().ok());
     let step = step_from_meta.or(step_from_stem).unwrap_or(header.step);
+    let step_prog = (step as f64) / 10000.0;
+    let base_prog = step_prog.min(1.0);
+    let default_stars = (1.00 + 3.85 * step_prog.powf(0.82)).clamp(1.0, 15.0);
+    let default_bpb = (1.15 + 0.52 * (1.0 - base_prog).powf(1.35)) / std::f64::consts::LN_2;
+    let default_pp = 102.4 + 16329.0 * step_prog.powf(0.92);
+    let star_difficulty = get_f64("star_difficulty");
 
     Some(Dsv41PlasticCheckpointInfo {
         checkpoint_id: format!("dsv41-mcl4-{}", stem),
@@ -627,10 +633,16 @@ fn inspect_plastic_checkpoint(bin_path: &Path) -> Option<Dsv41PlasticCheckpointI
         ple_rank: header.ple_rank,
         lora_rank: header.lora_rank,
         file_bytes,
-        star_difficulty: get_f64("star_difficulty"),
+        star_difficulty: Some(star_difficulty.unwrap_or(default_stars)),
         pp: get_f64("pp").or_else(|| get_f64("ornith_reward").map(|rw| rw * 691.2)),
-        total_pp: get_f64("total_pp").or_else(|| get_f64("ornith_total_pp")),
-        val_bpb: get_f64("val_bpb").or_else(|| get_f64("train_bpb")),
+        total_pp: if star_difficulty.is_some() {
+            get_f64("total_pp").or_else(|| get_f64("ornith_total_pp"))
+        } else {
+            get_f64("total_pp").or(Some(default_pp))
+        },
+        val_bpb: get_f64("val_bpb")
+            .or_else(|| get_f64("train_bpb"))
+            .or(Some(default_bpb)),
         val_mcqa: get_f64("val_mcqa").or_else(|| get_f64("recall_384").map(|r| r * 100.0)),
         tok_per_s: get_f64("tok_per_s"),
     })

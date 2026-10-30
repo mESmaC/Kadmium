@@ -7,7 +7,10 @@
 //! 2. **DeepSeek-V4.1 OpenAI-compatible Server API** (`/v1/chat/completions` with `DSML` tool
 //!    translation, `reasoning_content`, `<think>...</think>`, and `reasoning_effort`)
 
-use super::{InferenceProvider, endpoint, synthetic_tool_call_id, versioned_endpoint};
+use super::{
+    InferenceProvider, StreamedTokenDelta, TokenStreamSender, endpoint, synthetic_tool_call_id,
+    versioned_endpoint,
+};
 use crate::dsv41_mcl4::{
     Mcl4CoeKnobs, compact_messages_with_tool_pruning, discover_local_dsv41_shards_and_checkpoints,
     segment_reasoning_and_answer,
@@ -91,52 +94,8 @@ impl Mcl4CoeProvider {
         ]
     }
 
-    async fn try_mcl4_native_generate(
-        &self,
-        request: &ChatRequest,
-        knobs: &Mcl4CoeKnobs,
-        compacted_messages: &[Message],
-        include_knobs: bool,
-    ) -> Result<Option<ChatResponse>> {
-        let payload = native_request_body(request, knobs, compacted_messages, include_knobs);
-        let url = endpoint(self.config.base_url(), "api/generate");
-        let response = self
-            .authorize(self.client.post(url).json(&payload))
-            .send()
-            .await
-            .map_err(|error| {
-                CondenserError::provider(self.config.kind.label(), error.to_string())
-            })?;
-
-        if response.status().as_u16() == 404 {
-            return Ok(None);
-        }
-        let status = response.status();
-        let bytes = response.bytes().await.map_err(|error| {
-            CondenserError::provider(self.config.kind.label(), error.to_string())
-        })?;
-        let body: Value = serde_json::from_slice(&bytes).map_err(|error| {
-            CondenserError::provider(
-                self.config.kind.label(),
-                format!("could not decode native response: {error}"),
-            )
-        })?;
-        if !status.is_success() {
-            let err_msg = body
-                .get("error")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).trim().to_string());
-            if err_msg.contains("No checkpoint loaded") {
-                return Ok(None);
-            }
-            return Err(CondenserError::provider(
-                self.config.kind.label(),
-                format!("HTTP {status}: {err_msg}"),
-            ));
-        }
-
-        let turn = body.get("turn").unwrap_or(&body);
+    fn parse_native_turn_body(&self, request: &ChatRequest, body: &Value) -> Result<ChatResponse> {
+        let turn = body.get("turn").unwrap_or(body);
         let raw_trace = turn
             .get("trace")
             .or_else(|| turn.get("raw_output"))
@@ -179,7 +138,7 @@ impl Mcl4CoeProvider {
             Some("stop".to_string())
         };
 
-        Ok(Some(ChatResponse {
+        Ok(ChatResponse {
             model: request.model.clone(),
             message: Message {
                 role: Role::Assistant,
@@ -198,7 +157,136 @@ impl Mcl4CoeProvider {
                 total_tokens: prompt_toks + gen_toks,
             },
             telemetry: Some(slim_native_telemetry(turn)),
-        }))
+        })
+    }
+
+    async fn try_mcl4_native_generate(
+        &self,
+        request: &ChatRequest,
+        knobs: &Mcl4CoeKnobs,
+        compacted_messages: &[Message],
+        include_knobs: bool,
+        token_tx: Option<TokenStreamSender>,
+    ) -> Result<Option<ChatResponse>> {
+        let mut payload = native_request_body(request, knobs, compacted_messages, include_knobs);
+        if token_tx.is_some() {
+            payload["stream"] = json!(true);
+        }
+        let url = endpoint(self.config.base_url(), "api/generate");
+        let mut response = self
+            .authorize(self.client.post(url).json(&payload))
+            .send()
+            .await
+            .map_err(|error| {
+                CondenserError::provider(self.config.kind.label(), error.to_string())
+            })?;
+
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let status = response.status();
+        let is_event_stream = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.to_ascii_lowercase().starts_with("text/event-stream"));
+
+        if status.is_success() && is_event_stream {
+            let mut buffer = String::new();
+            let mut final_body: Option<Value> = None;
+            while let Some(chunk) = response.chunk().await.map_err(|error| {
+                CondenserError::provider(self.config.kind.label(), error.to_string())
+            })? {
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(newline_pos) = buffer.find('\n') {
+                    let line = buffer[..newline_pos].trim().to_string();
+                    buffer.drain(..=newline_pos);
+                    let Some(json_str) = line.strip_prefix("data:").map(str::trim) else {
+                        continue;
+                    };
+                    if json_str.is_empty() {
+                        continue;
+                    }
+                    let Ok(frame) = serde_json::from_str::<Value>(json_str) else {
+                        continue;
+                    };
+                    match frame.get("type").and_then(|v| v.as_str()) {
+                        Some("delta") => {
+                            if let Some(ref tx) = token_tx {
+                                let delta = frame
+                                    .get("delta")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .to_string();
+                                let reasoning_delta = frame
+                                    .get("reasoning_delta")
+                                    .and_then(|v| v.as_str())
+                                    .filter(|s| !s.is_empty())
+                                    .map(str::to_string);
+                                let generated_tokens = frame
+                                    .get("generated_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0) as usize;
+                                let tok_per_s = frame.get("tok_per_s").and_then(|v| v.as_f64());
+                                let _ = tx.send(StreamedTokenDelta {
+                                    delta,
+                                    reasoning_delta,
+                                    generated_tokens,
+                                    tok_per_s,
+                                });
+                            }
+                        }
+                        Some("done") => {
+                            final_body = Some(frame);
+                        }
+                        Some("error") => {
+                            let err_msg = frame
+                                .get("error")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("native stream error");
+                            return Err(CondenserError::provider(
+                                self.config.kind.label(),
+                                err_msg.to_string(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(body) = final_body {
+                return Ok(Some(self.parse_native_turn_body(request, &body)?));
+            }
+            return Err(CondenserError::provider(
+                self.config.kind.label(),
+                "native SSE stream closed before done event",
+            ));
+        }
+
+        let bytes = response.bytes().await.map_err(|error| {
+            CondenserError::provider(self.config.kind.label(), error.to_string())
+        })?;
+        let body: Value = serde_json::from_slice(&bytes).map_err(|error| {
+            CondenserError::provider(
+                self.config.kind.label(),
+                format!("could not decode native response: {error}"),
+            )
+        })?;
+        if !status.is_success() {
+            let err_msg = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).trim().to_string());
+            if err_msg.contains("No checkpoint loaded") {
+                return Ok(None);
+            }
+            return Err(CondenserError::provider(
+                self.config.kind.label(),
+                format!("HTTP {status}: {err_msg}"),
+            ));
+        }
+
+        Ok(Some(self.parse_native_turn_body(request, &body)?))
     }
 
     async fn try_openai_compatible_generate(
@@ -550,7 +638,9 @@ fn build_mcl4_prompt(messages: &[Message], tools: &[crate::types::ToolDefinition
                 }
             }
             Role::User => {
-                parts.push(msg.content.trim().to_string());
+                if !msg.content.trim().is_empty() {
+                    parts.push(format!("#U$# {}", msg.content.trim()));
+                }
             }
             Role::Assistant => {
                 if !msg.content.trim().is_empty() {
@@ -638,6 +728,14 @@ impl InferenceProvider for Mcl4CoeProvider {
     }
 
     async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse> {
+        self.complete_stream(request, None).await
+    }
+
+    async fn complete_stream(
+        &self,
+        request: &ChatRequest,
+        token_tx: Option<TokenStreamSender>,
+    ) -> Result<ChatResponse> {
         self.config.validate()?;
         request.sampling.validate()?;
 
@@ -669,7 +767,13 @@ impl InferenceProvider for Mcl4CoeProvider {
         // or stop sequences. DeepSeek requests carrying them use OpenAI only.
         if unsupported_native.is_none() {
             if let Some(resp) = self
-                .try_mcl4_native_generate(request, &knobs, &compacted_messages, include_knobs)
+                .try_mcl4_native_generate(
+                    request,
+                    &knobs,
+                    &compacted_messages,
+                    include_knobs,
+                    token_tx,
+                )
                 .await?
             {
                 return Ok(resp);

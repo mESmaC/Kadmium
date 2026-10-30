@@ -110,6 +110,7 @@ fn router(state: ServerState) -> Router {
         .route("/api/v1/plugins", get(plugins))
         .route("/api/v1/plugins/invoke", post(invoke_plugin))
         .route("/api/v1/chat", post(chat))
+        .route("/api/v1/chat/stream", post(chat_stream))
         .route("/api/v1/dsv41/profile", get(dsv41_profile))
         .route("/api/v1/mcl4/probe-decision", post(mcl4_probe_decision))
         .route("/api/v1/workspace", get(crate::workspace::workspace))
@@ -490,6 +491,106 @@ async fn chat(
         )
         .await?;
     Ok(Json(report).into_response())
+}
+
+struct StreamCancelOnDrop(tokio_util::sync::CancellationToken);
+
+impl Drop for StreamCancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+async fn chat_stream(
+    State(state): State<ServerState>,
+    Json(request): Json<ChatApiRequest>,
+) -> Result<Response, ApiError> {
+    let permit = match state.turn_permits.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return Ok((
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, "1")],
+                Json(json!({
+                    "error": "Condenser is at its concurrent-turn limit; retry shortly"
+                })),
+            )
+                .into_response());
+        }
+    };
+    if request
+        .max_run_seconds
+        .is_some_and(|seconds| seconds == 0 || seconds > 86_400)
+    {
+        return Err(
+            CondenserError::Config("max_run_seconds must be between 1 and 86400".into()).into(),
+        );
+    }
+    if request.messages.is_empty() {
+        return Err(
+            CondenserError::Config("a harness turn needs at least one message".into()).into(),
+        );
+    }
+    if !(1..=32).contains(&request.max_steps) {
+        return Err(
+            CondenserError::Config("max_steps must be between 1 and 32".into()).into(),
+        );
+    }
+    if request.max_calls_per_step == 0 {
+        return Err(
+            CondenserError::Config("max_calls_per_step must be at least 1".into()).into(),
+        );
+    }
+    request.sampling.validate()?;
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let control = RunControl {
+        cancellation: cancel_token.clone(),
+        deadline: request
+            .max_run_seconds
+            .map(|seconds| tokio::time::Instant::now() + std::time::Duration::from_secs(seconds)),
+        max_output_tokens: request.max_output_tokens,
+        max_tool_calls: request.max_tool_calls,
+    };
+    let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
+    let provider_cfg = upgrade_legacy_kadmium_provider(request.provider);
+    let harness = Harness::new_with_client(provider_cfg, plugins, state.client)?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<crate::harness::HarnessEvent>(1024);
+    let options = HarnessOptions {
+        enable_tools: request.enable_tools,
+        max_steps: request.max_steps,
+        max_calls_per_step: request.max_calls_per_step,
+        sampling: request.sampling,
+    };
+    let messages = request.messages;
+    tokio::spawn(async move {
+        let _permit = permit;
+        let _ = harness
+            .run_with_control(messages, options, control, Some(tx))
+            .await;
+    });
+
+    let cancel_guard = StreamCancelOnDrop(cancel_token);
+    let stream = futures_util::stream::unfold(
+        (rx, cancel_guard),
+        |(mut rx, cancel_guard)| async move {
+            let event = rx.recv().await?;
+            let line = format!(
+                "data: {}\n\n",
+                serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
+            );
+            Some((Ok::<String, std::convert::Infallible>(line), (rx, cancel_guard)))
+        },
+    );
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response())
 }
 
 pub(crate) struct ApiError(CondenserError);

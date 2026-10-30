@@ -1,11 +1,12 @@
 use crate::types::{ChatRequest, ChatResponse, ModelInfo, ProviderConfig, ProviderKind};
 use crate::{CondenserError, Result};
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 mod anthropic;
 mod mcl4_coe;
@@ -22,11 +23,30 @@ pub(crate) fn synthetic_tool_call_id(index: usize) -> String {
     format!("call-{sequence}-{index}")
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamedTokenDelta {
+    pub delta: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_delta: Option<String>,
+    pub generated_tokens: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tok_per_s: Option<f64>,
+}
+
+pub type TokenStreamSender = mpsc::UnboundedSender<StreamedTokenDelta>;
+
 #[async_trait]
 pub trait InferenceProvider: Send + Sync {
     fn kind(&self) -> ProviderKind;
     async fn list_models(&self) -> Result<Vec<ModelInfo>>;
     async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse>;
+    async fn complete_stream(
+        &self,
+        request: &ChatRequest,
+        _token_tx: Option<TokenStreamSender>,
+    ) -> Result<ChatResponse> {
+        self.complete(request).await
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

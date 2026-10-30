@@ -1434,7 +1434,10 @@
     const elapsed = Date.now() - activity.startedAt;
     const phases = ['Thinking...', 'Deducing...', 'Plotting...', 'Reasoning...', 'Decoding...'];
     const revealing = state.reveal && state.reveal.sessionId === activity.sessionId;
-    $('activity-label').textContent = revealing ? 'Generating...' : phases[Math.floor(elapsed / 2400) % phases.length];
+    const liveRate = revealing && state.reveal.liveStream && state.reveal.tokPerS
+      ? 'Streaming (' + Number(state.reveal.tokPerS).toFixed(1) + ' tok/s)...'
+      : 'Generating...';
+    $('activity-label').textContent = revealing ? liveRate : phases[Math.floor(elapsed / 2400) % phases.length];
     $('activity-timer').textContent = '[' + formatElapsed(elapsed) + ']';
   }
 
@@ -1504,8 +1507,11 @@
 
   async function chatRequest(session, input, transientInstruction, titleSource) {
     const sessionId = session.id;
+    if (input !== null) {
+      session.messages.push({ role: 'user', content: input, tool_calls: [], is_error: false });
+      renderAll();
+    }
     const messages = session.messages.filter((message) => message.role !== 'system');
-    if (input !== null) messages.push({ role: 'user', content: input, tool_calls: [], is_error: false });
     const systemPrompt = [session.config.system_prompt.trim(), transientInstruction].filter(Boolean).join('\n\n');
     if (systemPrompt) messages.unshift({ role: 'system', content: systemPrompt, tool_calls: [], is_error: false });
     const provider = {
@@ -1515,17 +1521,130 @@
       api_key: state.credentials[session.config.kind] || null,
       timeout_secs: 300
     };
-    const report = await api('/api/v1/chat', {
+    const requestPayload = {
+      provider,
+      messages,
+      enable_tools: session.config.enable_tools,
+      max_steps: session.config.max_steps,
+      sampling: session.config.sampling
+    };
+
+    let report = null;
+    let receivedRealTokens = false;
+    let liveMessage = null;
+
+    const ensureLiveStreamBubble = () => {
+      const target = state.sessions.find((item) => item.id === sessionId);
+      if (!target) return null;
+      if (!liveMessage) {
+        liveMessage = { role: 'assistant', content: '', reasoning: '', tool_calls: [], is_error: false };
+        target.messages.push(liveMessage);
+        state.reveal = {
+          sessionId,
+          message: liveMessage,
+          fullText: '',
+          visibleText: '…',
+          tokens: [],
+          node: null,
+          interval: null,
+          resolve: () => {},
+          finished: false,
+          liveStream: true,
+          generatedTokens: 0,
+          tokPerS: null
+        };
+        $('timeline').setAttribute('aria-busy', 'true');
+        renderAll();
+        updateActivity();
+      }
+      return liveMessage;
+    };
+
+    const streamResp = await fetch('/api/v1/chat/stream', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        provider,
-        messages,
-        enable_tools: session.config.enable_tools,
-        max_steps: session.config.max_steps,
-        sampling: session.config.sampling
-      })
+      body: JSON.stringify(requestPayload)
     });
+
+    if (!streamResp.ok) {
+      let errBody = {};
+      try { errBody = await streamResp.json(); } catch (_) {}
+      throw new Error(errBody.error || ('Request failed: ' + streamResp.status));
+    }
+
+    const contentType = (streamResp.headers.get('content-type') || '').toLowerCase();
+    if (contentType.startsWith('text/event-stream') && streamResp.body) {
+      const reader = streamResp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nlIdx;
+        while ((nlIdx = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nlIdx).trim();
+          buffer = buffer.slice(nlIdx + 1);
+          if (!line.startsWith('data:')) continue;
+          const jsonStr = line.slice(5).trim();
+          if (!jsonStr) continue;
+          let evt = null;
+          try { evt = JSON.parse(jsonStr); } catch (_) { continue; }
+          if (evt.event === 'model_started') {
+            liveMessage = null;
+            ensureLiveStreamBubble();
+          } else if (evt.event === 'model_token') {
+            const msg = ensureLiveStreamBubble();
+            if (msg) {
+              receivedRealTokens = true;
+              if (evt.delta) msg.content += evt.delta;
+              if (evt.reasoning_delta) msg.reasoning = (msg.reasoning || '') + evt.reasoning_delta;
+              if (state.reveal && state.reveal.message === msg) {
+                state.reveal.fullText = msg.content;
+                state.reveal.visibleText = msg.content || '…';
+                state.reveal.generatedTokens = evt.generated_tokens || state.reveal.generatedTokens;
+                state.reveal.tokPerS = evt.tok_per_s || state.reveal.tokPerS;
+                if (state.reveal.node && state.reveal.node.isConnected) {
+                  state.reveal.node.textContent = state.reveal.visibleText;
+                  $('timeline').scrollTop = $('timeline').scrollHeight;
+                } else {
+                  renderAll();
+                }
+                updateActivity();
+              }
+            }
+          } else if (evt.event === 'model_completed' && evt.response && evt.response.message) {
+            if (liveMessage) {
+              liveMessage.content = evt.response.message.content || liveMessage.content;
+              liveMessage.reasoning = evt.response.message.reasoning || liveMessage.reasoning;
+              liveMessage.tool_calls = evt.response.message.tool_calls || [];
+              if (state.reveal && state.reveal.message === liveMessage) {
+                state.reveal.fullText = liveMessage.content;
+                state.reveal.visibleText = liveMessage.content;
+              }
+            }
+            liveMessage = null;
+          } else if (evt.event === 'finished' && evt.report) {
+            report = evt.report;
+          }
+        }
+      }
+    } else {
+      report = await streamResp.json();
+    }
+
+    if (state.reveal && state.reveal.sessionId === sessionId) {
+      finishTokenReveal(state.reveal);
+    }
+
+    if (!report) {
+      report = await api('/api/v1/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(requestPayload)
+      });
+    }
+
     const target = state.sessions.find((item) => item.id === sessionId);
     if (!target) return { target: null, error: null, ready: false };
     target.messages = report.messages.filter((message) => message.role !== 'system');
@@ -1538,7 +1657,7 @@
     const lastMessage = target.messages[target.messages.length - 1];
     const ready = Boolean(transientInstruction === INTERVIEW_QUESTION_INSTRUCTION && lastMessage && lastMessage.role === 'assistant' && String(lastMessage.content || '').trim() === INTERVIEW_READY);
     if (ready) target.messages.pop();
-    if (!terminalError && !ready) {
+    if (!terminalError && !ready && !receivedRealTokens) {
       const reveal = startTokenReveal(target);
       if (reveal) await reveal;
     }

@@ -89,6 +89,15 @@ pub enum HarnessEvent {
     ModelStarted {
         step: usize,
     },
+    ModelToken {
+        step: usize,
+        delta: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning_delta: Option<String>,
+        generated_tokens: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tok_per_s: Option<f64>,
+    },
     ModelCompleted {
         step: usize,
         response: ChatResponse,
@@ -337,11 +346,34 @@ impl Harness {
                 sampling: options.sampling.clone(),
                 tools: definitions.clone(),
             };
+            let (token_tx, token_forwarder) = if let Some(ref event_sender) = events {
+                let (tx, mut rx) = mpsc::unbounded_channel::<crate::provider::StreamedTokenDelta>();
+                let sender_clone = event_sender.clone();
+                let step_num = index + 1;
+                let handle = tokio::spawn(async move {
+                    while let Some(tok) = rx.recv().await {
+                        let _ = sender_clone.try_send(HarnessEvent::ModelToken {
+                            step: step_num,
+                            delta: tok.delta,
+                            reasoning_delta: tok.reasoning_delta,
+                            generated_tokens: tok.generated_tokens,
+                            tok_per_s: tok.tok_per_s,
+                        });
+                    }
+                });
+                (Some(tx), Some(handle))
+            } else {
+                (None, None)
+            };
             let provider_wait = tokio::time::timeout(
                 std::time::Duration::from_secs(self.config.timeout_secs),
-                self.provider.complete(&request),
+                self.provider.complete_stream(&request, token_tx),
             );
-            let mut response = match controlled_wait(&control, provider_wait).await {
+            let wait_res = controlled_wait(&control, provider_wait).await;
+            if let Some(handle) = token_forwarder {
+                let _ = handle.await;
+            }
+            let mut response = match wait_res {
                 WaitOutcome::Completed(Ok(Ok(response))) => response,
                 WaitOutcome::Completed(Ok(Err(error))) => {
                     return self.finish(
