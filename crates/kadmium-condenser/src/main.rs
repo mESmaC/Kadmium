@@ -134,6 +134,9 @@ struct ChatArgs {
     /// Allow the model to call tools from discovered plugins.
     #[arg(long)]
     tools: bool,
+    /// Restrict --tools to exact plugin__tool names. Repeat for multiple tools.
+    #[arg(long = "allow-tool", requires = "tools")]
+    allowed_tools: Vec<String>,
     /// Maximum model/tool steps before failing explicitly.
     #[arg(long, default_value_t = 8)]
     max_steps: usize,
@@ -477,6 +480,7 @@ async fn run_chat(args: ChatArgs, roots: Vec<PathBuf>) -> Result<()> {
             messages,
             HarnessOptions {
                 enable_tools: args.tools,
+                allowed_tools: (!args.allowed_tools.is_empty()).then_some(args.allowed_tools),
                 max_steps: args.max_steps,
                 max_calls_per_step: 16,
                 sampling: SamplingParams {
