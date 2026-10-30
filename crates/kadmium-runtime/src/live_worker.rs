@@ -28,8 +28,9 @@ use kadmium_data::{
 };
 use kadmium_grid::LayerDigest;
 use kadmium_network::{
-    DEFAULT_KADMIUM_RUNTIME_VERSION, FleetUpdateManifest, LiveWorkerRegistration, PeerChannelPool,
-    WireFrame, WireFrameKind, WorkerUpdatePushAck,
+    DEFAULT_KADMIUM_RUNTIME_VERSION, DeltaLinkConfig, FleetUpdateManifest, FrameReader,
+    FrameWriter, LiveWorkerRegistration, PeerChannelPool, WireFrame, WireFrameKind,
+    WorkerUpdatePushAck, accept_delta_hello,
 };
 use kadmium_sharding::ClusterShardPlan;
 use serde::{Deserialize, Serialize};
@@ -915,7 +916,15 @@ mod training_digest_tests {
         let worker_node = node.clone();
         let worker = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
-            let frame = WireFrame::read_from_stream(&mut stream).await.unwrap();
+            let mut frame = WireFrame::read_from_stream(&mut stream).await.unwrap();
+            if frame.kind == WireFrameKind::DeltaHello {
+                // The pooled channel offers a delta link first; this one-connection mock declines
+                // it and keeps serving plain frames on the same connection.
+                let (_, decline) =
+                    kadmium_network::DeltaHello::answer(&frame, &DeltaLinkConfig::disabled());
+                decline.write_to_stream(&mut stream).await.unwrap();
+                frame = WireFrame::read_from_stream(&mut stream).await.unwrap();
+            }
             assert_eq!(frame.kind, WireFrameKind::DeMoCompressedGradient);
             let request: LiveStageTrainingRequest = serde_json::from_slice(&frame.payload).unwrap();
             let mut response =
@@ -1904,6 +1913,9 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
         }
         // CRDT gossip is exchanged between coordinators; the worker port does not serve it.
         WireFrameKind::ShardPlanEpochUpdate => {}
+        // Delta links are negotiated and unwrapped by `serve_worker_connection`; neither kind
+        // reaches a handler.
+        WireFrameKind::DeltaHello | WireFrameKind::DeltaFrame => {}
     }
     None
 }
@@ -1926,17 +1938,36 @@ fn unhandled_frame_reply(kind: WireFrameKind, epoch: u32) -> WireFrame {
 /// replies as they complete, out of order, each tagged with the `request_id` of the request it
 /// answers. Legacy one-shot clients (connect, one `KDMF` frame, read one reply, close) are served
 /// by the same loop: their reply is written and the next read sees EOF.
+///
+/// A client that opens with a `DeltaHello` gets a delta link (unless `KADMIUM_DELTA_LINK=0`):
+/// inbound `DeltaFrame`s are rebuilt here, in read order, before dispatch, and replies are
+/// delta-encoded under the writer lock, in the order they are written.
 pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerFrameContext) {
     let _ = stream.set_nodelay(true);
+    let delta_config = DeltaLinkConfig::from_env();
     let (read_half, write_half) = stream.into_split();
-    let mut reader = tokio::io::BufReader::new(read_half);
-    let writer = Arc::new(tokio::sync::Mutex::new(write_half));
+    let mut reader = FrameReader::new(tokio::io::BufReader::new(read_half));
+    let writer = Arc::new(tokio::sync::Mutex::new(FrameWriter::new(write_half)));
     loop {
-        let frame = match WireFrame::read_from_stream(&mut reader).await {
+        let frame = match reader.read_frame().await {
             Ok(frame) => frame,
-            // EOF, reset, or a malformed header: nothing more can be read from this connection.
+            // EOF, reset, a malformed header, or a delta frame that cannot be rebuilt: nothing
+            // more can be read from this connection.
             Err(_) => break,
         };
+        if frame.kind == WireFrameKind::DeltaHello {
+            let mut w = writer.lock().await;
+            match accept_delta_hello(&frame, &delta_config, &mut reader, &mut w).await {
+                Ok(store_bytes) if ctx.log_console && store_bytes > 0 => println!(
+                    "  [WireFrame DELTA] Peer {} opened a delta link ({} MiB chunk store per direction)",
+                    ctx.peer_addr,
+                    store_bytes >> 20
+                ),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            continue;
+        }
         let ctx = ctx.clone();
         let writer = Arc::clone(&writer);
         tokio::spawn(async move {
@@ -1945,7 +1976,7 @@ pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerF
                 .unwrap_or_else(|| unhandled_frame_reply(kind, epoch))
                 .with_request_id(request_id);
             let mut writer = writer.lock().await;
-            let _ = reply.write_to_stream(&mut *writer).await;
+            let _ = writer.write_frame(&reply).await;
         });
     }
 }
@@ -2176,7 +2207,7 @@ impl DistributedLanExecutor {
     /// connection per hop, so concurrent stage calls to one worker share a single socket.
     pub fn channel_pool() -> &'static PeerChannelPool {
         static POOL: OnceLock<PeerChannelPool> = OnceLock::new();
-        POOL.get_or_init(PeerChannelPool::new)
+        POOL.get_or_init(|| PeerChannelPool::with_delta_link(DeltaLinkConfig::from_env()))
     }
 
     /// Pings a worker's TCP `WireFrame` socket (`WireFrameKind::HeartbeatTelemetry`) and returns

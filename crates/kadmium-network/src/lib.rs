@@ -9,12 +9,17 @@ use kadmium_core::{HardwareNode, NodeId, NodeRole, NodeTrustTier, PoliteState};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+pub mod delta_link;
 pub mod lan_pairing;
 pub mod live_mesh;
 pub mod nat_traversal;
 pub mod peer_channel;
 pub mod raid_striper;
 pub mod usbc_interconnect;
+pub use delta_link::{
+    ChunkPlan, DeltaDecoder, DeltaEncoder, DeltaHello, DeltaLinkConfig, DeltaLinkSnapshot,
+    DeltaLinkStats, FrameReader, FrameWriter, accept_delta_hello,
+};
 pub use lan_pairing::*;
 pub use live_mesh::*;
 pub use nat_traversal::*;
@@ -196,6 +201,11 @@ pub enum WireFrameKind {
     WorkResult = 11,
     /// A worker asking a scheduler for work. Opaque payload defined by `kadmium-grid`.
     WorkRequest = 12,
+    /// Opens a delta link on a connection (see [`delta_link`]); answered by a `DeltaHello`.
+    DeltaHello = 13,
+    /// Any other frame, sent as only the chunks the peer does not already hold (see
+    /// [`delta_link`]). Read loops rebuild it into the frame it wraps before dispatching.
+    DeltaFrame = 14,
 }
 
 impl WireFrameKind {
@@ -213,6 +223,8 @@ impl WireFrameKind {
             10 => Some(Self::WorkDispatch),
             11 => Some(Self::WorkResult),
             12 => Some(Self::WorkRequest),
+            13 => Some(Self::DeltaHello),
+            14 => Some(Self::DeltaFrame),
             _ => None,
         }
     }
@@ -703,11 +715,13 @@ mod tests {
             (WireFrameKind::WorkDispatch, 10u8),
             (WireFrameKind::WorkResult, 11u8),
             (WireFrameKind::WorkRequest, 12u8),
+            (WireFrameKind::DeltaHello, 13u8),
+            (WireFrameKind::DeltaFrame, 14u8),
         ] {
             assert_eq!(kind as u8, byte);
             assert_eq!(WireFrameKind::from_u8(byte), Some(kind));
         }
-        assert_eq!(WireFrameKind::from_u8(13), None);
+        assert_eq!(WireFrameKind::from_u8(15), None);
     }
 
     #[tokio::test]
