@@ -894,7 +894,7 @@ impl LiveHardwareProfiler {
         let buf = vec![0xCDu8; block_bytes];
         let start = std::time::Instant::now();
         let mut acc = 0u64;
-        for chunk in buf.chunks_exact(65_536) {
+        for chunk in buf.as_chunks::<65_536>().0 {
             acc = acc
                 .wrapping_add(chunk[0] as u64)
                 .wrapping_add(chunk[65_535] as u64);

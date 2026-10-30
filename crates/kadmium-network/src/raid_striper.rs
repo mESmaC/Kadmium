@@ -152,6 +152,8 @@ impl SwarmRaidStriper {
     /// Automatically reconstructs the straggler's output stripe from the parity worker via:
     /// $$Y_m = Y_{\text{parity}} - \sum_{j \neq m} Y_j$$
     /// and verifies bit-accurate recovery against the exact monolithic matrix product.
+    // Preserve the public matrix/stripe API; each dimension has a distinct contract.
+    #[allow(clippy::too_many_arguments)]
     pub fn execute_raid5_coded_projection(
         input_matrix: &[f32],
         weight_matrix: &[f32],
@@ -226,12 +228,9 @@ impl SwarmRaidStriper {
         // Y_{straggler} = Y_{parity} - \sum_{j != straggler} Y_j
         let parity_y = &output_stripes[k].values;
         let mut reconstructed_stripe = parity_y.clone();
-        for s in 0..k {
+        for (s, stripe) in output_stripes.iter().enumerate().take(k) {
             if s != straggler_target {
-                for (acc, &val) in reconstructed_stripe
-                    .iter_mut()
-                    .zip(output_stripes[s].values.iter())
-                {
+                for (acc, &val) in reconstructed_stripe.iter_mut().zip(stripe.values.iter()) {
                     *acc -= val;
                 }
             }
@@ -240,13 +239,9 @@ impl SwarmRaidStriper {
         // Assemble final full output matrix Y (using reconstructed_stripe for `straggler_target`):
         let mut assembled_y = Vec::with_capacity(total_tokens * out_dim);
         let mut max_err: f32 = 0.0;
-        for s in 0..k {
+        for (s, stripe) in output_stripes.iter().enumerate().take(k) {
             let chosen = if s == straggler_target {
-                for (&exact, &rec) in output_stripes[s]
-                    .values
-                    .iter()
-                    .zip(reconstructed_stripe.iter())
-                {
+                for (&exact, &rec) in stripe.values.iter().zip(reconstructed_stripe.iter()) {
                     let diff = (exact - rec).abs();
                     if diff > max_err {
                         max_err = diff;
@@ -254,7 +249,7 @@ impl SwarmRaidStriper {
                 }
                 &reconstructed_stripe
             } else {
-                &output_stripes[s].values
+                &stripe.values
             };
             assembled_y.extend_from_slice(chosen);
         }

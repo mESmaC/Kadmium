@@ -705,22 +705,20 @@ impl InferenceProvider for Mcl4CoeProvider {
 
         // Check live MCL4-COE `/api/checkpoints` if running
         let url = endpoint(self.config.base_url(), "api/checkpoints");
-        if let Ok(resp) = self.authorize(self.client.get(url)).send().await {
-            if resp.status().is_success() {
-                if let Ok(payload) = resp.json::<Value>().await {
-                    if let Some(arr) = payload.get("checkpoints").and_then(|v| v.as_array()) {
-                        for item in arr.iter().take(12) {
-                            if let Some(cid) = item.get("checkpoint_id").and_then(|v| v.as_str()) {
-                                if !models.iter().any(|m| m.id == cid) {
-                                    models.push(ModelInfo {
-                                        id: cid.to_string(),
-                                        display_name: Some(format!("MCL4-COE Checkpoint: {cid}")),
-                                        context_length: Some(32_768),
-                                    });
-                                }
-                            }
-                        }
-                    }
+        if let Ok(resp) = self.authorize(self.client.get(url)).send().await
+            && resp.status().is_success()
+            && let Ok(payload) = resp.json::<Value>().await
+            && let Some(arr) = payload.get("checkpoints").and_then(|v| v.as_array())
+        {
+            for item in arr.iter().take(12) {
+                if let Some(cid) = item.get("checkpoint_id").and_then(|v| v.as_str())
+                    && !models.iter().any(|m| m.id == cid)
+                {
+                    models.push(ModelInfo {
+                        id: cid.to_string(),
+                        display_name: Some(format!("MCL4-COE Checkpoint: {cid}")),
+                        context_length: Some(32_768),
+                    });
                 }
             }
         }
@@ -755,19 +753,19 @@ impl InferenceProvider for Mcl4CoeProvider {
         );
 
         let unsupported_native = unsupported_native_sampling_option(request);
-        if is_native_mcl4_v7_model(&request.model) {
-            if let Some(option) = unsupported_native {
-                return Err(CondenserError::UnsupportedOption {
-                    provider: self.config.kind.label().into(),
-                    option: option.into(),
-                });
-            }
+        if is_native_mcl4_v7_model(&request.model)
+            && let Some(option) = unsupported_native
+        {
+            return Err(CondenserError::UnsupportedOption {
+                provider: self.config.kind.label().into(),
+                option: option.into(),
+            });
         }
 
         // The native API has no fields for generic sampling top-p/top-k, seed,
         // or stop sequences. DeepSeek requests carrying them use OpenAI only.
-        if unsupported_native.is_none() {
-            if let Some(resp) = self
+        if unsupported_native.is_none()
+            && let Some(resp) = self
                 .try_mcl4_native_generate(
                     request,
                     &knobs,
@@ -776,9 +774,8 @@ impl InferenceProvider for Mcl4CoeProvider {
                     token_tx,
                 )
                 .await?
-            {
-                return Ok(resp);
-            }
+        {
+            return Ok(resp);
         }
 
         self.try_openai_compatible_generate(request, &knobs, &compacted_messages)

@@ -1076,7 +1076,7 @@ pub fn apply_ota_update_manifest_local(
                 &manifest.update_id,
                 &manifest.target_version,
                 manifest.expected_ktb_merkle_root_fnv64,
-                manifest.artifact_size_bytes as usize,
+                manifest.artifact_size_bytes,
             )
         {
             repops_digest = hw_digest;
@@ -1097,7 +1097,7 @@ pub fn apply_ota_update_manifest_local(
                 &manifest.update_id,
                 &manifest.target_version,
                 manifest.expected_ktb_merkle_root_fnv64,
-                manifest.artifact_size_bytes as usize,
+                manifest.artifact_size_bytes,
             )
         {
             repops_digest = hw_digest;
@@ -1118,7 +1118,7 @@ pub fn apply_ota_update_manifest_local(
                 &manifest.update_id,
                 &manifest.target_version,
                 manifest.expected_ktb_merkle_root_fnv64,
-                manifest.artifact_size_bytes as usize,
+                manifest.artifact_size_bytes,
             )
         {
             repops_digest = hw_digest;
@@ -2632,7 +2632,7 @@ impl DistributedLanExecutor {
             .map(|i| (((i as u64 + step_index) as f32) * 0.11).cos() * 0.6)
             .collect();
         let target_signal: Vec<f32> = (0..d_out)
-            .map(|j| (((j as usize * 3 + 1) as f32) * 0.17).sin() * 0.5)
+            .map(|j| (((j * 3 + 1) as f32) * 0.17).sin() * 0.5)
             .collect();
 
         let q_in = BlockwiseInt8Tensor::quantize(&input_signal, 16);
@@ -3106,21 +3106,20 @@ impl DistributedLanExecutor {
             run_speculative_draft: false,
         };
 
-        if let Some(vw) = vision_worker {
-            if let Ok((resp, rtt_ms)) =
+        if let Some(vw) = vision_worker
+            && let Ok((resp, rtt_ms)) =
                 Self::send_stage_forward_tcp(&vw.worker_tcp_addr, &req).await
-            {
-                return VisionOffloadTelemetry {
-                    vision_encoder_model: "SigLIP-SO400M-14-384".to_string(),
-                    offloaded_to_node_id: vw.node.id.0.clone(),
-                    offloaded_to_hostname: vw.node.hostname.clone(),
-                    vision_backend: format!("{:?} ({})", vw.node.backend, vw.board_or_model),
-                    image_patches_encoded: 729,
-                    visual_tokens_projected: 256,
-                    offload_latency_ms: rtt_ms,
-                    repops_digest_fnv1a: resp.repops_digest_fnv1a,
-                };
-            }
+        {
+            return VisionOffloadTelemetry {
+                vision_encoder_model: "SigLIP-SO400M-14-384".to_string(),
+                offloaded_to_node_id: vw.node.id.0.clone(),
+                offloaded_to_hostname: vw.node.hostname.clone(),
+                vision_backend: format!("{:?} ({})", vw.node.backend, vw.board_or_model),
+                image_patches_encoded: 729,
+                visual_tokens_projected: 256,
+                offload_latency_ms: rtt_ms,
+                repops_digest_fnv1a: resp.repops_digest_fnv1a,
+            };
         }
 
         let local_resp = execute_stage_kernels_local("node-m4-mac-mini", "m4-mac-mini-pro", &req);
@@ -3358,7 +3357,9 @@ impl BlockwiseInt8Tensor {
             ));
         }
         let absmax_scales = bytes[INT8_TENSOR_CODEC_HEADER_LEN..scales_end]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let quantized_data = bytes[scales_end..data_end]

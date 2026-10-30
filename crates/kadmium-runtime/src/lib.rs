@@ -2146,8 +2146,8 @@ mod tests {
                 rr_out_x86[base + i1] = x0 * s + x1 * c;
             }
         }
-        for i in 0..8 {
-            assert!((rr_out_x86[i] - deep_256.rmsnorm_rope_sample8[i]).abs() < 1e-4);
+        for (i, &value) in rr_out_x86[..8].iter().enumerate() {
+            assert!((value - deep_256.rmsnorm_rope_sample8[i]).abs() < 1e-4);
         }
         let rr_f64: Vec<f64> = rr_out_x86.iter().map(|&v| v as f64).collect();
         let rr_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&rr_f64);
@@ -2179,7 +2179,7 @@ mod tests {
         // 5. Verify Zero-Copy POSIX mmap() + Metal 4 newBufferWithBytesNoCopy Unified Memory .ktb Execution against x86_64 Reference
         assert!(deep_256.zerocopy_mmap_verified);
         let mut zc_y_x86 = vec![0.0f64; 64];
-        for r in 0..64usize {
+        for (r, output) in zc_y_x86.iter_mut().enumerate() {
             let mut acc = 0.0f32;
             for c in 0..256usize {
                 let idx = r * 256 + c;
@@ -2187,7 +2187,7 @@ mod tests {
                 let x = ((c as f32) * 0.09).cos() * 0.5;
                 acc = w.mul_add(x, acc);
             }
-            zc_y_x86[r] = acc as f64;
+            *output = acc as f64;
             if r < 4 {
                 assert!((acc - deep_256.zerocopy_mmap_sample4[r]).abs() < 1e-4);
             }

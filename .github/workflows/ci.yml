@@ -22,9 +22,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.0"
           components: rustfmt, clippy
 
       - name: Cache Cargo registry and target build
@@ -39,6 +40,20 @@ jobs:
 
       - name: Run workspace unit & async integration tests
         run: cargo test --workspace
+
+      - name: Install Node for Control Room regression tests
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Test Control Room keyboard navigation and request recovery
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          npm install --prefix target/ui-test --no-package-lock --no-audit --no-fund playwright@1.64.1
+          node target/ui-test/node_modules/playwright/cli.js install --with-deps chromium
+          cargo build -p kadmium-gateway --example control_room_fixture
+          node --test crates/kadmium-gateway/tests/control_room.test.cjs
 
       - name: Smoke-test Kadmium CLI engines (probe, simulate, dream, slice, dataflow, cloud-shield)
         run: |

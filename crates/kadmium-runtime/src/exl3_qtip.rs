@@ -569,7 +569,7 @@ impl Exl3QuantizedTensor {
         let x_tilde = FastWalshHadamardTransform::forward_vector(x, &col_signs);
         let mut y_tilde = vec![0.0f32; self.rows];
 
-        for r in 0..self.rows {
+        for (r, output) in y_tilde.iter_mut().enumerate() {
             let scale = self.row_scales[r];
             let mut state = 0usize;
             let mut acc = 0.0f32;
@@ -586,7 +586,7 @@ impl Exl3QuantizedTensor {
                 acc += z * xt;
                 state = next_state;
             }
-            y_tilde[r] = acc * scale;
+            *output = acc * scale;
         }
 
         FastWalshHadamardTransform::inverse_vector(&y_tilde, &row_signs)

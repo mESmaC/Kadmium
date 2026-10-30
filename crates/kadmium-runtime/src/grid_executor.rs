@@ -3656,7 +3656,9 @@ impl WorkExecutor for VerdeAuditExecutor {
                     return Err("an opened audit state is a vector of f64".to_string());
                 }
                 bytes
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
                     .collect()
             }

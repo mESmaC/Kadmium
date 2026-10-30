@@ -230,9 +230,25 @@ cargo run --bin kadmium -- dream
 ```
 
 ### 5. Run the Full Workspace Verification Suite
+
+The repository and CI pin Rust **1.99.0** in `rust-toolchain.toml` and `.github/workflows/ci.yml`. Update both together when upgrading, and run formatting, Clippy and tests before changing the pin.
+
 ```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
+
+Control Room browser regressions run on Ubuntu CI. To run locally (Chromium on Linux/macOS, installed Edge on Windows):
+
+```bash
+npm install --prefix target/ui-test --no-package-lock --no-audit --no-fund playwright@1.64.1
+node target/ui-test/node_modules/playwright/cli.js install chromium
+cargo build -p kadmium-gateway --example control_room_fixture
+node --test crates/kadmium-gateway/tests/control_room.test.cjs
+```
+
+The fixture uses an ephemeral loopback port and a disposable working directory, without discovering or contacting live workers.
 
 ---
 

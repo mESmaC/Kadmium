@@ -1126,9 +1126,8 @@ impl OllamaSingleBoxBaseline {
 
         for node in nodes {
             let budget = NodeBudget::from_node(node);
-            let fast_cap_gb =
-                ((budget.fast_left as f64) / GIB - kv_q8_gb - graph_scratch_gb).max(0.0);
-            let warm_cap_gb = (budget.warm_left as f64) / GIB;
+            let fast_cap_gb = (budget.fast_left / GIB - kv_q8_gb - graph_scratch_gb).max(0.0);
+            let warm_cap_gb = budget.warm_left / GIB;
 
             let fast_res_gb = q4km_total_gb.min(fast_cap_gb);
             let rem_after_fast = (q4km_total_gb - fast_res_gb).max(0.0);

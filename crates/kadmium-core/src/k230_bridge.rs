@@ -681,10 +681,10 @@ impl K230UsbComputeBridge {
             }
             *guard = K230PersistentSerialBridge::spawn(port);
         }
-        if let Some(bridge) = guard.as_mut() {
-            if let Some(out) = bridge.eval_expr(expr) {
-                return Some(out);
-            }
+        if let Some(bridge) = guard.as_mut()
+            && let Some(out) = bridge.eval_expr(expr)
+        {
+            return Some(out);
         }
         // Reconnect once if pipe broke:
         if let Some(mut old) = guard.take() {
@@ -802,12 +802,12 @@ for line in text.splitlines():
             .ok()?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         for line in stdout.lines() {
-            if let Some(json_str) = line.strip_prefix("HOST_PARSED_K230:") {
-                if let Ok(parsed) = serde_json::from_str::<K230LiveSerialJson>(json_str.trim()) {
-                    // Pre-warm the persistent bridge so all subsequent cluster hops run in ~2.5 ms!
-                    *guard = K230PersistentSerialBridge::spawn(port);
-                    return Some(parsed);
-                }
+            if let Some(json_str) = line.strip_prefix("HOST_PARSED_K230:")
+                && let Ok(parsed) = serde_json::from_str::<K230LiveSerialJson>(json_str.trim())
+            {
+                // Pre-warm the persistent bridge so all subsequent cluster hops run in ~2.5 ms!
+                *guard = K230PersistentSerialBridge::spawn(port);
+                return Some(parsed);
             }
         }
         None

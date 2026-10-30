@@ -132,10 +132,10 @@ impl SpeculativeDraftTreeVerifier {
         let n = nodes.len();
         let mut mask = vec![vec![0u8; n]; n];
         let mut ones_count = 0usize;
-        for i in 0..n {
+        for (i, row) in mask.iter_mut().enumerate() {
             let mut cursor = Some(i);
             while let Some(anc) = cursor {
-                mask[i][anc] = 1;
+                row[anc] = 1;
                 ones_count += 1;
                 cursor = nodes[anc].parent_idx;
             }
