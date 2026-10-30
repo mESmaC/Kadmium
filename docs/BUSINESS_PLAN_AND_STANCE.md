@@ -1,12 +1,12 @@
 # Kadmium (`Cd-48`): Master Business Plan, Financial Ledger & Ethical Charter
 
-**Document Version:** `v2.0 — Post-R4 Audit Alignment`  
+**Document Version:** `v2.1 — Launch-Ready & Revenue-Sequenced Edition (Post-R4 Audit Alignment)`  
 **Canonical Numbers Date Stamp:** `2026-10-20` ([`docs/NUMBERS_2026-10.md`](NUMBERS_2026-10.md) & [`crates/kadmium-core/src/canonical_numbers.rs`](../crates/kadmium-core/src/canonical_numbers.rs))  
-**Audit Reference:** [`docs/MARKET_RESEARCH_REVIEW_2026-10.md`](MARKET_RESEARCH_REVIEW_2026-10.md) (*R4 Market Research & Fact-Check Review*)  
-**Executable Ledger Engines:** [`crates/kadmium-core/src/supply.rs`](../crates/kadmium-core/src/supply.rs) & [`crates/kadmium-core/src/reactor_clearinghouse.rs`](../crates/kadmium-core/src/reactor_clearinghouse.rs)
+**Audit & Benchmark References:** [`docs/MARKET_RESEARCH_REVIEW_2026-10.md`](MARKET_RESEARCH_REVIEW_2026-10.md) (*R4 Audit*) & [`docs/BENCHMARKS_2026-10.md`](BENCHMARKS_2026-10.md) (*Measured Multi-Node Run 1*)  
+**Executable Engines:** [`crates/kadmium-core/src/supply.rs`](../crates/kadmium-core/src/supply.rs), [`crates/kadmium-core/src/reactor_clearinghouse.rs`](../crates/kadmium-core/src/reactor_clearinghouse.rs), [`crates/kadmium-condenser`](../crates/kadmium-condenser) & [`crates/kadmium-grid`](../crates/kadmium-grid)
 
 > **Process Invariant (Single Dated Source of Truth):**
-> Every wholesale GPU rate, serverless token price floor, electricity tariff (`$0.182/kWh`), Steam-derived GPU count, DeMo compression range (`10×–85×`), credit redemption liability parameter, and hardware BOM figure in this document is locked to the **`2026-10-20` Canonical Numbers Ledger** ([`docs/NUMBERS_2026-10.md`](NUMBERS_2026-10.md)) and [`crates/kadmium-core/src/canonical_numbers.rs`](../crates/kadmium-core/src/canonical_numbers.rs). All throughput and buyer ROI tables are explicitly marked **Modelled** until automated `kadmium bench` hardware logs are published (`R4 §10`).
+> Every wholesale GPU rate, serverless token price floor, electricity tariff (`$0.182/kWh`), Steam-derived GPU count, DeMo compression range (`10×–85×`), credit redemption liability parameter, and hardware BOM figure in this document is locked to the **`2026-10-20` Canonical Numbers Ledger** ([`docs/NUMBERS_2026-10.md`](NUMBERS_2026-10.md)) and [`crates/kadmium-core/src/canonical_numbers.rs`](../crates/kadmium-core/src/canonical_numbers.rs). Measured multi-node results cite [`docs/BENCHMARKS_2026-10.md`](BENCHMARKS_2026-10.md) (**Measured**), while multi-tier hardware capability envelopes and buyer ROI tables are explicitly marked **Modelled** (`R4 §10`).
 
 ---
 
@@ -21,12 +21,29 @@ At the same time, an enormous fleet of capable consumer, prosumer, and instituti
   - **`~2.40M` GPUs with `24 GB` VRAM** (`5.50%` share, RTX 3090 / 4090 / RX 7900 XTX class)
   - **`~11.84M` GPUs with `16 GB` VRAM** (`27.21%` share)
   - **`~21.58M` cumulative GPUs with `12 GB+` VRAM** (`49.61%` share)
-- **Unified-Memory Workstations & Edge Boards:** Millions of Apple M-series Macs (`16 GB – 192 GB` UMA at `120 – 800 GB/s`), AMD Ryzen AI Max+ 395 (`Strix Halo` `128 GB` UMA), and home/lab Linux servers sit at low utilization outside active work or gaming hours.
+- **Unified-Memory Workstations & Edge Boards:** Millions of Apple M-series Macs (`16 GB – 192 GB` UMA at `120 – 800 GB/s`), AMD Ryzen AI Max+ 395 (`Strix Halo` `128 GB` UMA), handheld gaming APUs (`Ryzen Z1 Extreme / Z2`), and home/lab Linux servers sit at low utilization outside active work or gaming hours.
 
-**Kadmium (`Cd-48`, atomic number 48—the neutron-absorbing control rod element in a nuclear reactor)** is a local-first heterogeneous clustering runtime and output-metered clearinghouse built around three rules:
-1. **Free Forever on Your Own LAN (`Tier 0`):** Combining your own desktop, laptop, Mac mini, and home NAS over Thunderbolt/USB4, Ethernet, or Wi-Fi is **100% free forever (`$0.00`)** with no account, telemetry, or cloud dependency.
+**Kadmium (`Cd-48`, atomic number 48—the neutron-absorbing control rod element in a nuclear reactor)** is a local-first heterogeneous clustering runtime, multi-agent inference harness (`Condenser`), and output-metered clearinghouse built around three rules:
+1. **Free Forever on Your Own LAN (`Tier 0`):** Combining your own desktop, laptop, Mac mini, and home NAS over **USB4/Thunderbolt direct daisy-chain (`27.6 Gbps`, `$15` cable)**, Ethernet, or Wi-Fi is **100% free forever (`$0.00`)** with no account, telemetry, or cloud dependency.
 2. **Buyer-Constraint-First Clearing (`Tier 1 & Tier 2`):** When a workload needs more memory or throughput than local hardware provides, Kadmium either leases fractional capacity from the **Kadmium Supply Grid**—priced strictly per **delivered token or verified work unit at a 20–35% discount to serverless APIs**—or bursts into verified wholesale cloud spot GPUs priced transparently at **`WholesaleVerifiedIndex(class) × 1.25`**.
 3. **The `75 / 20 / 5` Steward-Ownership Charter:** When external buyers pay for verified Supply Grid work, **`75%` of gross compute billings go directly to the hardware hosts**, **`20%` funds a capped Cost-Plus living-wage operations reserve**, and **`5%` (plus 100% of net surplus above the Cost-Plus cap) sweeps quarterly into the Community STEM, Academic & Small-Business Grant Pool**.
+
+### 1.2 Late-2026 Distributed Compute Market Landscape: Why Hybrid Local-First Beats Pure DePIN
+By Q4 2026, the AI compute market has undergone three structural shifts that define Kadmium's commercial wedge:
+1. **"The Inference Flip" & Multi-Agent Token Explosion:** Inference now accounts for **~85% of enterprise AI budgets** and roughly two-thirds of all AI compute spend. Autonomous coding and research workflows (`Claude Code`, `Cursor`, `Condenser Blades`) execute 15–50 tool/verification turns per task, consuming **`5×–30×` more tokens** than single-turn chat. For engineering teams and labs, **per-seat rate limits, unpredictable API bills, and source-code egress**—not raw per-token spot floors—have become the primary buyer pain points (`R4 §6.4`).
+2. **The DePIN Revenue Disconnect & SaladCloud's Crypto Pivot:** Pure crypto DePIN compute networks carry a combined `~$10B` token market capitalization on just `~$72M` in FY2025 on-chain revenue (e.g., Akash Network at `~$4.2M` annualized lease spend) because enterprise procurement, university grant officers, and regulated SMBs cannot hold volatile utility tokens or pass compliance audits on anonymous nodes. Notably, in 2026 **SaladCloud integrated as the first external compute provider on the Render Network (`RNP-023` / `$RENDER` token rails)**—vacating the **100% No-Crypto, USD-only, Steward-Owned** position for consumer-grid batch compute and RL verification.
+3. **Validation of Multi-Cloud Aggregation & Local Office Clusters:**
+   - **Prime Intellect** raised a `$130M` Series A at a `$1B` valuation (surpassing `$100M` annualized revenue run-rate) by pairing a multi-cloud GPU spot aggregator with `Prime Inference` (an OpenAI-compatible router) and `Verifiers` (RL environment sandboxes)—proving massive B2B demand for **spot aggregation + RL verification + unified inference routing**.
+   - **Exo Labs** launched *Exo for Business* and `local.ai` after proving 4-node Mac Studio clusters on `Kimi-K2-Thinking` and `DeepSeek V3.1`, while **Ollama** raised `$65M` Series B and pivoted to paid cloud token plans—leaving a wide-open lane for a **cross-vendor (`NVIDIA + AMD + Apple Silicon + Linux/Windows`) local cluster runtime with built-in spot burst and a desktop agent workspace (`Condenser`)**.
+
+| Market Dimension (`Q4 2026`) | Pure Crypto DePIN (`Akash`, `io.net`, `Render`) | Consumer Container Grid (`SaladCloud` + `RNP-023`) | Cloud Spot / RL Aggregator (`Prime Intellect`, `RunPod`) | Local Mac Cluster (`Exo Labs`) | **Kadmium (`Cd-48` + `Condenser`)** |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Local Multi-Device LAN / USB4 Clustering (`$0/mo`)** | No | No | No | Yes *(Mac/RDMA focused)* | **Yes (`Windows + Mac + Linux + USB4 DMA`, `$0` Forever)** |
+| **Native Multi-Agent Workspace (`Condenser Blades`)** | No | No | CLI / API only | Basic Chat UI | **Yes (`Blades` multi-pane agents, Q/A, MCP/JSON-RPC)** |
+| **Sub-Second Local-to-Cloud Failover (`CloudShield`)** | No | No (`Cold container boot`) | Cloud-only | No (`Local-only`) | **Yes (`25ms` DDR5 shadow + `245ms` indexed burst)** |
+| **Output-Metered Supply Grid (`$/1M tok` & `WASI` RL)** | Hourly rental (`Crypto`) | Hourly container + `$RENDER` | Cloud GPU / Token API | No | **Yes (`$0.22/1M tok` & `$0.14/1k WASI`, `75%` USD to host)** |
+| **100% No-Crypto / Steward-Owned (`75 / 20 / 5`)** | No (`Token volatility`) | No (`Render RNP-023`) | VC-backed (`20–40%` take) | VC-backed | **Yes (`100% USD`, Golden-Share `75/20/5` Charter)** |
+| **Air-Gapped Regulated SMB Fabric (`HIPAA / CMMC / ABA`)** | No | No (`SOC 2 Type I cloud`) | Cloud VPC only | Custom enterprise quote | **Yes (`$499/mo` transparent self-serve On-Prem LAN)** |
 
 ---
 
@@ -36,10 +53,10 @@ At the same time, an enormous fleet of capable consumer, prosumer, and instituti
 
 | Tier | Target User | Monthly Price | What Is Included & How COGS Is Bounded |
 | :--- | :--- | :--- | :--- |
-| **1. Community LAN Core** | Hobbyists, students, home-lab tinkerers, `r/LocalLLaMA` | **`$0 / mo`** *(Free Forever)* | Full open-source `kadmium` CLI, native desktop companion, `4D` heterogeneous LAN sharding, `.ktb` zero-copy weight loader, USB4/Thunderbolt ring DMA, Polite Gaming Mode, and local OpenAI/Anthropic gateway (`:8080`). Zero Kadmium cloud COGS. |
+| **1. Community LAN Core** | Hobbyists, students, home-lab tinkerers, `r/LocalLLaMA` | **`$0 / mo`** *(Free Forever)* | Full open-source `kadmium` CLI, **`Condenser` (`Blades` multi-pane agent harness, `:7856`)**, `4D` heterogeneous LAN sharding, `.ktb` zero-copy weight loader, USB4/Thunderbolt ring DMA, Polite Gaming Mode, and local OpenAI/Anthropic gateway (`:8080`). Zero Kadmium cloud COGS. |
 | **2. CloudShield Pro** | Prosumers, indie AI devs, researchers with 16–64 GB local rigs | **`$29 / mo`** | Automated 25ms local DDR5 shadow fallback + 245ms cloud/grid failover, dynamic `4K -> 64K` KV-cache layer slider, and **`$35.00 / mo` in Indexed Burst & Supply Grid Credits**. **COGS Protection (`R4 §6.2`):** Credits draw down at the live `WholesaleVerifiedIndex(class) × 1.25` rate (or `$0.22 / 1M` batch tokens on the credit-paid community/studio grid). Workloads fitting 24–32 GB slices route first to credit-paid community supply, ensuring an active `$29/mo` subscriber never creates an unhedged `$50–$100` wholesale cash loss. |
-| **3. Team / Lab Cluster** | AI startups, university labs, ML engineering teams (up to 15 seats) | **`$199 / mo`** *(flat per lab)* | Multi-user RBAC queue priorities, centralized `.ktb` S3/R2/NAS team weight registry, automated multi-provider spot bidding across 85+ providers, WSD checkpoint recovery, and verified `WASI` RL sandbox orchestration. |
-| **4. Private Office Fabric (100% On-Premise LAN Mode)** | Regulated SMBs: law firms, medical/dental practices, defense subcontractors | **`$499 / mo`** *(per office)* | **100% Air-Gapped / On-Premise Office LAN Mode** (`Zero Egress`). Pools existing office PCs/Macs (`16–64 GB` each) into a local document/coding/transcription fabric inside the office firewall. Includes tamper-evident SHA-256 local audit logs and Active Directory / Okta SSO. *(See §6 for strict HIPAA / CMMC / ABA compliance boundaries.)* |
+| **3. Team / Lab Cluster** | AI startups, university labs, ML engineering teams (up to 15 seats) | **`$199 / mo`** *(flat per lab)* | Shared **`Condenser` Team Blades**, multi-user RBAC queue priorities, centralized `.ktb` S3/R2/NAS team weight registry, automated multi-provider spot bidding across 85+ providers, WSD checkpoint recovery, and verified `WASI` RL sandbox orchestration. |
+| **4. Private Office Fabric (100% On-Premise LAN Mode)** | Regulated SMBs: law firms, medical/dental practices, defense subcontractors | **`$499 / mo`** *(per office)* | **100% Air-Gapped / On-Premise Office LAN Mode** (`Zero Egress`). Pools existing office PCs/Macs (`16–64 GB` each) into a local document/coding/transcription fabric inside the office firewall with `Condenser` matter/patient workspaces. Includes tamper-evident SHA-256 local audit logs and Active Directory / Okta SSO. *(See §6 for strict HIPAA / CMMC / ABA compliance boundaries.)* |
 | **5. MSP Partner Channel** | Regional Managed IT Service Providers managing 5–50 SMB offices | **`$299 / mo`** *(wholesale per office)* | Multi-tenant MSP fleet console; MSP bills the end client `$499–$799/mo` for managed on-premise installation + SLA support, retaining `$200–$500/mo` recurring service margin while remitting `$299/mo` wholesale to Kadmium. |
 
 ### 2.2 Dynamic Wholesale GPU Index & Index-Plus-Spread Burst Pricing (`R4 §5.3, §6.2, §7.1`)
@@ -87,14 +104,14 @@ $$\text{BuyerClearing}_{\text{hr}} = \underbrace{\left(\$0.22 \times \frac{\text
    - Determined by effective memory bandwidth $\text{BW}_{\text{eff}}$ (`GB/s`), micro-batch amortization (`batch=8–16` for high-bandwidth GPUs/UMA), and WAN uplink penalty $\phi_{\text{net}} = \min(1.0, \text{Uplink}_{\text{Mbps}} / 100.0)$.
    - **Strict Memory-Bandwidth Routing Gate ($\text{BW}_{\text{eff}} < 60\text{ GB/s}$):** Any device with memory bandwidth below `60 GB/s` (such as a `25.6 GB/s` RK3588 SBC or smartphone array) is **automatically gated out of dense LLM token decode (`0` batch decode tokens assigned)** and routed strictly to **deterministic CPU/NPU `WASI` RL sandbox verification, speculative draft trees, and `.ktb` Merkle shard seeding**, where its output is genuinely cost-competitive.
 2. **Verified `WASI` RL Sandbox Rollouts (`$0.14 / 1,000 rollouts`):**
-   - Bounded by CPU/compute throughput and ` Verde RepOps` deterministic hash verification—a workload that is compute- and sandbox-bound rather than memory-bandwidth-bound.
+   - Bounded by CPU/compute throughput and `Verde RepOps` deterministic hash verification—a workload that is compute- and sandbox-bound rather than memory-bandwidth-bound.
 3. **`.ktb` Merkle Weight Shard Seeding (`$0.008 / GiB`):**
    - Bounded by the host's residential/campus upload bandwidth, undercutting hyperscaler egress (`$0.05–$0.09/GiB`) by `80–90%`.
 
 ### 3.3 Modelled Output-Delivered Host Payout & Buyer Clearing Table (`2026-10-20` Constants)
 
 > **Modelled Capability Envelope Notice (`R4 §10`):**
-> All throughput (`tok/hr`, `WASI rollouts/hr`), duty-cycle (`18%–35%`), and monthly net payout figures below are **Modelled** from [`crates/kadmium-core/src/supply.rs`](../crates/kadmium-core/src/supply.rs) using the US EIA October 2026 residential electricity rate of **`$0.182 / kWh`** (`18.2¢/kWh`). Because every LLM-capable node clears at **`$0.22 / 1M batch tokens`** (plus auxiliary WASI/seeding work), buyers always pay `~$0.22–$0.27 / 1M effective tokens`—below OpenRouter/GMICloud's `$0.28–$0.42 / 1M` floor.
+> All throughput (`tok/hr`, `WASI rollouts/hr`), duty-cycle (`8.3%–30%`), and monthly net payout figures below are **Modelled** from [`crates/kadmium-core/src/supply.rs`](../crates/kadmium-core/src/supply.rs) using the US EIA October 2026 residential electricity rate of **`$0.182 / kWh`** (`18.2¢/kWh`). Because every LLM-capable node clears at **`$0.22 / 1M batch tokens`** (plus auxiliary WASI/seeding work), buyers always pay `~$0.22–$0.27 / 1M effective tokens`—below OpenRouter/GMICloud's `$0.28–$0.42 / 1M` floor.
 
 | Hardware Profile | Assigned Grid Workload | Modelled Delivered Output / Hr | Buyer Clearing Rate (`$/hr` / Effective `$/1M tok`) | Host Gross Share (`75%` USD) | Incremental Wall Power & Cost (`@ $0.182/kWh`) | Host Net Cash / Hr (After Power) | Modelled Monthly Net Cash (`Duty Cycle` / `Hrs/Day`) | Overnight Credit Value (`1.25×` Index) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -209,4 +226,66 @@ In non-regulated developer/prosumer tiers, Kadmium supports **Zero Plaintext Egr
 4. **Right-to-Repair & Open Root Access:**
    - Every piece of software and optional reference hardware Kadmium ships gives the owner **100% root access, unlocked bootloaders, and zero DRM**. A user can uninstall Kadmium at any time and use their hardware as a standard Linux server or workstation.
 5. **Measurement-First Honesty (`No Unverified Benchmarks`):**
-   - Kadmium separates **Spec-Verified Mathematical Constants** (e.g., `10×–85×` DeMo DCT-II compression, `0.00e0` online Softmax LSE reduction error), **Dated Empirical Market Constants** (`2026-10-20` [`docs/NUMBERS_2026-10.md`](NUMBERS_2026-10.md)), and **Modelled Capability Envelopes** (explicitly labelled **Modelled** until reproducible `kadmium bench` hardware logs are attached).
+   - Kadmium separates **Spec-Verified Mathematical Constants** (e.g., `10×–85×` DeMo DCT-II compression, `0.00e0` online Softmax LSE reduction error), **Dated Empirical Market Constants** (`2026-10-20` [`docs/NUMBERS_2026-10.md`](NUMBERS_2026-10.md)), **Measured Multi-Node Hardware Runs** ([`docs/BENCHMARKS_2026-10.md`](BENCHMARKS_2026-10.md)), and **Modelled Capability Envelopes** (explicitly labelled **Modelled** until reproducible `kadmium bench` hardware logs are attached).
+
+---
+
+## 8. The Two-Stage Product Launch Architecture & Sequenced Path to Revenue
+
+### 8.1 Bridging Engineering Readiness (`R4 §2`) with Immediate Day-1 Revenue
+Per our R4 codebase audit (`R4 §2`), Kadmium's specification engine (`kadmium-core`, `kadmium-sharding`, `kadmium-wire`, `kadmium-ktb`, `kadmium-grid`) passes 430+ deterministic unit tests, and our first **Measured** two-machine benchmark ([`docs/BENCHMARKS_2026-10.md`](BENCHMARKS_2026-10.md) Run 1) proves that splitting `ornith-1.5-35B-A3B` (`Q4_K_M`, `19.6 GiB`) across a Windows PC (`16 GB` RAM, `L00–L15`) and an Apple M4 Mac mini (`16 GB` UMA, `L16–L39`) over 1GbE LAN delivers **`3.25 tok/s` p50 (`3.98×` faster than single-PC cold NVMe paging at `0.82 tok/s`) with `0` OS swap events**. At the same time, full hardware-accelerated multi-node CUDA/ROCm/Metal kernel FFI (`DeepGEMM`, `DeepEP`, `EPLB`) is transitioning from reference kernels to native device execution.
+
+To generate **immediate, high-margin B2B and prosumer revenue on Day 1** without over-claiming unmeasured kernel speeds, Kadmium executes a **Two-Stage Commercial Launch Bridge**:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ STAGE A (DAY 1 — LIVE TODAY): Condenser Agent Harness + Hybrid LAN/Cloud Orchestrator  │
+│  • Ships `kadmium-condenser` (:7856) with Blades multi-pane agent workspaces, Q/A      │
+│    interviews, doom-loop guards & JSON-RPC plugins over Ollama / OpenAI / Anthropic /  │
+│    MCL4-COE + Measured 2-node LAN shard execution (`ornith-1.5-35B-A3B` 3.98x speedup) │
+│  • Monetizes immediately: CloudShield Pro ($29/mo), Team/Lab ($199/mo), Private Office │
+│    Fabric ($499/mo), MSP Channel ($299/mo), and Indexed Spot Burst (Index × 1.25).     │
+└──────────────────────────────────────────┬─────────────────────────────────────────────┘
+                                           │ Transparent Engine Cutover (Zero Workflow Change)
+                                           ▼
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│ STAGE B (DAYS 30–90): Native `.ktb` GPU/Metal/USB4 Distributed Kernel Cutover          │
+│  • Drops in native ggml/CUDA/Metal/Vulkan FFI + `DeepGEMM` UE8M0 FP8 + `DeepEP`        │
+│    asymmetric LAN/WAN dispatch + `EPLB` hot-expert replication + 27.6 Gbps USB4 DMA    │
+│  • Unlocks multi-machine `M1–M4` capability envelopes (120B–671B MoE) & Supply Grid    │
+│    output-metered clearing ($0.22/1M batch tok, $0.14/1k WASI rollouts).               │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 8.2 Sequenced Execution Gates (`Gate 0 -> Gate 4`) & Path to `$35.9k/mo` (Day 90) and `$160k+/mo` (Month 6)
+
+| Launch Gate & Window | Core Engineering & Product Deliverable | Primary Commercial Motion & Target Buyer | Revenue & Adoption Gate Criteria (Go / No-Go for Next Gate) |
+| :--- | :--- | :--- | :--- |
+| **Gate 0: Pre-Launch Proof & Calculator (`Days 1–14`)** | Publish reproducible `kadmium bench` suite (Run 1 `3.98×` measured 2-node baseline + USB4 ring DMA + `Condenser` Blades release); launch interactive **"Will It Run on My Desk?" Hardware-to-Model Calculator** (`kadmium launch --plan`). | Zero-CAC developer seeding (`r/LocalLLaMA`, `r/homelab`, HN *Show HN*); open design-partner applications for `Team/Lab ($199)` and `Private Office ($499)`. | **`>= 500` Free LAN clusters (`Tier 0`)**, `>= 1,500` GitHub stars, and **`>= 10` qualified B2B/Lab pilot discovery calls** booked. |
+| **Gate 1: Design Partners & `Condenser` Pro Launch (`Days 15–35`)** | Activate Stripe billing for **`CloudShield Pro ($29/mo)`**, **`Team / Lab ($199/mo)`**, and **Prepaid Burst Packs (`$100 / $500`)** with live `WholesaleVerifiedIndex × 1.25` spot brokering. | Convert early power users hitting `16–24 GB` VRAM walls or Claude/Cursor rate limits; close first **5 `Team/Lab ($199/mo)`** and **3 `Private Office ($499/mo)`** pilots. | **`$5,000+ / mo` Gross Billings** (`>= 40` Pro subs + `>= 8` B2B/Lab logos); verified `>= 20%` realized burst spread with zero negative-margin credit redemptions. |
+| **Gate 2: Native Multi-Node Kernel Cutover & Supply Grid Beta (`Days 36–65`)** | Ship native GPU/Metal `.ktb` shard execution (`M1` Kitchen-Sink & `M2` 5-Dev Office Mesh) + **`WASI` RL Verifier Supply Grid (`$0.14 / 1k rollouts`)** & `.ktb` seeding (`$0.008 / GiB`). | Launch **AI Coding Team Campaign** (*"Zero Rate Limits, 100% LAN Privacy on Your Office Macs & PCs"*) and **Academic Lab Grant Pack** (`$199/mo` + `$500` burst pack). | **`$16,200 / mo` (Bear) to `$22,000 / mo` Gross Billings**; `>= 1,500` Free LAN clusters; `>= 20` active B2B/Lab accounts; published `M1/M2` `kadmium bench` logs. |
+| **Gate 3: MSP Channel & Regulated SMB Scale (`Days 66–90`)** | Release turnkey **100% Air-Gapped `Private Office Fabric ($499/mo)` installer** (SHA-256 audit log, AD/Okta SSO, FIPS 140-3 TLS profile) + **MSP Multi-Tenant Console (`$299/mo` wholesale)**. | Sign **3–5 regional Managed IT Service Providers (MSPs)** serving 10–30 Seat law firms, medical/dental clinics, and engineering shops; execute Base-Case Day-90 plan. | **`$35,903 / mo` Base-Case Gross Billings** (`+$15,559/mo` accrual net margin after `75%` pack/credit reserves; `$3,559/mo` STEM grant sweep). |
+| **Gate 4: Regional Clearinghouse & Optional Hardware Drop (`Months 4–6`)** | Scale `DeepEP` / `EPLB` high-bandwidth Supply Grid batch clearing (`$0.22 / 1M tok`); if signed ODM quote confirms landed BOM `<= $275` at MOQ 500, open **`Cd-48` 32 GB Coordinator (`$379`)** batch. | Expand MSP channel to `40+` regulated SMB offices (`$12k–$20k/mo` high-margin recurring software) + university/RL startup batch clearing. | **`$85,000 – $160,000 / mo` Gross Billings** (`~$38k–$68k/mo` accrual net operating contribution; full `75/20/5` quarterly audit published). |
+
+---
+
+## 9. Unit Economics, Customer Acquisition Cost (`CAC / LTV`) & Working-Capital Solvency Controls
+
+### 9.1 Channel-by-Channel Unit Economics (`Modelled — Base Case`)
+Because `Tier 0` (Community LAN Core + `Condenser` local mode) is 100% free and solves an immediate hardware problem (pooling existing PCs/Macs over LAN or `$15` USB4 cables without buying a new `$4,000` workstation), Kadmium acquires top-of-funnel users at near-zero paid CAC and monetizes expansion via software control planes and indexed burst:
+
+| Revenue Stream / Tier | Monthly ARPPU / Contract Value | Realized Accrual Gross Margin (`%` / `$/mo`) | Primary Acquisition Channel & Target CAC | Expected Retention / Lifetime (`LTV`) | `LTV : CAC` & Payback Period |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. `CloudShield Pro` (`$29/mo`)** | `$29.00 / mo` | **`47.9%`** (`+$13.90 / mo` after `$15.10` avg credit/burst COGS) | Organic CLI / `Condenser` in-app OOM & rate-limit upgrade prompt (`$8 – $15` CAC) | `14 months` (`$195` accrual LTV) | **`13× – 24×` (`< 1.1 mo` payback)** |
+| **2. `Team / Lab Cluster` (`$199/mo`)** | `$199.00 / mo` *(+ `~$180/mo` avg burst)* | **`82.0%` blended** (`+$196.00 / mo` SaaS + burst spread) | `kadmium launch --plan` calculator, GitHub, university PI / startup founder outreach (`$120 – $250` CAC) | `22 months` (`$4,312` accrual LTV) | **`17× – 35×` (`< 1.3 mo` payback)** |
+| **3. `Private Office Fabric` (`$499/mo` Direct)** | `$499.00 / mo` *(100% On-Prem LAN)* | **`92.0%`** (`+$459.08 / mo` pure software) | Vertical outbound to 10–50 seat law firms, clinics & defense shops + compliance webinars (`$450 – $800` CAC) | `30 months` (`$13,772` accrual LTV) | **`17× – 30×` (`< 1.8 mo` payback)** |
+| **4. `MSP Partner Channel` (`$299/mo` Wholesale)** | `$299.00 / mo` per deployed office | **`93.0%`** (`+$278.07 / mo` pure software) | Partner onboarding (`$600` per MSP; avg `4` offices deployed per MSP = `$150` CAC/office) | `36 months` (`$10,010` accrual LTV/office) | **`66×` (`< 0.6 mo` payback per office)** |
+| **5. `Prepaid Burst & Grid Packs` (`$100–$2,500`)** | `$350.00` avg pack size | **`21.8%` net of `75%` fulfillment COGS + `3.2%` Stripe** (`+$76.30 / pack`) | Self-serve upsell inside `Team/Lab` and `Condenser` dashboard (`~$0` incremental CAC) | Repeat quarterly top-ups (`2.5× / yr`) | **Immediate positive cash flow (with `75%` escrowed)** |
+
+### 9.2 Four Hard Working-Capital & Treasury Solvency Rules (`crates/kadmium-core/src/reactor_clearinghouse.rs`)
+To ensure Kadmium never experiences a liquidity squeeze, wholesale price inversion, or host payout default during rapid growth:
+1. **Segregated Escrow Sub-Account (`75%` Host & Wholesale Reserve):** Whenever a buyer purchases a Prepaid Burst Pack or pays a Supply Grid invoice, **`75.0%` of the gross cash is automatically swept at settlement into a segregated escrow reserve sub-account**. Only the **`20.0%` Cost-Plus operations share** and **`5.0%` STEM grant share** enter general operating cash as work units are verified and consumed.
+2. **T+7 Rolling Dispute & Verification Settlement Window:** Buyer payments clear upfront via Stripe/prepaid balance, while Supply Grid host USD payouts settle on a **`T+7` rolling verification window** after `Verde RepOps` / `DSpark` cryptographic receipts confirm non-corrupted output—eliminating chargeback and fraudulent-compute float risk.
+3. **Zero Unhedged Fixed-Price Cloud Obligations:** Every cloud burst minute is billed dynamically at `WholesaleVerifiedIndex(class) × 1.25` using live spot orderbook feeds (`spot_provisioner.rs`). If spot market prices spike during a datacenter shortage, the retail burst rate and credit drawdown scale in lockstep, preserving the **`20.0%` gross margin on retail (`25.0%` markup on wholesale)** at all times.
+4. **Zero Fixed Datacenter Lease Commitments:** Kadmium signs **`$0.00` in long-term GPU take-or-pay leases**. Total fixed infrastructure overhead at launch is **`$750 / mo`** for three lightweight `libp2p` coordinator/turn relays (US-East, EU-Central, AP-East)—covered by the first **two** `Private Office Fabric ($499/mo)` subscriptions or **four** `Team / Lab ($199/mo)` subscriptions.
+

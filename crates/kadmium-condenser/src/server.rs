@@ -5,9 +5,9 @@ use crate::dsv41_mcl4::{
 };
 use crate::plugin::{PluginInventory, PluginManager, default_plugin_roots};
 use crate::provider::ProviderFactory;
-use crate::types::{Message, ModelInfo, ProviderConfig, ProviderKind, SamplingParams};
+use crate::types::{Message, ModelInfo, ProviderConfig, SamplingParams};
 use crate::{CondenserError, DEFAULT_HTTP_PORT, Harness, HarnessOptions, Result, RunControl};
-use axum::extract::{Request, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
@@ -23,6 +23,7 @@ use std::sync::Arc;
 const CONDENSER_HTML: &str = include_str!("assets/condenser.html");
 const CONDENSER_CSS: &str = include_str!("assets/condenser.css");
 const CONDENSER_JS: &str = include_str!("assets/condenser.js");
+const WORKFLOW_JS: &str = include_str!("assets/workflow.js");
 const CONDENSER_MARK: &str = include_str!("assets/condenser-mark.svg");
 const CONDENSER_FAVICON: &str = include_str!("assets/condenser-favicon.svg");
 const CONDENSER_FONT_ARCHIVO: &[u8] = include_bytes!("assets/fonts/Archivo-Variable.woff2");
@@ -52,6 +53,7 @@ pub(crate) struct ServerState {
     plugin_roots: Arc<Vec<PathBuf>>,
     client: reqwest::Client,
     turn_permits: Arc<tokio::sync::Semaphore>,
+    active_runs: crate::runs::ActiveRuns,
     pub(crate) workspace: crate::workspace::WorkspaceState,
 }
 
@@ -89,6 +91,7 @@ pub async fn bind(
         plugin_roots: Arc::new(options.plugin_roots),
         client,
         turn_permits: Arc::new(tokio::sync::Semaphore::new(options.max_concurrent_turns)),
+        active_runs: crate::runs::ActiveRuns::default(),
         workspace: crate::workspace::WorkspaceState::from_current_dir()?,
     };
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, options.port)).await?;
@@ -114,6 +117,8 @@ fn router(state: ServerState) -> Router {
         .route("/api/v1/dsv41/profile", get(dsv41_profile))
         .route("/api/v1/mcl4/probe-decision", post(mcl4_probe_decision))
         .route("/api/v1/workspace", get(crate::workspace::workspace))
+        .route("/api/v1/compute/inspect", post(crate::compute::inspect))
+        .route("/api/v1/runs/{id}/cancel", post(cancel_run))
         .route("/api/v1/files/list", post(crate::workspace::list_files))
         .route("/api/v1/files/read", post(crate::workspace::read_file))
         .route("/api/v1/files/write", post(crate::workspace::write_file))
@@ -129,6 +134,10 @@ fn router(state: ServerState) -> Router {
         .route("/", get(index))
         .route("/condenser.css", get(condenser_css))
         .route("/condenser.js", get(condenser_js))
+        .route(
+            "/workflow.js",
+            get(|| async { text_asset("application/javascript; charset=utf-8", WORKFLOW_JS) }),
+        )
         .route("/assets/condenser-mark.svg", get(condenser_mark))
         .route("/assets/condenser-favicon.svg", get(condenser_favicon))
         .route("/fonts/Archivo-Variable.woff2", get(font_archivo))
@@ -352,23 +361,11 @@ struct ModelsRequest {
     provider: ProviderConfig,
 }
 
-fn upgrade_legacy_kadmium_provider(mut config: ProviderConfig) -> ProviderConfig {
-    if config.kind == ProviderKind::Kadmium
-        && config.base_url().trim_end_matches('/') == "http://127.0.0.1:7848"
-        && (config.model.trim().is_empty() || config.model == "deepseek-v3-671b-moe-q4k")
-    {
-        config.kind = ProviderKind::Mcl4Coe;
-        config.base_url = Some("http://127.0.0.1:7861".to_string());
-        config.model = "dsv41-mcl4-step_10000".to_string();
-    }
-    config
-}
-
 async fn models(
     State(state): State<ServerState>,
     Json(request): Json<ModelsRequest>,
 ) -> Result<Json<Vec<ModelInfo>>, ApiError> {
-    let provider_cfg = upgrade_legacy_kadmium_provider(request.provider);
+    let provider_cfg = request.provider;
     let timeout = provider_cfg.timeout_secs;
     let kind = provider_cfg.kind;
     let provider = ProviderFactory::build_with_client(provider_cfg, state.client)?;
@@ -413,10 +410,14 @@ async fn invoke_plugin(
 
 #[derive(Debug, Deserialize)]
 struct ChatApiRequest {
+    #[serde(default)]
+    run_id: Option<String>,
     provider: ProviderConfig,
     messages: Vec<Message>,
     #[serde(default)]
     enable_tools: bool,
+    #[serde(default)]
+    allowed_tools: Option<Vec<String>>,
     #[serde(default = "default_max_steps")]
     max_steps: usize,
     #[serde(default = "default_max_calls_per_step")]
@@ -429,6 +430,18 @@ struct ChatApiRequest {
     max_tool_calls: Option<usize>,
     #[serde(default)]
     sampling: SamplingParams,
+}
+
+async fn cancel_run(State(state): State<ServerState>, Path(id): Path<String>) -> Response {
+    if state.active_runs.cancel(&id) {
+        Json(json!({"status": "cancelling", "run_id": id})).into_response()
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Run is no longer active"})),
+        )
+            .into_response()
+    }
 }
 
 fn default_max_steps() -> usize {
@@ -464,22 +477,24 @@ async fn chat(
             CondenserError::Config("max_run_seconds must be between 1 and 86400".into()).into(),
         );
     }
+    let run = state.active_runs.register(request.run_id)?;
     let control = RunControl {
+        cancellation: run.token.clone(),
         deadline: request
             .max_run_seconds
             .map(|seconds| tokio::time::Instant::now() + std::time::Duration::from_secs(seconds)),
         max_output_tokens: request.max_output_tokens,
         max_tool_calls: request.max_tool_calls,
-        ..RunControl::default()
     };
     let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
-    let provider_cfg = upgrade_legacy_kadmium_provider(request.provider);
+    let provider_cfg = request.provider;
     let harness = Harness::new_with_client(provider_cfg, plugins, state.client)?;
     let report = harness
         .run_with_control(
             request.messages,
             HarnessOptions {
                 enable_tools: request.enable_tools,
+                allowed_tools: request.allowed_tools,
                 max_steps: request.max_steps,
                 max_calls_per_step: request.max_calls_per_step,
                 sampling: request.sampling,
@@ -537,7 +552,8 @@ async fn chat_stream(
     }
     request.sampling.validate()?;
 
-    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let run = state.active_runs.register(request.run_id)?;
+    let cancel_token = run.token.clone();
     let control = RunControl {
         cancellation: cancel_token.clone(),
         deadline: request
@@ -547,36 +563,57 @@ async fn chat_stream(
         max_tool_calls: request.max_tool_calls,
     };
     let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
-    let provider_cfg = upgrade_legacy_kadmium_provider(request.provider);
+    let provider_cfg = request.provider;
     let harness = Harness::new_with_client(provider_cfg, plugins, state.client)?;
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::harness::HarnessEvent>(1024);
     let options = HarnessOptions {
         enable_tools: request.enable_tools,
+        allowed_tools: request.allowed_tools,
         max_steps: request.max_steps,
         max_calls_per_step: request.max_calls_per_step,
         sampling: request.sampling,
     };
     let messages = request.messages;
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let _permit = permit;
-        let _ = harness
+        let _run = run;
+        harness
             .run_with_control(messages, options, control, Some(tx))
-            .await;
+            .await
     });
 
     let cancel_guard = StreamCancelOnDrop(cancel_token);
-    let stream =
-        futures_util::stream::unfold((rx, cancel_guard), |(mut rx, cancel_guard)| async move {
-            let event = rx.recv().await?;
+    let stream = futures_util::stream::unfold(
+        (rx, Some(task), cancel_guard),
+        |(mut rx, mut task, cancel_guard)| async move {
+            let event = loop {
+                match rx.recv().await {
+                    // The task result is authoritative even if the bounded
+                    // progress channel was full when the harness finished.
+                    Some(crate::HarnessEvent::Finished { .. }) => continue,
+                    Some(event) => break serde_json::to_value(event).unwrap_or_default(),
+                    None => {
+                        let result = task.take()?.await;
+                        break match result {
+                            Ok(Ok(report)) => json!({"event": "finished", "report": report}),
+                            Ok(Err(error)) => json!({"event": "error", "error": error.to_string()}),
+                            Err(_) => {
+                                json!({"event": "error", "error": "Run task terminated unexpectedly"})
+                            }
+                        };
+                    }
+                }
+            };
             let line = format!(
                 "data: {}\n\n",
                 serde_json::to_string(&event).unwrap_or_else(|_| "{}".to_string())
             );
             Some((
                 Ok::<String, std::convert::Infallible>(line),
-                (rx, cancel_guard),
+                (rx, task, cancel_guard),
             ))
-        });
+        },
+    );
 
     Ok((
         [

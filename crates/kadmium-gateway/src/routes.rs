@@ -316,6 +316,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         )
         .route("/api/v1/docs", get(get_documentation_catalog))
         .route("/api/v1/cluster/overview", get(get_cluster_overview))
+        .route(
+            "/api/v1/inference/workspace",
+            get(crate::inference_workspace::inspect),
+        )
         .route("/api/v1/cluster/shift", post(post_cluster_shift))
         .route("/api/v1/cluster/model", post(post_cluster_model))
         .route(
@@ -1896,16 +1900,7 @@ async fn openai_list_models(
         None
     };
 
-    let catalog = [
-        ModelSpec::llama_3_2_3b_instruct(),
-        ModelSpec::qwen2_5_coder_7b(),
-        ModelSpec::qwen2_5_coder_14b(),
-        ModelSpec::qwen2_5_coder_32b(),
-        ModelSpec::llama_3_70b_lora(),
-        ModelSpec::qwen3_235b_moe(),
-        ModelSpec::deepseek_v3_671b_moe(),
-        ModelSpec::deepseek_v3_671b_exl3(),
-    ];
+    let catalog = crate::inference_workspace::planning_catalog();
 
     let mut data: Vec<serde_json::Value> = catalog
         .iter()

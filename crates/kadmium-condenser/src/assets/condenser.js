@@ -2,6 +2,7 @@
   'use strict';
 
   const STORAGE_KEY = 'condenser.agent.tasks.v1';
+  const workflow = window.CondenserWorkflow;
   const MAX_INTERVIEW_QUESTIONS = 6;
   const INTERVIEW_READY = '[[READY]]';
   const INTERVIEW_QUESTION_INSTRUCTION = 'Conduct a clarifying interview before the final response. Ask exactly ONE concise, high-leverage question about the original task, using the previous Q/A context. Return only that question: no task answer, preamble, or list. If you already have enough context to answer well, return exactly [[READY]].';
@@ -22,6 +23,10 @@
     credentials: Object.create(null),
     busy: false,
     busySessionId: null,
+    activeRun: null,
+    draftTimer: null,
+    queueEdit: null,
+    compute: { snapshot: null, baseUrl: '', modelId: '', at: null, loading: false },
     selectedTool: null,
     persistence: true,
     contextPanel: 'run',
@@ -92,35 +97,31 @@
       model: item.default_model,
       base_url: item.default_base_url,
       enable_tools: false,
+      allowed_tools: [],
       interview: false,
       max_steps: 8,
+      max_run_seconds: null,
+      max_output_tokens: null,
+      max_tool_calls: null,
       system_prompt: '',
       sampling: {}
     };
   }
 
   function normalizeConfig(raw) {
-    let kind = raw && FALLBACK_PROVIDERS[raw.kind] ? raw.kind : 'mcl4-coe';
-    const isLegacyKadmiumDefault =
-      kind === 'kadmium' &&
-      (!raw.base_url || raw.base_url === 'http://127.0.0.1:7848') &&
-      (!raw.model || raw.model === 'deepseek-v3-671b-moe-q4k');
-    if (isLegacyKadmiumDefault) {
-      kind = 'mcl4-coe';
-      raw = Object.assign({}, raw, {
-        kind: 'mcl4-coe',
-        base_url: 'http://127.0.0.1:7861',
-        model: 'dsv41-mcl4-step_10000'
-      });
-    }
+    const kind = raw && FALLBACK_PROVIDERS[raw.kind] ? raw.kind : 'mcl4-coe';
     const base = defaultConfig(kind);
     const config = Object.assign(base, raw || {});
     config.kind = kind;
     config.max_steps = Math.max(1, Math.min(32, Number(config.max_steps) || 8));
     config.enable_tools = Boolean(config.enable_tools);
+    // Omitted lists from older tasks retain their original all-tools semantics.
+    config.allowed_tools = raw && Array.isArray(raw.allowed_tools) ? [...new Set(raw.allowed_tools.filter(name => typeof name === 'string'))] : null;
     config.interview = Boolean(config.interview);
     config.system_prompt = typeof config.system_prompt === 'string' ? config.system_prompt : '';
     config.sampling = config.sampling && typeof config.sampling === 'object' ? config.sampling : {};
+    config.sampling = JSON.parse(JSON.stringify(config.sampling));
+    delete config.api_key;
     return config;
   }
 
@@ -128,14 +129,23 @@
     if (!raw || typeof raw !== 'object' || !raw.id) return null;
     return {
       id: String(raw.id),
+      parentId: typeof raw.parentId === 'string' ? raw.parentId : null,
+      branchPoint: Number.isInteger(raw.branchPoint) ? raw.branchPoint : null,
+      queue: Array.isArray(raw.queue) ? raw.queue.filter(item => item && typeof item.id === 'string' && typeof item.prompt === 'string').map(item => ({
+        id: item.id, prompt: item.prompt, attachments: Array.isArray(item.attachments) ? item.attachments : [],
+        config: normalizeConfig(item.config), createdAt: Number(item.createdAt) || Date.now()
+      })) : [],
+      queuePaused: true,
+      draft: typeof raw.draft === 'string' ? raw.draft : '',
+      attachments: Array.isArray(raw.attachments) ? raw.attachments : [],
       title: typeof raw.title === 'string' && raw.title.trim() ? raw.title : 'Untitled task',
       createdAt: Number(raw.createdAt) || Date.now(),
       updatedAt: Number(raw.updatedAt) || Date.now(),
       messages: Array.isArray(raw.messages) ? raw.messages.filter((message) => message && typeof message === 'object') : [],
       runs: Array.isArray(raw.runs) ? raw.runs.filter((run) => run && typeof run === 'object') : [],
       config: normalizeConfig(raw.config),
-      status: ['ready', 'complete', 'error'].includes(raw.status) ? raw.status : 'ready',
-      lastError: typeof raw.lastError === 'string' ? raw.lastError : null
+      status: raw.status === 'running' ? 'error' : ['ready', 'complete', 'error', 'cancelled'].includes(raw.status) ? raw.status : 'ready',
+      lastError: raw.status === 'running' ? 'The browser closed before the run finished. Review its output before continuing; queued follow-ups are paused.' : typeof raw.lastError === 'string' ? raw.lastError : null
     };
   }
 
@@ -158,13 +168,16 @@
       state.currentId = state.sessions.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0].id;
     }
     saveSessions();
+    restoreDraft();
   }
 
   function saveSessions() {
     try {
-      const sessions = state.sessions.map((session) => Object.assign({}, session, {
-        status: session.status === 'running' ? 'ready' : session.status
-      }));
+      const sessions = state.sessions.map((session) => {
+        const active = state.activeRun && session.id === state.busySessionId && session.status === 'running';
+        // A refresh must never restore a partially streamed answer as accepted history.
+        return Object.assign({}, session, active ? { messages: state.activeRun.initialMessages } : {});
+      });
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, currentId: state.currentId, sessions }));
       state.persistence = true;
     } catch (error) {
@@ -180,6 +193,11 @@
     const now = Date.now();
     const session = {
       id: uid(),
+      parentId: null,
+      queue: [],
+      queuePaused: false,
+      draft: '',
+      attachments: [],
       title: 'Untitled task',
       createdAt: now,
       updatedAt: now,
@@ -196,8 +214,16 @@
   }
 
   function selectSession(id) {
-    if (!state.sessions.some((session) => session.id === id)) return;
+    if (state.importing || !state.sessions.some((session) => session.id === id)) return;
+    if (state.queueEdit && id !== state.currentId) {
+      const editingSession = state.sessions.find(session => session.id === state.queueEdit.sessionId);
+      const item = editingSession && editingSession.queue.find(item => item.id === state.queueEdit.id);
+      if (item && (state.queueEdit.text.trim() || item.attachments.length)) item.prompt = state.queueEdit.text.trim();
+      state.queueEdit = null;
+    }
+    saveDraft();
     state.currentId = id;
+    restoreDraft();
     saveSessions();
     setView('harness');
     renderAll();
@@ -205,20 +231,23 @@
 
   function archiveTask() {
     const session = currentSession();
-    if (!session) return;
+    if (!session || state.importing || session.id === state.busySessionId) return;
     if (!window.confirm('Archive this task and its local run history? This does not affect provider state.')) return;
     if (state.reveal && state.reveal.sessionId === session.id) finishTokenReveal(state.reveal);
     state.interviews.delete(session.id);
+    if (state.queueEdit && state.queueEdit.sessionId === session.id) state.queueEdit = null;
     state.sessions = state.sessions.filter((item) => item.id !== session.id);
     if (!state.sessions.length) {
       createTask(false);
     }
     state.currentId = state.sessions.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0].id;
+    restoreDraft();
     saveSessions();
     renderAll();
   }
 
   function exportTask() {
+    saveDraft();
     const session = currentSession();
     if (!session) return;
     const payload = {
@@ -234,6 +263,148 @@
     link.download = (session.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'condenser-task') + '.json';
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function saveDraft() {
+    clearTimeout(state.draftTimer);
+    const session = currentSession();
+    if (!session) return;
+    session.draft = $('prompt').value;
+    session.attachments = state.pendingFiles.slice();
+    saveSessions();
+  }
+
+  function restoreDraft() {
+    clearTimeout(state.draftTimer);
+    const session = currentSession();
+    $('prompt').value = session ? session.draft || '' : '';
+    state.pendingFiles = session && Array.isArray(session.attachments) ? session.attachments.slice() : [];
+    setAttachmentStatus('');
+  }
+
+  function forkTask() {
+    const source = currentSession();
+    if (!source || state.importing || source.id === state.busySessionId) return;
+    saveDraft();
+    const fork = workflow.forkTask(source, uid(), Date.now());
+    state.sessions.push(fork);
+    selectSession(fork.id);
+    $('prompt').focus();
+  }
+
+  function branchAtPrompt(index) {
+    const source = currentSession();
+    if (!source || state.importing || source.id === state.busySessionId) return;
+    saveDraft();
+    const branch = workflow.branchTask(source, index, uid(), Date.now());
+    state.sessions.push(branch);
+    selectSession(branch.id);
+    $('prompt').focus();
+  }
+
+  function toolNames() {
+    return state.plugins.flatMap(plugin => plugin.manifest.tools.map(tool => plugin.manifest.id + '__' + tool.name));
+  }
+
+  function selectedToolNames(config) {
+    return config.allowed_tools === null ? toolNames() : config.allowed_tools;
+  }
+
+  function captureConfig(config) {
+    const captured = normalizeConfig(config);
+    captured.allowed_tools = selectedToolNames(captured).slice();
+    return captured;
+  }
+
+  function enqueueFollowUp() {
+    const session = currentSession();
+    if (!session || state.importing || state.interviews.has(session.id) || session.config.interview) return;
+    const prompt = $('prompt').value.trim();
+    if (!prompt && !state.pendingFiles.length) return;
+    if (session.queue.length >= 20) {
+      setAttachmentStatus('The queue holds up to 20 follow-ups. Remove one before adding another.', true);
+      return;
+    }
+    session.queue.push(workflow.queuedPrompt(prompt, state.pendingFiles, captureConfig(session.config), uid(), Date.now()));
+    session.draft = '';
+    session.attachments = [];
+    session.updatedAt = Date.now();
+    restoreDraft();
+    saveSessions();
+    renderTask();
+    renderSessions();
+    $('prompt').focus();
+  }
+
+  function continueQueue(session) {
+    if (state.busy || !workflow.canContinueQueue(session) || state.interviews.has(session.id)) return;
+    if (state.importing || (state.queueEdit && state.queueEdit.sessionId === session.id)) {
+      session.queuePaused = true;
+      saveSessions();
+      if (currentSession() === session) renderQueue(session);
+      return;
+    }
+    void send({ queued: true, sessionId: session.id });
+  }
+
+  function renderQueue(session) {
+    $('follow-up-queue').classList.toggle('hidden', !session.queue.length);
+    $('queue-title').textContent = 'Up next · ' + session.queue.length;
+    const active = state.busySessionId === session.id;
+    $('queue-status').textContent = session.queuePaused
+      ? 'Paused. Resume when you’re ready. Each item keeps its submitted settings.'
+      : 'Runs in order after a successful response. Each item keeps its submitted settings.';
+    $('queue-toggle').textContent = !session.queuePaused && active ? 'Pause queue' : active ? 'Resume queue' : 'Run queue';
+    $('queue-toggle').disabled = Boolean(state.importing || state.queueEdit || (state.busy && !active) || state.interviews.has(session.id));
+    // Streaming updates should not move the caret while editing a queued prompt.
+    if ($('queue-list').contains(document.activeElement) && document.activeElement.classList.contains('queue-editor')) return;
+    const list = $('queue-list');
+    list.replaceChildren();
+    session.queue.forEach((item, index) => {
+      const row = element('div', 'queue-item');
+      row.dataset.queueId = item.id;
+      const head = element('div', 'queue-item-head');
+      head.append(element('span', 'queue-prompt', (index + 1) + '. ' + (item.prompt || 'Attached files')));
+      const actions = element('div', 'queue-actions');
+      const editing = state.queueEdit && state.queueEdit.sessionId === session.id && state.queueEdit.id === item.id;
+      const action = (label, title, handler, disabled) => {
+        const button = element('button', 'text-btn', label);
+        button.title = title;
+        button.setAttribute('aria-label', title);
+        button.disabled = Boolean(disabled);
+        button.addEventListener('click', () => { handler(); saveSessions(); renderQueue(session); });
+        actions.append(button);
+      };
+      if (editing) {
+        action('Save', 'Save queued prompt', () => {
+          if (!state.queueEdit.text.trim() && !item.attachments.length) return;
+          item.prompt = state.queueEdit.text.trim();
+          state.queueEdit = null;
+        });
+        action('Cancel', 'Cancel queue edit', () => { state.queueEdit = null; });
+      } else {
+        action('↑', 'Move follow-up earlier', () => {
+          [session.queue[index - 1], session.queue[index]] = [session.queue[index], session.queue[index - 1]];
+        }, index === 0 || state.queueEdit);
+        action('Edit', 'Edit queued prompt', () => {
+          session.queuePaused = true;
+          state.queueEdit = { sessionId: session.id, id: item.id, text: item.prompt };
+        }, state.queueEdit);
+        action('×', 'Remove queued prompt', () => { session.queue.splice(index, 1); }, state.queueEdit);
+      }
+      head.append(actions);
+      const toolCount = item.config.enable_tools ? selectedToolNames(item.config).length : 0;
+      row.append(head, element('span', 'queue-route', descriptor(item.config.kind).label + ' / ' + item.config.model + ' · ' + toolCount + ' tools' + (item.attachments.length ? ' · ' + item.attachments.length + ' files' : '')));
+      row.title = item.config.base_url;
+      if (editing) {
+        const editor = element('textarea', 'queue-editor');
+        editor.value = state.queueEdit.text;
+        editor.setAttribute('aria-label', 'Edit queued follow-up');
+        editor.addEventListener('input', () => { state.queueEdit.text = editor.value; });
+        row.append(editor);
+      }
+      list.append(row);
+    });
   }
 
   function setView(name) {
@@ -348,7 +519,7 @@
   function loadDockLayout() {
     try {
       const saved = JSON.parse(localStorage.getItem('condenser.workspace.dock.v1') || 'null');
-      if (saved && ['run', 'files', 'terminal', 'browser'].includes(saved.panel)) state.contextPanel = saved.panel;
+      if (saved && ['run', 'compute', 'files', 'terminal', 'browser'].includes(saved.panel)) state.contextPanel = saved.panel;
       if (saved) {
         state.contextWide = Boolean(saved.wide);
         state.railWidth = savedWidth(saved.railWidth, 264, 200, 420);
@@ -362,7 +533,7 @@
   }
 
   function setContextPanel(name, reveal) {
-    if (!['run', 'files', 'terminal', 'browser'].includes(name)) return;
+    if (!['run', 'compute', 'files', 'terminal', 'browser'].includes(name)) return;
     state.contextPanel = name;
     document.body.dataset.contextPanel = name;
     if (reveal !== false) document.body.classList.remove('context-closed');
@@ -373,6 +544,7 @@
       button.tabIndex = active ? 0 : -1;
     });
     document.querySelectorAll('.context-panel').forEach((panel) => { panel.hidden = panel.id !== 'context-' + name; });
+    $('open-compute').setAttribute('aria-pressed', String(name === 'compute'));
     if (name === 'files' && !state.files.loaded) loadWorkspace();
     if (name === 'terminal') setTimeout(() => $('terminal-command').focus(), 0);
     saveDockLayout();
@@ -863,13 +1035,20 @@
     return map;
   }
 
-  function renderMessage(message, executions) {
+  function renderMessage(message, executions, messageIndex) {
     if (message.role === 'user') {
       const event = element('article', 'event user-event');
       const avatar = element('div', 'event-avatar', 'YOU');
       const main = element('div', 'event-main');
       const meta = element('div', 'event-meta');
       meta.append(element('span', 'event-author', 'You'));
+      const actions = element('div', 'message-actions');
+      const branch = element('button', 'text-btn', 'Edit & branch');
+      branch.title = 'Copy the conversation before this prompt into a new task, then edit the prompt';
+      branch.disabled = state.busySessionId === state.currentId || Boolean(state.importing);
+      branch.addEventListener('click', () => branchAtPrompt(messageIndex));
+      actions.append(branch);
+      meta.append(actions);
       main.append(meta, element('div', 'event-text', message.content));
       event.append(main, avatar);
       return [event];
@@ -959,8 +1138,9 @@
       return;
     }
     const executions = executionMap(session);
-    visible.forEach((message) => {
-      renderMessage(message, executions).forEach((node) => timeline.append(node));
+    session.messages.forEach((message, index) => {
+      if (message.role !== 'user' && message.role !== 'assistant') return;
+      renderMessage(message, executions, index).forEach((node) => timeline.append(node));
     });
     timeline.scrollTop = timeline.scrollHeight;
   }
@@ -970,7 +1150,8 @@
     runbook.replaceChildren();
     const events = [];
     session.runs.forEach((run, runIndex) => {
-      if (run.error) events.push({ type: 'error', runIndex, detail: run.error });
+      if (run.error) events.push({ type: run.status === 'cancelled' ? 'cancelled' : 'error', runIndex, detail: run.error });
+      if (run.partial_output) events.push({ type: 'partial', runIndex, detail: run.partial_output });
       (run.steps || []).forEach((step) => {
         events.push({ type: 'model', runIndex, step, detail: step.response.finish_reason || 'complete' });
         (step.tool_executions || []).forEach((execution) => events.push({ type: 'tool', runIndex, step, execution, detail: execution.tool_name }));
@@ -995,7 +1176,7 @@
         name = 'Tool · ' + event.execution.tool_name;
         detail = Number(event.execution.duration_ms).toFixed(1) + ' ms' + (event.execution.result.is_error ? ' · error' : ' · complete');
       } else {
-        name = 'Turn failed';
+        name = event.type === 'cancelled' ? 'Run stopped' : event.type === 'partial' ? 'Partial response (not replayed)' : 'Turn failed';
         detail = event.detail;
       }
       body.append(element('div', 'runbook-name', name), element('div', 'runbook-detail', detail));
@@ -1011,7 +1192,15 @@
       return sum + (Number(usage.total_tokens) || (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0));
     }, 0);
     $('run-tokens').textContent = totals ? totals.toLocaleString() : '—';
-    $('run-tools').textContent = session.config.enable_tools ? 'Enabled · ' + pluginTools() + ' available' : 'Disabled';
+    $('run-tools').textContent = session.config.enable_tools ? selectedToolNames(session.config).length + ' selected' : 'Disabled';
+    const lastRun = session.runs[session.runs.length - 1];
+    const route = lastRun && lastRun.route;
+    $('run-route').textContent = route ? route.provider + ' / ' + route.model : 'No route recorded';
+    $('run-route').title = route ? route.base_url : '';
+    [['run-seconds', 'max_run_seconds'], ['run-output-budget', 'max_output_tokens'], ['run-tool-budget', 'max_tool_calls']].forEach(([id, key]) => {
+      if (document.activeElement !== $(id)) $(id).value = session.config[key] == null ? '' : session.config[key];
+      $(id).disabled = state.busy;
+    });
     renderRunbook(session);
     if (document.activeElement !== $('system-prompt')) $('system-prompt').value = session.config.system_prompt;
   }
@@ -1025,13 +1214,22 @@
     const awaitingAnswer = Boolean(interview && interview.awaitingAnswer && !working);
     const status = working ? 'running' : session.status;
     if (document.activeElement !== $('task-title')) $('task-title').value = session.title;
-    $('task-kicker').textContent = 'TASK / ' + session.id.slice(0, 8);
+    $('task-kicker').textContent = 'TASK / ' + session.id.slice(0, 8) + (session.parentId ? ' · FORK OF ' + session.parentId.slice(0, 8) : '');
     $('task-status').className = 'run-status ' + (awaitingAnswer ? 'ready' : status);
-    $('task-status').textContent = awaitingAnswer ? 'Awaiting answer' : status === 'running' ? 'Working' : status === 'complete' ? 'Complete' : status === 'error' ? 'Needs attention' : 'Ready';
+    $('task-status').textContent = awaitingAnswer ? 'Awaiting answer' : status === 'running' ? 'Working' : status === 'complete' ? 'Complete' : status === 'error' ? 'Needs attention' : status === 'cancelled' ? 'Stopped' : 'Ready';
+    $('fork-task').disabled = working || Boolean(state.importing);
+    $('archive-task').disabled = working || Boolean(state.importing);
+    $('new-task').disabled = Boolean(state.importing);
+    $('stop-run').classList.toggle('hidden', !working);
+    $('stop-run').disabled = Boolean(state.activeRun && state.activeRun.stopRequested);
+    $('stop-run').textContent = state.activeRun && state.activeRun.stopRequested ? 'Stopping…' : 'Stop';
+    $('attach-compute').disabled = state.busy || state.compute.loading || !state.compute.snapshot || Boolean(interview);
     $('enable-tools').checked = session.config.enable_tools;
-    $('tool-permission-label').textContent = session.config.enable_tools ? 'Tools on · ' + pluginTools() : 'Tools off';
+    $('enable-tools').disabled = state.busy;
+    $('step-budget').disabled = state.busy;
+    $('tool-permission-label').textContent = session.config.enable_tools ? 'Tools on · ' + selectedToolNames(session.config).length : 'Tools off';
     $('interview-mode').checked = session.config.interview;
-    $('interview-mode').disabled = state.busy || Boolean(interview);
+    $('interview-mode').disabled = state.busy || Boolean(interview) || session.queue.length > 0;
     if (document.activeElement !== $('step-budget')) $('step-budget').value = session.config.max_steps;
     $('composer-context').classList.toggle('hidden', !session.config.system_prompt.trim());
     $('interview-progress').classList.toggle('hidden', !interview);
@@ -1040,35 +1238,60 @@
       $('finish-interview').disabled = state.busy;
     }
     $('running-indicator').classList.toggle('hidden', !working);
-    $('running-detail').textContent = descriptor(session.config.kind).label + ' · up to ' + session.config.max_steps + ' steps · tools ' + (session.config.enable_tools ? 'enabled' : 'disabled');
+    const runConfig = working && state.activeRun ? state.activeRun.config : session.config;
+    $('running-detail').textContent = descriptor(runConfig.kind).label + ' / ' + runConfig.model + ' · up to ' + runConfig.max_steps + ' steps · tools ' + (runConfig.enable_tools ? 'enabled' : 'disabled');
     const mcl4 = session.config.sampling.mcl4_coe || {};
     $('thinking-control').classList.toggle('hidden', session.config.kind !== 'mcl4-coe');
     $('thinking-level').value = mcl4.reasoning_effort || 'high';
     $('thinking-level').disabled = state.busy;
-    $('import-files').disabled = state.busy || Boolean(interview);
-    $('send').disabled = state.busy || Boolean(state.importing);
-    $('send').querySelector('span').textContent = state.busy ? 'Working…' : awaitingAnswer ? 'Answer' : 'Run task';
-    $('send').setAttribute('aria-label', awaitingAnswer ? 'Answer Blades’ question' : 'Run task');
-    $('prompt').placeholder = awaitingAnswer ? 'Answer Blades’ question…' : 'Ask Blades to code, research, or get things done…';
+    $('import-files').disabled = Boolean(state.importing) || Boolean(interview);
+    const queueing = !interview && !session.config.interview && (working || session.queue.length > 0);
+    $('send').disabled = Boolean(state.importing) || (state.busy && (!working || !queueing));
+    $('send').querySelector('span').textContent = queueing ? 'Queue follow-up' : state.busy ? 'Working…' : awaitingAnswer ? 'Answer' : 'Run task';
+    $('send').setAttribute('aria-label', queueing ? 'Queue follow-up' : awaitingAnswer ? 'Answer Blades’ question' : 'Run task');
+    $('prompt').placeholder = queueing ? 'Add a follow-up for this task…' : awaitingAnswer ? 'Answer Blades’ question…' : 'Ask Blades to code, research, or get things done…';
     $('provider-button').disabled = state.busy;
     renderAttachments();
     $('composer-status').classList.toggle('error', status === 'error');
     $('composer-status').textContent = working ? (revealing ? 'Receiving response…' : 'The agent loop is running.') : status === 'error' ? session.lastError : awaitingAnswer ? 'One answer, then the next question—or finish Q/A now.' : status === 'complete' ? 'Run complete' + (session.lastElapsed ? ' · ' + formatElapsed(session.lastElapsed) : '') + '.' : '';
+    if (status === 'cancelled') $('composer-status').textContent = 'Run stopped. Completed steps are saved in the runbook.';
     updateActivity();
     renderTimeline(session);
     renderInspector(session);
+    renderQueue(session);
+    renderCapabilitySummary();
   }
 
   function renderCapabilitySummary() {
     const summary = $('capability-summary');
     summary.replaceChildren();
-    const tools = state.plugins.flatMap((plugin) => plugin.manifest.tools.map((tool) => plugin.manifest.id + '__' + tool.name));
+    const session = currentSession();
+    if (!session) return;
+    const available = toolNames();
+    const selected = selectedToolNames(session.config);
+    const tools = [...new Set([...available, ...selected])];
+    $('select-all-tools').disabled = state.busy || !available.length;
+    $('select-no-tools').disabled = state.busy || !selected.length;
     if (!tools.length) {
       summary.append(element('p', 'empty-copy caption', 'No tools discovered yet.'));
       return;
     }
-    tools.slice(0, 7).forEach((name) => summary.append(element('div', 'capability-row', name)));
-    if (tools.length > 7) summary.append(element('div', 'capability-row', '+ ' + (tools.length - 7) + ' more'));
+    tools.forEach((name) => {
+      const row = element('label', 'tool-choice');
+      const input = element('input');
+      input.type = 'checkbox';
+      input.checked = selected.includes(name);
+      input.disabled = state.busy;
+      input.addEventListener('change', () => {
+        const names = new Set(selectedToolNames(session.config));
+        if (input.checked) names.add(name); else names.delete(name);
+        session.config.allowed_tools = [...names];
+        updateTaskConfig();
+        renderTask();
+      });
+      row.append(input, element('span', '', name + (available.includes(name) ? '' : ' · unavailable')));
+      summary.append(row);
+    });
   }
 
   function renderAll() {
@@ -1093,8 +1316,8 @@
       renderCapabilitySummary();
       const session = currentSession();
       if (session) {
-        $('tool-permission-label').textContent = session.config.enable_tools ? 'Tools on · ' + tools : 'Tools off';
-        $('run-tools').textContent = session.config.enable_tools ? 'Enabled · ' + tools + ' available' : 'Disabled';
+        $('tool-permission-label').textContent = session.config.enable_tools ? 'Tools on · ' + selectedToolNames(session.config).length : 'Tools off';
+        $('run-tools').textContent = session.config.enable_tools ? selectedToolNames(session.config).length + ' selected' : 'Disabled';
       }
     } catch (error) {
       $('plugin-list').replaceChildren(element('div', 'empty-registry', error.message));
@@ -1211,7 +1434,7 @@
     $('base-url').value = item.default_base_url;
     $('model').value = item.default_model;
     $('model').placeholder = item.default_model || 'provider-model-id';
-    $('api-key').value = state.credentials[kind] || '';
+    $('api-key').value = state.credentials[workflow.credentialKey(kind, item.default_base_url)] || '';
     $('api-key').placeholder = item.requires_api_key ? 'required' : 'optional for local providers';
     $('key-hint').textContent = 'Memory-only. CLI alternative: ' + item.default_api_key_env + '.';
     $('provider-note').textContent = item.note;
@@ -1230,6 +1453,7 @@
     if (!session) return;
     applyProviderDefaults(session.config.kind);
     $('base-url').value = session.config.base_url;
+    $('api-key').value = state.credentials[workflow.credentialKey(session.config.kind, session.config.base_url)] || '';
     $('model').value = session.config.model;
     $('temperature').value = session.config.sampling.temperature === undefined ? '' : session.config.sampling.temperature;
     $('max-tokens').value = session.config.sampling.max_tokens === undefined ? '' : session.config.sampling.max_tokens;
@@ -1267,8 +1491,9 @@
       if ($('mcl4-tabu') && $('mcl4-tabu').value !== '') mcl4.recurrent_coverage_penalty = Number($('mcl4-tabu').value);
       config.sampling.mcl4_coe = mcl4;
     }
-    if ($('api-key').value) state.credentials[kind] = $('api-key').value;
-    else delete state.credentials[kind];
+    const keyId = workflow.credentialKey(kind, config.base_url);
+    if ($('api-key').value) state.credentials[keyId] = $('api-key').value;
+    else delete state.credentials[keyId];
     session.updatedAt = Date.now();
     session.lastError = null;
     session.status = 'ready';
@@ -1312,6 +1537,122 @@
     }
   }
 
+  function invalidateCompute() {
+    state.compute.snapshot = null;
+    $('compute-results').classList.add('hidden');
+    $('attach-compute').disabled = true;
+    $('compute-status').textContent = 'Connection or model changed. Inspect again for a fresh snapshot.';
+  }
+
+  async function inspectCompute() {
+    if (state.compute.loading) return;
+    const baseUrl = $('compute-url').value.trim().replace(/\/+$/, '');
+    const modelId = $('compute-model').value;
+    state.compute.loading = true;
+    invalidateCompute();
+    ['compute-url', 'compute-key', 'compute-model', 'compute-refresh'].forEach((id) => { $(id).disabled = true; });
+    $('compute-status').textContent = 'Reading fleet and placement plan…';
+    try {
+      const snapshot = await postJson('/api/v1/compute/inspect', {
+        base_url: baseUrl, api_key: $('compute-key').value || null, model_id: modelId || null
+      });
+      state.compute = { snapshot, baseUrl, modelId, at: Date.now(), loading: false };
+      $('compute-model').replaceChildren(new Option("Coordinator's current model", ''));
+      snapshot.catalog.forEach((model) => $('compute-model').append(new Option(model.display_name, model.id)));
+      $('compute-model').value = modelId;
+      $('compute-results').classList.remove('hidden');
+      $('compute-status').textContent = 'Snapshot · ' + new Date(state.compute.at).toLocaleTimeString() + ' · epoch ' + snapshot.epoch;
+      $('compute-generation').textContent = snapshot.generation_supported ? 'Coordinator reports generation support.' : 'Reference diagnostics. Generated answers run on the provider selected for this task.';
+      const facts = $('compute-facts');
+      facts.replaceChildren();
+      [
+        ['Fleet', snapshot.fleet_mode === 'live' ? 'Live hardware' : 'Demo + live hardware'],
+        ['Workers online', snapshot.online_workers],
+        ['Plan model', snapshot.plan.model_display_name],
+        ['Weights', Number(snapshot.plan.total_model_weight_gb).toFixed(1) + ' GiB'],
+        ['Layers assigned', snapshot.assigned_layers + ' / ' + snapshot.plan.total_layers]
+      ].forEach(([label, value]) => {
+        const row = element('div');
+        const detail = element('dd', '', value);
+        detail.title = String(value);
+        row.append(element('dt', '', label), detail);
+        facts.append(row);
+      });
+      $('compute-warnings').replaceChildren(...(snapshot.warnings || []).map((warning) => element('p', 'caption muted', warning)));
+      const placement = $('compute-placement');
+      placement.replaceChildren();
+      const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+      (snapshot.plan.assignments || []).forEach((assignment) => {
+        const node = nodesById.get(assignment.node_id);
+        const card = element('div', 'compute-node');
+        const header = element('div', 'compute-node-heading');
+        header.append(element('strong', '', assignment.hostname), element('span', 'compute-label', node && node.registered_online ? 'ONLINE' : 'IN PLAN'));
+        card.append(header);
+        card.append(element('p', 'caption', assignment.layer_count ? 'Layers ' + assignment.start_layer + '–' + assignment.end_layer + ' · ' + assignment.layer_count + ' layers' : 'Auxiliary responsibilities'));
+        const memory = assignment.tiered_memory;
+        card.append(element('p', 'caption muted', 'Fast ' + Number(memory.hot_vram_or_unified_gb).toFixed(1) + ' · RAM ' + Number(memory.warm_system_ram_gb).toFixed(1) + ' · NVMe ' + Number(memory.cold_nvme_stream_gb).toFixed(1) + ' GiB'));
+        card.append(element('p', 'caption muted', assignment.trust_tier + ' · ' + assignment.polite_state));
+        placement.append(card);
+      });
+      if (!placement.children.length) placement.append(element('p', 'caption muted', 'No nodes available for this plan.'));
+      $('compute-dashboard').href = baseUrl + '/dashboard';
+    } catch (error) {
+      $('compute-status').textContent = error.message;
+    } finally {
+      state.compute.loading = false;
+      ['compute-url', 'compute-key', 'compute-model', 'compute-refresh'].forEach((id) => { $(id).disabled = false; });
+      $('attach-compute').disabled = state.busy || !state.compute.snapshot || Boolean(currentSession() && state.interviews.has(currentSession().id));
+    }
+  }
+
+  function attachCompute() {
+    if (state.busy || !state.compute.snapshot || state.pendingFiles.length >= 6) {
+      setAttachmentStatus('Inspect compute first and leave room for a snapshot attachment (6 maximum).', true);
+      return;
+    }
+    const snapshot = state.compute.snapshot;
+    const content = JSON.stringify({
+      captured_at: new Date(state.compute.at).toISOString(), coordinator: state.compute.baseUrl,
+      epoch: snapshot.epoch, fleet_mode: snapshot.fleet_mode, generation_supported: snapshot.generation_supported,
+      warnings: snapshot.warnings, plan: snapshot.plan, nodes: snapshot.nodes
+    }, null, 2);
+    const size = new TextEncoder().encode(content).length;
+    if (size > 256 * 1024 || state.pendingFiles.reduce((sum, file) => sum + file.size, 0) + size > 512 * 1024) {
+      setAttachmentStatus('This snapshot exceeds the attachment size limit.', true);
+      return;
+    }
+    state.pendingFiles.push({ name: 'kadmium-compute-epoch-' + snapshot.epoch + '.json', content, size, lastModified: state.compute.at });
+    saveDraft();
+    renderAttachments();
+    setAttachmentStatus('Compute snapshot attached. It will be sent with your next prompt.');
+    $('prompt').focus();
+  }
+
+  async function stopRun() {
+    const session = state.sessions.find(item => item.id === state.busySessionId);
+    if (session) { session.queuePaused = true; saveSessions(); renderQueue(session); }
+    const run = state.activeRun;
+    if (!run || run.stopRequested) return;
+    run.stopRequested = true;
+    renderTask();
+    if (state.reveal && !state.reveal.liveStream) finishTokenReveal(state.reveal);
+    if (run.accepted) await cancelAcceptedRun(run);
+  }
+
+  async function cancelAcceptedRun(run) {
+    try {
+      const response = await fetch('/api/v1/runs/' + encodeURIComponent(run.id) + '/cancel', { method: 'POST' });
+      // A completed run may win the race; its final stream report still decides the outcome.
+      if (!response.ok && response.status !== 404) throw new Error('Could not stop the run (HTTP ' + response.status + ').');
+    } catch (error) {
+      if (state.activeRun === run) {
+        run.stopRequested = false;
+        renderTask();
+        $('composer-status').textContent = error.message;
+      }
+    }
+  }
+
   async function loadSystem() {
     try {
       const node = await api('/api/v1/system');
@@ -1349,10 +1690,11 @@
       chip.append(element('span', 'attachment-chip-size', formatBytes(file.size)));
       const remove = element('button', 'attachment-remove', '×');
       remove.type = 'button';
-      remove.disabled = state.busy || Boolean(currentSession() && state.interviews.has(currentSession().id));
+      remove.disabled = Boolean(state.importing) || Boolean(currentSession() && state.interviews.has(currentSession().id));
       remove.setAttribute('aria-label', 'Remove ' + file.name);
       remove.addEventListener('click', () => {
         state.pendingFiles.splice(index, 1);
+        saveDraft();
         setAttachmentStatus('');
         renderAttachments();
       });
@@ -1370,8 +1712,9 @@
 
   async function importTextFiles(fileList) {
     const candidates = Array.from(fileList || []);
-    if (!candidates.length || state.busy) return;
+    if (!candidates.length || state.importing || (currentSession() && state.interviews.has(currentSession().id))) return;
     state.importing = true;
+    renderTask();
     $('send').disabled = true;
     const errors = [];
     for (const file of candidates) {
@@ -1407,6 +1750,7 @@
       }
     }
     state.importing = false;
+    saveDraft();
     setAttachmentStatus(errors.join(' '), Boolean(errors.length));
     renderTask();
     $('file-import-input').value = '';
@@ -1505,29 +1849,38 @@
     return promise;
   }
 
-  async function chatRequest(session, input, transientInstruction, titleSource) {
+  async function chatRequest(session, input, transientInstruction, titleSource, config) {
     const sessionId = session.id;
+    const messageStart = session.messages.length;
     if (input !== null) {
       session.messages.push({ role: 'user', content: input, tool_calls: [], is_error: false });
       renderAll();
     }
     const messages = session.messages.filter((message) => message.role !== 'system');
-    const systemPrompt = [session.config.system_prompt.trim(), transientInstruction].filter(Boolean).join('\n\n');
+    const systemPrompt = [config.system_prompt.trim(), transientInstruction].filter(Boolean).join('\n\n');
     if (systemPrompt) messages.unshift({ role: 'system', content: systemPrompt, tool_calls: [], is_error: false });
     const provider = {
-      kind: session.config.kind,
-      model: session.config.model,
-      base_url: session.config.base_url,
-      api_key: state.credentials[session.config.kind] || null,
+      kind: config.kind,
+      model: config.model,
+      base_url: config.base_url,
+      api_key: state.credentials[workflow.credentialKey(config.kind, config.base_url)] || null,
       timeout_secs: 300
     };
     const requestPayload = {
+      run_id: uid(),
       provider,
       messages,
-      enable_tools: session.config.enable_tools,
-      max_steps: session.config.max_steps,
-      sampling: session.config.sampling
+      enable_tools: config.enable_tools,
+      allowed_tools: config.allowed_tools,
+      max_steps: config.max_steps,
+      max_run_seconds: config.max_run_seconds,
+      max_output_tokens: config.max_output_tokens,
+      max_tool_calls: config.max_tool_calls,
+      sampling: config.sampling
     };
+    const route = { provider: provider.kind, model: provider.model, base_url: provider.base_url };
+    state.activeRun = { id: requestPayload.run_id, accepted: false, stopRequested: false, route, initialMessages: messages.filter((message) => message.role !== 'system'), config };
+    saveSessions();
 
     let report = null;
     let receivedRealTokens = false;
@@ -1572,85 +1925,48 @@
       throw new Error(errBody.error || ('Request failed: ' + streamResp.status));
     }
 
-    const contentType = (streamResp.headers.get('content-type') || '').toLowerCase();
-    if (contentType.startsWith('text/event-stream') && streamResp.body) {
-      const reader = streamResp.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let buffer = '';
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let nlIdx;
-        while ((nlIdx = buffer.indexOf('\n')) !== -1) {
-          const line = buffer.slice(0, nlIdx).trim();
-          buffer = buffer.slice(nlIdx + 1);
-          if (!line.startsWith('data:')) continue;
-          const jsonStr = line.slice(5).trim();
-          if (!jsonStr) continue;
-          let evt = null;
-          try { evt = JSON.parse(jsonStr); } catch (_) { continue; }
-          if (evt.event === 'model_started') {
-            liveMessage = null;
-            ensureLiveStreamBubble();
-          } else if (evt.event === 'model_token') {
-            const msg = ensureLiveStreamBubble();
-            if (msg) {
-              receivedRealTokens = true;
-              if (evt.delta) msg.content += evt.delta;
-              if (evt.reasoning_delta) msg.reasoning = (msg.reasoning || '') + evt.reasoning_delta;
-              if (state.reveal && state.reveal.message === msg) {
-                state.reveal.fullText = msg.content;
-                state.reveal.visibleText = msg.content || '…';
-                state.reveal.generatedTokens = evt.generated_tokens || state.reveal.generatedTokens;
-                state.reveal.tokPerS = evt.tok_per_s || state.reveal.tokPerS;
-                if (state.reveal.node && state.reveal.node.isConnected) {
-                  state.reveal.node.textContent = state.reveal.visibleText;
-                  $('timeline').scrollTop = $('timeline').scrollHeight;
-                } else {
-                  renderAll();
-                }
-                updateActivity();
-              }
-            }
-          } else if (evt.event === 'model_completed' && evt.response && evt.response.message) {
-            if (liveMessage) {
-              liveMessage.content = evt.response.message.content || liveMessage.content;
-              liveMessage.reasoning = evt.response.message.reasoning || liveMessage.reasoning;
-              liveMessage.tool_calls = evt.response.message.tool_calls || [];
-              if (state.reveal && state.reveal.message === liveMessage) {
-                state.reveal.fullText = liveMessage.content;
-                state.reveal.visibleText = liveMessage.content;
-              }
-            }
-            liveMessage = null;
-          } else if (evt.event === 'finished' && evt.report) {
-            report = evt.report;
+    state.activeRun.accepted = true;
+    if (state.activeRun.stopRequested) await cancelAcceptedRun(state.activeRun);
+    report = await workflow.readRunStream(streamResp, (evt) => {
+      if (evt.event === 'model_started') {
+        liveMessage = null;
+        ensureLiveStreamBubble();
+      } else if (evt.event === 'model_token') {
+        const msg = ensureLiveStreamBubble();
+        if (msg) {
+          receivedRealTokens = true;
+          if (evt.delta) msg.content += evt.delta;
+          if (evt.reasoning_delta) msg.reasoning = (msg.reasoning || '') + evt.reasoning_delta;
+          if (state.reveal && state.reveal.message === msg) {
+            state.reveal.fullText = msg.content;
+            state.reveal.visibleText = msg.content || '…';
+            state.reveal.generatedTokens = evt.generated_tokens || state.reveal.generatedTokens;
+            state.reveal.tokPerS = evt.tok_per_s || state.reveal.tokPerS;
+            if (state.reveal.node && state.reveal.node.isConnected) {
+              state.reveal.node.textContent = state.reveal.visibleText;
+              $('timeline').scrollTop = $('timeline').scrollHeight;
+            } else renderAll();
+            updateActivity();
           }
         }
+      } else if (evt.event === 'model_completed' && evt.response && evt.response.message) {
+        if (liveMessage) Object.assign(liveMessage, evt.response.message);
+        liveMessage = null;
+      } else if (evt.event === 'tool_started') {
+        if (state.currentId === sessionId) $('running-detail').textContent = 'Running tool · ' + evt.tool_name;
+      } else if (evt.event === 'tool_completed') {
+        session.messages.push({ role: 'tool', content: evt.result.content, tool_call_id: evt.call_id, name: evt.tool_name, is_error: evt.result.is_error, tool_calls: [] });
       }
-    } else {
-      report = await streamResp.json();
-    }
-
-    if (state.reveal && state.reveal.sessionId === sessionId) {
-      finishTokenReveal(state.reveal);
-    }
-
-    if (!report) {
-      report = await api('/api/v1/chat', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(requestPayload)
-      });
-    }
+    });
+    if (state.reveal && state.reveal.sessionId === sessionId) finishTokenReveal(state.reveal);
 
     const target = state.sessions.find((item) => item.id === sessionId);
     if (!target) return { target: null, error: null, ready: false };
     target.messages = report.messages.filter((message) => message.role !== 'system');
+    const partialOutput = report.status !== 'completed' && liveMessage ? liveMessage.content : null;
     const terminalError = report.status === 'completed' ? null : (report.error || ('Run ended: ' + report.status));
-    target.runs.push({ id: uid(), at: Date.now(), steps: report.steps, usage: report.usage, diagnostics: report.diagnostics, status: report.status, error: terminalError });
-    target.status = terminalError ? 'error' : 'complete';
+    target.runs.push({ id: requestPayload.run_id, at: Date.now(), route, config, message_start: messageStart, message_end: target.messages.length, partial_output: partialOutput, steps: report.steps, usage: report.usage, diagnostics: report.diagnostics, status: report.status, error: terminalError });
+    target.status = report.status === 'cancelled' ? 'cancelled' : terminalError ? 'error' : 'complete';
     target.lastError = terminalError;
     target.updatedAt = Date.now();
     if (titleSource && target.title === 'Untitled task') target.title = titleSource.length > 72 ? titleSource.slice(0, 69) + '…' : titleSource;
@@ -1665,13 +1981,24 @@
   }
 
   async function send(options) {
-    if (state.busy || state.importing) return;
-    const finishOnly = Boolean(options && options.finish);
-    const session = currentSession();
+    if (state.importing) return;
+    const queued = Boolean(options && options.queued);
+    const session = queued ? state.sessions.find(item => item.id === options.sessionId) : currentSession();
     if (!session) return;
+    if (!queued && !options?.finish && !state.interviews.has(session.id) && !session.config.interview &&
+        ((state.busy && state.busySessionId === session.id) || (!state.busy && session.queue.length))) {
+      enqueueFollowUp();
+      return;
+    }
+    if (state.busy) return;
+    saveDraft();
+    const finishOnly = Boolean(options && options.finish);
+    const item = queued ? session.queue[0] : null;
+    if (queued && (!item || state.interviews.has(session.id))) return;
+    const config = captureConfig(item ? item.config : session.config);
     const sessionId = session.id;
-    const prompt = $('prompt').value.trim();
-    const attachments = state.pendingFiles.slice();
+    const prompt = item ? item.prompt : $('prompt').value.trim();
+    const attachments = item ? item.attachments : state.pendingFiles.slice();
     let interview = state.interviews.get(sessionId) || null;
     const continuingInterview = Boolean(interview);
     let outboundPrompt = null;
@@ -1683,18 +2010,20 @@
     } else {
       if (!prompt && !attachments.length) return;
       outboundPrompt = messageWithAttachments(prompt, attachments);
-      if (session.config.interview) {
+      if (config.interview) {
         interview = { questionCount: 0, next: 'question', awaitingAnswer: false, retry: false };
         state.interviews.set(sessionId, interview);
       }
     }
     if (finishOnly && !interview) return;
-    if (!session.config.model.trim()) {
+    if (!config.model.trim()) {
       if (interview && !continuingInterview) state.interviews.delete(sessionId);
       session.status = 'error';
       session.lastError = 'Choose a model in provider settings before running this task.';
+      session.queuePaused = true;
+      saveSessions();
       renderTask();
-      openSettings();
+      if (!queued) openSettings();
       return;
     }
     const titleSource = continuingInterview ? null : (prompt || (attachments[0] && attachments[0].name));
@@ -1711,34 +2040,40 @@
     state.busySessionId = sessionId;
     session.status = 'running';
     session.lastError = null;
+    if (item) session.queue.shift();
+    else if (!session.queue.length) session.queuePaused = false;
     startActivity(sessionId);
     saveSessions();
     renderAll();
     const clearComposer = () => {
-      if (state.currentId !== sessionId) return;
-      $('prompt').value = '';
-      state.pendingFiles = [];
-      setAttachmentStatus('');
-      renderAttachments();
+      session.draft = '';
+      session.attachments = [];
+      if (state.currentId === sessionId) {
+        restoreDraft();
+        renderAttachments();
+      }
     };
+    if (!queued) clearComposer();
+    saveSessions();
     try {
       while (state.sessions.some((item) => item.id === sessionId)) {
         const phase = interview ? interview.next : null;
         const instruction = phase === 'question' ? INTERVIEW_QUESTION_INSTRUCTION : phase === 'final' ? INTERVIEW_FINAL_INSTRUCTION : null;
-        const result = await chatRequest(session, interview ? null : outboundPrompt, instruction, titleSource);
+        const result = await chatRequest(session, interview ? null : outboundPrompt, instruction, titleSource, config);
         if (!result.target) return;
         if (result.error) {
-          if (interview) interview.retry = true;
+          if (result.target.status === 'cancelled') {
+            state.interviews.delete(sessionId);
+            result.target.config.interview = false;
+          } else if (interview) interview.retry = true;
           break;
         }
         if (!interview) {
-          clearComposer();
           break;
         }
         if (phase === 'final') {
           state.interviews.delete(sessionId);
           result.target.config.interview = false;
-          clearComposer();
           break;
         }
         if (result.ready) {
@@ -1749,7 +2084,6 @@
         interview.next = 'question';
         interview.awaitingAnswer = true;
         interview.retry = false;
-        clearComposer();
         break;
       }
     } catch (error) {
@@ -1759,16 +2093,21 @@
         target.status = 'error';
         target.lastError = error.message;
         target.updatedAt = Date.now();
-        target.runs.push({ id: uid(), at: Date.now(), steps: [], usage: {}, error: error.message });
+        const partial = state.activeRun ? target.messages.slice(state.activeRun.initialMessages.length) : [];
+        target.runs.push({ id: state.activeRun ? state.activeRun.id : uid(), at: Date.now(), route: state.activeRun && state.activeRun.route, config, partial_output: partial.map((message) => message.role + ': ' + (message.content || '')).join('\n\n'), partial_messages: partial, steps: [], usage: {}, status: 'failed', error: error.message });
+        if (state.activeRun) target.messages = state.activeRun.initialMessages;
       }
     } finally {
       if (state.reveal && state.reveal.sessionId === sessionId) finishTokenReveal(state.reveal);
       stopActivity();
       state.busy = false;
       state.busySessionId = null;
+      state.activeRun = null;
+      if (session.status !== 'complete') session.queuePaused = true;
       saveSessions();
       renderAll();
-      $('prompt').focus();
+      if (state.currentId === sessionId && !state.queueEdit && document.activeElement === document.body) $('prompt').focus();
+      continueQueue(session);
     }
   }
 
@@ -1779,11 +2118,50 @@
       if (card) selectSession(card.dataset.session);
     });
     $('new-task').addEventListener('click', () => {
-      const session = createTask(true);
+      if (state.importing) return;
+      saveDraft();
+      const session = createTask(false);
       selectSession(session.id);
       $('prompt').focus();
     });
     $('archive-task').addEventListener('click', archiveTask);
+    $('fork-task').addEventListener('click', forkTask);
+    $('stop-run').addEventListener('click', stopRun);
+    $('queue-toggle').addEventListener('click', () => {
+      const session = currentSession();
+      if (!session || state.importing || state.queueEdit || (state.busy && state.busySessionId !== session.id)) return;
+      session.queuePaused = state.busySessionId === session.id ? !session.queuePaused : false;
+      saveSessions();
+      renderQueue(session);
+      if (!state.busy && !session.queuePaused) void send({ queued: true, sessionId: session.id });
+    });
+    [['select-all-tools', true], ['select-no-tools', false]].forEach(([id, all]) => {
+      $(id).addEventListener('click', () => {
+        const session = currentSession();
+        if (!session || state.busy) return;
+        session.config.allowed_tools = all ? toolNames() : [];
+        updateTaskConfig();
+        renderTask();
+      });
+    });
+    $('prompt').addEventListener('input', () => {
+      clearTimeout(state.draftTimer);
+      state.draftTimer = setTimeout(saveDraft, 200);
+    });
+    $('open-compute').addEventListener('click', () => setContextPanel('compute'));
+    $('compute-form').addEventListener('submit', (event) => { event.preventDefault(); inspectCompute(); });
+    $('compute-url').addEventListener('input', () => { $('compute-key').value = ''; $('compute-model').replaceChildren(new Option("Coordinator's current model", '')); invalidateCompute(); });
+    $('compute-model').addEventListener('change', invalidateCompute);
+    $('attach-compute').addEventListener('click', attachCompute);
+    $('base-url').addEventListener('input', () => { $('api-key').value = state.credentials[workflow.credentialKey($('provider').value, $('base-url').value)] || ''; });
+    [['run-seconds', 'max_run_seconds'], ['run-output-budget', 'max_output_tokens'], ['run-tool-budget', 'max_tool_calls']].forEach(([id, key]) => {
+      $(id).addEventListener('change', () => {
+        const session = currentSession();
+        if (!session || !$(id).reportValidity()) return;
+        session.config[key] = $(id).value === '' ? null : Number($(id).value);
+        saveSessions();
+      });
+    });
     $('export-task').addEventListener('click', exportTask);
     $('task-title').addEventListener('input', () => {
       const session = currentSession();
@@ -1828,10 +2206,12 @@
       const session = currentSession();
       if (!session) return;
       session.config.enable_tools = $('enable-tools').checked;
+      if (session.config.allowed_tools === null) session.config.allowed_tools = toolNames();
       session.updatedAt = Date.now();
       saveSessions();
       renderTask();
       renderSessions();
+      if (session.config.enable_tools && !selectedToolNames(session.config).length) setContextPanel('run');
     });
     $('step-budget').addEventListener('change', () => {
       const session = currentSession();
@@ -1961,6 +2341,7 @@
       }
     });
     window.addEventListener('beforeunload', () => {
+      saveDraft();
       const files = state.files;
       if (!files.selected || !files.dirty || files.saving) return;
       const payload = JSON.stringify({ path: files.selected, content: $('file-editor').value });

@@ -15,6 +15,8 @@ pub(crate) const DOC_SUBCLUSTERS_CLOUD_MD: &str =
 pub(crate) const DOC_INTEGRATIONS_MD: &str =
     include_str!("../../../docs/guides/integrations-hf-github.md");
 pub(crate) const DOC_MCP_MD: &str = include_str!("../../../docs/guides/mcp-server.md");
+pub(crate) const DOC_CONDENSER_MD: &str =
+    include_str!("../../../docs/guides/condenser-workspace.md");
 pub(crate) const DOC_SPECSHEET_ROADMAP_MD: &str =
     include_str!("../../../docs/SPECSHEET_AND_ROADMAP.md");
 pub(crate) const DOC_ARCHITECTURE_MD: &str = include_str!("../../../docs/ARCHITECTURE.md");
@@ -74,6 +76,14 @@ pub fn build_documentation_catalog() -> Vec<DocumentationPage> {
             file_path: "docs/guides/hardware-and-sharding.md".into(),
             summary: "5-tier memory hierarchy, 64 KiB .ktb transcoding, CERN FTS3 P2P staging, <200ms Gaming Auto-Yield, and 3-Tier Trust.".into(),
             markdown: DOC_HARDWARE_SHARDING_MD.into(),
+        },
+        DocumentationPage {
+            slug: "condenser-workspace".into(),
+            title: "Condenser Inference Workspace".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/condenser-workspace.md".into(),
+            summary: "Provider tasks, compute placement previews, task forks, drafts and cancellable bounded runs.".into(),
+            markdown: DOC_CONDENSER_MD.into(),
         },
         DocumentationPage {
             slug: "training-and-dream-rsi".into(),

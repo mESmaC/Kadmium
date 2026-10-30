@@ -38,6 +38,8 @@ impl ToolExecutor for PluginManager {
 #[derive(Debug, Clone)]
 pub struct HarnessOptions {
     pub enable_tools: bool,
+    /// Exact qualified tool names. None preserves all-tools behavior; Some([]) denies all.
+    pub allowed_tools: Option<Vec<String>>,
     pub max_steps: usize,
     pub max_calls_per_step: usize,
     pub sampling: SamplingParams,
@@ -47,6 +49,7 @@ impl Default for HarnessOptions {
     fn default() -> Self {
         Self {
             enable_tools: false,
+            allowed_tools: None,
             max_steps: 8,
             max_calls_per_step: 16,
             sampling: SamplingParams::default(),
@@ -282,11 +285,23 @@ impl Harness {
         }
         options.sampling.validate()?;
 
-        let (tools, diagnostics) = if options.enable_tools {
+        let (mut tools, diagnostics) = if options.enable_tools {
             self.executor.registered_tools()?
         } else {
             (Vec::new(), Vec::new())
         };
+        if options.enable_tools
+            && let Some(allowed) = &options.allowed_tools
+        {
+            for name in allowed {
+                if !tools.iter().any(|tool| &tool.qualified_name == name) {
+                    return Err(CondenserError::Config(format!(
+                        "allowed tool `{name}` is not registered; use an exact plugin__tool name"
+                    )));
+                }
+            }
+            tools.retain(|tool| allowed.contains(&tool.qualified_name));
+        }
         let registry = ToolRegistry::new(&tools);
         let mut definitions = tools
             .iter()
@@ -1053,6 +1068,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tool_allowlist_filters_catalog_and_blocks_excluded_calls() {
+        let excluded = registered_tool();
+        let mut allowed = excluded.clone();
+        allowed.qualified_name = "example__read".into();
+        allowed.definition.name = "read".into();
+        let mut first = Message::assistant("");
+        first.tool_calls = vec![
+            ToolCall {
+                id: "blocked".into(),
+                name: "example__echo".into(),
+                arguments_json: "{}".into(),
+            },
+            ToolCall {
+                id: "allowed".into(),
+                name: "example__read".into(),
+                arguments_json: "{\"text\":\"ok\"}".into(),
+            },
+        ];
+        let provider = Arc::new(MockProvider {
+            responses: Mutex::new(VecDeque::from([
+                response(first),
+                response(Message::assistant("done")),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let harness = Harness::from_components(
+            ProviderConfig::new(ProviderKind::Kadmium),
+            provider.clone(),
+            Arc::new(MockExecutor {
+                tools: vec![excluded, allowed],
+            }),
+        )
+        .unwrap();
+        let report = harness
+            .run(
+                vec![Message::user("read only")],
+                HarnessOptions {
+                    enable_tools: true,
+                    allowed_tools: Some(vec!["example__read".into()]),
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests[0].tools.len(), 1);
+        assert_eq!(requests[0].tools[0].name, "example__read");
+        assert!(report.messages[2].is_error);
+        assert_eq!(report.messages[2].tool_call_id.as_deref(), Some("blocked"));
+        assert!(!report.messages[3].is_error);
+        assert_eq!(report.messages[3].content, "example:ok");
+    }
+
+    #[tokio::test]
+    async fn empty_allowlist_and_tools_off_never_execute_a_plugin() {
+        for (enabled, allowed) in [(true, vec![]), (false, vec!["example__echo".into()])] {
+            let mut first = Message::assistant("");
+            first.tool_calls = vec![ToolCall {
+                id: "call".into(),
+                name: "echo".into(),
+                arguments_json: "{}".into(),
+            }];
+            let provider = Arc::new(MockProvider {
+                responses: Mutex::new(VecDeque::from([
+                    response(first),
+                    response(Message::assistant("done")),
+                ])),
+                requests: Mutex::new(Vec::new()),
+            });
+            let executor = Arc::new(CountingExecutor {
+                tool: registered_tool(),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let harness = Harness::from_components(
+                ProviderConfig::new(ProviderKind::Kadmium),
+                provider.clone(),
+                executor.clone(),
+            )
+            .unwrap();
+            let report = harness
+                .run(
+                    vec![Message::user("try a call")],
+                    HarnessOptions {
+                        enable_tools: enabled,
+                        allowed_tools: Some(allowed),
+                        ..HarnessOptions::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(provider.requests.lock().unwrap()[0].tools.is_empty());
+            assert_eq!(executor.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert!(report.messages[2].is_error);
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_or_unqualified_allowlist_names_fail_before_inference() {
+        for name in ["echo", "missing__tool"] {
+            let provider = Arc::new(MockProvider {
+                responses: Mutex::new(VecDeque::new()),
+                requests: Mutex::new(Vec::new()),
+            });
+            let harness = Harness::from_components(
+                ProviderConfig::new(ProviderKind::Kadmium),
+                provider.clone(),
+                Arc::new(MockExecutor {
+                    tools: vec![registered_tool()],
+                }),
+            )
+            .unwrap();
+            let result = harness
+                .run(
+                    vec![Message::user("hello")],
+                    HarnessOptions {
+                        enable_tools: true,
+                        allowed_tools: Some(vec![name.into()]),
+                        ..HarnessOptions::default()
+                    },
+                )
+                .await;
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("exact plugin__tool name")
+            );
+            assert!(provider.requests.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn tool_turn_feeds_results_back_to_the_model() {
         let call = ToolCall {
             id: "call-1".into(),
@@ -1082,6 +1229,7 @@ mod tests {
                 vec![Message::user("run the tool")],
                 HarnessOptions {
                     enable_tools: true,
+                    allowed_tools: None,
                     max_steps: 4,
                     max_calls_per_step: 16,
                     sampling: SamplingParams::default(),
@@ -1149,6 +1297,7 @@ mod tests {
                 vec![Message::user("Echo test")],
                 HarnessOptions {
                     enable_tools: true,
+                    allowed_tools: None,
                     max_steps: 4,
                     max_calls_per_step: 16,
                     sampling: SamplingParams::default(),
@@ -1215,6 +1364,7 @@ mod tests {
                 vec![Message::user("run the tool")],
                 HarnessOptions {
                     enable_tools: true,
+                    allowed_tools: None,
                     max_steps: 4,
                     max_calls_per_step: 16,
                     sampling: SamplingParams::default(),

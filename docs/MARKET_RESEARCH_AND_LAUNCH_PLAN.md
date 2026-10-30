@@ -42,7 +42,7 @@ Pre-existing internet datacenters were built out of necessity to power global we
 
 Most venture-backed AI clouds (`CoreWeave`, `Modal`, `Together`, `AWS`) must extract **`60%–75%` gross margins** to pay for `$10B` concrete datacenter debt, bloated executive compensation packages, and aggressive VC return multiples.
 
-**Kadmium (`Cd-48`) operates on an Open-Book, Cost-Plus Steward-Ownership Model** codified directly in [`CompanySustainabilitySummary`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/supply.rs):
+**Kadmium (`Cd-48`) operates on an Open-Book, Cost-Plus Steward-Ownership Model** codified directly in [`CompanySustainabilitySummary`](../crates/kadmium-core/src/supply.rs):
 - **`75.0%` Directly to the People (Compute & Storage Hosts):** Paid strictly from verified buyer billings (`No-Demand = No-Compute-Payout`, guaranteeing company solvency).
 - **`20.0%` Headcount-Proportional Operations & Core Relay Infrastructure:**
   - Operational take-rate is tied directly to **how many people Kadmium employs** (modest, honest living-wage salaries so the founder and every team member can comfortably support their families—**no bloated 6-figure executive greed**) plus the exact cost of running `relay.kadmium.ai`, `Verde` referee nodes, and S3/NAS grounding anchors.
@@ -56,7 +56,7 @@ Most venture-backed AI clouds (`CoreWeave`, `Modal`, `Together`, `AWS`) must ext
 
 ### 0.3 The 4-Segment Buyer Positioning Matrix: Why Check-Writers Actually Buy `Kadmium Reactor`
 
-A noble mission rallies supply hosts, press, and universities—but **compute buyers write checks when we solve their hardest technical & budget bottlenecks better than anyone else.** Here is how [`BuyerSegmentPositioning`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/supply.rs) positions **Kadmium Reactor** to each of the four target buyer segments without ever looking like "a solution to a problem that doesn't exist":
+A noble mission rallies supply hosts, press, and universities—but **compute buyers write checks when we solve their hardest technical & budget bottlenecks better than anyone else.** Here is how [`BuyerSegmentPositioning`](../crates/kadmium-core/src/supply.rs) positions **Kadmium Reactor** to each of the four target buyer segments without ever looking like "a solution to a problem that doesn't exist":
 
 | Target Buyer Segment | Their Acute Pain Point Today | Why Hyperscalers / Existing Clouds Fail Them | **How `Kadmium Reactor` Wins the Contract** | Modelled Buyer ROI (`R4 §10` Capability Envelope) |
 | :--- | :--- | :--- | :--- | :--- |
@@ -71,7 +71,7 @@ A noble mission rallies supply hosts, press, and universities—but **compute bu
 
 With NVIDIA pricing **DGX Spark** at **`$6,950`** (`128 GB LPDDR5x`, after 2026 memory-supercycle increases, `R4 §7.3`) and **Framework Desktop (`AMD Ryzen AI Max+ 395 Strix Halo 128 GB`)** at **`$2,459`**, the semiconductor giants have validated massive prosumer and research demand for local AI hardware.
 
-Per `R4 §3.4`, any external ARM box connected over `2.5GbE` (`0.28 GB/s`) or USB-C (`0.9–2.4 GB/s`) is `~100–200×` slower than a desktop's internal GPU VRAM and `~20×` slower than an internal PCIe Gen4 NVMe SSD—so an RK3588 SBC should **never** be marketed as a desktop memory execution sidecar for spilled 70B layers. Instead, we offer the **`Kadmium Cd-48 32 GB RK3588 Coordinator & .ktb NAS Seed Node`** ([`EmbeddedReactorBoxSpec`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/reactor_clearinghouse.rs)): an **honest Cost-Plus `$379` (`$275` Oct-2026 BOM, `9%` crowdfunding/payment fee assumption)** open-hardware, battery-free `32 GB LPDDR5` + `M.2 NVMe` + `Dual 2.5GbE` Linux appliance engineered for three roles where low-wattage ARM silicon genuinely wins:
+Per `R4 §3.4`, any external ARM box connected over `2.5GbE` (`0.28 GB/s`) or USB-C (`0.9–2.4 GB/s`) is `~100–200×` slower than a desktop's internal GPU VRAM and `~20×` slower than an internal PCIe Gen4 NVMe SSD—so an RK3588 SBC should **never** be marketed as a desktop memory execution sidecar for spilled 70B layers. Instead, we offer the **`Kadmium Cd-48 32 GB RK3588 Coordinator & .ktb NAS Seed Node`** ([`EmbeddedReactorBoxSpec`](../crates/kadmium-core/src/reactor_clearinghouse.rs)): an **honest Cost-Plus `$379` (`$275` Oct-2026 BOM, `9%` crowdfunding/payment fee assumption)** open-hardware, battery-free `32 GB LPDDR5` + `M.2 NVMe` + `Dual 2.5GbE` Linux appliance engineered for three roles where low-wattage ARM silicon genuinely wins:
 
 1. **Role 1 — 24/7 `libp2p` Cluster Coordinator, `.ktb` Merkle NAS Seed Vault & Speculative Draft/WASI Node:**
    - Keeps the cluster's CRDT routing table, `CloudShield` failover watchdog, and `M.2 NVMe` `.ktb` shard cache online 24/7 at `6–15W` so `350W` gaming desktops can sleep when idle, while executing deterministic `WasiMicroSandbox` RL rollouts (`$0.14 / 1k`) and small speculative draft trees.
@@ -81,7 +81,7 @@ Per `R4 §3.4`, any external ARM box connected over `2.5GbE` (`0.28 GB/s`) or US
    - Powered by a stable `12V / USB-C PD` wall adapter (**zero lithium battery inside**), drawing only `15W` active (`~$0.66/mo` incremental electricity at `$0.182/kWh` for 7.2h/day active duty) while earning **`~$6.80/mo` modelled net cash** (or **`~$11.90/mo` in `1.25×` Reactor Credits**):
 
 | Mini-ML System | Oct 2026 Retail Price (`R4 §7.3`) | Power Draw | Memory & Storage | Open General-Purpose Linux? | Modelled Monthly `Kadmium` Net Earnings (After `$0.182/kWh` Power) | Primary Cluster Role |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
 | **NVIDIA DGX Spark (`128 GB`)** | `$6,950` | `170W` | `128 GB LPDDR5x` + `4 TB NVMe` | Yes (DGX OS) | `~$32.50 / mo` | Standalone 128 GB Inference / Training Workstation |
 | **Framework Desktop `Strix Halo` (`128 GB`)** | `$2,459` | `120W` | `128 GB LPDDR5x` + `2 TB NVMe` | Yes | `~$32.50 / mo` | High-Value 128 GB Unified Memory MoE Node |
 | **Kadmium `Cd-48` 32 GB RK3588 Node (`Cost-Plus`)** | **`$379`** *($275 BOM, 9% fees)* | **`15W`** *(Battery-Free)* | **`32 GB LPDDR5` + `M.2 NVMe` + `Dual 2.5GbE`** | **100% Open Debian / Docker / GPIO / NAS** | **`~$6.80 / mo` Cash** *(or `~$11.90/mo` Credits)* | **24/7 Coordinator, `.ktb` NAS Seed Vault & WASI Verifier** |
@@ -93,17 +93,17 @@ Per `R4 §3.4`, any external ARM box connected over `2.5GbE` (`0.28 GB/s`) or US
 Most infrastructure startups in the local and decentralized AI space get stuck in one of three traps:
 1. **The Open-Source Local Trap (`EXO Labs`, `llama.cpp RPC`):** Users download the free binary, cluster two Mac Minis on their desk, star the GitHub repo, and pay **$0 forever** because there is no built-in transactional monetization hook inside a purely local tool.
 2. **The Two-Sided Marketplace Cold-Start Trap (Early P2P GPU networks):** Waiting until 1,000 community gamers list their GPUs before selling compute to researchers means zero supply on Day 1—and supply hosts churn within 48 hours if there isn't immediate utilization.
-3. **The Crypto-Verification Latency Trap (`Gensyn`, `Akash`, `io.net`):** Token-driven DePIN networks suffer from speculative node spoofing ("utilization gap") or heavy cryptographic proof overhead that stalls real-time token streaming.
+3. **The Crypto-Verification Latency Trap (`Gensyn`, `Akash`, `io.net`, `Render`):** Token-driven DePIN networks suffer from speculative node spoofing ("utilization gap"), enterprise procurement bans on holding utility tokens, or heavy proof overhead that stalls real-time token streaming.
 
 ### Kadmium's Asymmetric Monetization Wedge
 Kadmium (`Cd-48`) bypasses all three traps on Day 1:
-- **Local-First Hook (`$0` CAC):** Users install `kadmium` for free to pool their PC + Mac + laptop + NAS (`--cadmium`) and point Claude Code, Cursor, or Cline to `http://127.0.0.1:7848/v1`.
-- **Day-1 Guaranteed Supply via Indexed Wholesale Spot Arbitrage (`Index × 1.25`):** When a user's local cluster is 20 GB short of running a 70B–671B model—or when they launch a game and their PC auto-yields (`< 200 ms`)—they click **"Attach Burst GPU"** (`--cherenkov`). On Day 1, [`SpotOrderbookBidEngine`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-sharding/src/spot_provisioner.rs) fulfills that burst request using verified wholesale spot APIs (`$0.38–$2.20/hr` verified wholesale index) and bills at `WholesaleVerifiedIndex(class) × 1.25` (**`20.0%` gross margin on retail**).
+- **Local-First Hook (`$0` CAC via CLI + `Condenser` Agent Workspace):** Users install `kadmium` and **`Condenser` (`Blades` multi-pane agent harness, `:7856`)** for free to pool their PC + Mac + laptop + NAS over LAN or `$15` USB4 direct cables (`27.6 Gbps`), and point Claude Code, Cursor, or Cline to `http://127.0.0.1:7848/v1`.
+- **Day-1 Guaranteed Supply via Indexed Wholesale Spot Arbitrage (`Index × 1.25`):** When a user's local cluster is 20 GB short of running a 70B–671B model—or when they launch a game and their PC auto-yields (`< 200 ms`)—they click **"Attach Burst GPU"** (`--cherenkov`). On Day 1, [`SpotOrderbookBidEngine`](../crates/kadmium-sharding/src/spot_provisioner.rs) fulfills that burst request using verified wholesale spot APIs (`$0.38–$2.20/hr` verified wholesale index) and bills at `WholesaleVerifiedIndex(class) × 1.25` (**`20.0%` gross margin on retail**).
 - **Supply Flywheel via `1.25×` Credit Reciprocity (with `70%` Redemption Liability Reserve):** As users enable **Supply Grid Hosting** (`kadmium lease --credits true`) to earn `1.25×` wholesale-indexed credits overnight (12-month expiry), Kadmium routes `24–32 GB` burst shards onto credit-paid community/studio hosts first while booking a `70%` expected redemption liability reserve (`R4 §6.3`).
 
 ```mermaid
 flowchart LR
-    A["1. Free OSS Hook\nkadmium serve / probe\n(Local PC + Mac + NAS)"] --> B["2. Natural Bottleneck\nModel > Local VRAM or\nGaming Auto-Yield (<200ms)"]
+    A["1. Free OSS Hook\nkadmium serve + Condenser\n(Local PC + Mac + USB4/LAN)"] --> B["2. Natural Bottleneck\nModel > Local VRAM or\nGaming Auto-Yield (<200ms)"]
     B --> C["3. Instant Monetization\n$25-$100 Prepaid Burst Pack\n+ $29/$199/$499 Subscriptions"]
     C --> D["4. Day-1 Fulfillment\nIndexed Spot Bridge (Index x 1.25)\n(20% Realized Spread)"]
     C --> E["5. Flywheel Fulfillment\nOutput-Metered Supply Grid\n($0.22/1M Tok | 75% to Host)"]
@@ -122,32 +122,35 @@ flowchart LR
 | **NVIDIA A100 (`80 GB`)** | `$0.89/hr` | **`$1.46/hr`** (`$1.43` Spheron – `$1.49` RunPod) | `$1.80/hr` | **`$1.83/hr`** | **`+$0.37/hr` (20.2%)** | `$3.29 – $4.10/hr` |
 | **NVIDIA H100 (`80 GB`)** | `$1.80/hr` | **`$2.20/hr`** (`$1.87` Vast ver. – `$2.65` Spheron) | `$3.99/hr` | **`$2.75/hr`** | **`+$0.55/hr` (20.0%)** | `$5.49 – $7.00/hr` |
 
-### 2.2 Competitor-by-Competitor Teardown: What Works & Where They Fail
+### 2.2 Competitor-by-Competitor Teardown: What Works & Where They Fail (`Q4 2026`)
 
-#### 1. `Ollama Cloud` & `LM Studio Bionic` (Local-to-Cloud Hybrids)
-- **What they proved (2025–2026):** Both Ollama and LM Studio proved that local-first developers will pay recurring monthly subscriptions for seamless cloud overflow:
-  - **Ollama Cloud Pricing:** `Free ($0)` $\to$ `Pro ($20/mo, includes $60 in cloud token credits, 3 concurrent requests)` $\to$ `Max ($100/mo, $300 in credits, 10 concurrent)` $\to$ `Team ($500/mo, $1,000 shared credits + RBAC)`.
-  - **LM Studio Bionic:** Free local runtime + paid team/organization cloud credit pools with Zero Data Retention (ZDR).
-- **Where both fail:** In Ollama Cloud and LM Studio Bionic, execution is **binary (all-local OR all-cloud)**. If a model is 15 GB too large for your desktop, 100% of the model runs in their cloud—meaning your `$3,000` local GPU sits completely idle and your **raw plaintext prompt is transmitted to a remote server**.
-- **Kadmium's Edge:** Kadmium is the only platform that **splits a single model across your local hardware + cloud burst simultaneously** (`Layer 0` + `Layer N-1` + 65% of middle layers on your local PC+Mac for `$0/hr`, and only the remaining 35% of middle layers on cloud burst)—delivering **mathematical zero-plaintext privacy** and **3× lower cloud credit burn**.
+#### 1. `Ollama Cloud` (`$65M` Series B) & `LM Studio Teams / Enterprise` (Single-Node Local + Cloud Fallback)
+- **What they proved (2025–2026):** Both Ollama and LM Studio proved that local-first developers and organizations will pay recurring subscriptions for governance and cloud overflow (`R4 §7.7`):
+  - **Ollama Cloud Pricing:** `Free ($0)` $\to$ `Pro ($20/mo, 3 concurrent requests)` $\to$ `Max ($100/mo, 10 concurrent)` + usage-based cloud token billing.
+  - **LM Studio (`Free at Work` + Paid `Teams / Enterprise`):** Made its local desktop app (`Bionic` edition) free for commercial work, monetizing via paid **Teams & Enterprise tiers** (SSO, RBAC model governance, audit logs, and Zero Data Retention enterprise controls).
+- **Where both fail:** In both Ollama and LM Studio, execution is **single-machine local OR 100% remote cloud**. Neither can pool a user's desktop PC + MacBook + NAS across LAN/USB4, and if a model is 10 GB too large for one machine, 100% of the model and plaintext prompt must go to a remote cloud server.
+- **Kadmium's Edge:** Kadmium unifies **multi-machine local LAN/USB4 clustering (`Tier 0`) + `Condenser` (`Blades` multi-pane agent workspace) + Fractional Middle-Layer Burst (`Tier 1/2`)**—keeping `Layer 0` and `Layer N-1` local while renting only the missing middle slice.
 
-#### 2. `Tailscale` (The $1.5B Open-Core Mesh Conversion Blueprint)
-- **What they proved:** Tailscale built a `$1.5B+` business on top of open-source WireGuard (and alongside open-source `Headscale`) by making personal/homelab mesh networking 100% free and gating **multi-user team governance** (`SSO`, `RBAC ACLs`, audit logs, and managed DERP relays) behind per-seat/team tiers.
-- **How Kadmium applies the Tailscale Playbook:**
-  - Single-user `Kadmium Local` is 100% free and open source (`MIT/Apache-2.0`).
-  - The moment a **second lab member, engineer, or employee** needs shared access to the cluster (`SubClusterRbacEngine`, scoped `kdm_live_...` keys, per-user cloud spend caps, managed zero-config WAN hole-punching/DERP), the organization converts to **`Kadmium Team & Lab` (`$199–$499/mo`)**.
+#### 2. `Exo Labs` (`Exo for Business` & `local.ai`)
+- **What they proved (2026):** Exo Labs validated commercial demand for local cluster software with *Exo for Business* (running `Kimi-K2-Thinking` and `DeepSeek V3.1` across 4× Mac Studios over Thunderbolt 5 RDMA) and their viral `local.ai` hardware-to-model calculator.
+- **Where Exo fails:** Exo is heavily optimized around homogeneous Apple Silicon clusters and lacks **(a) built-in cloud spot failover (`CloudShield`)**, **(b) an output-metered Supply Grid clearinghouse (`$0.22/1M` batch tokens, `$0.14/1k` WASI rollouts)**, and **(c) transparent self-serve SMB pricing** (requiring custom enterprise sales quotes).
+- **Kadmium's Edge:** Kadmium natively bridges **Windows (`CUDA`/`Vulkan`) + Apple Silicon (`Metal`) + Linux + ARM SBCs** over both Ethernet and `27.6 Gbps` USB4 DMA, includes automatic `245ms` cloud spot failover when a gaming PC yields, and offers self-serve `$199/mo` Team and `$499/mo` Air-Gapped Private Office tiers.
 
-#### 3. `Salad.com` (Consumer Gaming PC Cloud)
-- **What they proved:** Tens of thousands of gamers ("Salad Chefs") across 190 countries willingly run a background agent on RTX 3090/4090/5080/5090 PCs without crypto tokens in exchange for store credits and PayPal payouts.
-- **Where Salad fails for frontier LLMs:**
-  - **Single-Node VRAM Wall:** Salad schedules monolithic Docker containers onto individual consumer PCs (capped at 16–24 GB VRAM). It cannot shard a 70B–671B model across a user's local machines + remote nodes.
-  - **Zero Prompt Privacy:** Sending an inference container to a residential Salad host exposes plaintext user prompts and weights in the host's RAM/VRAM.
-  - **Brutal Preemption Cold Starts:** When a gamer launches a game, the container is killed and another host must pull a 15–30 GB Docker image from scratch.
-- **Kadmium's Edge:** Kadmium uses consumer GPUs **strictly for blind middle layers (`L1..N-2`)** via `NodeTrustTier::VerifiedPeerMiddleLayersOnly`, streams `64 KiB` page-aligned `.ktb` layer slices in seconds, and shifts layers in **`< 200 ms`** when a host starts gaming.
+#### 3. `Prime Intellect` (`$130M` Series A, `$1B` Valuation) & `RunPod` (`1.2M+` Developers)
+- **What they proved (2026):** Prime Intellect scaled past `$100M` annualized revenue run-rate by combining a multi-cloud spot aggregator with `Prime Inference` (an OpenAI-compatible router) and `Verifiers` (RL environment sandboxes). RunPod scaled to `1.2M+` developers with per-second serverless and community/secure GPU pods.
+- **Where they fail:** They are **100% cloud-only** (zero local hardware utilization, zero on-premise LAN clustering for regulated SMBs, and full plaintext prompt exposure in cloud containers).
+- **Kadmium's Edge:** Kadmium brings Prime Intellect-style **spot meta-brokering (`SpotOrderbookBidEngine`) and deterministic `WASI` RL verification sandboxes (`$0.14/1k` rollouts)** directly into a **local-first hybrid runtime** where users pay `$0/hr` on their own silicon first and burst only overflow.
 
-#### 4. `Modal`, `Baseten`, `Together AI` & `Fireworks AI` (Serverless vs. Dedicated Endpoints)
-- **What they proved:** Engineering teams gladly pay **`$3.95/hr` to `$6.50/hr` per H100** on Dedicated Endpoints purely to host custom fine-tunes/LoRAs, avoid public rate limits, and eliminate cold-start weight downloads.
-- **Kadmium's Edge:** Kadmium's `.ktb` HTTP Byte-Range slicer + local NAS seed vault keeps custom weights and `DistributedQLoRAAdapter` states warm 24/7 at **`$0/hr`**, bursting middle layers at **`$0.45–$0.75/hr`** only during active batches (**85–92% cheaper than Together/Fireworks/Baseten Dedicated Endpoints**).
+#### 4. `SaladCloud` (Consumer Gaming PC Cloud + `Render Network RNP-023` Crypto Integration)
+- **What they proved:** Tens of thousands of gamers ("Salad Chefs") across 190 countries willingly run a background agent on RTX 3090/4090/5080/5090 PCs, and Salad achieved SOC 2 Type I compliance for batch workloads.
+- **Where Salad fails in late 2026:**
+  - **The 2026 Crypto Pivot (`RNP-023`):** In 2026, SaladCloud integrated into the **Render Network (`$RENDER` utility token rails)** under proposal `RNP-023`. This alienates university grant administrators, government agencies, and enterprise procurement teams that strictly prohibit crypto-linked supply networks.
+  - **Single-Node VRAM Wall & Cold Container Preemption:** Salad schedules monolithic Docker containers onto single 16–24 GB consumer PCs (cannot shard 70B–671B models across local + remote nodes) and kills the container when a gamer launches a game.
+- **Kadmium's Edge:** Kadmium is **100% No-Crypto / USD-Only (`75/20/5` Steward-Owned)**, uses consumer GPUs strictly for blind middle layers or output-metered batch/WASI work (`$0.22/1M` tokens), and live-migrates layers in `< 200 ms` on game launch.
+
+#### 5. `Modal`, `Baseten`, `Together AI` & `Fireworks AI` (Serverless vs. Dedicated Endpoints)
+- **What they proved:** Engineering teams gladly pay **`$3.29/hr` to `$7.00/hr` per A100/H100** on Dedicated Endpoints (`R4 §7.1`) purely to host custom fine-tunes/LoRAs, avoid public rate limits, and eliminate cold-start weight downloads.
+- **Kadmium's Edge:** Kadmium's `.ktb` HTTP Byte-Range slicer + local NAS seed vault keeps custom weights and `DistributedQLoRAAdapter` states warm 24/7 at **`$0/hr`**, bursting middle layers at **`$0.48–$1.20/hr` (`Index × 1.25`)** only during active batches (**75–88% cheaper than Dedicated Endpoints**).
 
 ---
 
@@ -163,23 +166,23 @@ For `Llama-3-70B` / `DeepSeek-V3` ($d \approx 7168\dots 8192$):
 > [!WARNING]
 > **Critical Product & Routing Rule for Kadmium:**
 > Never chain multiple low-upload residential WAN nodes in series for interactive single-stream decode. Instead, Kadmium enforces a **Two-Tier Topology Rule**:
-> 1. **Interactive Inference (`< 1 ms` LAN + Single-Hop Datacenter Burst + Local Speculative Drafts):**
->    - Multi-node sharding happens across the user's **high-speed Local LAN** (`1–10 Gbps` Ethernet / Wi-Fi 6E / Thunderbolt, where `33 MB` prefill takes `< 30 ms`).
->    - If cloud burst is attached, `ShardPlanner` pins a **single contiguous middle block (`L_a..L_b`)** onto **one datacenter-connected spot GPU** (`10 Gbps` symmetrical link)—requiring only **one WAN round-trip per forward pass**—while the local SBC/laptop runs **Leviathan Speculative Drafts ($K=4$ tokens verified in parallel per single WAN pass)**, boosting effective WAN throughput from `~12 tok/s` to **`32–42 tok/s`**.
-> 2. **Residential Supply Grid Hosts $\to$ Routed to High-Compute / Low-Bandwidth Workloads:**
->    - Residential gamer PCs (`20–50 Mbps` upload) are assigned to **Parallel GRPO Rollouts + WASI Verification**, **Sharded-Island `DiLoCo + DeMo` Training** (`85×` DCT-compressed sparse momentum synced once every 500 inner steps), and **Asynchronous Batch Document Processing**.
+> 1. **Interactive Inference (`< 1 ms` LAN / `79 µs` USB4 DMA + Single-Hop Datacenter Burst + Local Speculative Drafts):**
+>    - Multi-node sharding happens across the user's **high-speed Local LAN / USB4 Daisy-Chain** (`1–10 Gbps` Ethernet or `27.6 Gbps` USB4, where `33 MB` prefill takes `10–30 ms`).
+>    - If cloud burst is attached, `ShardPlanner` pins a **single contiguous middle block (`L_a..L_b`)** onto **one datacenter-connected spot GPU** (`10 Gbps` symmetrical link)—requiring only **one WAN round-trip per forward pass**—while the local node runs **`DSpark` / Leviathan Speculative Drafts ($K=4$ tokens verified in parallel per single WAN pass)**, boosting effective WAN throughput from `~12 tok/s` to **`32–42 tok/s`** (*Modelled*).
+> 2. **Residential Supply Grid Hosts $\to$ Routed to High-Compute / Output-Metered Batch & WASI Workloads:**
+>    - Residential gamer PCs (`20–50 Mbps` upload) are assigned to **Parallel Batch Inference (`$0.22/1M` tok)**, **Deterministic `WASI` RL Verification (`$0.14/1k` rollouts)**, and **Sharded-Island `DiLoCo + DeMo` Training** (`10×–85×` DCT-compressed sparse momentum synced once every 500 inner steps).
 
 ---
 
-### 3.2 Reality Check #2: When Does Kadmium Beat Cheap Serverless APIs (`OpenRouter` / `DeepSeek API`)?
-We must be surgical about which customers we target. On `OpenRouter`, shared serverless `DeepSeek-V3` or `Qwen-Coder` costs roughly `$0.20–$0.60 / 1M input tokens` and `$0.60–$1.80 / 1M output tokens`.
+### 3.2 Reality Check #2: When Does Kadmium Beat Cheap Serverless APIs (`OpenRouter` / `DeepSeek API`)? (`R4 §6.4`)
+We must be surgical about which customers we target. In October 2026 (`R4 §7.2`), commodity open-weight `DeepSeek-V3.2` clears at **`$0.21–$0.28 / 1M input` and `$0.31–$0.42 / 1M output`**, whereas frontier-open models (`DeepSeek V4-Pro`, `Kimi K2.6`, `GLM-5.1`) clear at **`$0.95–$2.10 / 1M input` and `$3.00–$4.40 / 1M output`**, and closed frontier APIs (`Claude Sonnet / Opus`) cost **`$3.00 / $15.00+` per 1M** with strict 5-hour and weekly rate limits.
 
 | Customer Scenario | Cheap Serverless API (`OpenRouter`) Cost | Dedicated Cloud Endpoint (`Together` / `Baseten`) | **Kadmium (`Local + Middle-Layer Burst`)** | **Winner & Why** |
 | :--- | :--- | :--- | :--- | :--- |
 | **Casual Solo Chat** (`30 prompts/day`, ~40k tokens/day, public weights, zero privacy need) | **`$1.50 / mo`** | `$2,160+ / mo` | `$0/mo` (if fits locally) or `$15/mo` burst | **OpenRouter** (unless model fits 100% on user's local PC+Mac for `$0`). **Do not pitch paid burst to casual chatters.** |
-| **Prosumer "Just-Enough-Boost" (`RTX 4090 / 3090 24GB` running `70B` + `32K` KV = `30.5 GB`, only `8 GB` short!)** | Uncensored / local custom models unavailable; CPU RAM offload (`-ngl`) drops speed to `5.8 tok/s` | `$1,318+ / mo` (`$1.83/hr` indexed 80GB A100, wasting the user's `$2,000` local RTX 4090!) | **`$0.00/hr` (if spilling `8 GB` to a laptop/Mac on LAN $\to$ `54.2 tok/s`) OR `$0.07/hr` (`8 GB` Fractional Grid Micro-Boost $\to$ `49.6 tok/s`)** | **Kadmium wins (`9.3×` faster than CPU offload; `$0/hr` on LAN or `96%` cheaper than renting a full cloud GPU, with Zero Plaintext Egress!).** |
+| **Prosumer "Just-Enough-Boost" (`RTX 4090 / 3090 24GB` running `70B` + `32K` KV = `30.5 GB`, only `8 GB` short!)** | Uncensored / local custom models unavailable; cold NVMe swap drops speed to `< 1 tok/s` (`0.82 tok/s` measured on `35B-A3B`) | `$1,318+ / mo` (`$1.83/hr` indexed 80GB A100, wasting the user's `$2,000` local RTX 4090!) | **`$0.00/hr` (spilling `8 GB` to a Mac/PC on LAN/USB4) OR `$0.07/hr` (`8 GB` Fractional Grid Micro-Boost)** | **Kadmium wins (`3.98×` measured speedup over cold NVMe swap on 1GbE LAN; `$0/hr` on LAN or `96%` cheaper than renting a full cloud GPU, with Zero Plaintext Egress!).** |
 | **Custom Fine-Tuned / QLoRA 70B+ Model** (Custom weights not hosted on shared serverless APIs) | *Impossible* (Shared APIs only host stock public models) | **`$2,400 – $5,040 / mo`** (`$3.29–$7.00/hr` 24/7 dedicated endpoint) | **`$29/mo` + `$0.48–$1.20/hr` indexed burst (`~$135/mo`)** | **Kadmium wins by 94%** (Base `.ktb` + LoRA adapter stays warm on local NAS/RAM at `$0/hr`; burst only on active requests). |
-| **Heavy Multi-Agent Coding / Repo Indexing** (`Claude Code` / `Cursor` / `OpenCode` running 5–15M tokens/day across a 5-dev team) | **`$900 – $2,400 / mo`** (+ 429 rate limits) | `$2,500+ / mo` | **`$199/mo` Team Plan + `$120/mo` burst (`$319/mo`)** | **Kadmium wins by 70–85%** (Pools team's existing MacBooks + desktop GPUs on office LAN; bursts only peak overflow). |
+| **Heavy Multi-Agent Coding / Repo Indexing (`R4 §6.4`)** (`Claude Code` / `Cursor` / `Condenser` running 5–15M tokens/day across a 5-dev team) | `$46–$139/mo` on `DeepSeek-V3.2`, **or `$287–$861/mo` on Frontier-Open (`V4-Pro`/`Kimi K2.6`), or `$900–$2,400/mo` on Closed APIs + `38%` hit org rate limits** | `$2,500+ / mo` | **`$0/mo` on `M2` 5-Dev Office LAN (`~400 GB` pooled) OR `$199/mo` Team Plan + `$120/mo` burst (`$319/mo`)** | **Kadmium wins on Zero Rate Limits, 100% LAN Code Privacy, and `60%–85%` savings vs. Frontier-Open / Closed APIs (`R4 §6.4`).** |
 | **Regulated Legal / Medical / Defense Workflows** (HIPAA PHI, Attorney-Client Privilege, CUI) | *Disqualified* (Plaintext leaves building to 3rd-party routers) | Requires `$25k+/yr` Enterprise BAA + VPC | **`$499/mo` Private Office Fabric (100% On-Premise LAN Mode)** (`Zero Egress` outside the building) | **Kadmium wins on both compliance and 80% lower TCO.** |
 | **GRPO RL Post-Training & Code Verification** (10,000+ compiler/test rollouts per epoch) | `$1.00 / 1M` training tokens + no custom WASI env | `$1,800+ / mo` (GPUs stall waiting on CPU tests) | **Output-metered WASI (`$0.14 / 1k` rollouts) + `Dream-RSI` replay + `$1.20/hr` L40S learner burst** | **Kadmium wins by 65–75%** by disaggregating CPU sandboxes from GPU learner steps. |
 
@@ -191,7 +194,7 @@ Why do residential RTX 4090/5090 hosts on `Salad.com` churn? **Electricity math:
 - At the US EIA October 2026 residential average of **`$0.182/kWh` (`18.2¢/kWh`, projected `$0.187/kWh` in 2027, `R4 §7.9`)**, incremental power costs **`$0.048–$0.091/hr`**. In Europe, California, or the US Northeast (`$0.32–$0.42/kWh`), power costs **`$0.16–$0.27/hr`**—wiping out Salad's `$0.18–$0.25/hr` cash payout!
 
 #### How Kadmium Solves Both Buyer Parity and Host Solvency (`SupplySettlementEngine`, `R4 §6.3`):
-As proven in `R4 §6.3`, pricing hardware by *what it is* (raw GiB installed) overprices `25 GB/s` SBCs (`~$11/1M tokens`) and single-stream UMA nodes (`~$17/1M tokens`) by an order of magnitude above open-weight serverless APIs (`$0.28/$0.42` per 1M on `DeepSeek-V3.2`). Because **the buyer side is the binding constraint**, [`SupplySettlementEngine`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/supply.rs) prices Supply Grid capacity strictly per **delivered work unit** at a **20–35% discount to serverless**:
+As proven in `R4 §6.3`, pricing hardware by *what it is* (raw GiB installed) overprices `25 GB/s` SBCs (`~$11/1M tokens`) and single-stream UMA nodes (`~$17/1M tokens`) by an order of magnitude above open-weight serverless APIs (`$0.28/$0.42` per 1M on `DeepSeek-V3.2`). Because **the buyer side is the binding constraint**, [`SupplySettlementEngine`](../crates/kadmium-core/src/supply.rs) prices Supply Grid capacity strictly per **delivered work unit** at a **20–35% discount to serverless**:
 
 $$\text{BuyerClearing}_{\text{hr}} = \left(\$0.22 \times \frac{\text{Tokens}_{\text{batch,hr}}}{10^6}\right) + \left(\$0.14 \times \frac{\text{Rollouts}_{\text{wasi,hr}}}{10^3}\right) + \left(\$0.008 \times \text{GiB}_{\text{seeded,hr}}\right)$$
 
@@ -303,16 +306,20 @@ Interactive chat uses `~500` tokens per prompt. Autonomous coding agents (`Claud
 - A single 15-step coding task transmits **`40,000 to 120,000` input tokens** (mostly repeated repository context) and generates **`2,000 to 5,000` output tokens**.
 - Without high-hit-rate **Prefix KV-Cache Persistence**, re-evaluating a 64k-token prompt across a sharded cluster on every step would stall the agent for 30+ seconds per turn.
 
-### 8.2 Kadmium's Technical Moat for Coding Agents
-1. **`RadixKvTree` + Local NVMe `.ktb` Prefix Pinning (`90%+ Cache Hit Rate`):**
-   - Because coding agents append tool results to an unchanging system prompt and file tree, Kadmium's [`RadixKvTree`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-runtime/src/scheduler.rs) matches the shared prefix (`90–98%` of the prompt) already cached in local RAM/VRAM/NVMe.
+### 8.2 Kadmium's Technical Moat for Coding Agents (`Condenser` + `RadixKvTree` + USB4 Ring DMA)
+1. **`Condenser` (`Blades` Multi-Pane Agent Workspace, `:7856`):**
+   - Ships out of the box with [`kadmium-condenser`](../crates/kadmium-condenser) featuring **Blades** multi-pane agent workspaces, interactive Q/A architecture interviews, automatic tool doom-loop detection, context compaction, and out-of-process JSON-RPC plugins across local `Ollama`, `OpenAI`, `Anthropic`, `MCL4-COE` (`DeepSeek-V4.1`), and the native `:8080` Kadmium shard gateway.
+2. **`RadixKvTree` + Local NVMe `.ktb` Prefix Pinning (`90%+ Cache Hit Rate`):**
+   - Because coding agents append tool results to an unchanging system prompt and file tree, Kadmium's [`RadixKvTree`](../crates/kadmium-runtime/src/scheduler.rs) matches the shared prefix (`90–98%` of the prompt) already cached in local RAM/VRAM/NVMe.
    - Only the **delta tokens (`~300–800` new tokens from the latest compiler/test output)** are transmitted across the pipeline boundary (`< 800 KB` INT8 payload instead of `60 MB`!). This eliminates the WAN prefill bottleneck for multi-step coding loops.
-2. **Native Anthropic (`/v1/messages`) + OpenAI (`/v1/chat/completions`) + MCP (`/api/v1/mcp`) Tri-Protocol Gateway:**
+3. **Direct `$15` USB4 / Thunderbolt Daisy-Chain DMA (`27.6 Gbps`, `79 µs` RTT):**
+   - With [`usbc_interconnect.rs`](../crates/kadmium-runtime/src/usbc_interconnect.rs), developers do not need a `$500+` 10GbE switch to link a Windows gaming PC, an M4 MacBook/Mac Mini, and a `Strix Halo` / handheld gaming APU on their desk—a standard `$15` USB4 cable creates a `27.6 Gbps` direct DMA ring capable of both pipeline and intra-layer tensor/expert parallelism (`DeepEP`).
+4. **Native Anthropic (`/v1/messages`) + OpenAI (`/v1/chat/completions`) + MCP (`/api/v1/mcp`) Tri-Protocol Gateway:**
    - **Claude Code:** Works natively by setting `ANTHROPIC_BASE_URL=http://127.0.0.1:7848` and `ANTHROPIC_API_KEY=kdm_live_...`.
    - **Cursor / Cline / Continue.dev:** Works natively via OpenAI base URL override (`http://127.0.0.1:7848/v1`).
    - **Self-Provisioning via `kadmium-mcp`:** When a coding agent hits a complex architectural task or needs to run 50 parallel `WasiMicroSandbox` unit-test verifications, it invokes the `kadmium_burst_attach` MCP tool directly from inside the IDE.
-3. **Zero-Drift `Verde` Verification for Tool Calls:**
-   - Aggressive unstructured quantization on cheap cloud providers frequently breaks JSON-schema tool calls or corrupts indentation in code diffs. Kadmium's importance-weighted $q^*$ calibration + `Verde` $O(\log_2 L)$ canary checks guarantee that sharded `Qwen3-Coder-480B` and `DeepSeek-V3` maintain full `SWE-bench Verified` pass rates.
+5. **Zero-Drift `Verde` & `DSpark` Verification for Tool Calls:**
+   - Aggressive unstructured quantization on cheap cloud providers frequently breaks JSON-schema tool calls or corrupts indentation in code diffs. Kadmium's importance-weighted $q^*$ calibration + `Verde` $O(\log_2 L)$ canary checks and `DSpark` confidence-scheduled speculative verification guarantee that sharded `Qwen3-Coder-480B` and `DeepSeek-V3` maintain full `SWE-bench Verified` pass rates.
 
 ---
 
@@ -330,7 +337,7 @@ To guarantee 100% burst availability on Day 1 before our community Supply Grid r
 
 ### Wholesale Arbitrage Routing Logic:
 1. **First 60 Seconds of a Burst (`Modal` / `RunPod Flash`):** When a user clicks "Attach Burst GPU", Kadmium immediately bridges onto a warm `RunPod` or `Modal` container (`< 2s` startup) so token generation begins instantaneously.
-2. **Minute 2+ Background Migration (`Vast.ai` / `Prime Intellect` Datacenter Spot):** While the user works, `SpotOrderbookBidEngine` bids on the lowest-cost verified datacenter node (`$0.18–$0.38/hr`), pre-stages the `.ktb` middle-layer slice via HTTP Byte-Range, and performs a zero-downtime `< 400 ms` `CloudShield` pointer swap—dropping Kadmium's wholesale COGS by **45–60%** mid-session!
+2. **Minute 2+ Background Migration (`Vast.ai` / `Spheron` Datacenter Spot):** While the user works, `SpotOrderbookBidEngine` bids on the lowest-cost verified datacenter node (`$0.38–$0.96/hr` wholesale), pre-stages the `.ktb` middle-layer slice via HTTP Byte-Range, and performs a zero-downtime `< 400 ms` `CloudShield` pointer swap—locking in Kadmium's **`20.0%` retail gross spread (`Index × 1.25`)**!
 
 ---
 
@@ -340,10 +347,10 @@ To guarantee 100% burst availability on Day 1 before our community Supply Grid r
 A fatal mistake for two-sided marketplaces is inadvertently becoming an unlicensed Money Services Business (MSB) or Money Transmitter under FinCEN (`31 CFR § 1010.100(ff)`) and state-by-state money transmitter laws (which cost `$500k+` and 18 months to license).
 
 - **How Kadmium Avoids Money Transmitter Classification (`31 CFR § 1010.100(ff)(4)(iii)(A)` Closed-Loop Exemption):**
-  1. **`1.25×` Kadmium Compute Credits are Strictly Closed-Loop:** Credits earned by community hosts (`kadmium lease --credits true`) or purchased in Prepaid Burst Packs can **only** be redeemed for compute services inside the Kadmium platform.
+  1. **`1.25×` Kadmium Compute Credits are Strictly Closed-Loop:** Credits earned by community hosts (`kadmium lease --credits true`) or purchased in Prepaid Burst Packs can **only** be redeemed for compute services inside the Kadmium platform (expiring 12 months from issuance).
   2. **No Peer-to-Peer Credit Transfers & No Fiat Cash-Out of Promotional/Barter Credits:** Credits cannot be transferred between users or converted back into fiat currency, and single-day prepaid loads are capped at **$\le \$2,000\text{/day}$** per account—placing Kadmium squarely inside FinCEN's statutory **Closed-Loop Prepaid Access Exemption**.
 - **How Cash Payouts Work for Verified Commercial Fleet Hosts (`Stripe Connect Express`):**
-  - When commercial studio hosts or large prosumer fleets opt for the **80% USD Cash Payout track**, Kadmium never holds custodial fiat balances. Instead, payouts are processed as standard **B2B Vendor Service Payments (`Accounts Payable`) via `Stripe Connect Express`**, where Stripe acts as the licensed payment processor and handles OFAC/KYC screening.
+  - When commercial studio hosts or prosumer fleets opt for the **`75%` USD Cash Payout track** (`75 / 20 / 5` Steward-Ownership Charter), Kadmium never holds unsegregated custodial fiat balances. Instead, `75%` of buyer billings are held in a segregated escrow sub-account and paid out on a `T+7` verified settlement window as standard **B2B Vendor Service Payments (`Accounts Payable`) via `Stripe Connect Express`**, where Stripe acts as the licensed payment processor and handles OFAC/KYC screening.
 
 ### 10.2 The 2026 IRS `1099-NEC` `$2,000` Threshold Advantage
 Under the 2026 federal tax reporting rules (post-*One Big Beautiful Bill Act* update to IRC § 6041), the federal threshold for issuing **IRS Form `1099-NEC`** (Nonemployee Compensation) rose from `$600/yr` to **`$2,000/yr`**:
@@ -359,9 +366,9 @@ Under the 2026 federal tax reporting rules (post-*One Big Beautiful Bill Act* up
 
 ```mermaid
 flowchart TD
-    A["1. Cultural & PR Hook\nThe 'Grid-Zero / Anti-Datacenter' Manifesto\n(Tech, Climate & Local Grid Press)"] --> E["Kadmium Funnel\nFree Download + Kickstarter/Reg CF + Burst Packs"]
-    B["2. Viral Proof Videos\n'Doom + 671B Split-Screen' & 'Mac+PC Fusion'\n(r/LocalLLaMA, Show HN, YouTube Builders)"] --> E
-    C["3. Built-In Product Loops\n'kadmium bench --share' Hardware Badges\n+ MCP Auto-Discovery in Cursor/Claude Code"] --> E
+    A["1. Cultural & PR Hook\nThe 'Grid-Zero / Anti-Datacenter' Manifesto\n(Tech, Climate & Local Grid Press)"] --> E["Kadmium Funnel\nFree Download + Condenser + Burst Packs"]
+    B["2. Viral Proof Videos\n'3.98x LAN Speedup + <200ms Gaming Yield'\n(r/LocalLLaMA, Show HN, YouTube Builders)"] --> E
+    C["3. Built-In Product Loops\n'kadmium launch --plan' Calculator +\n'kadmium bench --share' Hardware Badges"] --> E
     D["4. Campus & Scholar Seeding\nFree .edu Scholar Compute Grants\n+ University Lab Overnight Fabrics"] --> E
 ```
 
@@ -371,15 +378,17 @@ In 2025–2026, public anger against hyperscale AI datacenters is front-page new
   > *"We don't need to restart coal plants or bulldoze farmland for 1-gigawatt AI datacenters. Scaling the Sep/Oct 2026 Steam Hardware Survey across 43.5M concurrent peak users shows ~2.40M 24 GB GPUs, ~0.56M 32 GB GPUs, and ~21.6M 12 GB+ GPUs—plus millions of Apple Silicon Macs and university workstations—already plugged into the wall. Kadmium is the open-source control rod that turns existing silicon into a planetary supercomputer—with zero new datacenters."*
 
 #### Channel 2: Visceral, Unfakeable Technical Video Demos (YouTube, `r/LocalLLaMA`, `r/homelab`, X)
-Developers ignore text claims; they share **unfakeable hardware stunts**. Produce three 90-second raw screen+camera videos:
-1. **Video #1 — *"The Kitchen-Sink 671B Cluster"*:** A Windows gaming PC (`RTX 4090`) + a MacBook Pro (`M3 Max`) + a Synology NAS + a `$379` (`$275` BOM) RK3588 Coordinator node running `DeepSeek-V3-671B` together over home Ethernet—then launching *Cyberpunk 2077* / *Doom* on the gaming PC and watching the HUD shift layers to a `$0.48/hr` indexed burst node in **`140 milliseconds`** without dropping a single frame or token.
-2. **Video #2 — *"The Wireshark Privacy Challenge"*:** Running Wireshark live on the router while bursting middle layers (`L1..N-2`) to the cloud, proving on camera that **zero bytes of plaintext prompt or code ever leave the room**.
+Developers ignore text claims; they share **unfakeable, honest hardware stunts** backed by reproducible [`kadmium bench`](BENCHMARKS_2026-10.md) logs (`R4 §3.3, §10`). Produce three 90-second raw screen+camera videos:
+1. **Video #1 — *"The Kitchen-Sink 120B MoE Desk & `<200ms` Gaming Auto-Yield"*:**
+   - **Part A (Measured 2-Node Baseline, [`BENCHMARKS_2026-10.md`](BENCHMARKS_2026-10.md) Run 1):** Show a Windows PC (`16 GB`) + Apple M4 Mac mini (`16 GB` UMA) running `ornith-1.5-35B-A3B` (`19.6 GiB` `Q4_K_M`) over 1GbE LAN at **`3.25 tok/s` (`3.98×` faster than single-PC cold NVMe paging at `0.82 tok/s`) with `0` OS swap events**.
+   - **Part B (Modelled `M1` Kitchen-Sink Desk Envelope, `R4 §3.3`):** Show a Windows gaming PC (`RTX 4090 24 GB` + `64 GB` DDR5) + MacBook Pro (`M3 Pro 36 GB`) + `$15` USB4 cable (`27.6 Gbps`) running `gpt-oss-120b` (`5.1B` active MoE) at **`28–67 tok/s` single-stream (`162 tok/s` aggregate)**—then launching *Cyberpunk 2077* / *Doom* on the gaming PC and watching the HUD shift middle layers to a **`$0.48/hr` (`Index × 1.25`)** burst node in **`142 milliseconds`** without dropping a single frame or token. *(For full `DeepSeek-V3-671B` interactive speed at `3.7–16 tok/s` single-stream / `~32 tok/s` aggregate, show the `M2` 5-Dev Office Mesh pooling `~400 GB` across 2× Mac Studios + 2× 4090 PCs + NAS.)*
+2. **Video #2 — *"The Wireshark Privacy Challenge"*:** Running Wireshark live on the router while bursting middle layers (`L1..N-2`) to the cloud, proving on camera that **zero bytes of plaintext prompt or code ever leave `127.0.0.1`**.
 3. **Creator Seeding (`$0` upfront via hardware/demo collabs):** Send pre-configured `kadmium.toml` multi-device scripts to homelab/AI YouTubers (**Jeff Geerling**, **NetworkChuck**, **Alex Ziskind**, **Matthew Berman**, **Dave's Garage**, **Hardware Haven**) who regularly get `200,000–1,500,000` views building heterogeneous Raspberry Pi / Mac / PC clusters.
 
-#### Channel 3: Built-In Product Viral Loops (`kadmium bench --share`)
-- Add a **`kadmium bench --share`** CLI output card (similar to *Speedtest.net* or *Geekbench*) that generates a sleek terminal/SVG scorecard:
-  > *"My Heterogeneous Mesh: RTX 4080 PC + M2 Pro Mac Mini + Synology NAS = 94 GB Unified Pool | 38.4 tok/s on Llama-3.3-70B (`$0.00/hr` Cloud Cost) — Benchmarked on Kadmium Cd-48"*.
-- Developers love flexing their homelab specs on `r/LocalLLaMA`, `r/homelab`, `r/MacStudio`, and X—turning every free user's benchmark post into a free billboard for Kadmium.
+#### Channel 3: Built-In Product Viral Loops (`kadmium launch --plan` Calculator & `kadmium bench --share`)
+- **The Interactive "Will It Run on My Desk?" Calculator (`kadmium launch --plan` & Web Widget):** Inspired by the viral success of `local.ai`, users select the exact devices sitting on their desk (`RTX 4090 PC`, `M4 Mac Mini`, `Strix Halo`, `Steam Deck / ROG Ally`, `Synology NAS`) and see their exact pooled memory, recommended `.ktb` shard map (`Layer 0..N`), **Measured** vs. **Modelled (`R4 §3.3`)** `tok/s` on `gpt-oss-120b`, `Llama-3.3-70B`, `Qwen3-235B`, and `DeepSeek-V3-671B`, and exact `$0.00/hr` LAN vs. `$0.48/hr` indexed burst cost.
+- **`kadmium bench --share` Terminal Scorecard:** Generates a verifiable terminal/SVG badge with embedded hardware & latency telemetry (`R4 §10`):
+  > *"My Heterogeneous Mesh (`M1` Desk): RTX 4090 PC + M3 Pro MacBook + USB4 Ring = 60 GB Fast Pool | 48.2 tok/s on gpt-oss-120b (`$0.00/hr` Cloud Cost) — Benchmarked on Kadmium Cd-48"*.
 
 #### Channel 4: High-ROI Micro-Targeted Paid Ads (`$500–$2,000` Test Budget)
 - Skip expensive broad Google Search ads. Run surgical **`$25/day` Reddit Promoted Video Posts** targeted *exclusively* at subscribers of `r/LocalLLaMA`, `r/homelab`, `r/selfhosted`, `r/ClaudeAI`, and `r/cursor`, plus classified sponsorships in developer newsletters (*TLDR AI*, *Console.dev*).
@@ -429,19 +438,20 @@ Crowdfunding campaigns go viral when they tap into a **righteous, urgent cultura
 
 Because US law strictly separates **product pre-orders** (`Kickstarter`) from **investment securities** (`SEC Regulation Crowdfunding`), we can execute a **two-stage crowdfunding blitz**:
 
-| Dimension | **Stage 1: `Kickstarter` (Reward & Compute Pre-Sale)** | **Stage 2: `Wefunder` or `StartEngine` (SEC Reg CF Community Investment)** |
+| Dimension | **Stage 1: `Kickstarter` / `Crowd Supply` (Reward & Compute Pre-Sale)** | **Stage 2: `Wefunder` or `StartEngine` (SEC Reg CF Community Investment)** |
 | :--- | :--- | :--- |
-| **Legal Structure** | Product & Service Pre-Order (**0% Equity Dilution**, no SEC filing required) | **SEC Regulation Crowdfunding (Reg CF)** via single-line-item SPV SAFE or Equity (up to **`$5,000,000/yr`**) |
-| **Time to Launch** | **7–14 Days** (Immediate cash upon 30-day campaign close) | **30–45 Days** (Requires Form C filing + CPA financial review) |
-| **Who Backs It?** | Developers, homelabbers, gamers, privacy advocates, indie labs buying discounted compute & hardware | Users, GPU hosts, retail tech investors, and climate/decentralization advocates who want to **own equity** in Kadmium |
+| **Legal Structure** | Product & Service Pre-Order (**0% Equity Dilution**, no SEC filing required) | **SEC Regulation Crowdfunding (Reg CF)** via single-line-item SPV SAFE or Steward-Aligned Revenue Share (up to **`$5,000,000/yr`**) |
+| **Time to Launch** | **14–21 Days** (Hardware tiers gated on signed MOQ-500 ODM quote $\le \$275$ BOM per `R4 §6.6`) | **30–45 Days** (Requires Form C filing + CPA financial review) |
+| **Who Backs It?** | Developers, homelabbers, gamers, privacy advocates, indie labs buying discounted compute & hardware | Users, GPU hosts, retail tech investors, and climate/decentralization advocates who want to back Kadmium |
 | **Target Raise** | **`$50,000 – $250,000`** in non-dilutive pre-sold compute & founder licenses | **`$250,000 – $2,500,000+`** in community capital |
 
-#### High-Converting `Kickstarter` Reward Tiers (Designed for Maximum Margin & Press Appeal):
-1. **`$29` — "Grid-Zero Believer Pack":** `$50` in Kadmium Burst Credits + Founder Badge in Companion App (`~82%` net margin).
-2. **`$99` — "Homelab Pro Annual Pass":** 1 Full Year of `CloudShield Pro` + `$125` in Burst Credits (`$473` retail value).
-3. **`$299` — "Founder Lifetime Personal Pro":** Lifetime `CloudShield Pro` WAN mesh/failover subscription + `$200` Burst Credits + priority beta access to new kernels (Capped at 250 backers = **`$74,750` pure high-margin cash**).
-4. **`$699` — "The Kadmium `Cd-48` Control Rod Hardware Node" (Physical Showcase Tier):** A sleek, anodized gunmetal-gray **ARM64 RK3588 (32 GB RAM) + 2TB NVMe Mini-Appliance** pre-flashed with `kadmium-node`, pre-indexed with top `.ktb` quantized models (`DeepSeek`, `Llama-3.3`, `Qwen3-Coder`), `Dream-RSI` overnight trainer, and `$200` Burst Credits. *(Hardware cost: `~$260`; Margin: `$439/unit`—and having a tangible plug-and-play hardware box qualifies Kadmium for Kickstarter's massive **"Technology / Hardware"** discovery algorithm!)*
-5. **`$1,999` — "Founding University Lab / Studio 15-Node Pack":** Full white-glove deployment + 1 Year of `Kadmium Lab & Team` + `$1,000` Burst Credits.
+#### High-Converting `Kickstarter` Reward Tiers (`2026-10-20` Audited Deferred-Revenue & BOM Accounting, `R4 §6.5, §6.6`):
+*(See Section 18.2 for the complete per-tier COGS, `70% × 75%` credit redemption reserve, and `9%` fee waterfall.)*
+1. **`$29` — "Grid-Zero Starter Pack":** `$35` in Indexed Kadmium Burst Credits + Founder Badge in `Condenser` & Companion App (`~$18.38` credit redemption liability + `$2.61` fees = **`+$8.01` (`27.6%`) realized accrual net contribution**).
+2. **`$299` — "Homelab Pro Annual Pass":** 1 Full Year of `CloudShield Pro` + `$125` in Indexed Burst Credits (`~$125.00` credit COGS + `$26.91` fees = **`+$147.09` (`49.2%`) net contribution**).
+3. **`$379` — "The `Cd-48` 32GB RK3588 Coordinator / `.ktb` NAS Seed Node (Base)":** Pre-certified **ARM64 RK3588 (`32 GB LPDDR5`) + CNC Case + 30W PD PSU** (`$275.00` Oct-2026 BOM + `$15.16` RMA reserve + `$34.11` fees = **`+$54.73` (`14.4%`) net hardware margin**; gated on signed MOQ-500 ODM quote).
+4. **`$699` — "The `Cd-48` Control Rod 32GB + 2TB NVMe Bundle" (Physical Showcase Tier):** Pre-certified **RK3588 (`32 GB LPDDR5`) + `2 TB` PCIe NVMe** pre-loaded with `1.5 TB` of `.ktb` Merkle-verified model shards (`DeepSeek`, `Llama-3.3`, `Qwen3-Coder`, `gpt-oss-120b`) + `$100` Indexed Burst Credits (`$462.50` total BOM & credit liability + `$62.91` fees = **`+$173.59` (`24.8%`) net contribution**).
+5. **`$1,999` — "Founding University Lab / Studio 15-Node Pack":** Full white-glove deployment + 1 Year of `Kadmium Lab & Team` + `$500` Indexed Burst Credits (`~$440.00` credit/setup COGS + `$179.91` fees = **`+$1,379.09` (`69.0%`) net contribution**).
 
 ---
 
@@ -473,100 +483,96 @@ Modelled on the legendary **GitHub Student Developer Pack** and **JetBrains / Cu
   - When those students graduate in 6–24 months (or intern at startups/enterprises), they bring Kadmium into their companies.
   - Most importantly: **Federal and state grant reviewers score proposals heavily on "Broader Impacts, STEM Workforce Training, and Democratizing Access for Under-Resourced Institutions."** Having an active **Kadmium Scholar Program** turns our grant applications into slam-dunks.
 
-### 13.3 Non-Dilutive Federal, State & Philanthropic Grant Roadmap (`$305,000` to `$3,000,000+`)
+### 13.3 Non-Dilutive Federal, State & Philanthropic Grant Roadmap (`$305,000` to `$3,000,000+`, `R4 §7.8`)
 
 By pairing **Kadmium (`Cd-48`)** with **1–2 University Research Lab Partners** and the **Kadmium Scholar Program**, we unlock five concrete non-dilutive funding vehicles:
 
-| Grant / Program | Funding Amount | Why Kadmium + University Partner Fits Perfectly | Actionable Next Step |
+| Grant / Program | Funding Amount | Why Kadmium + University Partner Fits Perfectly | Actionable Next Step & Verified Solicitation Rules (`R4 §7.8`) |
 | :--- | :--- | :--- | :--- |
-| **1. `NSF STTR / SBIR` Phase I & II** (*America's Seed Fund — Distributed Systems & AI Infrastructure*) | **Phase I: `$305,000`** (6–12 mo)<br>**Phase II: `$1,250,000`** (24 mo)<br>**Fast-Track: `$1,555,000`** | **STTR requires partnering with a U.S. university lab** (which receives 30%+ of the grant budget). A CS professor gets **`$90k–$400k` in direct lab funding** just for co-signing and testing Kadmium's `DiLoCo + DeMo` and `Dream-RSI` across their campus lab! | Recruit 1–2 CS/Systems professors at a regional or R1 university as **STTR Co-PIs** and submit the 3-page **NSF Project Pitch** (approved within ~3 weeks). |
+| **1. `NSF STTR / SBIR` Phase I & II** (*Solicitation `NSF 26-510` — Distributed Systems & AI Infrastructure*) | **Phase I: `$305,000`** (`6–18 mo`)<br>**Phase II: `$1,250,000`** (`24 mo`)<br>**Combined: `$1,555,000`** | **STTR requires partnering with a U.S. university research institution** (`30%–60%` subaward to the university, `>=40%` to the small business). A CS professor gets **`$91.5k–$122k` in Phase I (`$375k+` in Phase II)** to co-benchmark `DiLoCo + DeMo` and `Dream-RSI` across their campus lab. | **Verified `NSF 26-510` Deadlines:** **`4 Nov 2026`** and **`4 Mar 2027`**. **Mandatory PI Eligibility Gate:** Under `NSF 26-510`, the Principal Investigator (PI) **must be `>50%` (`>=51%`) primarily employed by the small business** at the time of award (`>=20 hrs/wk`, `<=19.6 hrs/wk` outside employment). |
 | **2. `NSF NAIRR` (National AI Research Resource)** (*Campus & Regional Expansion Tracks*) | **Institutional Compute Contracts + Cyberinfrastructure Sub-Awards** | NAIRR's mandate is bridging the "compute divide" for non-R1 universities, HBCUs, MSIs, and community colleges that lack `$10M` H100 clusters. Kadmium turns their *existing* campus PCs/Macs into a NAIRR-compatible AI fabric. | Partner with NAIRR-OC (SDSC / TACC) and 3 regional universities to pilot **Kadmium Campus Fabric** as a federated NAIRR edge multiplier. |
-| **3. `DOE SBIR / STTR` (Office of Science — `ASCR`)** (*Energy-Efficient & Edge AI Computing*) | **Phase I: `$200,000 – $250,000`**<br>**Phase II: `$1,100,000 – $1,600,000`** | Directly addresses the Department of Energy's #1 priority: **reducing AI electric grid strain** by shifting AI training/inference to off-peak hours and ultra-low-wattage heterogeneous edge silicon (`DeMo` `85×` WAN compression + `Dream-RSI` CPU replay). | Frame proposal around **Grid-Aware Load Shifting & Heterogeneous Energy Efficiency (tok/Joule)**. |
+| **3. `DOE SBIR / STTR` (Office of Science — `ASCR`)** (*Energy-Efficient & Edge AI Computing*) | **Phase I: `$200,000 – $250,000`**<br>**Phase II: `$1,100,000 – $1,600,000`** | Directly addresses the Department of Energy's #1 priority: **reducing AI electric grid strain** by shifting AI training/inference to off-peak hours and ultra-low-wattage heterogeneous edge silicon (`DeMo` `10×–85×` WAN compression + `Dream-RSI` CPU replay). | Frame proposal around **Grid-Aware Load Shifting & Heterogeneous Energy Efficiency (tok/Joule)**. |
 | **4. State Economic Development & SBIR Matching Grants** (*State Tech Funds / University Innovation Hubs*) | **`$50,000 – $500,000`** *(Non-dilutive matching grants)* | Over 25 U.S. states offer automatic **50%–100% cash matching grants** to startups that win an NSF/DOE Phase I SBIR/STTR or partner with a state public university to provide free student compute. | Apply to state university tech-transfer / innovation funds alongside the host university partner. |
 | **5. Philanthropic Open-Source & Public-Interest AI Grants** (*Mozilla, Sloan, Schmidt Sciences, Patrick J. McGovern*) | **`$50,000 – $500,000`** *(Fast-turnaround 60–90 day grants)* | Foundations funding "Public Interest AI" and "Open-Source Alternatives to Big Tech Monopolies" actively fund open-core software that provides free AI compute to students and academic researchers. | Submit the **Kadmium Scholar + Open-Source `.ktb` / `Verde` Protocol** to Mozilla Builders and Sloan Digital Infrastructure tracks. |
 
 ---
 
-## 14. Master Integrated Timeline: Revenue + Crowdfunding + Academic Grants
+## 14. Master Integrated Timeline: Revenue + Crowdfunding + Academic Grants (`Aligned with R4 §6.5`)
 
 | Timeframe | Track 1: Commercial Revenue (Immediate Cash) | Track 2: Crowdfunding & Community Staking | Track 3: Academic, Scholar & Grant Engine |
 | :--- | :--- | :--- | :--- |
-| **Weeks 1–2** | Launch self-serve `$25/$100` Burst Packs & `$29/$199/$499` tiers; close first 5 Founding Labs (`$2,500–$5,000`). | Record the *"Kitchen-Sink 671B + Gaming Yield"* & *"Wireshark Privacy"* videos; open Kickstarter pre-launch waitlist. | Launch the **Kadmium Scholar `.edu` Application Page** on `/site`; recruit 2 University CS professors as **NSF STTR Co-PIs**. |
-| **Weeks 3–4** | Public viral launch (`r/LocalLLaMA`, `Show HN`, MCP Registry); onboard first 2 MSP partners (`25%` rev-share). | **Launch 30-Day `Kickstarter` Campaign** ("The Grid-Zero AI Fabric" — Compute Passes + `$699` `Cd-48` Mini-Node Hardware Tier). | Submit **3-Page NSF SBIR/STTR Project Pitch** (`$305k` Phase I); deploy pilot overnight cluster in Partner Lab #1. |
-| **Weeks 5–8** | Activate `1.25×` Supply Grid overnight credits & **Host SLA Bonds**; sign first 2 VFX/LAN studio overnight fleets. | Close Kickstarter (`$50k–$250k` target); file SEC Form C to open **`Wefunder` / `StartEngine` Reg CF Community Round**. | Onboard first **500 `.edu` Kadmium Scholars**; submit full **NSF STTR Phase I (`$305k`)** + **DOE ASCR** + **Mozilla/Sloan** proposals. |
-| **Weeks 9–12** | Scale to **`$50k–$90k/mo` gross cash** across Burst Packs, `CloudShield Pro`, University Labs, and MSP Legal/Medical SMBs. | Run live **Reg CF Community Equity Round** (turning active users and GPU hosts into evangelist shareholders). | Publish joint benchmark paper with University Partner Lab; expand Campus Overnight Fabric to 5 universities. |
+| **Weeks 1–2 (`Gate 0`)** | Ship `Condenser` Blades (`:7856`) + `kadmium launch --plan` calculator; launch self-serve `$25/$100` Burst Packs & `$29/$199/$499` tiers; close first 5 Founding Labs (`$2,500–$5,000`). | Record the *"Measured 3.98× LAN Speedup + Kitchen-Sink 120B MoE + Gaming Yield"* & *"Wireshark Privacy"* videos; open `$1` VIP pre-launch waitlist. | Launch the **Kadmium Scholar `.edu` Application Page** on `/site`; recruit 2 University CS professors as **NSF STTR Co-PIs** (confirming `>=51%` small-business PI employment for `NSF 26-510`). |
+| **Weeks 3–4 (`Gate 1`)** | Public viral launch (`r/LocalLLaMA`, `Show HN`, MCP Registry); onboard first 2 MSP partners (`$299/mo` wholesale); reach **`$5,000+/mo`** gross billings. | **Launch 30-Day `Kickstarter` / `Crowd Supply` Campaign** (Compute Passes + `$379` / `$699` `Cd-48` Coordinator Tiers once MOQ-500 ODM quote $\le \$275$ is signed). | Submit **3-Page NSF SBIR/STTR Project Pitch** (`$305k` Phase I, `NSF 26-510`); deploy pilot overnight cluster in Partner Lab #1. |
+| **Weeks 5–8 (`Gate 2`)** | Cut over native `.ktb` GPU/Metal/USB4 kernels (`M1/M2` envelopes); activate `1.25×` Supply Grid overnight credits & **Host SLA Bonds**; sign first 2 VFX/LAN studio overnight fleets. | Close Kickstarter (`$50k–$250k` target); file SEC Form C to open **`Wefunder` / `StartEngine` Reg CF Community Round**. | Onboard first **500 `.edu` Kadmium Scholars**; submit full **NSF STTR Phase I (`$305k`)** + **DOE ASCR** + **Mozilla/Sloan** proposals. |
+| **Weeks 9–12 (`Gate 3`)** | Scale to **`$16,189/mo` (Bear) — `$35,903/mo` (Base Budget Target, `+$15,559/mo` accrual margin) — `$110,637/mo` (Stretch)** across Burst Packs, `CloudShield Pro`, Labs, and MSP SMBs (`R4 §6.5`). | Run live **Reg CF Community Round** (turning active users and GPU hosts into evangelist stakeholders). | Publish joint benchmark paper with University Partner Lab; expand Campus Overnight Fabric to 5 universities. |
 
 
 ---
 
-## 15. Breakthrough Bandwidth Architecture: P2P Seeder/Leecher Swarming & `RAID-0 / RAID-5` Tensor Striping
+## 15. Breakthrough Bandwidth Architecture: P2P Seeder/Leecher Swarming & `RAID-0 / RAID-5` Tensor Striping (`R4 §3.6` Scoped)
 
-In Section 3.1, we identified the classic bottleneck that killed early P2P inference networks (`Petals`): **asymmetric residential upload bandwidth**. A typical consumer broadband connection has **`500–1,000 Mbps` download (`62–125 MB/s`)** but only **`20–35 Mbps` upload (`2.5–4.3 MB/s`)**. When a single residential node tries to upload a `33 MB` INT8 prefill activation or a `4 GB` model shard over a single `25 Mbps` uplink, the receiver's `1,000 Mbps` download pipe sits **97.5% idle**.
+In Section 3.1, we identified the classic bottleneck that killed early P2P inference networks (`Petals`): **asymmetric residential upload bandwidth**. A typical consumer broadband connection has **`500–1,000 Mbps` download (`62–125 MB/s`)** but only **`20–35 Mbps` upload (`2.5–4.3 MB/s`)**. When a single residential node tries to upload a `4 GB` `.ktb` model shard or a multi-request batch output over a single `25 Mbps` uplink, the receiver's `1,000 Mbps` download pipe sits **97.5% idle**.
 
-We solve this using two proven systems engineering primitives adapted to tensor compute: **BitTorrent Seeder/Leecher Swarming** and **RAID / Multi-Channel DDR Connection & Tensor Striping**.
+> [!IMPORTANT]
+> **Physics Scope Boundary for Residential Striping (`R4 §3.6`):**
+> In a Transformer, FFN / SwiGLU and MoE expert projections are token-wise independent, **but causal self-attention is NOT token-wise independent** (tokens $513..4096$ must attend to the Keys and Values of tokens $1..512$). Exchanging $K, V$ states across 8 residential `25 Mbps` uplinks at every layer of an 80-layer model would require `68–376 seconds` for a single prompt (`R4 §3.6`). Therefore, Kadmium **never** uses residential WAN striping to split a single interactive prompt across multiple layers. Instead, Kadmium scopes **BitTorrent Swarming** and **`RAID-0 / RAID-5` Striping** strictly to the three workloads that are genuinely embarrassingly parallel across asymmetric links:
+> 1. **`.ktb` Merkle Weight & KV-Cache Page Swarming (`64 KiB` blocks)**
+> 2. **Multi-Request Batch Inference & Parallel RL Rollout Striping (`~1.6M batch tokens/hr per peer`, where each worker processes independent prompts $B_1..B_k$)**
+> 3. **Single-Layer Co-Located LAN / Campus MoE Expert Fan-Out (`DeepEP` / `EPLB`)**
 
 ```mermaid
 flowchart LR
     subgraph Leecher_Coordinator["Coordinator / Leecher (1,000 Mbps Download)"]
-        L0["Local Layer 0\nSplits 4,096-Token Prefill\ninto k=8 Stripes + Parity"]
-        Gather["SIMD RAID-5 Reconstructor\nRebuilds Full Tensor as soon as\nANY 8 of 9 Stripes Arrive (<1.2s)"]
+        L0["Batch Dispatcher / .ktb Leecher\nSplits Independent Batch Requests B1..B8\nor 64 KiB .ktb Merkle Pages"]
+        Gather["SIMD RAID-5 Reconstructor\nRebuilds Full Batch / Shard as soon as\nANY 8 of 9 Stripes Arrive"]
     end
     subgraph Swarm_Seeders["Residential GPU Swarm (Each: 500 Mbps Down / 25 Mbps Up)"]
-        S1["Seeder GPU #1\nStripe 1 (512 tok / 4.1 MB)"]
-        S2["Seeder GPU #2\nStripe 2 (512 tok / 4.1 MB)"]
-        S8["Seeder GPU #8\nStripe 8 (512 tok / 4.1 MB)"]
-        SP["Parity Seeder GPU #9\nRAID Parity Stripe (512 tok)"]
+        S1["Seeder GPU #1\nBatch Stripe 1 / .ktb Pages"]
+        S2["Seeder GPU #2\nBatch Stripe 2 / .ktb Pages"]
+        S8["Seeder GPU #8\nBatch Stripe 8 / .ktb Pages"]
+        SP["Parity Seeder GPU #9\nRAID-5 Parity Stripe"]
     end
-    L0 -->|"Fast 500 Mbps Down (~65ms)"| S1 & S2 & S8 & SP
+    L0 -->|"Fast 500 Mbps Down"| S1 & S2 & S8 & SP
     S1 & S2 & S8 & SP -->|"8 x 25 Mbps Parallel Upload = 200 Mbps Aggregate"| Gather
 ```
 
 ### 15.1 BitTorrent Seeder/Leecher Swarming for `.ktb` Shards, LoRAs & KV-Cache Handoffs
-Because Kadmium's `.ktb` weight format is already structured into **`64 KiB` page-aligned, SHA-256 Merkle-verified blocks** ([`KtbMerkleTree`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-data/src/lib.rs)), every node holding a model slice acts as a **BitTorrent Seeder**:
+Because Kadmium's `.ktb` weight format is already structured into **`64 KiB` page-aligned, SHA-256 Merkle-verified blocks** ([`KtbMerkleTree`](../crates/kadmium-data/src/lib.rs)), every node holding a model slice acts as a **BitTorrent Seeder**:
 1. **Aggregating Slow Uplinks into a Gigabit Downlink:**
    - When a new worker node or `< 400 ms` `CloudShield` failover target (`Leecher`) needs a `.ktb` layer shard or a migrated KV-cache block, it pulls distinct `64 KiB` pages in parallel from **$M = 16\text{ to }32$ Seeders simultaneously**.
    - Even if each residential seeder only contributes `25 Mbps` of upload, **$20\text{ seeders} \times 25\text{ Mbps} = 500\text{ Mbps}$ (`62.5 MB/s`)** into the leecher's download pipe.
 2. **Zero-Trust Merkle Verification & `$0` Cloud Egress COGS:**
-   - Every `64 KiB` page is cryptographically verified against the `.ktb` Merkle root on arrival before zero-copy `mmap` insertion (`Fts3PagePatchEngine`). Untrusted seeders cannot corrupt weights, and **Kadmium pays `$0.00` in cloud CDN egress fees** (eliminating the `$0.08–$0.12/GB` egress tax that burdens centralized GPU clouds).
-3. **Incentivizing Seeding ("Idle NVMe Bandwidth Micro-Credits"):**
-   - Users with fast fiber uploads or 24/7 home NAS boxes (`Synology` / `TrueNAS`) earn passive Kadmium Cloud Credits simply by seeding popular `.ktb` shards (`DeepSeek-V3`, `Llama-3.3-70B`, `Qwen3-Coder`) to the swarm—even when their GPU is busy!
+   - Every `64 KiB` page is cryptographically verified against the `.ktb` Merkle root on arrival before zero-copy `mmap` insertion (`Fts3PagePatchEngine`). Untrusted seeders cannot corrupt weights, and **Kadmium pays `$0.00` in cloud CDN egress fees** (eliminating the `$0.05–$0.09/GiB` egress tax that burdens centralized GPU clouds).
+3. **Incentivizing Seeding (`$0.008 / GiB` Output-Metered Seeding Payout):**
+   - Users with fast fiber uploads or 24/7 home NAS / `Cd-48` Coordinator boxes earn output-metered Supply Grid revenue (`$0.008 / GiB`, `75%` to host) by seeding popular `.ktb` shards (`DeepSeek-V3`, `Llama-3.3-70B`, `Qwen3-Coder`) to the swarm—even when their GPU is busy!
 
 ---
 
-### 15.2 `RAID-0` & Dual/Octa-Channel DDR Striping for Live Activation & MoE Throughput
-Just as **8-channel DDR5 memory** and **`RAID-0` NVMe arrays** interleave reads/writes across $k$ independent controllers to multiply bandwidth by $k\times$, Kadmium can stripe **live forward-pass activations** across $k$ parallel residential Supply Grid nodes:
+### 15.2 `RAID-0` Batch-Request Striping & Co-Located MoE Expert Striping
+Just as **8-channel DDR5 memory** and **`RAID-0` NVMe arrays** interleave reads/writes across $k$ independent controllers to multiply bandwidth by $k\times$, Kadmium stripes **independent batch requests** (over WAN) and **MoE expert evaluations** (over LAN/USB4):
 
-1. **Sequence-Chunk `RAID-0` Striping for Prefill (`8×–16×` Upload Speedup):**
-   - In a Transformer (`Llama-3`, `DeepSeek-V3`, `Qwen3`), **67% to 92% of all parameters and FLOPs reside in the FFN / SwiGLU / MoE blocks**, which are strictly token-wise independent:
-     $$\text{FFN}(X_{1..4096}) = \big[\text{FFN}(X_{1..512}),\; \text{FFN}(X_{513..1024}),\; \dots,\; \text{FFN}(X_{3585..4096})\big]$$
-   - Instead of sending a `4,096`-token prefill (`33 MB` INT8) to a single residential node (`10.6 sec` upload bottleneck), the coordinator stripes **`512`-token micro-batches (`4.1 MB` each)** across **$k = 8$ parallel residential GPUs** that seed the same `.ktb` layer slice:
-     - **Inbound (Fast Download):** Each residential GPU uses its fast `500 Mbps` *download* pipe to receive its `4.1 MB` stripe in **`~65 ms`**.
-     - **Outbound (Parallel Striped Upload):** All 8 residential GPUs upload their `4.1 MB` output stripe **simultaneously in parallel** (`8 × 25 Mbps = 200 Mbps` combined upload) into the coordinator's `1,000 Mbps` download pipe—cutting transfer time from **`10.6 seconds` down to `1.3 seconds` (`8×` speedup)**! With $k = 16$ striped seeders, it drops to **`~660 milliseconds`**.
-2. **MoE Expert-Channel Striping (`DeepSeek-V3` / `Qwen3-MoE`):**
-   - In Mixture-of-Experts layers where each token activates Top-$K=8$ independent experts ($y = \sum_{i=1}^8 g_i E_i(x)$), Kadmium stripes the 8 expert evaluations across parallel peer channels and gathers the quantized partial sums concurrently—turning consumer broadband links into an **8-channel distributed memory bus**.
+1. **Multi-Request Batch `RAID-0` Striping on the Supply Grid (`$0.22 / 1M` Batch Tokens):**
+   - When an AI startup or university lab submits an evaluation, synthetic data, or document-extraction batch of $N = 64\dots 1,000$ independent prompts, each prompt's causal attention is completely self-contained.
+   - Striping micro-batches of 8–16 independent prompts across $k = 8$ parallel residential RTX 4090 / Mac Studio nodes allows each node to compute locally at **`~1.4M–1.97M` batch tokens/hr** (`R4 §6.3`) and stream completed token batches in parallel (`8 × 25 Mbps = 200 Mbps` combined uplink)—delivering **datacenter-grade batch throughput at `$0.22 / 1M tokens`**.
+2. **MoE Expert-Channel Striping (`DeepEP` + `EPLB` on LAN / USB4 / Campus Fiber):**
+   - In Mixture-of-Experts layers (`DeepSeek-V3`, `Qwen3-MoE`, `gpt-oss-120b`) where each token activates Top-$K=8$ independent experts ($y = \sum_{i=1}^8 g_i E_i(x)$), [`deep_ep.rs`](../crates/kadmium-runtime/src/deep_ep.rs) and [`expert_balance.rs`](../crates/kadmium-runtime/src/expert_balance.rs) stripe expert evaluations across parallel LAN/USB4 channels (`FP8` dispatch + `BF16` combine) while replicating hot experts onto the fastest links.
 3. **Multi-Homed Link Striping (`Multi-Path QUIC`):**
-   - On nodes with multiple physical network interfaces (e.g., `2.5GbE` LAN + `Wi-Fi 6E`, or Home Broadband + `5G` Backup), Kadmium interleaves `64 KiB` wire frames across all active sockets using a **Lowest-RTT / Deficit-Round-Robin scheduler** to bond their aggregate throughput.
+   - On nodes with multiple physical network interfaces (e.g., `27.6 Gbps` USB4 + `2.5GbE` LAN + `Wi-Fi 6E`), Kadmium interleaves `64 KiB` wire frames across all active sockets using a **Lowest-RTT / Deficit-Round-Robin scheduler** to bond their aggregate throughput.
 
 ---
 
 ### 15.3 `RAID-5 / RAID-6` Parity Striping: Eliminating Residential Tail-Latency Stragglers
-The classic objection to `RAID-0` striping across $k = 8$ residential internet nodes is the **Straggler Problem**: if *one* of the 8 residential PCs hits a 500 ms Wi-Fi spike or ISP packet loss, the whole layer waits for the slowest node.
+The classic objection to `RAID-0` striping across $k = 8$ residential internet nodes is the **Straggler Problem**: if *one* of the 8 residential PCs hits a 500 ms Wi-Fi spike or ISP packet loss, the whole batch or shard transfer waits for the slowest node.
 
 Kadmium solves this by upgrading `RAID-0` striping to **`RAID-5 / RAID-6` Erasure-Coded & Linear-Algebraic Parity Striping**:
 
 1. **Packet-Level `RAID-5 / Reed-Solomon` Return Striping ($k$ Data + $p$ Parity):**
-   - When streaming `.ktb` weight pages, KV caches, or activation chunks from a swarm of $k + p$ seeders (e.g., $k = 8$ data streams + $p = 2$ Reed-Solomon parity streams), the leecher reconstructs the complete tensor the instant **any 8 out of 10 streams finish**.
-   - The slowest 2 residential nodes are automatically ignored without waiting for TCP/QUIC retransmission—**slashing `p99` WAN tail latency by 60%–80%**.
+   - When streaming `.ktb` weight pages or KV caches from a swarm of $k + p$ seeders (e.g., $k = 8$ data streams + $p = 2$ Reed-Solomon parity streams), the leecher reconstructs the complete tensor the instant **any 8 out of 10 streams finish**—**slashing `p99` WAN tail latency by 60%–80%**.
 2. **Linear-Algebraic `RAID-5` Coded Matrix Multiplication ($X_{\text{parity}} = \sum_{j=1}^k X_j$):**
-   - For linear projections $Y_j = X_j W$ striped across $k$ workers holding weight shard $W$, a $(k+1)$-th **Parity Worker** receives the elementwise sum of the input stripes $X_{\text{parity}} = \sum_{j=1}^k X_j$ (which has the exact same `4.1 MB` size as a single stripe!) and computes:
+   - For linear / FFN / expert projections $Y_j = X_j W$ striped across $k$ workers holding identical weight shard $W$, a $(k+1)$-th **Parity Worker** receives the elementwise sum of the input stripes $X_{\text{parity}} = \sum_{j=1}^k X_j$ and computes:
      $$Y_{\text{parity}} = X_{\text{parity}} W = \left(\sum_{j=1}^k X_j\right) W = \sum_{j=1}^k Y_j$$
-   - If **any one residential GPU $m$ lags, stutters, or triggers `< 200 ms` Gaming Auto-Yield mid-pass**, the coordinator does not wait or retry—it reconstructs the missing output stripe $Y_m$ immediately in `< 0.5 ms` via subtraction:
+   - If **any one worker GPU $m$ lags, stutters, or triggers `< 200 ms` Gaming Auto-Yield mid-pass**, the coordinator reconstructs the missing output stripe $Y_m$ immediately in `< 0.5 ms` via subtraction:
      $$Y_m = Y_{\text{parity}} - \sum_{j \neq m} Y_j$$
-
-> [!TIP]
-> **Why This Is a Massive Commercial & Patentable Differentiator for Kadmium:**
-> Competitors (`Petals`, `Salad`, `Exo`) treat every node as an isolated point-to-point bottleneck, making residential `25 Mbps` upload nodes unusable for fast prefill or reliable commercial SLAs. By combining **BitTorrent Seeder/Leecher Swarming** with **`RAID-5` Parity-Striped Tensor Execution**, Kadmium turns 10 cheap residential GPUs (`25 Mbps` upload each, `$0.01/hr` credit cost) into a **straggler-immune `200+ Mbps` virtual accelerator** that rivals a `$2.50/hr` datacenter GPU!
-
 
 ---
 
@@ -578,11 +584,11 @@ To move from zero awareness to revenue and a viral crowdfunding/product launch w
 
 | Advertising Channel | Pricing Model & 2026 Rate Benchmark | Typical CTR / Conversion | Best Offer to Pitch | Expected CAC (Paid Customer / Backer) |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. Reddit Ads (Niche Subreddit Targeting: `r/LocalLLaMA`, `r/homelab`, `r/selfhosted`, `r/MacStudio`)** | **`$7.00 – $15.00` CPM** (`$0.45 – $1.20` CPC) | `1.2% – 2.8%` CTR on native terminal/video posts | Free `kadmium` CLI download + `$25` Burst Pack OR `$1` VIP Kickstarter Reservation | **`$12 – $24`** |
+| **1. Reddit Ads (Niche Subreddit Targeting: `r/LocalLLaMA`, `r/homelab`, `r/selfhosted`, `r/MacStudio`)** | **`$7.00 – $15.00` CPM** (`$0.45 – $1.20` CPC) | `1.2% – 2.8%` CTR on native terminal/video posts | Free `kadmium` + `Condenser` download + `$25` Burst Pack OR `$1` VIP Kickstarter Reservation | **`$12 – $24`** |
 | **2. YouTube Mid-Tier Homelab & Local AI Creators (`50k–250k` subs, `20k–50k` avg views)** | **`$28 – $55` CPM** (`$700 – $1,800` per 60–90s mid-roll integration; `$1,500 – $3,200` dedicated) | High evergreen search tail (videos rank for 12–24 months) | Live multi-device sharding demo + **Custom Creator Referral Code (`+$15` bonus burst credits)** | **`$15 – $30`** *(drops to `<$8` over 6-month evergreen views)* |
 | **3. Boutique Dev Tool Newsletters (`Console.dev`, `Selfh.st`, `Changelog`, `Pointer`)** | **`$50 – $95` CPM** (`$400 – $1,500` per issue placement) | `2.5% – 5.0%` click rate among senior/staff engineers & CTOs | `Kadmium Lab & Team` (`$199/mo`) & open-source `.ktb` / `RAID-5` technical blog post | **`$35 – $65`** *(High LTV `$199–$499/mo` buyers)* |
 | **4. Flagship Mega-Newsletters (`TLDR AI` 1.1M+ subs, `ByteByteGo` 1M+ subs)** | **`$60 – $100+` CPM** (`$5,000 – $15,000` per primary placement) | Massive top-of-funnel awareness (`400k+` opens per issue) | *Only use during Week 1 of Kickstarter / Reg CF launch* (too expensive for Day-1 bootstrap) | **`$45 – $90`** |
-| **5. Meta / X Retargeting Ads (Strictly Warm Visitors & `$1` VIP Crowdfunding Funnel)** | **`$12 – $22` CPM** (`$1.00 – $3.00` Cost Per Email Lead) | `5% – 15%` of email leads upgrade to `$1` VIP Deposit; **`25% – 35%` of VIPs buy `$99–$699` tier** | **`$1` VIP Reservation** for the `$299` Lifetime Pro or `$699` `Cd-48` Control Rod Hardware Node | **`$18 – $32`** *(on `$180+` avg order value = `5.6x–10x` ROAS)* |
+| **5. Meta / X Retargeting Ads (Strictly Warm Visitors & `$1` VIP Crowdfunding Funnel)** | **`$12 – $22` CPM** (`$1.00 – $3.00` Cost Per Email Lead) | `5% – 15%` of email leads upgrade to `$1` VIP Deposit; **`25% – 35%` of VIPs buy `$299–$699` tier** | **`$1` VIP Reservation** for the `$299` Annual Pro or `$379`/`$699` `Cd-48` Coordinator Node | **`$18 – $32`** *(on `$180+` avg order value = `5.6x–10x` ROAS)* |
 
 ---
 
@@ -595,12 +601,12 @@ We use the proven **3-Step `$1` VIP Micro-Commitment Funnel** for 14–21 days *
 ```mermaid
 flowchart LR
     A["Step 1: Native Video Ad\n(Reddit / YouTube / Meta)\n'Stop Paying the Datacenter Tax:\nPool Your PC+Mac+NAS'"] -->|"15-30% Opt-in\n($1.50-$2.50 CPL)"| B["Step 2: Email Capture\nWaitlist Landing Page\n(Free CLI + Early Bird Info)"]
-    B -->|"8-15% Upgrade\n($15-$22 per VIP)"| C["Step 3: The $1 VIP Deposit\nLocks in $100 Bonus Compute Credits\n+ $200 Off the Cd-48 Node"]
+    B -->|"8-15% Upgrade\n($15-$22 per VIP)"| C["Step 3: The $1 VIP Deposit\nLocks in $100 Bonus Compute Credits\n+ Early-Bird Cd-48 Node"]
     C -->|"28-35% Convert on Hour 1\n(6x-10x Blended ROAS)"| D["Step 4: Launch Morning\nTriggers Kickstarter #1 Tech Algorithm\n(30-50% Extra Free Organic Backers)"]
 ```
 
 #### Why the `$1` Deposit Works Psychologically & Financially:
-1. **30× Higher Conversion Than Free Email Lists:** A user who pulls out their credit card (or Apple Pay) to pay **`$1`** to lock in **"Founder VIP Status"** (`+$100` in bonus Kadmium Burst Credits + guaranteed Super-Early-Bird pricing on the `$299` Lifetime Pro or `$699` `Cd-48` Hardware Appliance) converts at **25% to 35% on Launch Morning** (compared to `< 1%` for free email signups).
+1. **30× Higher Conversion Than Free Email Lists:** A user who pulls out their credit card (or Apple Pay) to pay **`$1`** to lock in **"Founder VIP Status"** (`+$100` in bonus Kadmium Burst Credits + guaranteed Early-Bird pricing on the `$299` Homelab Pro Annual Pass or `$379`/`$699` `Cd-48` Hardware Appliance) converts at **25% to 35% on Launch Morning** (compared to `< 1%` for free email signups).
 2. **Self-Liquidating Pre-Launch Validation:** If you spend `$1,500` on targeted Reddit/YouTube/Meta test ads:
    - You acquire `~750` developer emails (`$2.00` CPL) and **`~90` `$1` VIP Depositors** (`$16.60` per VIP).
    - On Hour 1 of Kickstarter, `30%` of those 90 VIPs (`27 backers`) plus `2%` of the remaining email list (`13 backers`) = **40 immediate backers** at an average pledge of **`$220` (`$8,800` on Hour 1 = `5.8×` ROAS before organic algorithm traffic even kicks in)**!
@@ -612,9 +618,9 @@ flowchart LR
 
 Developers on `r/LocalLLaMA`, `r/homelab`, `r/rust`, and `r/selfhosted` use ad-blockers or instantly downvote polished corporate marketing graphics. To achieve a **`2.0%+` CTR at `$0.50` CPC** on Reddit Ads, every ad must follow three strict rules:
 
-1. **Format = Raw Terminal + Split-Screen Hardware Video (Never Stock Graphics):**
-   - **Ad Creative #1 (*The "Idle Silicon" Hook*):** A raw photo/video of a desktop PC + MacBook Pro + Synology NAS on a real desk with a terminal overlay showing `kadmium probe` combining them into a `112 GB` pool running `DeepSeek-V3` at `34 tok/s`.
-   - **Headline:** `[Open-Source Rust] I got tired of my 24GB PC and 36GB MacBook sitting on the same desk unable to pool VRAM—so we built Kadmium (Cd-48) with <200ms gaming auto-yield and RAID-5 P2P tensor striping.`
+1. **Format = Raw Terminal + Split-Screen Hardware Video with Honest Measured/Modelled Speeds (Never Stock Graphics):**
+   - **Ad Creative #1 (*The "Idle Silicon" Hook*):** A raw photo/video of a desktop PC (`RTX 4090 24 GB`) + MacBook Pro (`M3 Pro 36 GB`) + Synology NAS on a real desk with a terminal overlay showing `kadmium probe` combining them into a `60 GB` fast pool (`124 GB` total with DDR5) running `gpt-oss-120b` at `28–67 tok/s` (`M1` Modelled, `R4 §3.3`) and `ornith-1.5-35B-A3B` at `3.98×` faster than single-PC cold NVMe swap ([`BENCHMARKS_2026-10.md`](BENCHMARKS_2026-10.md) Measured Run 1).
+   - **Headline:** `[Open-Source Rust] I got tired of my 24GB PC and 36GB MacBook sitting on the same desk unable to pool VRAM—so we built Kadmium (Cd-48) with 27.6 Gbps USB4 DMA, <200ms gaming auto-yield, and Condenser Blades.`
 2. **Keep Comments UNLOCKED & Answer Deep Technical Questions Live:**
    - Brands that lock comments on Reddit ads get ignored. Leaving comments open and answering questions with deep Rust systems engineering details (`.ktb` `64 KiB` Merkle pages, `FreeToken` $q^*$ sensitivity, `RAID-5` linear-algebraic parity striping, and Wireshark packet captures) turns the comment section into a viral upvote thread.
 3. **The "Zero-Friction First Action":**
@@ -653,45 +659,45 @@ How to deploy our first **`$0` $\to$ `$1,000` $\to$ `$5,000`** in advertising ca
 
 ---
 
-## 17. Ad Creative Scripts, Visual Storyboards & Ready-to-Post Copy
+## 17. Ad Creative Scripts, Visual Storyboards & Ready-to-Post Copy (`Aligned with R4 §3.3 & Measured Run 1`)
 
 ### 17.1 Video Script #1: "The Idle Silicon Desk & The `<200ms` Gaming Test" (90 Seconds — Reddit, YouTube, X)
 
 | Timestamp | Visual On-Screen (Split-Screen Camera + Live Terminal/HUD) | Voiceover / Captions (Fast-Paced, Engineer-to-Engineer) |
 | :--- | :--- | :--- |
-| **`0:00 – 0:12`** | **Hook:** Camera pans across a real desk with a Windows Gaming PC (`RTX 4090 24GB`), a `MacBook Pro M3 Max 36GB`, a `Synology NAS`, and a tiny `RK3588 SBC`. | *"Look at your desk right now. You probably have a gaming PC, a MacBook, and maybe a NAS or old laptop. Together, that's over 80 gigabytes of high-speed memory—already paid for—yet you're still paying $200 a month for rate-limited cloud AI APIs because your devices can't pool their VRAM."* |
-| **`0:12 – 0:32`** | **The Setup:** Terminal runs `kadmium probe` and `kadmium serve --model deepseek-v3-671b`. The Control Room HUD lights up showing `Layer 0..18` on the PC, `Layer 19..42` on the MacBook, `.ktb` cold experts `mmap`'d on the NAS, and `Claude Code` streaming at `36 tok/s`. | *"This is Kadmium (`Cd-48`). It's a single pure-Rust binary that fuses Windows, Mac, Linux, and ARM into one heterogeneous AI fabric. Your PC and Mac handle the hot layers, your NAS streams 64-kilobyte page-aligned `.ktb` experts, and your tiny SBC runs speculative draft tokens."* |
-| **`0:32 – 0:55`** | **The Unfakeable Stunt (`<200ms` Yield):** While `Claude Code` is mid-stream refactoring a repository, the user double-clicks *Cyberpunk 2077* / *Doom Eternal* on the Windows PC. A millisecond timer overlay hits **`142 ms`**: the PC's layers slide smoothly onto the Mac + a `$0.45/hr` burst node without dropping a single token or game frame. | *"Watch what happens when I launch a game on my main PC while a 671-billion parameter model is mid-sentence. Kadmium hooks into the OS GPU swapchain, detects the game in 142 milliseconds, and live-migrates my PC's middle layers to a 45-cent burst node—zero dropped frames, zero interrupted tokens."* |
-| **`0:55 – 1:15`** | **The Privacy & RAID-5 Hook:** Quick zoom onto Wireshark packet capture + `RAID-5` multi-seeder diagram. | *"And unlike cloud providers that read your raw prompts, Kadmium pins Layer 0 and the output head strictly on your machine. Remote nodes only ever see quantized middle-layer numbers, striped across peers like RAID-5."* |
-| **`1:15 – 1:30`** | **Call to Action:** Terminal shows `cargo install kadmium-cli` + URL to `/site` and the `$1` VIP Founder Pass. | *"Kadmium Local is 100% free and open-source. Download the binary today, or grab a $1 Founder Reservation to lock in $100 of bonus burst compute."* |
+| **`0:00 – 0:12`** | **Hook:** Camera pans across a real desk with a Windows Gaming PC (`RTX 4090 24GB`), a `MacBook Pro M3 Pro 36GB` linked via a `$15` USB4 cable (`27.6 Gbps`), a `Synology NAS`, and a `RK3588 Coordinator SBC`. | *"Look at your desk right now. You probably have a gaming PC, a MacBook, and maybe a NAS or old laptop. Together, that's 60 gigabytes of fast GPU and Unified Memory—plus 64 gigs of DDR5—already paid for, yet you're still hitting rate limits on $200-a-month cloud AI APIs because your devices can't pool their memory."* |
+| **`0:12 – 0:32`** | **The Setup:** Terminal runs `kadmium probe` and `kadmium serve`. Split-screen shows **(1) Measured Run 1 (`ornith-1.5-35B-A3B` running `3.98×` faster across PC+Mac than single-PC NVMe paging with `0` swap)** and **(2) Modelled `M1` Desk Envelope (`gpt-oss-120b` streaming at `28–67 tok/s` inside `Condenser` Blades)**. | *"This is Kadmium (`Cd-48`) and Condenser. It's a pure-Rust runtime that fuses Windows, Mac, Linux, and ARM over Ethernet or a $15 USB4 cable. On a 2-node 16GB PC + Mac mini split, it runs a 35B MoE 3.98x faster than cold NVMe swap—and on a 4090 + MacBook desk, it models `gpt-oss-120b` at 28 to 67 tokens per second."* |
+| **`0:32 – 0:55`** | **The Unfakeable Stunt (`<200ms` Yield):** While `Condenser` / `Claude Code` is mid-stream refactoring a repository, the user double-clicks *Cyberpunk 2077* / *Doom Eternal* on the Windows PC. A millisecond timer overlay hits **`142 ms`**: the PC's layers slide smoothly onto the Mac + a **`$0.48/hr` (`Index × 1.25`)** burst node without dropping a single token or game frame. | *"Watch what happens when I launch a game on my main PC while my coding agent is mid-sentence. Kadmium hooks into the OS GPU swapchain, detects the game in 142 milliseconds, and live-migrates my PC's middle layers to a 48-cent indexed burst node—zero dropped frames, zero interrupted tokens."* |
+| **`0:55 – 1:15`** | **The Privacy & RAID-5 Hook:** Quick zoom onto Wireshark packet capture + `.ktb` `RAID-5` multi-seeder diagram. | *"And unlike cloud providers that read your raw prompts, Kadmium pins Layer 0 and the output head strictly on your machine. Remote nodes only ever see middle-layer tensors or independent batch stripes."* |
+| **`1:15 – 1:30`** | **Call to Action:** Terminal shows `cargo install kadmium-cli` + `kadmium launch --plan` calculator + URL to `/site`. | *"Kadmium Local and Condenser Blades are 100% free and open-source. Run `kadmium launch --plan` on your desk today, or grab a $1 Founder Reservation to lock in $100 of bonus burst compute."* |
 
 ---
 
 ### 17.2 Video Script #2: "The Grid-Zero Manifesto" (Crowdfunding & Mainstream PR Hero Video — 2 Minutes)
 - **`0:00 – 0:25` (The Problem):** News headlines of hyperscale datacenters consuming `~415 TWh` of electricity in 2024 and projected by the IEA to hit `~945 TWh` by 2030, draining municipal watersheds, and hiking local residential electric bills (`$329.17/MW-day` PJM capacity cap, `$0.182/kWh` US residential average), while 4 trillion-dollar tech monopolies lock frontier AI behind rent-seeking paywalls.
 - **`0:25 – 0:55` (The Hidden Supercomputer):** *"The world doesn't have a silicon shortage. It has a utilization crisis. Across Steam's 43.5M concurrent peak alone, ~2.40M 24 GB GPUs, ~0.56M 32 GB GPUs, and ~21.6M 12 GB+ GPUs—plus millions of Apple Silicon Macs, studio workstations, and university computer labs—are already manufactured and already plugged in."*
-- **`0:55 – 1:35` (How Kadmium Works):** Show how Kadmium (`Cd-48` — the atomic control rod) connects personal hardware, overnight university labs, and studio fleets using **Zero-Plaintext Local Pinning**, **BitTorrent `.ktb` Seeding**, and **`RAID-5` Parity Tensor Striping**—turning 10 everyday residential connections into a straggler-immune supercomputer.
-- **`1:35 – 2:00` (The Mission & Rewards):** *"When you back Kadmium, you aren't funding another concrete datacenter in a cornfield. You're claiming compute independence—and helping us provide free AI compute grants to thousands of students and public university labs."*
+- **`0:55 – 1:35` (How Kadmium Works):** Show how Kadmium (`Cd-48` — the atomic control rod) connects personal hardware, overnight university labs, and studio fleets using **Zero-Plaintext Local Pinning**, **BitTorrent `.ktb` Seeding**, and **Output-Metered `WASI` & Batch Clearing (`$0.22/1M` tokens, `75%` to host)**—turning everyday hardware into a community-owned clearinghouse.
+- **`1:35 – 2:00` (The Mission & Rewards):** *"When you back Kadmium, you aren't funding another concrete datacenter in a cornfield. You're claiming compute independence—and helping our `75/20/5` Steward-Ownership Charter fund free AI compute grants for students, public university labs, and small businesses."*
 
 ---
 
 ### 17.3 Copy-Paste Native Reddit Ad & `r/LocalLLaMA` Launch Post
 
-> **Title:** `[Open-Source / Pure Rust] We built Kadmium (Cd-48) to pool mismatched GPUs + Macs + NAS + SBCs into one LLM/RL cluster — featuring <200ms gaming auto-yield, zero-plaintext middle-layer burst, and RAID-5 P2P tensor striping`
+> **Title:** `[Open-Source / Pure Rust] We built Kadmium (Cd-48) + Condenser to pool mismatched GPUs + Macs + NAS over LAN & $15 USB4 cables (27.6 Gbps) — 3.98x measured speedup over cold NVMe swap, <200ms gaming auto-yield, and 0% crypto`
 >
 > **Body:**
-> Like a lot of people here, I have a 24GB gaming PC under my desk, a 36GB MacBook Pro for work, and a NAS in the closet. Individually, none of them can comfortably run a high-precision 70B–671B model with a 64k KV cache for `Claude Code` or `Cline`.
+> Like a lot of people here, I have a gaming PC under my desk, a MacBook / Mac Mini for work, and a NAS in the closet. Individually, when a model exceeds a single machine's VRAM/UMA, cold NVMe paging tanks throughput to `< 1 tok/s` (`0.82 tok/s` measured on `ornith-1.5-35B-A3B` `Q4_K_M`).
 >
-> Existing tools either required identical Macs (`exo`), stalled on residential upload speeds (`Petals`), or forced me to rent a full 2×A100 pod in the cloud and send my raw code to a stranger's server.
+> Existing tools either required homogeneous Macs (`exo`), stalled on residential upload speeds (`Petals`), pivoted to crypto tokens (`Salad RNP-023`), or forced me to rent a full cloud pod and send my raw code to a remote server.
 >
-> So we built **Kadmium (`Cd-48`)** in pure Rust (`MIT/Apache-2.0`):
-> - **True Heterogeneous Sharding:** Combines discrete GPUs (`CUDA`/`Vulkan`) + Apple Silicon Unified Memory (`Metal`) + DDR5 RAM (`FreeToken` $q^*$ importance quantization) + NVMe (`.ktb` `64 KiB` page-aligned zero-copy `mmap`).
-> - **`< 200 ms` Polite Gaming / Battery Auto-Yield:** Watches `DXGI` / `IOKit` / `DRM` swapchains. Launch a game on your PC and Kadmium drains its layers in `< 200 ms` without killing your coding agent's stream.
-> - **Blind Middle-Layer Cloud Burst (`L0` & `LN-1` Stay Local):** If your local hardware is 30 GB short, you only rent the missing middle layers (`$0.48/hr` indexed 4090 or `$0.07/hr` fractional grid slice instead of `$3.29+/hr` dedicated), and raw prompts/tokens never leave `127.0.0.1`.
-> - **BitTorrent `.ktb` Swarming + `RAID-5` Tensor Striping:** Stripes prefill chunks across $k$ parallel seeders + $p$ linear-algebraic parity nodes ($Y_{\text{parity}} = \sum Y_j$), aggregating slow `25 Mbps` residential uploads into a `200+ Mbps` straggler-immune pipe.
+> So we built **Kadmium (`Cd-48`)** and **Condenser (`Blades` multi-pane agent harness)** in pure Rust (`MIT/Apache-2.0`):
+> - **Measured Multi-Node Speedup + `27.6 Gbps` USB4 Ring DMA:** Splitting `ornith-1.5-35B-A3B` (`19.6 GiB`) across a 16GB Windows PC (`L00–L15`) and a 16GB M4 Mac mini (`L16–L39`) over 1GbE LAN delivers **`3.25 tok/s` p50 (`3.98×` faster than single-PC cold NVMe paging) with `0` OS swap events** ([`docs/BENCHMARKS_2026-10.md`](BENCHMARKS_2026-10.md)). Link machines with a `$15` USB4 cable for a `27.6 Gbps` (`79 µs` RTT) direct DMA ring (`M1` desk envelope models `gpt-oss-120b` at `28–67 tok/s`; `M2` 5-dev office mesh models `DeepSeek-V3-671B` at `3.7–16 tok/s` single-stream / `~32 tok/s` aggregate).
+> - **`< 200 ms` Polite Gaming / Battery Auto-Yield:** Watches `DXGI` / `IOKit` / `DRM` swapchains. Launch a game on your PC and Kadmium drains its layers in `< 200 ms` without killing your `Condenser` or `Claude Code` stream.
+> - **Blind Middle-Layer Cloud Burst (`L0` & `LN-1` Stay Local):** If your local hardware is short on memory, you only rent the missing middle slice (`$0.48/hr` indexed 4090 or `$1.20/hr` L40S at `WholesaleVerifiedIndex × 1.25` instead of `$3.29+/hr` dedicated), and raw prompts/tokens never leave `127.0.0.1`.
+> - **BitTorrent `.ktb` Swarming + Output-Metered Supply Grid (`75/20/5` Steward-Owned, Zero Crypto):** Pools `64 KiB` Merkle-verified `.ktb` pages across seeders (`$0.008/GiB`), clears batch inference at `$0.22/1M` tokens and deterministic `WASI` RL verification at `$0.14/1k` rollouts, and pays `75%` in USD directly to hardware hosts.
 >
-> **Try it locally (100% free):** `cargo install --git https://github.com/mESmaC/Kadmium kadmium-cli`
-> Run `kadmium bench --share` and reply with your multi-device topology score—we're dropping **`$25` in free middle-layer Burst Credits** to everyone who posts a bug report or multi-node benchmark in this thread today!
+> **Try it locally (100% free forever on LAN):** `cargo install --git https://github.com/mESmaC/Kadmium kadmium-cli`
+> Run `kadmium launch --plan` or `kadmium bench --share` and reply with your multi-device topology score—we're dropping **`$25` in free middle-layer Burst Credits** to everyone who posts a bug report or multi-node benchmark in this thread today!
 
 ---
 
@@ -718,38 +724,38 @@ A critical legal reality uncovered in our hardware compliance research: **buildi
 
 ## 19. Academic & Grant Execution Playbook (`NSF STTR Project Pitch` + Outreach Templates)
 
-### 19.1 Ready-to-Submit `NSF SBIR/STTR` Phase I Project Pitch (`$305,000` Award)
-The NSF SBIR/STTR portal requires a 4-part **Project Pitch** before inviting a full `$305,000` Phase I proposal (which then unlocks `$1,250,000` in Phase II). Under **STTR**, **30% to 40% (`$91,500–$122,000`) goes directly to our partner University CS Lab**, making university professors eager to co-author and validate the system!
+### 19.1 Ready-to-Submit `NSF SBIR/STTR` Phase I Project Pitch (`$305,000` Award — Solicitation `NSF 26-510`)
+The NSF SBIR/STTR portal (`NSF 26-510`, deadlines **`4 Nov 2026`** and **`4 Mar 2027`**) requires a 4-part **Project Pitch** before inviting a full `$305,000` Phase I proposal (`6–18 months`, which then unlocks `$1,250,000` over `24 months` in Phase II). Under **STTR**, **30% to 60% (`$91,500–$183,000` in Phase I)** goes to our partner University CS Lab while the small-business PI maintains **`>=51%` primary employment** at Kadmium (`R4 §7.8`):
 
 1. **Section 1 — The Technology Innovation *(Max 3,500 chars)*:**
-   - **Core R&D Breakthrough:** `Kadmium (Cd-48)` is a consolidated, heterogeneous distributed AI inference and post-training runtime written in pure Rust that unifies disparate edge, desktop, and campus architectures (`x86_64`, `ARM64`, discrete GPUs, Apple Unified Memory, DDR5 RAM, and NVMe storage) into a single fault-tolerant compute fabric. Unlike existing frameworks (`vLLM`, `DeepSpeed`, `Petals`) that require homogeneous datacenter GPUs or stall over asymmetric WAN links, Kadmium introduces four novel systems innovations: (1) **Zero-Copy `64 KiB` Page-Aligned `.ktb` Tensor Banks** with SHA-256 Merkle verification and BitTorrent-style multi-seeder swarming; (2) **`RAID-5` Linear-Algebraic Coded Tensor Striping** ($Y_{\text{parity}} = (\sum_{j=1}^k X_j)W$), which stripes activations across $k$ low-upload nodes plus $p$ parity workers to multiply effective uplink bandwidth by $k\times$ while eliminating `p99` straggler tail latency; (3) **FreeToken $q^*$ Activation-Sensitivity Mixed-Precision Sharding** combined with `< 200 ms` OS GPU swapchain hysteresis for non-disruptive daytime campus/office operation; and (4) **Disaggregated Zero-GPU Reinforcement Learning (`Dream-RSI` MCTS causal replay + deterministic `WASI` sandboxes + `DiLoCo/DeMo` `10×–85×` DCT-compressed gradients)**.
+   - **Core R&D Breakthrough:** `Kadmium (Cd-48)` is a consolidated, heterogeneous distributed AI inference and post-training runtime written in pure Rust that unifies disparate edge, desktop, and campus architectures (`x86_64`, `ARM64`, discrete GPUs, Apple Unified Memory, DDR5 RAM, and NVMe storage) into a single fault-tolerant compute fabric. Unlike existing frameworks (`vLLM`, `DeepSpeed`, `Petals`) that require homogeneous datacenter GPUs or stall over asymmetric WAN links, Kadmium introduces four novel systems innovations: (1) **Zero-Copy `64 KiB` Page-Aligned `.ktb` Tensor Banks** with SHA-256 Merkle verification and BitTorrent-style multi-seeder swarming; (2) **`RAID-5` Linear-Algebraic Coded Batch & Expert Striping** ($Y_{\text{parity}} = (\sum_{j=1}^k X_j)W$) combined with **`DeepEP` asymmetric LAN/WAN dispatch and `EPLB` hot-expert replication**; (3) **FreeToken $q^*$ Activation-Sensitivity Mixed-Precision Sharding** combined with `< 200 ms` OS GPU swapchain hysteresis for non-disruptive daytime campus/office operation; and (4) **Disaggregated Zero-GPU Reinforcement Learning (`Dream-RSI` MCTS causal replay + deterministic `WASI` sandboxes + `DiLoCo/DeMo` `10×–85×` DCT-compressed gradients)**.
 2. **Section 2 — Technical Objectives and Challenges *(Max 3,500 chars)*:**
    - **Phase I R&D Objectives (with University STTR Partner Lab):**
-     - *Objective 1:* Formalize and benchmark **`RAID-5` Coded Activation & Expert Striping** across 50+ heterogeneous campus workstations and residential WAN links (`20–50 Mbps` uplink), proving $\ge 6\times$ reduction in `p99` prefill latency and zero-stall recovery under 15% simulated node preemption.
-     - *Objective 2:* Validate **`Verde` $O(\log_2 L)$ Referee Bisection** and **Zero-Plaintext Local Boundary Pinning (`L0` / `LN-1`)** against adversarial bit-flip and model-poisoning attacks across untrusted peer nodes.
+     - *Objective 1:* Formalize and benchmark **`RAID-5` Coded Batch & Expert Striping** and **`DeepEP`/`EPLB` MoE scheduling** across 50+ heterogeneous campus workstations and residential WAN links (`20–50 Mbps` uplink), proving $\ge 6\times$ reduction in `p99` batch/shard tail latency and zero-stall recovery under 15% simulated node preemption.
+     - *Objective 2:* Validate **`Verde` $O(\log_2 L)$ Referee Bisection** and **`DSpark` confidence-scheduled verification** against adversarial bit-flip and model-poisoning attacks across untrusted peer nodes.
      - *Objective 3:* Benchmark disaggregated **GRPO + `Dream-RSI` offline MCTS post-training** across 200 idle overnight university lab machines, demonstrating $\ge 65\%$ reduction in GPU-hour energy consumption (`tok/Joule`) compared to monolithic H100 clusters.
 3. **Section 3 — The Market Opportunity *(Max 1,750 chars)*:**
-   - Hyperscale AI datacenters face severe power-grid bottlenecks (IEA `~415 TWh` in 2024 $\to$ `~945 TWh` by 2030) and high hourly costs (`$3.29–$7.00/hr` per dedicated GPU), pricing out academic labs, students, and regulated SMBs (legal, healthcare, defense). Meanwhile, Steam's `43.5M` concurrent peak alone reflects `~2.40M` 24 GB GPUs, `~0.56M` 32 GB GPUs, and `~21.6M` 12 GB+ GPUs, alongside millions of Apple Silicon Macs and university campus computers sitting underutilized. Kadmium monetizes via a Tailscale-style open-core SaaS model (`$199–$499/mo` Lab & Air-Gapped Regulated SMB Fabrics) and a `1.25×` indexed middle-layer burst marketplace paired with the **Kadmium Scholar `.edu` Program**.
+   - Hyperscale AI datacenters face severe power-grid bottlenecks (IEA `~415 TWh` in 2024 $\to$ `~945 TWh` by 2030) and high hourly costs (`$3.29–$7.00/hr` per dedicated GPU), pricing out academic labs, students, and regulated SMBs (legal, healthcare, defense). Meanwhile, Steam's `43.5M` concurrent peak alone reflects `~2.40M` 24 GB GPUs, `~0.56M` 32 GB GPUs, and `~21.6M` 12 GB+ GPUs, alongside millions of Apple Silicon Macs and university campus computers sitting underutilized. Kadmium monetizes via a Tailscale-style open-core SaaS model (`$199–$499/mo` Lab & Air-Gapped Regulated SMB Fabrics) and a `1.25×` indexed middle-layer burst & output-metered clearinghouse paired with the **Kadmium Scholar `.edu` Program**.
 4. **Section 4 — The Company and Team *(Max 1,750 chars)*:**
-   - Led by systems engineers behind the 8-crate pure-Rust `Kadmium (Cd-48)` workspace (`>15,000` LoC of verified sharding, `.ktb` transcoding, WASI RL, and QUIC mesh networking) in partnership with `[Partner University CS Systems/AI Lab, PI Name]`.
+   - Led by systems engineers behind the 10-crate pure-Rust `Kadmium (Cd-48)` workspace (`>20,000` LoC of verified sharding, `.ktb` transcoding, `Condenser` agent workspaces, `kadmium-grid` scheduling, WASI RL, and QUIC mesh networking) in partnership with `[Partner University CS Systems/AI Lab, PI Name]`.
 
 ---
 
 ### 19.2 Copy-Paste Outreach Email to University CS Professors (STTR Co-PI + Campus Grid Pilot)
 
-> **Subject:** `NSF STTR Phase I ($100kSubaward to your lab) + Zero-CapEx Overnight AI Cluster on existing department machines`
+> **Subject:** `NSF 26-510 STTR Phase I ($100k+ Subaward to your lab) + Zero-CapEx Overnight AI Cluster on existing department machines`
 >
 > Hi Prof. `[Last Name]`,
 >
 > I've been following your group's work on `[distributed systems / efficient ML / RL]`.
 >
-> We built **Kadmium (`Cd-48`)**, an open-source pure-Rust distributed AI fabric (`github.com/mESmaC/Kadmium`) that pools heterogeneous campus hardware (mismatched RTX 3090/4090s, Mac Studios, Linux desktops, and department computer labs) into a unified cluster for 70B–671B inference and `DiLoCo` / `GRPO` post-training—with `<200ms` auto-yield during daytime student use and **RAID-5 linear-algebraic tensor striping**.
+> We built **Kadmium (`Cd-48`)**, an open-source pure-Rust distributed AI fabric (`github.com/mESmaC/Kadmium`) that pools heterogeneous campus hardware (mismatched RTX 3090/4090s, Mac Studios, Linux desktops, and department computer labs) into a unified cluster for 35B–671B inference and `DiLoCo` / `GRPO` post-training—with `<200ms` auto-yield during daytime student use, `DeepEP`/`EPLB` MoE scheduling, and **RAID-5 linear-algebraic tensor striping**.
 >
-> We are submitting an **NSF STTR Phase I (`$305,000`) & Phase II (`$1,250,000`)** proposal this cycle and are looking for **one academic Co-PI partner lab**. Under STTR rules:
-> 1. **Your lab receives `$95,000–$120,000` directly in Phase I** (and up to **`$400,000` in Phase II**) to fund 1–2 of your PhD students to co-benchmark `RAID-5` coded inference and `Dream-RSI` offline RL on campus hardware.
+> We are submitting an **NSF STTR Phase I (`$305,000`, `NSF 26-510`) & Phase II (`$1,250,000`)** proposal this cycle and are looking for **one academic Co-PI partner lab**. Under STTR rules:
+> 1. **Your lab receives `$95,000–$120,000` directly in Phase I** (and up to **`$400,000` in Phase II**) to fund 1–2 of your PhD students to co-benchmark `RAID-5` coded inference, `DeepEP` scheduling, and `Dream-RSI` offline RL on campus hardware.
 > 2. **Immediate Free Deployment + Kadmium Scholar Grants:** We will configure Kadmium across your lab's existing machines this week at `$0` cost and grant every student in your department free `.edu` **Kadmium Scholar** burst credits.
 >
-> We already have the working 8-crate Rust codebase and the 3-page NSF Project Pitch drafted. Are you open to a 15-minute Zoom this Thursday or Friday to see if this fits a grad student in your lab?
+> We already have the working pure-Rust codebase, measured 2-node benchmark logs, and the 3-page NSF Project Pitch drafted. Are you open to a 15-minute Zoom this Thursday or Friday to see if this fits a grad student in your lab?
 
 ---
 
@@ -759,9 +765,9 @@ The NSF SBIR/STTR portal requires a 4-part **Project Pitch** before inviting a f
 >
 > Hey `[First Name]`,
 >
-> Saw your work leading `[University] ACM / AI Club`. Know how tough it is for undergrads and grad students to get enough VRAM to run `DeepSeek-V3`, `Llama-3.3-70B`, or heavy `Claude Code` agent loops without burning through personal credit cards.
+> Saw your work leading `[University] ACM / AI Club`. Know how tough it is for undergrads and grad students to get enough VRAM to run `gpt-oss-120b`, `Llama-3.3-70B`, or heavy `Claude Code` / `Condenser` agent loops without burning through personal credit cards.
 >
-> We just opened the **Kadmium Scholar Program** (`kadmium.ai`)—an open-source Rust fabric that lets students pool their dorm gaming PCs + MacBooks together and burst missing model layers to the cloud.
+> We just opened the **Kadmium Scholar Program** (`kadmium.ai`)—an open-source Rust fabric that lets students pool their dorm gaming PCs + MacBooks together over LAN or USB4 and burst missing model layers to the cloud.
 >
 > We'd love to sponsor a **1-evening "dorm-cluster & coding agent" workshop/mini-hackathon** for `[University]` this month:
 > - Every club member with a `.edu` email automatically gets a **`$50` Kadmium Scholar Compute Grant** + free `CloudShield Pro` student license.
@@ -785,16 +791,16 @@ flowchart TD
 
 ### 20.1 Loop 1: The Two-Sided Developer Referral (`"Give $25, Get $25"` in Closed-Loop Compute)
 - Every Kadmium user gets a personal invite link (`kadmium.ai/r/<username>`) embedded automatically in their **`kadmium bench --share`** terminal scorecard.
-- **Referee gets:** **`$25` in Free Starter Burst Credits** (routed to overnight `1.25×` community/campus Supply Grid nodes, so **cash COGS to Kadmium = `$0`**!).
+- **Referee gets:** **`$25` in Free Starter Burst Credits** (routed to overnight `1.25×` community/campus Supply Grid nodes, with a `70% × 75%` internal credit liability reserve).
 - **Referrer gets:** **`$25` in Priority Burst Credits** the moment their referred friend purchases their first `$25` Burst Pack or `$29/mo` `CloudShield Pro` subscription.
 
 ### 20.2 Loop 2: YouTube Creator & `Kickbooster` Cash Affiliate Program (`15%` Crowdfunding / `10%` SaaS)
-- **During Kickstarter (`Kickbooster` Integration):** Tech YouTubers, newsletter writers, and backers get a 1-click `Kickbooster` link paying **15% cash commission** on every pledge they drive (if they drive 20 backers to the `$299` tier = **`$897` cash to the creator**, with zero upfront risk to Kadmium since Kickbooster only pays out on collected pledges!).
+- **During Kickstarter (`Kickbooster` Integration):** Tech YouTubers, newsletter writers, and backers get a 1-click `Kickbooster` link paying **15% cash commission** on every pledge they drive (zero upfront risk to Kadmium since Kickbooster only pays out on collected pledges!).
 - **Ongoing SaaS & Burst (`10%` Recurring Cash for 12 Months):** Creators earn **10% cash via Stripe/PartnerStack** on all Burst Credit Packs, `CloudShield Pro` (`$29/mo`), and `Kadmium Lab & Team` (`$199/mo`) subscriptions for 12 months.
 
 ### 20.3 Loop 3: The "Supply Guild" Host Referral Override (`5%` Compute / Cash Override)
 - How do we get gamers, university lab admins, and VFX studio technical directors to recruit *other* GPU owners into the Supply Grid?
-- **The "Guild Leader" Override:** Anyone who refers a new GPU/Mac host (`kadmium lease --guild <leader_id>`) earns a **5% bonus override** (minted in Kadmium Cloud Credits or USD for commercial fleet brokers) on every verified TeraFLOP-hour that host contributes for 12 months—without reducing the host's own payout!
+- **The "Guild Leader" Override:** Anyone who refers a new GPU/Mac host (`kadmium lease --guild <leader_id>`) earns a **5% bonus override** (funded out of Kadmium's `20%` operations share so the host's `75%` payout is never reduced) on every verified work unit that host delivers for 12 months!
 
 ### 20.4 Loop 4: The `.ktb` Model Pack & `Dream-RSI` World Creator Royalty (`3%–5%` Usage Share)
 - Inspired by **RunPod Hub Templates**: open-source model quantizers (like `bartowski` / `unsloth` community builders) and RL environment authors who publish popular `.ktb` mixed-precision model banks or `gh://` `Dream-RSI` WASI verification worlds to the Kadmium Registry earn a **3% to 5% compute revenue share** whenever users spend Burst Credits running their package—turning the most influential model builders on Hugging Face and `r/LocalLLaMA` into vocal Kadmium evangelists!
@@ -809,8 +815,8 @@ While Kadmium's thesis is that we never build hyperscale datacenters, **operatin
 ### 21.1 Why Kadmium Needs a Small "Sentinel Server Room" (And Why Older Enterprise Hardware Is Perfect for It)
 We do not need our own servers to run every customer's 671B model; we need our own hardware for **five high-leverage control-plane and anchor roles** that work brilliantly on **retired 2-to-5-year-old enterprise servers** (`Dual Xeon/EPYC + 256–512 GB DDR4 + NVMe + older V100/T4/A4000/3090 GPUs`):
 1. **Trusted `Verde` Canary & Fraud-Proof Referees:** Only nodes we directly control (or verified university partner nodes) should inject cryptographic canary micro-batches and adjudicate $O(\log_2 L)$ `Verde` slashing disputes when a Supply Grid host is accused of tensor spoofing.
-2. **24/7 Master `.ktb` BitTorrent Super-Seeders:** A raid array of cheap enterprise SSDs/HDDs (`20–60 TB`) holding pre-compiled `64 KiB` Merkle-verified `.ktb` model banks (`DeepSeek-V3`, `Llama-3.3`, `Qwen3-Coder`) ensures every P2P swarm always has at least one 100%-uptime seed source.
-3. **Boundary Layer (`Layer 0` & `Layer N-1`) Anchor for Thin Clients:** When a mobile/web or lightweight laptop user bursts a model and doesn't want to hold `Layer 0` locally, our own trusted Sentinel servers can hold `Layer 0` & `Layer N-1` while striping middle layers (`L1..N-2`) across cheap community/spot GPUs.
+2. **24/7 Master `.ktb` BitTorrent Super-Seeders:** A raid array of cheap enterprise SSDs/HDDs (`20–60 TB`) holding pre-compiled `64 KiB` Merkle-verified `.ktb` model banks (`DeepSeek-V3`, `Llama-3.3`, `Qwen3-Coder`, `gpt-oss-120b`) ensures every P2P swarm always has at least one 100%-uptime seed source.
+3. **Boundary Layer (`Layer 0` & `Layer N-1`) Anchor for Thin Clients:** When a mobile/web or lightweight laptop user bursts a model and doesn't want to hold `Layer 0` locally, our own trusted Sentinel servers can hold `Layer 0` & `Layer N-1` while striping middle layers (`L1..N-2`) across verified spot GPUs.
 4. **Live Traffic, Load & `ClusterStateCrdt` Telemetry Hub:** Running our own STUN/DERP NAT traversal relays, Prometheus/Grafana traffic monitors, and the `SpotOrderbookBidEngine`.
 5. **High-Core-Count `WASI` RL Verifiers & `FreeToken` $q^*$ RAM Hosts:** Datacenters retire dual-socket `64-core EPYC / Xeon` blades with `512 GB DDR4 RAM` because they aren't H100s—yet for Kadmium, `512 GB` of server RAM + 128 CPU threads is a powerhouse for `WasiMicroSandbox` compiler verification, `Dream-RSI` MCTS tree search, and $q^*$ RAM-quantized MoE experts!
 
@@ -835,17 +841,17 @@ However, large companies rarely donate hardware directly to a standard for-profi
    - Every major university has an internal **Campus Surplus / Property Disposition Warehouse** where central IT and engineering departments dump pallets of 3-to-4-year-old `Dell/Supermicro` rack servers, `OptiPlex/Precision` workstations, and `10GbE` switches every semester.
    - Outside buyers have to bid at public auction, **but any faculty member or student club on campus (our STTR Co-PI or ACM Club chapter!) can requisition surplus servers for `$0` internal departmental transfer** to build the **Kadmium Campus & Sentinel Cluster**.
 2. **High-Frequency Trading (HFT) & Quantitative Prop Shops (*Jane Street, Jump, DRW, Hudson River Trading, Citadel*):**
-   - Prop trading firms replace overclocked servers, solarflare/Mellanox low-latency NICs, and GPU boxes every **18–24 months** because a 5-nanosecond advantage matters to them.
+   - Prop trading firms replace overclocked servers, Solarflare/Mellanox low-latency NICs, and GPU boxes every **18–24 months** because a 5-nanosecond advantage matters to them.
    - Crucially, HFT firms **heavily sponsor Rust / Systems Engineering open-source projects and university computer clubs** for recruiting! Pitching their Infrastructure / University Recruiting leads: *"Donate 4–8 decommissioned drive-less servers to power the pure-Rust Kadmium Open Scholar Grid, and we'll feature `[Firm Name]` on our GitHub, `/status` dashboard, and university hackathon banners"* has a massive hit rate.
 3. **Regional Tier-2 / Tier-3 Colocation Facilities & "Abandoned Rack" Arbitrage:**
    - Independent regional colocation datacenters constantly end up with **"abandoned customer hardware"** (when startups go bankrupt or fail to pay their colo bill, leaving behind `$20,000` of Supermicro/Dell servers in the rack) plus **stranded cabinet space and uncommitted bandwidth**.
    - **The Pitch to Regional Colo Owners:** *"Let us rack 4U of your abandoned/decommissioned servers in an empty corner cabinet as a Kadmium Sentinel & `.ktb` Seeder Node; in exchange, we route paid burst workloads to your spare capacity and give you a recurring revenue share + 'Official Grid-Zero Infrastructure Partner' branding."*
 4. **ITAD (IT Asset Disposition) & Circular Economy Brokers (*Rheaply*, *Human-I-T*, *Free Geek*, Regional Server Liquidators):**
    - Regional server recyclers buy decommissioned enterprise servers by the pallet for pennies on the dollar. Offer them an **"In-Kind Compute Grant & ESG Co-Marketing Partnership"** (or swap `$500` of Founder Burst Credits + website sponsor placement for 4 drive-less `2U` dual-Xeon/EPYC servers with `256 GB` RAM).
-5. **Stacking `$110,000+` in Free Bare-Metal & Cloud Startup Grants (Zero Equity, Immediate Bridge):**
+5. **Stacking `$110,000+` in Free Bare-Metal & Cloud Startup Grants (Zero Equity, Immediate Bridge, `R4 §7.7`):**
    - While our physical Sentinel rack is being assembled, we can run our Sentinel Control Plane, `.ktb` Master Seeder, and STUN/DERP Relays for **12 months at `$0` cash cost** by stacking three non-dilutive programs:
      - **`OVHcloud Startup Program`:** Up to **`€100,000` (`~$108,000`)** in free cloud, storage, and managed bare-metal credits (no VC backing or equity required for the `START` tier).
-     - **`Cloudflare for Startups` (Bootstrapped Tier):** **`$10,000`** in credits covering global `R2` zero-egress `.ktb` shard storage, Anycast DNS/DDoS protection, and edge routing.
+     - **`Cloudflare for Startups` (Bootstrapped Tier):** **`$5,000`** in direct self-serve bootstrap credits (scaling up to `$250,000` via accelerator/partner cohorts, `R4 §7.7`) covering global `R2` zero-egress `.ktb` shard storage, Anycast DNS/DDoS protection, and edge routing.
      - **`Vultr Open Source Program`:** **`$500 – $30,000/yr`** in free bare-metal/VPS instances granted to open-source infrastructure maintainers.
 
 ---
@@ -872,38 +878,63 @@ However, large companies rarely donate hardware directly to a standard for-profi
 
 ---
 
-## 22. Overnight Engineering Breakthroughs & Their Commercial / GTM Multiplier
+## 22. Circular-Economy Hardware & Quantization Multipliers (`Phone Farm WASI Verifiers`, `EXL3/QTIP`, `Live Mesh`)
 
-The six major engineering capabilities added overnight (`10b4329` $\to$ `6ee825e`) directly supercharge our unit economics, crowdfunding hardware line, and viral demo hooks:
+### 22.1 The 20-Slot Phone Farm Box (`kadmium-core::phone_farm`) — Ultra-Low-Power `WASI` RL Verifier & `.ktb` Seeder Array (`R4 §6.3` Gated)
+With [`phone_farm.rs`](../crates/kadmium-core/src/phone_farm.rs), Kadmium profiles and orchestrates **20-Slot Phone Farm Boxes** (`Snapdragon 845 / 865 / 8 Gen 2` motherboards with screens and lithium-ion batteries removed, running 24/7 on 5V BMS power supplies over multiplexed USB 3.0 / OTG Ethernet).
 
-### 22.1 The 20-Slot Phone Farm Box (`kadmium-core::phone_farm`) — The Ultimate Circular-Economy AI Appliance
-With [`phone_farm.rs`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-core/src/phone_farm.rs), Kadmium now natively profiles, orchestrates, and shards across **20-Slot Phone Farm Boxes** (`Snapdragon 845 / 865 / 8 Gen 2` motherboards with screens and lithium-ion batteries removed, running 24/7 on 5V BMS power supplies over multiplexed USB 3.0 ADB tunnels or OTG Ethernet) as well as **Pocket-Polite Standalone Mobile Phones**:
+> [!NOTE]
+> **Strict Memory-Bandwidth Routing Gate (`R4 §6.3`):**
+> Because a 20-slot smartphone array connected over USB/Ethernet has `~34 GB/s` effective cross-board memory bandwidth (`< 60 GB/s` LLM decode threshold), [`SupplySettlementEngine`](../crates/kadmium-core/src/supply.rs) **automatically gates Phone Farm Boxes out of dense LLM token decode (`0` batch decode tokens)** and routes them 100% to the workloads where 160 ARM64 cores and `2.5–5.1 TB` of UFS 3.0/4.0 flash dominate: **20× Parallel `WASI` RL Sandbox Verification (`$0.14 / 1k` rollouts), `Dream-RSI` MCTS tree search, and `.ktb` Merkle BitTorrent Super-Seeding (`$0.008 / GiB`)**.
 
-| Phone Farm Box Tier | Aggregate Memory & Storage | Compute & NPU Throughput | Wall Power & Electricity Cost (`$0.182/kWh` EIA) | Ideal Kadmium Role |
+| Phone Farm Box Tier | Aggregate Memory & Storage | Compute & NPU Throughput | Wall Power & Electricity Cost (`$0.182/kWh` EIA) | Audited Kadmium Role (`R4 §6.3`) |
 | :--- | :--- | :--- | :--- | :--- |
-| **`20× Snapdragon 845` (S9 Box)** | `120 GB LPDDR4X` + `1.28 TB UFS 2.1` | `160 ARM64 cores` · `120 INT4 TOPS` | **`~95W` (`$0.017 / hr`!)** | 20× parallel `WasiMicroSandbox` RL verifiers, `Dream-RSI` MCTS rollouts & `/v1/embeddings` |
-| **`20× Snapdragon 865` (S20 Box)** | `160 GB LPDDR5` + `2.56 TB UFS 3.0` | `160 Kryo 585 cores` · `300 INT4 TOPS` | **`~115W` (`$0.021 / hr`!)** | Parallel WASI RL verification + 2.5 TB `.ktb` BitTorrent Super-Seeder |
-| **`20× Snapdragon 8 Gen 2` (S23 Box)** | `240 GB LPDDR5X` + `5.12 TB UFS 4.0` | `160 ARMv9 cores` · `680 INT4 TOPS` | **`~145W` (`$0.026 / hr`!)** | High-capacity parallel WASI RL & speculative draft array at `<150W` wall power |
+| **`20× Snapdragon 845` (S9 Box)** | `120 GB LPDDR4X` + `1.28 TB UFS 2.1` | `160 ARM64 cores` · `120 INT4 TOPS` | **`~55–95W` (`$0.010–$0.017 / hr`)** | 20× parallel `WasiMicroSandbox` RL verifiers & `Dream-RSI` MCTS rollouts |
+| **`20× Snapdragon 865` (S20 Box)** | `160 GB LPDDR5` + `2.56 TB UFS 3.0` | `160 Kryo 585 cores` · `300 INT4 TOPS` | **`~55–115W` (`$0.010–$0.021 / hr`)** | Parallel WASI RL verification (`642 rollouts/hr`, `$0.103/hr` clearing) + `2.56 TB` `.ktb` Super-Seeder |
+| **`20× Snapdragon 8 Gen 2` (S23 Box)** | `240 GB LPDDR5X` + `5.12 TB UFS 4.0` | `160 ARMv9 cores` · `680 INT4 TOPS` | **`~85–145W` (`$0.015–$0.026 / hr`)** | High-capacity parallel WASI RL & speculative draft array at `<150W` wall power |
 
-#### Why This Is Marketing, Crowdfunding & Grant Rocket Fuel:
-1. **Unbeatable YouTube & Reddit Viral Stunt (*"Running DeepSeek-671B on 20 Recycled Cracked-Screen Smartphone Motherboards at 120 Watts"*):**
-   - Millions of flagship phones are discarded every year solely due to cracked OLED screens, leaving `Snapdragon 865 / 8 Gen 2` SoCs with `8–12 GB LPDDR5` RAM sitting in e-waste bins.
-   - Showing a single `$400–$800` **20-Slot Phone Farm Box (`160–240 GB LPDDR5`)** plugged into a laptop via one USB 3.0 cable running `DeepSeek-V3` and 20 parallel `Dream-RSI` RL sandboxes at `115W` is guaranteed front-page material for *Hacker News*, *r/LocalLLaMA*, *r/homelab*, *Jeff Geerling*, and *Linus Tech Tips*.
-2. **New High-Margin Kickstarter Hardware Tier (`The Cd-48 "Bramble-20" Phone Farm Box`):**
-   - Alongside the `$699` single-board `RK3588` node, we can offer a **`$1,499` Pre-Configured 20-Slot Snapdragon 865 Phone Farm Box (`160 GB LPDDR5 + 2.56 TB UFS`)** pre-flashed with `kadmium`—giving backers **160 GB of unified memory for less than half the price of a 128 GB Mac Studio**!
-3. **Cheap Sentinel Server Room Expansion:**
-   - Just **3 Phone Farm Boxes** sitting on a shelf in our office give Kadmium **60 independent physical ARM64 nodes, `480 GB` of LPDDR5 RAM, and `7.6 TB` of UFS flash drawing only `345 Watts` total** (less power than a single gaming PC!) to run 24/7 `Verde` canary audits, `.ktb` seeding, and WASI RL verification.
+#### Why This Is E-Waste Circularity, Sentinel & Grant Rocket Fuel:
+1. **Unbeatable Circular-Economy Demo (*"20 Recycled Cracked-Screen Smartphone Motherboards Running 640+ Deterministic RL Code Verifications/Hr at 55 Watts"*):**
+   - Millions of flagship phones are discarded every year solely due to cracked OLED screens. Showing a single battery-free 20-slot motherboard box executing 20 parallel `WasiMicroSandbox` compiler/unit-test RL verification loops while seeding `2.5 TB` of `.ktb` shards at `55–115W` is a dream story for sustainability press, university labs, and DOE/NSF grant reviewers.
+2. **Low-Power Sentinel Server Room Expansion:**
+   - Just **3 Phone Farm Boxes** sitting on a shelf in our office give Kadmium **60 independent physical ARM64 sandbox nodes and `7.6 TB` of UFS flash drawing `< 300 Watts` total** to run 24/7 `Verde` canary audits, `.ktb` seeding, and WASI RL verification.
 
 ---
 
 ### 22.2 `EXL3 / QTIP` Lookup-Free Bitshift Trellis Quantization (`kadmium-runtime::exl3_qtip`)
-With [`exl3_qtip.rs`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-runtime/src/exl3_qtip.rs), Kadmium now implements **Randomized Fast Walsh-Hadamard Transform (`FWHT`) Incoherence Processing** ($\tilde{W} = H_m \operatorname{diag}(s_u) W \operatorname{diag}(s_v) H_n^\top$), **On-the-Fly $LDL^\top$ Hessian Error Feedback**, and **Viterbi Bitshift Trellis Quantization (`2.0` to `6.0 bpw`)**:
-- **Commercial Impact:** Shrinks a `70B` model down to **`~18.5 GB` (`2.2 bpw`)** and `DeepSeek-V3-671B` down to **`~175 GB` (`2.1 bpw`)** with near-zero perplexity degradation—meaning **2× more customers can fit frontier models onto their existing desktop + laptop + Phone Farm Box** and need even smaller middle-layer cloud bursts!
+With [`exl3_qtip.rs`](../crates/kadmium-runtime/src/exl3_qtip.rs), Kadmium implements **Randomized Fast Walsh-Hadamard Transform (`FWHT`) Incoherence Processing** ($\tilde{W} = H_m \operatorname{diag}(s_u) W \operatorname{diag}(s_v) H_n^\top$), **On-the-Fly $LDL^\top$ Hessian Error Feedback**, and **Viterbi Bitshift Trellis Quantization (`2.0` to `6.0 bpw`)**:
+- **Commercial Impact:** Shrinks a `70B` model down to **`~18.5 GB` (`2.2 bpw`)** and `DeepSeek-V3-671B` down to **`~175 GB` (`2.1 bpw`)** with minimal perplexity degradation—meaning **2× more customers can fit frontier models onto their existing desktop + Mac (`M1`/`M2` meshes)** and need even smaller middle-layer cloud bursts!
 
 ---
 
 ### 22.3 Live TCP `WireFrame` Mesh (`live_mesh.rs`, `live_worker.rs`), KV-Cache Migration & Local `.gguf/.safetensors` Importer (`importer.rs`)
-- **Zero-Friction Onboarding from Ollama / LM Studio (`kadmium import`):** Users no longer have to re-download weights—[`LocalModelDiskImporter`](file:///c:/Users/Cameron/Desktop/DTI/crates/kadmium-data/src/importer.rs) scans existing local `.gguf` and `.safetensors` files on disk and transcodes them directly into `64 KiB` page-aligned, Merkle-verified `.ktb` banks.
+- **Zero-Friction Onboarding from Ollama / LM Studio (`kadmium import`):** Users no longer have to re-download weights—[`LocalModelDiskImporter`](../crates/kadmium-data/src/importer.rs) scans existing local `.gguf` and `.safetensors` files on disk and transcodes them directly into `64 KiB` page-aligned, Merkle-verified `.ktb` banks.
 - **Live TCP PagedAttention KV-Cache Migration & State Journaling:** When a node yields for gaming (`< 200 ms`) or a spot GPU preempts, live `KvPageBlock` states migrate over TCP `WireFrame` sockets without losing conversation context.
 - **Over-The-Air (OTA) Fleet Updates (LAN Push + WAN Heartbeat Pull):** Lab admins and MSPs can push signed binary and `.ktb` delta updates (`FleetUpdateManifest`) across all LAN and WAN nodes in one click with rolling `Verde` canary verification.
 - **Multi-Modal & RAG Ready (`/v1/embeddings`, `/v1/models`, Vision Offloading):** Regulated legal/medical SMBs can now run their entire **local RAG document embedding pipeline (`/v1/embeddings`) and multimodal vision ingestion** on the same Kadmium endpoint.
+
+---
+
+## 23. Late-October 2026 Product-Led Growth Multipliers: `Condenser` Blades, `USB4` Direct Rings & `kadmium-grid` Scheduling
+
+The major systems crates and modules landed in late October 2026 ([`kadmium-condenser`](../crates/kadmium-condenser), [`kadmium-grid`](../crates/kadmium-grid), [`deep_gemm.rs`](../crates/kadmium-runtime/src/deep_gemm.rs), [`deep_ep.rs`](../crates/kadmium-runtime/src/deep_ep.rs), [`expert_balance.rs`](../crates/kadmium-runtime/src/expert_balance.rs), [`verification.rs`](../crates/kadmium-runtime/src/verification.rs), and [`usbc_interconnect.rs`](../crates/kadmium-runtime/src/usbc_interconnect.rs)) transform Kadmium from a background CLI daemon into a **daily-driver developer & office workspace with an immediate Day-1 monetization bridge**:
+
+### 23.1 `Condenser` (`:7856` — "The Kadmium Power Plant Inference Harness") as the Day-1 Commercial Wedge
+Instead of asking developers or SMBs to change their workflow or wait for every distributed GPU kernel to finish FFI binding, **`kadmium-condenser`** gives users an immediate, flagship desktop and CLI workspace on Day 1:
+- **Multi-Provider Out of the Box (`Ollama + OpenAI + Anthropic + MCL4-COE + Kadmium :8080`):** Users can launch `Condenser` today over their existing local `Ollama` models and cloud API keys, and seamlessly route heavy tasks to their multi-node Kadmium LAN cluster (`:8080`) or Indexed Spot Burst (`Index × 1.25`).
+- **`Blades` Multi-Pane Agent Workspaces & Q/A Interviews:** Lets engineers, lawyers, and researchers run parallel side-by-side agent blades (e.g., *Blade 1: Architecture Q/A Interview*, *Blade 2: Code Implementation*, *Blade 3: WASI Test Verification*) with automatic tool doom-loop detection, context compaction, and out-of-process JSON-RPC plugins.
+- **Built-In Conversion Prompt:** When a user's local `Ollama` model hits a context/VRAM ceiling or an external API hits a `429` rate limit inside `Condenser`, a non-intrusive banner offers **1-click upgrade to `CloudShield Pro ($29/mo)` or `Team/Lab ($199/mo)`**.
+
+### 23.2 Eliminating the "$500 10GbE Switch Barrier" via `$15` USB4 / Thunderbolt Direct Ring DMA (`27.6 Gbps`)
+A hidden adoption blocker for home and small-office local clusters (`Exo`, `llama.cpp RPC`) was networking hardware: standard `1GbE` Ethernet (`0.11 GB/s`) bottlenecked tensor parallelism, while buying a `10GbE` switch + Thunderbolt NIC adapters cost `$500–$800`.
+- **The `$15` Cable Unlock (`usbc_interconnect.rs`):** Almost every modern MacBook, Mac Mini, Windows gaming laptop, `Strix Halo` mini-PC, and handheld gaming PC (`ROG Ally`, `Legion Go`) already has `USB4 / Thunderbolt 4` ports (`40 Gbps` raw, **`27.6 Gbps` / `3.45 GB/s` measured DMA throughput at `79 µs` RTT**).
+- **Marketing Hook:** *"Don't buy a $4,000 workstation or a $600 10GbE switch. Plug a $15 USB4 cable between your Windows gaming PC and your MacBook to create a 27.6 Gbps zero-copy AI ring in 10 seconds."*
+
+### 23.3 DeepSeek-Class Distributed MoE Primitives (`DeepGEMM`, `DeepEP`, `EPLB`, `DSpark`) & `/api/v1/grid/sweep`
+With the `kadmium-grid` work-graph substrate and DeepSeek-V3-inspired runtime primitives, Kadmium is purpose-built for the sparse Mixture-of-Experts (`MoE`) era (`DeepSeek-V3/V4`, `Qwen3-235B-A22B`, `Kimi-K2.6`, `gpt-oss-120b`):
+1. **`DeepGEMM` (`UE8M0` Block-Scaled FP8 Grouped GEMMs):** Power-of-two `UE8M0` scale factors eliminate FP8 dequantization bottlenecks across heterogeneous GPUs and Unified Memory.
+2. **`DeepEP` Asymmetric LAN/WAN Dispatch & `0-SM` Communication Overlap:** Uses two-stage hierarchical token forwarding (`LAN/USB4` $\to$ `WAN`) with `FP8` inbound dispatch and `BF16` combine, overlapping communication behind computation without burning GPU SMs.
+3. **`EPLB` (Expert-Parallel Load Balancer):** Dynamically replicates "hot" routed experts onto the highest-bandwidth local/LAN nodes while pinning cold long-tail experts on NAS/RAM nodes.
+4. **`DSpark` Confidence-Scheduled Speculative Verification (`verification.rs`):** Dynamically scales verification depth based on draft-token entropy and `Verde` trust scores—maximizing tokens/sec per dollar.
+5. **Automated Pareto Frontier Benchmarking (`POST /api/v1/grid/sweep`):** Enterprise CTOs and university PIs can hit `/api/v1/grid/sweep` (or run `kadmium launch --plan`) to generate an immediate, mathematically verified **Latency vs. Throughput vs. `$/1M Token` Pareto Frontier** for their exact office or lab hardware before spending a dollar.
+

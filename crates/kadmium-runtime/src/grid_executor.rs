@@ -2595,6 +2595,74 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn delta_link_carries_repeated_dispatches_to_a_live_worker_unchanged() {
+        use kadmium_network::{DeltaLinkConfig, PeerChannel};
+
+        let cluster = sample_personal_cluster();
+        let worker =
+            LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, cluster[0].clone(), false)
+                .await
+                .expect("spawn worker");
+        worker.executors.register(Arc::new(EchoReverse));
+        let addr = worker.local_addr.to_string();
+        let timeout = Duration::from_secs(10);
+        let delta = PeerChannel::connect_with(&addr, timeout, &DeltaLinkConfig::default())
+            .await
+            .expect("delta channel");
+        assert!(delta.delta_link_active());
+        let plain = PeerChannel::connect(&addr, timeout)
+            .await
+            .expect("plain channel");
+
+        // Every step carries the same 2 MiB activation except for a per-step counter, the way a
+        // decode loop re-dispatches a stage whose resident inputs barely move.
+        let base: Vec<u8> = (0..2u32 << 20).map(|i| (i * 31 % 251) as u8).collect();
+        for step in 0..8u64 {
+            let input = ContentRef::named(ContentKind::Activation, "g/in", base.len() as u64);
+            let mut unit = WorkUnit::new("rev", AppKind::Custom("echo-reverse".into()));
+            unit.inputs = vec![input.clone()];
+            unit.graph_id = Some("g".into());
+            let mut blob = base.clone();
+            blob[..8].copy_from_slice(&step.to_le_bytes());
+            let bytes = WorkDispatchPayload::new(
+                unit,
+                InstanceId(format!("rev#{step}")),
+                1,
+                vec![(input.content_id.clone(), blob.clone())],
+            )
+            .to_le_bytes();
+            let via_delta = delta
+                .call(WireFrameKind::WorkDispatch, 1, bytes.clone(), timeout)
+                .await
+                .expect("delta dispatch");
+            let via_plain = plain
+                .call(WireFrameKind::WorkDispatch, 1, bytes, timeout)
+                .await
+                .expect("plain dispatch");
+            assert_eq!(via_delta.kind, WireFrameKind::WorkResult);
+            let a = WorkResultPayload::from_le_bytes(&via_delta.payload).expect("delta result");
+            let b = WorkResultPayload::from_le_bytes(&via_plain.payload).expect("plain result");
+            assert!(a.header.ok, "{:?}", a.error_message());
+            assert_eq!(a.blobs, b.blobs);
+            assert_eq!(
+                a.header.result.as_ref().map(|r| r.digest_fnv1a),
+                b.header.result.as_ref().map(|r| r.digest_fnv1a)
+            );
+            blob.reverse();
+            assert_eq!(a.blobs[0].1, blob);
+        }
+        let (outbound, inbound) = delta.delta_link_stats().expect("delta stats");
+        assert!(
+            outbound.wire_bytes * 4 < outbound.logical_bytes,
+            "{outbound:?}"
+        );
+        assert!(
+            inbound.wire_bytes * 4 < inbound.logical_bytes,
+            "{inbound:?}"
+        );
+    }
+
     #[test]
     fn envelopes_roundtrip_and_bare_error_json_is_a_failure() {
         let unit = WorkUnit::new("u", AppKind::StageForward).with_params_bytes(b"{}".to_vec());

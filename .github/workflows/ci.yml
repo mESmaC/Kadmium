@@ -41,8 +41,7 @@ jobs:
       - name: Run workspace unit & async integration tests
         run: cargo test --workspace
 
-      - name: Install Node for Control Room regression tests
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install Node for UI regression tests
         uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -54,6 +53,8 @@ jobs:
           node target/ui-test/node_modules/playwright/cli.js install --with-deps chromium
           cargo build -p kadmium-gateway --example control_room_fixture
           node --test crates/kadmium-gateway/tests/control_room.test.cjs
+      - name: Test Condenser stream and task workflows
+        run: node --test crates/kadmium-condenser/tests/workflow.test.cjs
 
       - name: Smoke-test Kadmium CLI engines (probe, simulate, dream, slice, dataflow, cloud-shield)
         run: |
