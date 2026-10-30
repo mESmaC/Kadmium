@@ -21,6 +21,7 @@ Kadmium implements a heterogeneous compute control plane, planners, worker trans
 ### 2. Operator & Developer Guides
 | Guide | Description |
 | :--- | :--- |
+| [**Condenser Inference Workspace**](./guides/condenser-workspace.md) | Connect provider tasks to Kadmium placement previews, attach compute context, fork conversations, and control bounded runs. |
 | [**Hardware Setup, Asymmetric Sharding & Polite Governance**](./guides/hardware-and-sharding.md) | Combine GPUs, Apple Silicon unified memory, NAS vaults, and SBCs; compile GGUF/Safetensors to `.ktb`; configure `<200ms` Gaming Auto-Yield and 3-Tier Trust Zones. |
 | [**Distributed Training, RL & Dream-RSI Evolving Worlds**](./guides/training-and-dream-rsi.md) | Run Sharded-Island DiLoCo + `DeMo` training over consumer broadband, and use SBCs/legacy laptops to run **Dream-RSI** offline causal replay at zero GPU cost. |
 | [**Sub-Cluster Slicing, Desktop Companion & CloudShield**](./guides/subclusters-and-cloud-shield.md) | Partition a 100-node pool into isolated sub-clusters (Prod, Staging, Training, RL), switch the Companion App between Self-Hosted OSS and `kadmium.ai` Cloud, and configure Bidirectional Failover Shield. |

@@ -38,6 +38,7 @@ pub mod coordinator;
 pub mod diloco_api;
 pub mod docs;
 pub mod grid_api;
+mod inference_workspace;
 pub mod mcp;
 pub mod routes;
 
@@ -1269,7 +1270,8 @@ mod tests {
 
         // Verify embedded public documentation catalog from `docs/`
         let docs = build_documentation_catalog();
-        assert_eq!(docs.len(), 12);
+        assert_eq!(docs.len(), 13);
+        assert!(docs.iter().any(|page| page.slug == "condenser-workspace"));
         assert!(docs.iter().all(|d| !d.markdown.is_empty()));
 
         // Verify Kadmium MCP Server (JSON-RPC 2.0 initialize, tools/list, tools/call, resources/read)

@@ -40,6 +40,14 @@ jobs:
       - name: Run workspace unit & async integration tests
         run: cargo test --workspace
 
+      - name: Install Node for embedded UI protocol tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Test Condenser stream and task workflows
+        run: node --test crates/kadmium-condenser/tests/workflow.test.cjs
+
       - name: Smoke-test Kadmium CLI engines (probe, simulate, dream, slice, dataflow, cloud-shield)
         run: |
           cargo run --bin kadmium -- probe

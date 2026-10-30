@@ -5,11 +5,13 @@
 //! Both the CLI and the native UI use this library rather than maintaining
 //! separate inference implementations.
 
+mod compute;
 pub mod dsv41_mcl4;
 pub mod error;
 pub mod harness;
 pub mod plugin;
 pub mod provider;
+mod runs;
 pub mod server;
 pub mod types;
 pub mod ui;

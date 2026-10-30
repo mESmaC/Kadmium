@@ -5,6 +5,8 @@ When `kadmium launch` or `kadmium serve` is running, [`kadmium-gateway`](../crat
 1. **Reference compute diagnostics with OpenAI/Anthropic-shaped responses** (`/v1/...`)
 2. **Cluster Control Plane & Desktop Companion REST API** (`/api/v1/...`)
 
+Condenser runs separately on loopback port `7856`. Its [inference workspace guide](guides/condenser-workspace.md) covers provider routing, compute inspection, task history and run cancellation. Kadmium's read-only `GET /api/v1/inference/workspace?model_id=<catalog-id>` returns fleet and placement context for that workspace without loading a model or changing cluster selection.
+
 ---
 
 ## 1. Reference API Endpoints
