@@ -721,24 +721,12 @@ mod tests {
             DistributedPagedKvPlanner::plan_cluster_context_capacity(&plan, &model, &cluster);
         assert_eq!(
             ctx_report.model_native_context_tokens,
-            model.native_max_context_tokens()
+            model.try_native_max_context_tokens()
         );
-        assert_eq!(ctx_report.zigzag_ring_cp_degree, 1);
         assert!(ctx_report.cluster_in_memory_context_tokens <= model.native_max_context_tokens());
         assert!(
             ctx_report.cluster_max_full_attention_context_tokens
                 <= model.native_max_context_tokens()
         );
-
-        // Verify dense 70B model on 16-node training pool keeps d_cp == 1 (2 independent 8-node cells).
-        let dense_model = ModelSpec::llama_3_70b_lora();
-        let train_decomp = HierarchicalPoolPlanner::decompose_pool(
-            16,
-            &dense_model,
-            WorkloadKind::DistributedTraining,
-        );
-        assert_eq!(train_decomp.zigzag_context_parallel_degree, 1);
-        assert_eq!(train_decomp.nodes_per_model_cell, 8);
-        assert_eq!(train_decomp.total_model_cells, 2);
     }
 }

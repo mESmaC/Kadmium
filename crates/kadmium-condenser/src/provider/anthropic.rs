@@ -135,8 +135,13 @@ impl InferenceProvider for AnthropicProvider {
         };
         let body = request_body(request, max_tokens)?;
         let url = versioned_endpoint(self.config.base_url(), "messages");
-        let response = self
-            .authorize(self.client.post(url).json(&body))
+        let mut req_builder = self.authorize(self.client.post(url).json(&body));
+        if max_tokens > 16_384 {
+            req_builder = req_builder.timeout(std::time::Duration::from_secs(
+                self.config.timeout_secs.max(1800),
+            ));
+        }
+        let response = req_builder
             .send()
             .await
             .map_err(|error| CondenserError::provider("Anthropic", error.to_string()))?;

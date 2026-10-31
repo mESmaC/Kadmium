@@ -753,13 +753,20 @@ impl InferenceProvider for Mcl4CoeProvider {
 
         // Preserve full multi-turn thoughts and full tool outputs unless `sampling.compact_history`
         // or explicit `mcl4_coe` compaction knobs are requested.
-        let (strip_thoughts, prune_chars) = if request.sampling.compact_history || include_knobs {
+        let (strip_thoughts, prune_chars) = if request.sampling.compact_history {
+            (
+                true,
+                if knobs.prune_old_tool_results_chars == usize::MAX {
+                    4096
+                } else {
+                    knobs.prune_old_tool_results_chars
+                },
+            )
+        } else {
             (
                 knobs.strip_prior_thoughts_in_multiturn,
                 knobs.prune_old_tool_results_chars,
             )
-        } else {
-            (false, usize::MAX)
         };
         let (compacted_messages, _) =
             compact_messages_with_tool_pruning(&request.messages, strip_thoughts, prune_chars);

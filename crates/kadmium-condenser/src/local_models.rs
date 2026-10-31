@@ -221,9 +221,19 @@ pub async fn load_ollama(
         .get("model_info")
         .and_then(Value::as_object)
         .is_some_and(|info| info.keys().any(|k| k.contains(".rope.scaling.")));
-    let active_context = match crate::provider::advertised_context_length(&shown) {
-        Some(backend_ctx) if backend_ctx < manifest.context_length && !has_backend_rope_scaling => {
-            backend_ctx
+    let backend_ctx = crate::provider::advertised_context_length(&shown);
+    if let Some(ctx) = backend_ctx
+        && ctx < manifest.context_length
+    {
+        return Err(backend_error(
+            "backend reported a context length smaller than the checkpoint native context length",
+        ));
+    }
+    let active_context = match manifest.scaled_context_length {
+        Some(scaled)
+            if has_backend_rope_scaling && backend_ctx.is_some_and(|ctx| ctx >= scaled) =>
+        {
+            scaled
         }
         _ => manifest.context_length,
     };

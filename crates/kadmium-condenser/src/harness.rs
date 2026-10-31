@@ -1812,5 +1812,88 @@ mod tests {
             .await
             .unwrap_err();
         assert!(over_calls.to_string().contains("16"));
+
+        // Verify that max_steps > 32 (e.g., 33) installs the default 64-tool-call aggregate cap
+        // on RunControl::default(), whereas max_steps == 32 does not.
+        let make_16_distinct_calls = |step_idx: usize| -> ChatResponse {
+            let mut msg = Message::assistant("batch");
+            msg.tool_calls = (0..16)
+                .map(|call_idx| ToolCall {
+                    id: format!("s{step_idx}-c{call_idx}"),
+                    name: "example__echo".into(),
+                    arguments_json: format!("{{\"text\":\"{step_idx}-{call_idx}\"}}"),
+                })
+                .collect();
+            response(msg)
+        };
+
+        // At max_steps == 33, 5 steps * 16 calls = 80 calls > 64 default cap -> stops with BudgetExceeded at 64 calls.
+        let responses_33: VecDeque<ChatResponse> = (0..5).map(make_16_distinct_calls).collect();
+        let provider_33 = Arc::new(MockProvider {
+            responses: Mutex::new(responses_33),
+            requests: Mutex::new(Vec::new()),
+        });
+        let executor_33 = Arc::new(CountingExecutor {
+            tool: registered_tool(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let harness_33 = Harness::from_components(
+            ProviderConfig::new(ProviderKind::Kadmium),
+            provider_33,
+            executor_33.clone(),
+        )
+        .unwrap();
+        let report_33 = harness_33
+            .run(
+                vec![Message::user("run 33")],
+                HarnessOptions {
+                    enable_tools: true,
+                    max_steps: 33,
+                    max_calls_per_step: 16,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(report_33.status, RunStatus::BudgetExceeded);
+        assert_eq!(
+            executor_33.calls.load(std::sync::atomic::Ordering::SeqCst),
+            64
+        );
+
+        // At max_steps == 32, 5 steps * 16 calls = 80 calls + final answer succeeds without hitting a 64-call cap.
+        let mut responses_32: VecDeque<ChatResponse> = (0..5).map(make_16_distinct_calls).collect();
+        responses_32.push_back(response(Message::assistant("completed 80 calls")));
+        let provider_32 = Arc::new(MockProvider {
+            responses: Mutex::new(responses_32),
+            requests: Mutex::new(Vec::new()),
+        });
+        let executor_32 = Arc::new(CountingExecutor {
+            tool: registered_tool(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let harness_32 = Harness::from_components(
+            ProviderConfig::new(ProviderKind::Kadmium),
+            provider_32,
+            executor_32.clone(),
+        )
+        .unwrap();
+        let report_32 = harness_32
+            .run(
+                vec![Message::user("run 32")],
+                HarnessOptions {
+                    enable_tools: true,
+                    max_steps: 32,
+                    max_calls_per_step: 16,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(report_32.status, RunStatus::Completed);
+        assert_eq!(
+            executor_32.calls.load(std::sync::atomic::Ordering::SeqCst),
+            80
+        );
     }
 }

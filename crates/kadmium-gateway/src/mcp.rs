@@ -379,8 +379,12 @@ impl KadmiumMcpServer {
                     &state.inference_model,
                     &snap.nodes,
                 );
+                let native_label = ctx_cap
+                    .model_native_context_tokens
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
                 let summary = format!(
-                    "Kadmium (Cd-48) Epoch {} | {} active nodes | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Context: {}–{} tokens (native {}) | Leader: {} (Term {}) | Throughput: {:.1} {}",
+                    "Kadmium (Cd-48) Epoch {} | {} active nodes | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Modelled KV context: {}–{} tokens (theoretical estimate, native {}) | Leader: {} (Term {}) | Throughput: {:.1} {}",
                     snap.inference_plan.epoch,
                     snap.nodes.len(),
                     total_vram,
@@ -388,7 +392,7 @@ impl KadmiumMcpServer {
                     total_tflops,
                     ctx_cap.cluster_in_memory_context_tokens,
                     ctx_cap.cluster_max_full_attention_context_tokens,
-                    ctx_cap.model_native_context_tokens,
+                    native_label,
                     snap.coordinator_quorum.active_leader,
                     snap.coordinator_quorum.term,
                     snap.inference_plan.estimated_throughput,

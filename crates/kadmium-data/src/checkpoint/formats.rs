@@ -5,7 +5,13 @@ use std::collections::BTreeMap;
 pub(super) fn inspect(
     dir: &Path,
     files: &[PackageFile],
-) -> Result<(String, Option<String>, u64, Vec<CheckpointTensor>)> {
+) -> Result<(
+    String,
+    Option<String>,
+    u64,
+    Option<u64>,
+    Vec<CheckpointTensor>,
+)> {
     let safe: Vec<_> = files
         .iter()
         .filter(|f| f.name.ends_with(".safetensors"))
@@ -15,11 +21,13 @@ pub(super) fn inspect(
     let architecture;
     let format;
     let context_length;
+    let scaled_context_length;
     if !safe.is_empty() && gguf.is_empty() {
         let config: Value = read_json(&dir.join("config.json"))
             .map_err(|e| format!("A SafeTensors model requires config.json: {e}"))?;
         architecture = extract_safetensors_architecture(&config);
-        context_length = extract_safetensors_context_length(&config);
+        (context_length, scaled_context_length) =
+            extract_safetensors_native_and_scaled_context(&config);
         if architecture.is_none() {
             return Err("config.json must identify model_type".into());
         }
@@ -98,6 +106,7 @@ pub(super) fn inspect(
         }
         architecture = architectures.into_iter().next();
         context_length = contexts.into_iter().next().unwrap_or(0);
+        scaled_context_length = None;
         format = "gguf".into();
     } else {
         return Err(
@@ -106,7 +115,13 @@ pub(super) fn inspect(
     }
     unique_tensors(&tensors)?;
     tensors.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok((format, architecture, context_length, tensors))
+    Ok((
+        format,
+        architecture,
+        context_length,
+        scaled_context_length,
+        tensors,
+    ))
 }
 
 fn tensor(
@@ -385,10 +400,15 @@ fn extract_safetensors_architecture(config: &serde_json::Value) -> Option<String
         })
 }
 
-fn extract_scope_context_length(
+/// Returns `(native_context_length, scaled_context_length)` for a single SafeTensors config scope.
+/// - `native_context_length`: the pretrained unscaled window (`max_position_embeddings`, etc.).
+/// - `scaled_context_length`: `Some(scaled)` only when `linear` or `yarn` `rope_scaling` defines
+///   an extended window beyond `native_context_length` (excluding Gemma-3 where `131_072` is
+///   already the full trained window and `factor = 8.0` is internal to global attention layers).
+fn extract_scope_context_windows(
     scope: &serde_json::Value,
     fallback_model_type: Option<&str>,
-) -> Option<u64> {
+) -> (Option<u64>, Option<u64>) {
     const ORDERED_CONTEXT_KEYS: &[&str] = &[
         "max_position_embeddings",
         "n_positions",
@@ -400,7 +420,7 @@ fn extract_scope_context_length(
         "model_max_length",
     ];
 
-    let mut base_ctx = ORDERED_CONTEXT_KEYS
+    let mut native_ctx = ORDERED_CONTEXT_KEYS
         .iter()
         .find_map(|key| scope.get(*key).and_then(parse_plausible_context_tokens));
 
@@ -409,17 +429,20 @@ fn extract_scope_context_length(
         .and_then(|v| v.as_str())
         .or(fallback_model_type)
         .unwrap_or("");
+    let is_gemma3 = matches!(model_type, "gemma3" | "gemma3_text");
 
-    if base_ctx.is_none() && matches!(model_type, "gemma3" | "gemma3_text") {
+    if native_ctx.is_none() && is_gemma3 {
         let sliding = scope
             .get("sliding_window")
             .and_then(parse_plausible_context_tokens);
-        base_ctx = Some(if sliding == Some(512) {
+        native_ctx = Some(if sliding == Some(512) {
             32_768
         } else {
             131_072
         });
     }
+
+    let mut scaled_ctx = None;
 
     if let Some(rope) = scope.get("rope_scaling").and_then(|v| v.as_object()) {
         let rope_type = rope
@@ -429,10 +452,9 @@ fn extract_scope_context_length(
             .map(|s| s.trim().to_ascii_lowercase())
             .unwrap_or_default();
 
-        let orig = rope
+        let explicit_orig = rope
             .get("original_max_position_embeddings")
-            .and_then(parse_plausible_context_tokens)
-            .or(base_ctx);
+            .and_then(parse_plausible_context_tokens);
 
         let factor = rope
             .get("factor")
@@ -440,45 +462,61 @@ fn extract_scope_context_length(
             .filter(|f| f.is_finite() && *f > 1.0 && *f <= 128.0);
 
         match rope_type.as_str() {
-            "linear" | "yarn" => {
-                if let (Some(o), Some(f)) = (orig, factor) {
-                    let scaled = (o as f64 * f).round() as u64;
-                    if (1..=MAX_PLAUSIBLE_CONTEXT_TOKENS).contains(&scaled) {
-                        base_ctx = Some(base_ctx.map_or(scaled, |b| b.max(scaled)));
+            "linear" | "yarn" if !is_gemma3 => {
+                let scale_base = if let Some(orig) = explicit_orig {
+                    native_ctx = Some(native_ctx.map_or(orig, |b| b.max(orig)));
+                    Some(orig)
+                } else {
+                    // Only scale an unannotated `max_position_embeddings` when it is a base
+                    // pre-extension window (<= 32_768), never double-scaling a 64K/128K config.
+                    native_ctx.filter(|&b| b <= 32_768)
+                };
+                if let (Some(base), Some(f)) = (scale_base, factor) {
+                    let scaled = (base as f64 * f).round() as u64;
+                    let current_native = native_ctx.unwrap_or(base);
+                    if (1..=MAX_PLAUSIBLE_CONTEXT_TOKENS).contains(&scaled)
+                        && scaled > current_native
+                    {
+                        scaled_ctx = Some(scaled);
                     }
                 }
             }
-            "llama3" | "longrope" | "su" | "shortrope" | "dynamic" | "ntk" | "default" | "" => {
-                if base_ctx.is_none() {
-                    base_ctx = orig;
-                }
-            }
             _ => {
-                if base_ctx.is_none() {
-                    base_ctx = orig;
+                if native_ctx.is_none() {
+                    native_ctx = explicit_orig;
                 }
             }
         }
     }
 
-    base_ctx
+    (native_ctx, scaled_ctx)
 }
 
-fn extract_safetensors_context_length(config: &serde_json::Value) -> u64 {
+fn extract_safetensors_native_and_scaled_context(config: &serde_json::Value) -> (u64, Option<u64>) {
     let top_model_type = config.get("model_type").and_then(|v| v.as_str());
     let sub_config = config
         .get("text_config")
         .or_else(|| config.get("language_config"))
         .or_else(|| config.get("llm_config"));
 
-    let resolved = if let Some(sub) = sub_config {
-        extract_scope_context_length(sub, top_model_type)
-            .or_else(|| extract_scope_context_length(config, top_model_type))
+    let (native, scaled) = if let Some(sub) = sub_config {
+        let (sub_native, sub_scaled) = extract_scope_context_windows(sub, top_model_type);
+        if sub_native.is_some() {
+            (sub_native, sub_scaled)
+        } else {
+            extract_scope_context_windows(config, top_model_type)
+        }
     } else {
-        extract_scope_context_length(config, top_model_type)
+        extract_scope_context_windows(config, top_model_type)
     };
 
-    resolved.unwrap_or(0)
+    (native.unwrap_or(0), scaled)
+}
+
+#[cfg(test)]
+fn extract_safetensors_context_length(config: &serde_json::Value) -> u64 {
+    let (native, scaled) = extract_safetensors_native_and_scaled_context(config);
+    scaled.unwrap_or(native)
 }
 
 fn extract_gguf_context_length(
@@ -495,18 +533,10 @@ fn extract_gguf_context_length(
         }
     }
 
-    if let Some(val) = metadata
+    metadata
         .get("general.context_length")
         .or_else(|| metadata.get("context_length"))
         .and_then(parse_plausible_context_tokens)
-    {
-        return Some(val);
-    }
-
-    metadata
-        .iter()
-        .filter(|(k, _)| k.ends_with(".context_length"))
-        .find_map(|(_, v)| parse_plausible_context_tokens(v))
 }
 
 pub(super) fn matches_legacy_v1_metadata(
@@ -522,7 +552,13 @@ pub(super) fn matches_legacy_v1_metadata(
             };
             let legacy_arch = config["model_type"].as_str().map(String::from);
             let legacy_ctx = config["max_position_embeddings"].as_u64().unwrap_or(0);
-            *recorded_arch == legacy_arch && recorded_ctx == legacy_ctx
+            let (curr_native, curr_scaled) = extract_safetensors_native_and_scaled_context(&config);
+            let curr_arch = extract_safetensors_architecture(&config);
+            let arch_ok = *recorded_arch == legacy_arch || *recorded_arch == curr_arch;
+            let ctx_ok = recorded_ctx == legacy_ctx
+                || recorded_ctx == curr_native
+                || Some(recorded_ctx) == curr_scaled;
+            arch_ok && ctx_ok
         }
         "gguf" => recorded_ctx == 0,
         _ => false,
@@ -548,6 +584,10 @@ mod tests {
                 "rope_type": "llama3"
             }
         });
+        assert_eq!(
+            extract_safetensors_native_and_scaled_context(&llama32),
+            (131_072, None)
+        );
         assert_eq!(extract_safetensors_context_length(&llama32), 131_072);
 
         // 2. Llama-2 dynamic RoPE (type = "dynamic", factor = 2.0, mpe = 4096) -> 4096
@@ -572,7 +612,7 @@ mod tests {
         });
         assert_eq!(extract_safetensors_context_length(&internlm), 32_768);
 
-        // 4. Qwen2.5-1M YaRN (rope_type = "yarn", factor = 4.0, original = 32768, mpe = 32768) -> 131072
+        // 4. Qwen2.5-1M YaRN (rope_type = "yarn", factor = 4.0, original = 32768, mpe = 32768) -> native 32768, scaled 131072
         let qwen_yarn = json!({
             "model_type": "qwen2",
             "max_position_embeddings": 32768,
@@ -582,6 +622,10 @@ mod tests {
                 "original_max_position_embeddings": 32768
             }
         });
+        assert_eq!(
+            extract_safetensors_native_and_scaled_context(&qwen_yarn),
+            (32_768, Some(131_072))
+        );
         assert_eq!(extract_safetensors_context_length(&qwen_yarn), 131_072);
 
         // 5. Malformed config with factor = 1e300 -> ignores absurd factor and keeps mpe = 8192
@@ -619,25 +663,54 @@ mod tests {
             Some("llama")
         );
 
-        // 8. Published Gemma-3-4B VLM where text_config omits max_position_embeddings -> 131072
+        // 8. Real Gemma-3-4B VLM where text_config has rope_scaling: {rope_type: "linear", factor: 8.0}
+        // and either omits max_position_embeddings or sets it to 131072 -> 131072 (never 8x = 1048576).
         let gemma3_vlm = json!({
             "model_type": "gemma3",
             "text_config": {
                 "model_type": "gemma3_text",
                 "hidden_size": 2560,
-                "sliding_window": 1024
+                "sliding_window": 1024,
+                "rope_scaling": {
+                    "rope_type": "linear",
+                    "factor": 8.0
+                }
             }
         });
+        assert_eq!(
+            extract_safetensors_native_and_scaled_context(&gemma3_vlm),
+            (131_072, None)
+        );
         assert_eq!(extract_safetensors_context_length(&gemma3_vlm), 131_072);
+
+        let gemma3_with_mpe = json!({
+            "model_type": "gemma3",
+            "text_config": {
+                "model_type": "gemma3_text",
+                "max_position_embeddings": 131072,
+                "sliding_window": 1024,
+                "rope_scaling": {
+                    "rope_type": "linear",
+                    "factor": 8.0
+                }
+            }
+        });
+        assert_eq!(
+            extract_safetensors_native_and_scaled_context(&gemma3_with_mpe),
+            (131_072, None)
+        );
     }
 
     #[test]
-    fn gguf_context_length_prefers_active_architecture_key() {
+    fn gguf_context_length_prefers_active_architecture_key_and_ignores_vision_keys() {
         let mut meta = BTreeMap::new();
         meta.insert("general.architecture".to_string(), json!("qwen2"));
         meta.insert("qwen2.context_length".to_string(), json!(32768));
         meta.insert("llama.context_length".to_string(), json!(131072));
-
         assert_eq!(extract_gguf_context_length(&meta, "qwen2"), Some(32_768));
+
+        let mut vision_only = BTreeMap::new();
+        vision_only.insert("clip.vision.context_length".to_string(), json!(577));
+        assert_eq!(extract_gguf_context_length(&vision_only, "qwen2"), None);
     }
 }

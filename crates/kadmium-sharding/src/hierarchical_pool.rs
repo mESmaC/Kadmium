@@ -39,7 +39,7 @@ pub struct Pool4DDecomposition {
     pub pipeline_parallel_stages: usize,
     /// Tier-0 Expert-Parallel + `RAID-5` Parity width per pipeline stage ($D_{\text{EP/RAID}} \in [1, 8]$).
     pub expert_and_raid5_width: usize,
-    /// Tier-0 Zig-Zag Ring Context-Parallel degree ($D_{\text{CP}} \in [1, 4]$).
+    /// Tier-0 Zig-Zag Ring Context-Parallel degree ($D_{\text{CP}} \in [1, 2]$).
     pub zigzag_context_parallel_degree: usize,
     /// Total nodes inside a single self-contained Model Cell ($C = D_{\text{PP}} \times D_{\text{EP/RAID}} \times D_{\text{CP}}$).
     pub nodes_per_model_cell: usize,
@@ -75,8 +75,6 @@ pub struct DisaggregatedInferencePoolStats {
     pub decode_cells: usize,
     /// Prefix-tree consistent hashing cache hit rate across multi-turn agent/chat requests (`%`).
     pub radix_kv_prefix_cache_hit_pct: f64,
-    /// Maximum full-attention context window supported per model cell (`tokens`), bounded by the model's native context limit.
-    pub max_cell_full_attention_context_tokens: u64,
     /// Aggregate pool inference throughput (`tokens/sec`).
     pub aggregate_inference_tok_s: f64,
     /// Concurrent active user/agent streams supported at `>40 tok/s` per stream.
@@ -158,13 +156,7 @@ impl HierarchicalPoolPlanner {
                 }
             }
             WorkloadKind::Inference | WorkloadKind::BatchPipeline => {
-                if rem_after_ep >= 4 && n >= 64 {
-                    4
-                } else if rem_after_ep >= 2 && n >= 16 {
-                    2
-                } else {
-                    1
-                }
+                if rem_after_ep >= 2 && n >= 64 { 2 } else { 1 }
             }
         };
 
@@ -240,7 +232,6 @@ impl HierarchicalPoolPlanner {
         model: &ModelSpec,
     ) -> PoolScaleTierProfile {
         let decomp = Self::decompose_pool(total_nodes, model, WorkloadKind::DistributedTraining);
-        let inf_decomp = Self::decompose_pool(total_nodes, model, WorkloadKind::Inference);
         let metrics = Self::evaluate_scaling_metrics(&decomp, 16);
 
         let cells = decomp.total_model_cells;
@@ -253,9 +244,6 @@ impl HierarchicalPoolPlanner {
         let per_cell_inf_tok_s = 310.0 * (1.0 + (radix_hit_pct - 80.0) * 0.015);
         let agg_inf_tok_s = (cells as f64) * per_cell_inf_tok_s;
         let concurrent_streams = ((agg_inf_tok_s / 42.0).round() as usize).max(4);
-        let native_cap = model.native_max_context_tokens() as u64;
-        let cell_context_tokens = ((inf_decomp.zigzag_context_parallel_degree as u64) * 81_920)
-            .clamp(65_536.min(native_cap), native_cap);
 
         // For Federated DiLoCo + DeMo Training:
         // Logarithmic tree sync keeps scaling efficiency > 89% even at 100,000 nodes!
@@ -273,7 +261,6 @@ impl HierarchicalPoolPlanner {
                 prefill_cells,
                 decode_cells,
                 radix_kv_prefix_cache_hit_pct: (radix_hit_pct * 10.0).round() / 10.0,
-                max_cell_full_attention_context_tokens: cell_context_tokens,
                 aggregate_inference_tok_s: (agg_inf_tok_s * 10.0).round() / 10.0,
                 concurrent_active_streams_capacity: concurrent_streams,
             },

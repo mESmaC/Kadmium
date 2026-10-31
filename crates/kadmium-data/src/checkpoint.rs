@@ -48,6 +48,8 @@ pub struct CheckpointManifest {
     pub source_format: String,
     pub architecture: Option<String>,
     pub context_length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scaled_context_length: Option<u64>,
     pub source_files: Vec<PackageFile>,
     pub banks: Vec<PackageFile>,
     pub tensors: Vec<CheckpointTensor>,
@@ -63,6 +65,8 @@ pub struct CheckpointSummary {
     pub source_format: String,
     pub architecture: Option<String>,
     pub context_length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scaled_context_length: Option<u64>,
     pub tensor_count: usize,
     pub source_bytes: u64,
     pub bank_bytes: u64,
@@ -78,6 +82,7 @@ impl CheckpointManifest {
             source_format: self.source_format.clone(),
             architecture: self.architecture.clone(),
             context_length: self.context_length,
+            scaled_context_length: self.scaled_context_length,
             tensor_count: self.tensors.len(),
             source_bytes: self.source_files.iter().map(|f| f.bytes).sum(),
             bank_bytes: self.banks.iter().map(|f| f.bytes).sum(),
@@ -124,7 +129,7 @@ impl CheckpointLibrary {
     pub fn read(&self, id: &str) -> Result<CheckpointManifest> {
         let path = self.package_dir(id)?.join("manifest.json");
         let manifest: CheckpointManifest = read_json(&path)?;
-        if manifest.schema_version != 1
+        if !matches!(manifest.schema_version, 1 | 2)
             || manifest.id != id
             || manifest.quality_policy != "preserve_source"
         {
@@ -176,7 +181,7 @@ impl CheckpointLibrary {
                 }
             }
         }
-        let (format, architecture, context, tensors) =
+        let (format, architecture, context, scaled_context, tensors) =
             formats::inspect(&dir.join("source"), &manifest.source_files)?;
         let recorded: Vec<_> = manifest
             .tensors
@@ -191,15 +196,22 @@ impl CheckpointLibrary {
         if format != manifest.source_format || tensors != recorded {
             return Err("Checkpoint manifest does not match its source metadata".into());
         }
-        if architecture != manifest.architecture || context != manifest.context_length {
-            if formats::matches_legacy_v1_metadata(
-                &dir.join("source"),
-                &format,
-                &manifest.architecture,
-                manifest.context_length,
-            ) {
+        if architecture != manifest.architecture
+            || context != manifest.context_length
+            || scaled_context != manifest.scaled_context_length
+        {
+            if manifest.schema_version == 1
+                && formats::matches_legacy_v1_metadata(
+                    &dir.join("source"),
+                    &format,
+                    &manifest.architecture,
+                    manifest.context_length,
+                )
+            {
+                manifest.schema_version = 2;
                 manifest.architecture = architecture;
                 manifest.context_length = context;
+                manifest.scaled_context_length = scaled_context;
                 if let Ok(bytes) = serde_json::to_vec_pretty(&manifest) {
                     let _ = fs::write(dir.join("manifest.json"), bytes);
                 }
@@ -295,7 +307,7 @@ impl CheckpointLibrary {
         if target.exists() {
             return self.verify(&id);
         }
-        let (source_format, architecture, context_length, mut tensors) =
+        let (source_format, architecture, context_length, scaled_context_length, mut tensors) =
             formats::inspect(&staging.0.join("source"), &source_files)?;
         let mut banks = Vec::new();
         // A bounded number of descriptors per bank keeps version-1 Page 0 readable everywhere.
@@ -318,7 +330,7 @@ impl CheckpointLibrary {
             warnings.push("This checkpoint contains quantized or non-floating tensors. Their original formats are preserved.".into());
         }
         let manifest = CheckpointManifest {
-            schema_version: 1,
+            schema_version: 2,
             id,
             name: source
                 .file_name()
@@ -328,6 +340,7 @@ impl CheckpointLibrary {
             source_format,
             architecture,
             context_length,
+            scaled_context_length,
             source_files,
             banks,
             tensors,
