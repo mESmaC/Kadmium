@@ -27,8 +27,24 @@ pub struct PickerRequest {
     root: Option<PathBuf>,
 }
 
+/// A trusted picker message either opens a dialog or completes with a validation error.
+#[derive(Debug)]
+pub enum PickerMessage {
+    Request(PickerRequest),
+    Rejected { id: String, error: &'static str },
+}
+
+impl PickerMessage {
+    pub fn show(&self, parent: &(impl HasWindowHandle + HasDisplayHandle)) -> String {
+        match self {
+            Self::Request(request) => request.show(parent),
+            Self::Rejected { id, error } => completion(json!({"id": id, "error": error})),
+        }
+    }
+}
+
 /// Reject other origins, documents and malformed/unbounded messages before opening a dialog.
-pub fn parse_request(origin: &str, source: &str, body: &str) -> Option<PickerRequest> {
+pub fn parse_request(origin: &str, source: &str, body: &str) -> Option<PickerMessage> {
     if body.len() > 32 * 1024 {
         return None;
     }
@@ -37,7 +53,6 @@ pub fn parse_request(origin: &str, source: &str, body: &str) -> Option<PickerReq
     if base.scheme() != "http"
         || !matches!(base.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
         || base.origin() != source.origin()
-        || !matches!(source.path(), "/" | "/condenser" | "/condenser/")
     {
         return None;
     }
@@ -45,33 +60,64 @@ pub fn parse_request(origin: &str, source: &str, body: &str) -> Option<PickerReq
     if value.get("cmd")?.as_str()? != "pickPath" {
         return None;
     }
-    let request: PickerRequest = serde_json::from_value(value).ok()?;
-    if request.id.is_empty()
-        || request.id.len() > 64
-        || !request
-            .id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        || matches!(request.kind, Kind::WorkspaceFile) && request.root.is_none()
+    let id = value.get("id")?.as_str()?;
+    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
         return None;
     }
-    Some(request)
+    let id = id.to_string();
+    let reject = |error| {
+        Some(PickerMessage::Rejected {
+            id: id.clone(),
+            error,
+        })
+    };
+    if !matches!(source.path(), "/" | "/condenser" | "/condenser/") {
+        return reject("File dialogs are only available from the Condenser workspace.");
+    }
+    let Ok(request) = serde_json::from_value::<PickerRequest>(value) else {
+        return reject(
+            "Invalid file dialog request. Choose a model file, model folder, or workspace file.",
+        );
+    };
+    if matches!(request.kind, Kind::WorkspaceFile) && request.root.is_none() {
+        return reject("The workspace is not ready. Refresh and try again.");
+    }
+    Some(PickerMessage::Request(request))
+}
+
+fn completion(response: serde_json::Value) -> String {
+    format!("window.__KADMIUM_FILES__?.complete({response});")
+}
+
+fn initial_directory(path: &Path) -> Option<PathBuf> {
+    // Preserve real paths containing quote characters; otherwise accept a pasted shell path.
+    let path = if path.exists() {
+        path
+    } else if let Some(text) = path.to_str() {
+        let unquoted = text
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| text.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')));
+        unquoted.map(Path::new).unwrap_or(path)
+    } else {
+        path
+    };
+    let directory = if path.is_file() { path.parent()? } else { path };
+    directory.is_dir().then(|| directory.to_path_buf())
 }
 
 impl PickerRequest {
     /// Open an OS-owned, parented dialog. Cancel returns null; selection never imports a model.
     pub fn show(&self, parent: &(impl HasWindowHandle + HasDisplayHandle)) -> String {
         let mut dialog = rfd::FileDialog::new().set_parent(parent);
-        if let Some(path) = self.path.as_ref().or(self.root.as_ref()) {
-            let directory = if path.is_file() {
-                path.parent()
-            } else {
-                Some(path.as_path())
-            };
-            if let Some(directory) = directory.filter(|p| p.is_dir()) {
-                dialog = dialog.set_directory(directory);
-            }
+        if let Some(directory) = self
+            .path
+            .as_ref()
+            .or(self.root.as_ref())
+            .and_then(|path| initial_directory(path))
+        {
+            dialog = dialog.set_directory(directory);
         }
         let selected = match self.kind {
             Kind::ModelFile => dialog
@@ -92,7 +138,7 @@ impl PickerRequest {
             Ok(path) => json!({"id": self.id, "path": path}),
             Err(error) => json!({"id": self.id, "error": error}),
         };
-        format!("window.__KADMIUM_FILES__?.complete({response});")
+        completion(response)
     }
 
     fn selection(&self, path: &Path) -> Result<String, String> {
@@ -137,12 +183,16 @@ mod tests {
     use super::*;
 
     fn request(kind: &str) -> PickerRequest {
-        parse_request(
+        let message = parse_request(
             "http://127.0.0.1:7856",
             "http://127.0.0.1:7856/",
             &json!({"cmd":"pickPath", "id":"test-1", "kind":kind}).to_string(),
         )
-        .unwrap()
+        .unwrap();
+        let PickerMessage::Request(request) = message else {
+            panic!("expected a valid picker request")
+        };
+        request
     }
 
     #[test]
@@ -153,7 +203,6 @@ mod tests {
             "http://127.0.0.1:9999/",
             "http://127.0.0.1:7856.evil.example/",
             "about:blank",
-            "http://127.0.0.1:7856/plugins/untrusted",
         ] {
             assert!(parse_request("http://127.0.0.1:7856", source, body).is_none());
         }
@@ -193,6 +242,80 @@ mod tests {
         assert!(request.response(None).contains("\"path\":null"));
         let escaped = request.response(Some(PathBuf::from("models/a\"b.gguf")));
         assert!(escaped.contains("a\\\"b.gguf"));
+    }
+
+    #[test]
+    fn trusted_invalid_requests_complete_without_opening_a_dialog() {
+        struct NoWindow;
+        impl HasWindowHandle for NoWindow {
+            fn window_handle(
+                &self,
+            ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError>
+            {
+                panic!("rejected requests must not open a dialog")
+            }
+        }
+        impl HasDisplayHandle for NoWindow {
+            fn display_handle(
+                &self,
+            ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError>
+            {
+                panic!("rejected requests must not open a dialog")
+            }
+        }
+        let origin = "http://127.0.0.1:7856";
+        for (source, fields) in [
+            ("/", json!({"kind": "unknown"})),
+            ("/", json!({"kind": "workspace_file"})),
+            ("/", json!({"kind": "model_file", "path": 123})),
+            ("/plugins/untrusted", json!({"kind": "model_file"})),
+        ] {
+            let mut body = fields;
+            body["cmd"] = json!("pickPath");
+            body["id"] = json!("retry-1");
+            let message =
+                parse_request(origin, &format!("{origin}{source}"), &body.to_string()).unwrap();
+            assert!(matches!(message, PickerMessage::Rejected { .. }));
+            let script = message.show(&NoWindow);
+            let response: serde_json::Value = serde_json::from_str(
+                script
+                    .strip_prefix("window.__KADMIUM_FILES__?.complete(")
+                    .unwrap()
+                    .strip_suffix(");")
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(response["id"], "retry-1");
+            assert!(
+                response["error"]
+                    .as_str()
+                    .is_some_and(|error| !error.is_empty())
+            );
+            assert!(response.get("path").is_none());
+        }
+    }
+
+    #[test]
+    fn quoted_initial_paths_find_the_same_directory_without_expanding_shell_text() {
+        let fixture =
+            std::env::temp_dir().join(format!("kadmium-picker-quotes-{}", std::process::id()));
+        let directory = fixture.join("model folder");
+        std::fs::create_dir_all(&directory).unwrap();
+        let file = directory.join("model.gguf");
+        std::fs::write(&file, b"picker fixture").unwrap();
+        for path in [&file, &directory] {
+            for quote in ['"', '\''] {
+                let quoted = PathBuf::from(format!("{quote}{}{quote}", path.display()));
+                assert_eq!(initial_directory(&quoted), Some(directory.clone()));
+            }
+            assert_eq!(initial_directory(path), Some(directory.clone()));
+        }
+        assert_eq!(initial_directory(Path::new("\"$(not-a-command)\"")), None);
+        assert_eq!(
+            initial_directory(&PathBuf::from(format!("\"{}'", file.display()))),
+            None
+        );
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]

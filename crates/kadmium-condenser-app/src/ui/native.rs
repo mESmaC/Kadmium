@@ -6,7 +6,7 @@ use tao::window::{Theme, Window, WindowBuilder};
 use wry::{NewWindowResponse, WebContext, WebView, WebViewBuilder};
 
 pub fn run(options: UiOptions, server: EmbeddedServer) {
-    let event_loop = EventLoopBuilder::<kadmium_native::PickerRequest>::with_user_event().build();
+    let event_loop = EventLoopBuilder::<kadmium_native::PickerMessage>::with_user_event().build();
     let window = match build_window(&event_loop) {
         Ok(window) => window,
         Err(error) => {
@@ -49,7 +49,7 @@ pub fn run(options: UiOptions, server: EmbeddedServer) {
     });
 }
 
-fn build_window(event_loop: &EventLoop<kadmium_native::PickerRequest>) -> Result<Window, String> {
+fn build_window(event_loop: &EventLoop<kadmium_native::PickerMessage>) -> Result<Window, String> {
     let builder = WindowBuilder::new()
         .with_title("Condenser — Agent Workspace")
         .with_inner_size(LogicalSize::new(1280.0, 820.0))
@@ -80,7 +80,7 @@ fn build_webview(
     context: &mut WebContext,
     window: &Window,
     url: &str,
-    proxy: EventLoopProxy<kadmium_native::PickerRequest>,
+    proxy: EventLoopProxy<kadmium_native::PickerMessage>,
 ) -> wry::Result<WebView> {
     let origin = url.trim_end_matches('/').to_string();
     let ipc_origin = origin.clone();

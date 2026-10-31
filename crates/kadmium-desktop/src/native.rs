@@ -21,7 +21,7 @@ enum AppEvent {
     Unavailable {
         reason: String,
     },
-    PickPath(kadmium_native::PickerRequest),
+    PickPath(kadmium_native::PickerMessage),
 }
 
 pub fn run(args: Args, source: CoordinatorSource) {
