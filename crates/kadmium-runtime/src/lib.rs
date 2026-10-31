@@ -20,6 +20,8 @@ pub mod kernels;
 pub mod kv_replay;
 pub mod live_worker;
 pub mod moe_layer;
+/// Explicit approximate NPU execution, separate from RepOps verification paths.
+pub use kadmium_npu as npu;
 pub mod repops;
 pub mod speculative;
 pub mod throughput_boost;
