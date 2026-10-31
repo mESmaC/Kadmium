@@ -60,7 +60,7 @@ async fn import_verify_load_and_chat_rejects_backend_precision_changes() {
             Json(json!({"status":"success"}))
         }))
         .route("/prefix/api/show",post(|State(state):State<Backend>|async move{
-            Json(json!({"model_info":{"general.architecture":"llama","llama.context_length":8192},"tensors":[{"name":"model.weight","shape":[2],"type":if state.corrupt.load(Ordering::Relaxed){"F16"}else{"F32"}}]}))
+            Json(json!({"model_info":{"general.architecture":"llama","llama.context_length":8192},"parameters":format!("num_ctx {}",state.context.load(Ordering::Relaxed)),"tensors":[{"name":"model.weight","shape":[2],"type":if state.corrupt.load(Ordering::Relaxed){"F16"}else{"F32"}}]}))
         }))
         .route("/prefix/api/generate",post(|State(state):State<Backend>,Json(body):Json<Value>|async move{
             assert_eq!(body["options"]["num_ctx"],state.context.load(Ordering::Relaxed));state.loads.fetch_add(1,Ordering::Relaxed);
@@ -69,10 +69,10 @@ async fn import_verify_load_and_chat_rejects_backend_precision_changes() {
         .route("/prefix/api/ps",get(|State(state):State<Backend>|async move{
             Json(json!({"models":[{"name":*state.model.lock().unwrap(),"context_length":if state.shorten_context.load(Ordering::Relaxed){4096}else{state.context.load(Ordering::Relaxed)}}]}))
         }))
-        .route("/prefix/api/chat",post(|Json(body):Json<Value>|async move{
+        .route("/prefix/api/chat",post(|State(state):State<Backend>,Json(body):Json<Value>|async move{
             assert!(body["model"].as_str().unwrap().starts_with("kadmium-"));
-            // Full context comes from the created model's `num_ctx` parameter (asserted above).
-            assert!(body["options"].get("num_ctx").is_none());
+            // The loaded Modelfile window is sent explicitly on every request.
+            assert_eq!(body["options"]["num_ctx"],state.context.load(Ordering::Relaxed));
             assert_eq!(body["options"]["num_predict"],-1);
             assert_eq!(body["truncate"],false);
             Json(json!({"model":body["model"],"message":{"role":"assistant","content":"Checkpoint answer"},"done":true,"eval_count":2,"prompt_eval_count":3}))
@@ -198,6 +198,123 @@ async fn import_verify_load_and_chat_rejects_backend_precision_changes() {
         .await
         .unwrap();
     assert_eq!(forbidden.status(), 403);
+    server.abort();
+    mock.abort();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn scaled_checkpoints_bake_the_confirmed_window_into_the_modelfile() {
+    let root = std::env::temp_dir().join(format!(
+        "condenser-checkpoint-scaled-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(root.join("source")).unwrap();
+    std::fs::write(
+        root.join("source/config.json"),
+        br#"{"model_type":"llama","max_position_embeddings":8192,"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":8192}}"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("source/tokenizer.json"), b"{}").unwrap();
+    std::fs::write(
+        root.join("source/model.safetensors"),
+        SafetensorsToKtbTranscoder::build_safetensors_bytes(&[(
+            "model.weight",
+            "F32",
+            vec![2],
+            &[0, 0, 128, 63, 1, 0, 128, 63],
+        )]),
+    )
+    .unwrap();
+    // `corrupt` doubles as "backend lacks RoPE scaling" here.
+    let backend = Backend::default();
+    let app=Router::new()
+        .route("/prefix/api/version",get(||async{Json(json!({"version":"fixture"}))}))
+        .route("/prefix/api/blobs/{digest}",head(||async{StatusCode::OK}))
+        .route("/prefix/api/create",post(|State(state):State<Backend>,Json(body):Json<Value>|async move{
+            state.context.store(body["parameters"]["num_ctx"].as_u64().unwrap() as usize, Ordering::Relaxed);
+            state.loads.fetch_add(1,Ordering::Relaxed);
+            *state.model.lock().unwrap()=body["model"].as_str().unwrap().into();
+            Json(json!({"status":"success"}))
+        }))
+        .route("/prefix/api/show",post(|State(state):State<Backend>|async move{
+            let mut info=json!({"general.architecture":"llama","llama.context_length":32768});
+            if !state.corrupt.load(Ordering::Relaxed) { info["llama.rope.scaling.factor"]=json!(4.0); }
+            Json(json!({"model_info":info,"tensors":[{"name":"model.weight","shape":[2],"type":"F32"}]}))
+        }))
+        .route("/prefix/api/generate",post(|State(state):State<Backend>,Json(body):Json<Value>|async move{
+            assert_eq!(body["options"]["num_ctx"],state.context.load(Ordering::Relaxed));
+            Json(json!({"done":true}))
+        }))
+        .route("/prefix/api/ps",get(|State(state):State<Backend>|async move{
+            Json(json!({"models":[{"name":*state.model.lock().unwrap(),"context_length":state.context.load(Ordering::Relaxed)}]}))
+        })).with_state(backend.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = format!("http://{}/prefix", listener.local_addr().unwrap());
+    let mock = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (addr, server) = bind(ServerOptions {
+        port: 0,
+        model_library: root.join("library"),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let server = tokio::spawn(server);
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+    let imported: Value = client
+        .post(format!("{base}/api/v1/checkpoints/import"))
+        .json(&json!({"source_path":root.join("source")}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = imported["id"].as_str().unwrap().to_string();
+    let load = |context: Option<u32>| {
+        let mut body = json!({"checkpoint_id":id,"base_url":upstream});
+        if let Some(context) = context {
+            body["context_length"] = json!(context);
+        }
+        client
+            .post(format!("{base}/api/v1/checkpoints/load"))
+            .json(&body)
+            .send()
+    };
+
+    // Default: the scaled window ends up in the Modelfile, not just the preload.
+    let loaded = load(None).await.unwrap();
+    assert_eq!(loaded.status(), 200);
+    assert_eq!(
+        loaded.json::<Value>().await.unwrap()["context_length"],
+        32768
+    );
+    assert_eq!(backend.context.load(Ordering::Relaxed), 32768);
+    assert_eq!(backend.loads.load(Ordering::Relaxed), 2);
+
+    // An owner may choose a window above native and up to the scaled maximum.
+    let chosen = load(Some(16384)).await.unwrap();
+    assert_eq!(chosen.status(), 200);
+    assert_eq!(
+        chosen.json::<Value>().await.unwrap()["context_length"],
+        16384
+    );
+    assert_eq!(backend.context.load(Ordering::Relaxed), 16384);
+    assert_eq!(load(Some(32769)).await.unwrap().status(), 400);
+
+    // Without backend RoPE scaling, a window above native is refused, not silently lowered.
+    backend.corrupt.store(true, Ordering::Relaxed);
+    let refused = load(Some(16384)).await.unwrap();
+    assert!(!refused.status().is_success());
+    assert!(refused.text().await.unwrap().contains("RoPE scaling"));
+    let native = load(None).await.unwrap();
+    assert_eq!(
+        native.json::<Value>().await.unwrap()["context_length"],
+        8192
+    );
+    assert_eq!(backend.context.load(Ordering::Relaxed), 8192);
+
     server.abort();
     mock.abort();
     let _ = std::fs::remove_dir_all(root);

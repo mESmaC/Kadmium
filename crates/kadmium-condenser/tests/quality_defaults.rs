@@ -51,8 +51,7 @@ async fn providers_use_advertised_maxima_and_keep_explicit_limits() {
         provider.complete(&request).await.unwrap();
         let body = requests.lock().unwrap().last().unwrap().clone();
         if kind == ProviderKind::Ollama {
-            // The Modelfile parameter carries the full context; only an explicit choice is sent.
-            assert!(body["options"].get("num_ctx").is_none(), "{body}");
+            assert_eq!(body["options"]["num_ctx"], 131072);
             assert_eq!(body["options"]["num_predict"], -1);
             assert_eq!(body["truncate"], false);
             assert_eq!(body["shift"], false);
@@ -127,7 +126,7 @@ async fn missing_maximum_never_submits_a_small_default() {
             .complete(&request)
             .await;
         if kind == ProviderKind::Ollama {
-            // Unlimited generation and the model's own context; no small guess is sent.
+            // No context is reported, so none is guessed; the Modelfile governs.
             result.unwrap();
             let body = requests.lock().unwrap().last().unwrap().clone();
             assert_eq!(body["options"]["num_predict"], -1);

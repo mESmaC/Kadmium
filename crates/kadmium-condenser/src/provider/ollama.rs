@@ -13,7 +13,16 @@ use std::sync::Mutex;
 pub(crate) struct OllamaProvider {
     config: ProviderConfig,
     client: reqwest::Client,
-    native_ctx_cache: Mutex<HashMap<String, u32>>,
+    native_ctx_cache: Mutex<HashMap<String, ContextWindow>>,
+}
+
+/// What `/api/show` reports about a model's context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContextWindow {
+    /// Largest window a request may ask for.
+    maximum: u32,
+    /// Window sent when the request does not choose one.
+    default: u32,
 }
 
 impl OllamaProvider {
@@ -32,7 +41,7 @@ impl OllamaProvider {
         }
     }
 
-    async fn fetch_native_context(&self, model: &str) -> Result<Option<u32>> {
+    async fn fetch_native_context(&self, model: &str) -> Result<Option<ContextWindow>> {
         if let Some(cached) = self
             .native_ctx_cache
             .lock()
@@ -61,7 +70,31 @@ impl OllamaProvider {
     }
 }
 
-fn native_context(shown: &Value) -> Option<u32> {
+/// A Modelfile `num_ctx` is an explicit choice (Kadmium's loader writes the owner's
+/// window or a confirmed RoPE-scaled one), so it is the default; otherwise the
+/// declared context. Either may be requested up to the larger of the two.
+fn native_context(shown: &Value) -> Option<ContextWindow> {
+    let modelfile = shown
+        .get("parameters")
+        .and_then(Value::as_str)
+        .and_then(|parameters| {
+            parameters.lines().find_map(|line| {
+                let mut parts = line.split_whitespace();
+                (parts.next() == Some("num_ctx"))
+                    .then(|| parts.next()?.parse::<u32>().ok())
+                    .flatten()
+                    .filter(|ctx| *ctx > 0)
+            })
+        });
+    let declared = declared_context(shown);
+    let default = modelfile.or(declared)?;
+    Some(ContextWindow {
+        maximum: declared.map_or(default, |declared| declared.max(default)),
+        default,
+    })
+}
+
+fn declared_context(shown: &Value) -> Option<u32> {
     if let Some(arch) = shown
         .pointer("/model_info/general.architecture")
         .and_then(|v| v.as_str())
@@ -116,16 +149,23 @@ impl InferenceProvider for OllamaProvider {
     async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse> {
         self.config.validate()?;
         request.sampling.validate()?;
-        if let Some(requested_ctx) = request.sampling.context_window
-            && let Some(native_ctx) = self.fetch_native_context(&request.model).await?
-            && requested_ctx > native_ctx
+        // Ollama otherwise falls back to its small default window for pulled models
+        // without a Modelfile `num_ctx`, so the full window is always sent explicitly.
+        let native_ctx = self.fetch_native_context(&request.model).await?;
+        if let (Some(requested_ctx), Some(window)) = (request.sampling.context_window, native_ctx)
+            && requested_ctx > window.maximum
         {
             return Err(CondenserError::Config(format!(
-                "requested context_window ({requested_ctx}) exceeds model `{}` native context length ({native_ctx})",
-                request.model
+                "requested context_window ({requested_ctx}) exceeds model `{}` native context length ({})",
+                request.model, window.maximum
             )));
         }
-        let body = request_body(request)?;
+        let mut resolved = request.clone();
+        resolved.sampling.context_window = request
+            .sampling
+            .context_window
+            .or(native_ctx.map(|window| window.default));
+        let body = request_body(&resolved)?;
         let url = endpoint(self.config.base_url(), "api/chat");
         let response = self
             .authorize(self.client.post(url).json(&body))
@@ -326,7 +366,38 @@ mod tests {
                 "llama.context_length": 4096
             }
         });
-        assert_eq!(native_context(&shown), Some(131_072));
+        assert_eq!(
+            native_context(&shown),
+            Some(ContextWindow {
+                maximum: 131_072,
+                default: 131_072
+            })
+        );
+        // An owner-lowered Modelfile window is kept by default but can be raised.
+        let lowered = json!({
+            "model_info": {"general.architecture": "llama", "llama.context_length": 8192},
+            "parameters": "stop \"<|eot|>\"
+        num_ctx                        4096"
+        });
+        assert_eq!(
+            native_context(&lowered),
+            Some(ContextWindow {
+                maximum: 8192,
+                default: 4096
+            })
+        );
+        // A RoPE-scaled window baked by the loader exceeds the declared one.
+        let scaled = json!({
+            "model_info": {"general.architecture": "llama", "llama.context_length": 32768},
+            "parameters": "num_ctx 131072"
+        });
+        assert_eq!(
+            native_context(&scaled),
+            Some(ContextWindow {
+                maximum: 131_072,
+                default: 131_072
+            })
+        );
     }
 
     #[test]

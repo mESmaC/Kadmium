@@ -202,7 +202,11 @@ pub async fn load_ollama_with_context(
     }
     // An explicit owner choice wins; otherwise the native (or supported scaled) maximum.
     let requested = context_length.map(u64::from);
-    if requested.is_some_and(|c| c == 0 || c > manifest.context_length) {
+    let ceiling = manifest
+        .scaled_context_length
+        .unwrap_or(manifest.context_length)
+        .max(manifest.context_length);
+    if requested.is_some_and(|c| c == 0 || c > ceiling) {
         return Err(CondenserError::Config(
             "Context must be between 1 and the checkpoint's declared maximum".into(),
         ));
@@ -259,24 +263,12 @@ pub async fn load_ollama_with_context(
         files.insert(file.name.clone(), digest);
     }
     let model = format!("kadmium-{}:latest", manifest.id);
-    let response = client
-        .post(endpoint(&base, "create"))
-        .json(&json!({
-            "model":model, "files":files, "stream":false,
-            "parameters":{"num_ctx":requested.unwrap_or(manifest.context_length)}
-        }))
-        .send()
-        .await
-        .map_err(backend_error)?;
-    let created: Value = decode_json(ProviderKind::Ollama, response).await?;
-    if created["status"] != "success" {
-        return Err(backend_error(
-            created
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("backend did not finish model creation"),
-        ));
-    }
+    // Scaled support is only known after creation, so start at the native window
+    // and re-create below once a larger window is confirmed.
+    let created_context = requested
+        .unwrap_or(manifest.context_length)
+        .min(manifest.context_length);
+    create_model(&client, &base, &model, &files, created_context).await?;
     let response = client
         .post(endpoint(&base, "show"))
         .json(&json!({"model":model,"verbose":true}))
@@ -297,15 +289,21 @@ pub async fn load_ollama_with_context(
             "backend reported a context length smaller than the checkpoint native context length",
         ));
     }
+    let scaling_supports =
+        |ctx: u64| has_backend_rope_scaling && backend_ctx.is_some_and(|backend| backend >= ctx);
     let active_context = match (requested, manifest.scaled_context_length) {
-        (Some(chosen), _) => chosen,
-        (None, Some(scaled))
-            if has_backend_rope_scaling && backend_ctx.is_some_and(|ctx| ctx >= scaled) =>
-        {
-            scaled
+        (Some(chosen), _) if chosen > manifest.context_length && !scaling_supports(chosen) => {
+            return Err(backend_error(
+                "backend does not support RoPE scaling to the requested context length",
+            ));
         }
+        (Some(chosen), _) => chosen,
+        (None, Some(scaled)) if scaling_supports(scaled) => scaled,
         _ => manifest.context_length,
     };
+    if active_context != created_context {
+        create_model(&client, &base, &model, &files, active_context).await?;
+    }
     // Empty generate preloads the actual model. A create success alone does not prove it fits.
     let response = client
         .post(endpoint(&base, "generate"))
@@ -348,6 +346,35 @@ pub async fn load_ollama_with_context(
         context_length: u32::try_from(active_context).map_err(backend_error)?,
         execution: "Local Ollama using preserved source files; KTB banks are storage artifacts. Backend arithmetic and KV precision are not RepOps-certified.",
     })
+}
+
+/// Registers the model with `num_ctx` baked into its Modelfile parameters.
+async fn create_model(
+    client: &reqwest::Client,
+    base: &reqwest::Url,
+    model: &str,
+    files: &BTreeMap<String, String>,
+    context: u64,
+) -> Result<()> {
+    let response = client
+        .post(endpoint(base, "create"))
+        .json(&json!({
+            "model":model, "files":files, "stream":false,
+            "parameters":{"num_ctx":context}
+        }))
+        .send()
+        .await
+        .map_err(backend_error)?;
+    let created: Value = decode_json(ProviderKind::Ollama, response).await?;
+    if created["status"] != "success" {
+        return Err(backend_error(
+            created
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("backend did not finish model creation"),
+        ));
+    }
+    Ok(())
 }
 
 fn verify_backend_tensors(manifest: &CheckpointManifest, shown: &Value) -> Result<()> {
