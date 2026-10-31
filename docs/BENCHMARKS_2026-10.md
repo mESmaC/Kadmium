@@ -1,5 +1,7 @@
 # Kadmium (`Cd-48`) Measured Benchmark Ledger (`2026-10`)
 
+> **Commercial-use qualification — 2026-10-30:** Run 1 is a reported external-harness measurement with the configuration/provenance caveats below, not a reproducible shipped-product benchmark. Previous business/launch descriptions of Q4_K_M, 19.6 GiB, a 16 GB PC, wired 1GbE and zero swap did not match this ledger and have been withdrawn. Do not advertise 3.98× as an equal-condition production speedup. Runs 2–3 measure reference kernels on loopback. See the [evidence review](MARKETING_BUSINESS_REVIEW_2026-10-30.md).
+
 > **Process Invariant (Measured Figures Replace Modelled Ones As They Land):**
 > [`docs/NUMBERS_2026-10.md`](NUMBERS_2026-10.md) and the R4 review ([`docs/MARKET_RESEARCH_REVIEW_2026-10.md`](MARKET_RESEARCH_REVIEW_2026-10.md) section 10) label every throughput and ROI figure **Modelled** until measured logs exist. This ledger is where measured runs are recorded. Each run is dated, names the hardware and configuration it was taken on, and is labelled **Measured**. Anything derived from a run by arithmetic is labelled **Derived**, and anything projected from a run is labelled **Modelled**.
 >

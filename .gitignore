@@ -4,3 +4,4 @@ target/
 *.pdb
 .DS_Store
 .env
+__pycache__/

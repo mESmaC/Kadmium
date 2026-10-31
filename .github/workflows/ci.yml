@@ -11,6 +11,19 @@ env:
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
+  business-model:
+    name: Verify business planning calculations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check accounting and cohort invariants
+        run: python scripts/test_business_model.py
+      - name: Check generated economics match assumptions
+        run: python scripts/business_model.py --check
+
   check-and-test:
     name: Test & Lint (${{ matrix.os }})
     strategy:

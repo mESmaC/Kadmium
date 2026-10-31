@@ -1,12 +1,13 @@
-# Kadmium (`Cd-48`) Canonical Market, Energy & Hardware Numbers Ledger (`2026-10-20`)
+# Kadmium (`Cd-48`) Historical Engineering Numbers Ledger (`2026-10-20`)
 
-> **Process Invariant (Single Dated Source of Truth):**
-> Every economic model, wholesale GPU index rate, serverless token benchmark, electricity tariff, hardware BOM estimate, and compliance boundary across the Kadmium codebase and documentation reads from this dated ledger and its corresponding Rust module [`crates/kadmium-core/src/canonical_numbers.rs`](../crates/kadmium-core/src/canonical_numbers.rs).
+> **Scope update — 2026-10-30:** This ledger and [canonical_numbers.rs](../crates/kadmium-core/src/canonical_numbers.rs) preserve historical engineering/model inputs. They are not a live wholesale feed, verified customer price book, compliance determination or approved financial policy. The commercial [evidence review](MARKETING_BUSINESS_REVIEW_2026-10-30.md) supersedes the earlier business interpretation; proposed operating assumptions now live in [business/assumptions.json](business/assumptions.json).
+>
+> The historical tables below remain unchanged for traceability. The 75% wholesale reserve, assumed 70% credit redemption, Steam-derived host counts, universal token discounts and legal/charter assertions must not be reused as validated commercial facts. A 1.25× wholesale markup implies 80% fulfillment cost. See the [recalculated economics](business/ECONOMICS.md). This review does not change runtime behavior.
 >
 > - **Dataset Date Stamp:** `2026-10-20`
 > - **Primary Audit Reference:** [`docs/MARKET_RESEARCH_REVIEW_2026-10.md`](MARKET_RESEARCH_REVIEW_2026-10.md) (*R4 Market Research & Fact-Check Review*)
 > - **Consuming Code Modules:** [`crates/kadmium-core/src/canonical_numbers.rs`](../crates/kadmium-core/src/canonical_numbers.rs), [`crates/kadmium-core/src/supply.rs`](../crates/kadmium-core/src/supply.rs), [`crates/kadmium-core/src/reactor_clearinghouse.rs`](../crates/kadmium-core/src/reactor_clearinghouse.rs)
-> - **Consuming Documents:** [`docs/BUSINESS_PLAN_AND_STANCE.md`](BUSINESS_PLAN_AND_STANCE.md), [`docs/MARKET_RESEARCH_AND_LAUNCH_PLAN.md`](MARKET_RESEARCH_AND_LAUNCH_PLAN.md), [`README.md`](../README.md)
+> - **Historical Consumers:** earlier business and launch plans; some [README](../readme.md) and application claims still require the publication-remediation pass identified in the review.
 
 ---
 

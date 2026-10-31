@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kadmium credit-bundle sensitivity</title>
+<style>
+:root { font-family:var(--font-sans,system-ui); color:var(--foreground,CanvasText); }
+body { margin:0; } h2 { font-size:20px; margin:0 0 10px; }
+p { line-height:1.5; margin:8px 0; } .muted { color:var(--muted-foreground,GrayText); font-size:13px; }
+svg { width:100%; height:275px; overflow:visible; } text { fill:var(--foreground,CanvasText); font:15px var(--font-sans,system-ui); }
+.note { padding:16px; border-radius:var(--radius,8px); background:var(--secondary,ButtonFace); }
+@media(max-width:420px) { svg { height:220px; } }
+</style></head><body>
+<h2>Credit redemption changes the subscription margin</h2>
+<p>Eventual contribution per billed month: $29.00 subscription with $35.00 compute credits.</p>
+<svg viewBox="0 0 650 280" role="img" aria-label="0% redemption: $22.28; 52% redemption: $7.72; 100% redemption: -$5.72">
+<line x1="35" y1="130" x2="625" y2="130" stroke="var(--border,GrayText)"/>
+<text x="2" y="135">$0</text><rect x="85.0" y="40.00" width="80" height="90.00" rx="4" fill="var(--chart-1, CanvasText)"/><text x="125.0" y="31.00" text-anchor="middle">$22.28</text><text x="125.0" y="260" text-anchor="middle">0% redeemed</text><rect x="285.0" y="98.82" width="80" height="31.18" rx="4" fill="var(--chart-1, CanvasText)"/><text x="325.0" y="89.82" text-anchor="middle">$7.72</text><text x="325.0" y="260" text-anchor="middle">52% redeemed</text><rect x="485.0" y="130.00" width="80" height="23.11" rx="4" fill="var(--destructive, CanvasText)"/><text x="525.0" y="172.11" text-anchor="middle">-$5.72</text><text x="525.0" y="260" text-anchor="middle">100% redeemed</text></svg>
+<div class="note"><strong>Proposal: separate compute from service pricing.</strong>
+<p>Full redemption leaves -$0.14 after wholesale compute and card fees,
+before support, infrastructure and the refund/loss allowance.</p></div>
+<p class="muted">Illustrative sensitivity, 2026-10-30; not customer results.
+Assumes 80% fulfillment cost,
+card fee 2.9% + $0.30,
+$4.00 support, $1.00 infrastructure
+and 2% refund/loss allowance.
+Generated from docs/business/assumptions.json. Eventual redemption rates are unvalidated;
+unused balances require separate liability and reserve tracking.</p>
+</body></html>

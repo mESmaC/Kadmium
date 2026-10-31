@@ -8,6 +8,18 @@ Kadmium implements a heterogeneous compute control plane, planners, worker trans
 
 ## Documentation Sitemap
 
+### Business and marketing review
+
+The commercial plan is a proposal for review. It separates current evidence from future services; no managed compute, revenue, charter or compliance readiness is implied.
+
+| Document | Purpose |
+| :--- | :--- |
+| [Marketing and business review — 2026-10-30](MARKETING_BUSINESS_REVIEW_2026-10-30.md) | Findings, strongest case and objections, competitors, primary sources and publication blockers. |
+| [Business plan and stance](BUSINESS_PLAN_AND_STANCE.md) | First customer, scoped offer, stewardship proposal, economics and evidence gates. |
+| [Marketing and launch plan](MARKET_RESEARCH_AND_LAUNCH_PLAN.md) | Growth experiments, draft copy, budgets, measurement and 90-day calendar. |
+| [Operating plan](OPERATING_PLAN.md) | Ownership, delivery, support, release claims, treasury and stop rules. |
+| [Reproducible economics](business/ECONOMICS.md) | Service cohorts, redemption stress and cash/liability reconciliation. |
+
 ### 1. Getting Started & Core Reference
 | Guide | Description |
 | :--- | :--- |
