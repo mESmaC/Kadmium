@@ -49,14 +49,7 @@ The commercial plan is a proposal for review. It does not establish managed comp
 | [Operating plan](OPERATING_PLAN.md) | Ownership, delivery, release claims, treasury, and stop rules. |
 | [Reproducible economics](business/ECONOMICS.md) | Cohorts, redemption stress, and cash/liability calculations. |
 | [Historical engineering numbers](NUMBERS_2026-10.md) | Dated model inputs, not live prices or measured supply. |
-
-### 3. Business, Market & Strategy
-| Guide | Description |
-| :--- | :--- |
-| [**Strategy Audit (`STRATEGY_AUDIT_2026-10-30.md`)**](./STRATEGY_AUDIT_2026-10-30.md) | Audit of the business and launch plans against the direction of the concept: steelman, structural weaknesses, eighteen unused angles, a tighter narrative, milestone-gated sequencing and a section-by-section scorecard. |
-| [**Business Plan & Stance (`BUSINESS_PLAN_AND_STANCE.md`)**](./BUSINESS_PLAN_AND_STANCE.md) | Pay-in tiers, wholesale index pricing, output-metered Supply Grid clearing, credit liability accounting, compliance boundaries and the `75 / 20 / 5` charter. |
-| [**Market Research & Launch Plan (`MARKET_RESEARCH_AND_LAUNCH_PLAN.md`)**](./MARKET_RESEARCH_AND_LAUNCH_PLAN.md) | Buyer positioning, competitive teardown, reality checks, go-to-market channels, academic and grant engine, referral loops. |
-| [**R4 Market Research Review (`MARKET_RESEARCH_REVIEW_2026-10.md`)**](./MARKET_RESEARCH_REVIEW_2026-10.md) | Claim-by-claim fact-check, capability envelope, risk register and ranked recommendations. |
+| [Strategy audit — 2026-10-30](STRATEGY_AUDIT_2026-10-30.md) | Steelman, structural findings and eighteen candidate angles, written against the pre-#28 plan (`2e2040b5`) with a status table against version 3. |
 
 ---
 

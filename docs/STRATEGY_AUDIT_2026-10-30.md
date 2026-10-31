@@ -1,10 +1,66 @@
 # Kadmium strategy audit — business plan and launch plan (30 October 2026)
 
-**Documents audited:** [`BUSINESS_PLAN_AND_STANCE.md`](BUSINESS_PLAN_AND_STANCE.md) (v2.1) and [`MARKET_RESEARCH_AND_LAUNCH_PLAN.md`](MARKET_RESEARCH_AND_LAUNCH_PLAN.md), read together with the [R4 review](MARKET_RESEARCH_REVIEW_2026-10.md), the [numbers ledger](NUMBERS_2026-10.md), the [specsheet](SPECSHEET_AND_ROADMAP.md) and the [design-system voice guide](../design-system/1-voice.md).
+> **Scope note (added 31 October 2026).** This audit was written against **version 2.1** of the plans at commit [`2e2040b5`](https://github.com/mESmaC/Kadmium/tree/2e2040b5d8feae4a84da6fd306c0452dafff369e): the [business plan](https://github.com/mESmaC/Kadmium/blob/2e2040b5d8feae4a84da6fd306c0452dafff369e/docs/BUSINESS_PLAN_AND_STANCE.md) and [launch plan](https://github.com/mESmaC/Kadmium/blob/2e2040b5d8feae4a84da6fd306c0452dafff369e/docs/MARKET_RESEARCH_AND_LAUNCH_PLAN.md) as they stood before PR #28. PR #28 (merged as [`6e514f2`](https://github.com/mESmaC/Kadmium/commit/6e514f2)) replaced both with **version 3**: one paid pilot for one customer segment, evidence gates G0–G5, an [operating plan](OPERATING_PLAN.md) and a [service-economics model](business/ECONOMICS.md). Sections 1–9 and Appendix A are left as written so the reasoning stays checkable against the version they judged. The [status section](#status-against-version-3) records which findings version 3 already resolves, which it defers along with the feature they belong to, and which are still open. Where this audit and version 3 disagree about what may be claimed or sold today, version 3 governs.
 
-**Lens.** This audit judges the plans against the *direction of the concept*: a local-first heterogeneous compute fabric (Windows, macOS, Linux, ARM) with polite yield, a desktop agent workspace (Condenser), elastic overflow to indexed cloud spot and to an output-metered community grid, an air-gapped office tier for regulated buyers, a campus and grant engine, and a USD-only steward-ownership charter. It does not re-audit what the code does today. The [R4 review](MARKET_RESEARCH_REVIEW_2026-10.md) and the open evidence review in PR #28 cover readiness, provenance and arithmetic; where those findings change the strategy they are cited, not repeated.
+**Documents audited:** [`BUSINESS_PLAN_AND_STANCE.md`](https://github.com/mESmaC/Kadmium/blob/2e2040b5d8feae4a84da6fd306c0452dafff369e/docs/BUSINESS_PLAN_AND_STANCE.md) (v2.1 at `2e2040b5`) and [`MARKET_RESEARCH_AND_LAUNCH_PLAN.md`](https://github.com/mESmaC/Kadmium/blob/2e2040b5d8feae4a84da6fd306c0452dafff369e/docs/MARKET_RESEARCH_AND_LAUNCH_PLAN.md) (same commit), read together with the [R4 review](MARKET_RESEARCH_REVIEW_2026-10.md), the [numbers ledger](NUMBERS_2026-10.md), the [specsheet](SPECSHEET_AND_ROADMAP.md) and the [design-system voice guide](../design-system/1-voice.md).
+
+**Lens.** This audit judges the plans against the *direction of the concept*: a local-first heterogeneous compute fabric (Windows, macOS, Linux, ARM) with polite yield, a desktop agent workspace (Condenser), elastic overflow to indexed cloud spot and to an output-metered community grid, an air-gapped office tier for regulated buyers, a campus and grant engine, and a USD-only steward-ownership charter. It does not re-audit what the code does today. The [R4 review](MARKET_RESEARCH_REVIEW_2026-10.md) and the [evidence review](MARKETING_BUSINESS_REVIEW_2026-10-30.md) merged in PR #28 cover readiness, provenance and arithmetic; where those findings change the strategy they are cited, not repeated.
 
 **Short verdict.** The concept is a genuine category, the pricing architecture is more rigorous than any adjacent competitor's, and the charter is a procurement feature rather than a slogan. The plans undercut that strength in three ways: they spread one founder across eight businesses in ninety days, they bury the one buyer who pays 90 percent gross margin under a manifesto aimed at hosts who earn twenty dollars a month, and they violate the project's own voice guide so thoroughly that the target community would discount the numbers. Section 4 lists eighteen angles the plans do not yet use. Section 9 gives the order of operations.
+
+---
+
+## Status against version 3
+
+Version 3 of the plans (the [business plan](BUSINESS_PLAN_AND_STANCE.md), [launch plan](MARKET_RESEARCH_AND_LAUNCH_PLAN.md), [evidence review](MARKETING_BUSINESS_REVIEW_2026-10-30.md), [operating plan](OPERATING_PLAN.md) and [economics model](business/ECONOMICS.md)) sells a $1,500 two-week pilot and a $299 monthly service to small AI engineering teams, bills compute through the buyer's own provider, and gates every other offer on evidence. Read against that, the findings below fall into three groups: resolved by version 3, deferred with the feature they belong to, and still open.
+
+### Structural findings (§3)
+
+| Finding | Version 3 status | What remains |
+| :--- | :--- | :--- |
+| §3.1 Scope sprawl | **Resolved.** One segment (3–15 person engineering teams), one supported configuration, one paid offer. Hardware, marketplace, regulated verticals and grants are deferred to G3–G5. | The audit's spine (private, rate-limit-free inference on the machines the team owns) is the G3 form of version 3's "understand your compute" job. Use it only after native execution is measured. |
+| §3.2 Brand and voice | **Partly resolved.** Launch plan §1 uses Kadmium and Condenser only and retires Reactor from acquisition pages. | The taxonomy table and the Appendix A rewrites are input to the C1 and C2 publication-remediation items in the operating plan. The marketing page still carries the old copy. |
+| §3.3 Manifesto versus host table | **Resolved.** Version 3 disqualifies hosting-income prospects, retires passive-income promises, and starts community compute as a permissioned queue on one buyer's own machines. | Reciprocity rather than income for residential hosts, and fleets before gamers, remain the recommended host positioning when G4 opens third-party supply. |
+| §3.4 Pricing design | **Resolved for the current offer.** The $29 plan with $35 of credits, the deposit funnel and the two-sided referral are retired. The pilot is fixed-fee and compute stays on the buyer's provider account. | Included credits at or below 60 percent of price, one credit unit with one multiplier, and Office pricing by node count are design rules for the deferred tiers (managed software after G2, compute service at G4). |
+| §3.5 Hero number | **Resolved.** The 3.98× headline is withdrawn. The operating plan's benchmark acceptance requires matched single-node and alternative-runtime baselines. | The comparison to run at G3 is still Kadmium against llama.cpp RPC or Exo on the identical mixed-OS pair, with an absolute tokens-per-second figure on a named model. |
+| §3.6 Competitive map | **Partly resolved.** The evidence review adds GPUStack, LM Link, the Tailscale DIY stack, API batch and "no change", and corrects the Exo and Salad claims. | Still missing from the alternatives guide: FreeToken and colibri (single-machine MoE), vLLM and SGLang disaggregated serving, MLX distributed and DGX Spark pairs, and Petals marked dormant. |
+| §3.7 Hardware | **Resolved.** Hardware is deferred until demand specifically requires an appliance. | §4.7 (OEM certification) remains the zero-inventory alternative when that point arrives. |
+| §3.8 Regulated office and MSP | **Resolved by deferral to G5.** The operating plan adopts the HHS position that on-premise placement is not compliance and that remote support changes the boundary. | The documents-and-retrieval workload, the choice between a BAA template and a no-remote-access support model, and the MSP enablement kit (NFR licences, an RMM-deployable installer, a co-branded sheet) are inputs to G5 and experiment M7. |
+| §3.9 Date-gated timeline | **Resolved.** G0–G5 are evidence gates and dates are learning windows. | The gate table in §6 and its software-only Day-90 base case ($11,753) are superseded by the version 3 gates and the planning scenario in the economics model. |
+| §3.10 Crowdfunding | **Resolved.** Crowdfunding and equity are reconsidered only against a reliable deliverable and a validated capital need. | None. |
+| §3.11 Grant timing | **Resolved.** Grant-fit research is capped at four founder hours, no award is assumed, and Phase I needs a Project Pitch invitation. | If a submission is pursued, the 4 March 2027 window and the PI employment rule still apply. |
+
+### Steelman (§2), narrative (§5) and order of operations (§9)
+
+- **§2.1 and §2.2** describe the deferred marketplace design. Version 3 keeps native heterogeneous execution as the long-term investment and the 75/20/5 split as a design objective, and operating plan §6 lists what must be validated before any of §2.2 is operated. They remain the direction of the concept, not a description of what is sold.
+- **§2.3** is superseded. Version 3 earns service contribution ($526 per pilot, $194 per account-month) rather than 85–93 percent software margin, and tests the $199 anchor separately and later.
+- **§2.4 and §2.5** are strengthened. Version 3 labels every figure observed, reported, derived or hypothesis, and calls the charter a proposal until governing documents exist.
+- **§2.6** is narrowed. Version 3 places the civic narrative after the product and bars "no additional datacenters" as a sales promise, which matches §3.3's advice to keep it as a press hook only.
+- **§5** describes the concept at G3 and beyond. The version 3 draft copy governs the acquisition page until native execution is measured, and "reactor" stays off acquisition pages per launch plan §1.
+- **§9**: items 1, 3 and 10 are adopted; items 4, 5, 8 and 9 are deferred with the features they belong to; items 2, 6, 7 and 11 are still open; item 12 is narrowed to the leaderboard, for the reason given under 4.11 below.
+
+### The eighteen angles (§4)
+
+| Angle | Usable when | Note against version 3 |
+| :--- | :--- | :--- |
+| 4.1 Step-level hybrid routing and spend meter | Now (G0–G2) | The natural "understand your compute" feature while compute stays on the buyer's provider account. Candidate for the one common paid operational feature at G2. |
+| 4.2 Rate-limit overflow as the headline | After G3 | Until then, use the last 429 or out-of-memory incident as a discovery-interview trigger only. |
+| 4.3 Sanctioned alternative to shadow AI | Now, as positioning | Speaks to the operator and security-reviewer role in business plan §3. No compliance claim attaches. |
+| 4.4 Demand response and carbon-aware compute | After G4 | Only with measured energy per accepted task against a stated counterfactual (evidence review, recommendation 6). |
+| 4.5 Sovereign and regional compute | G5 | Unchanged. |
+| 4.6 Fleets as the supply anchor | G4 | Matches version 3's permissioned overnight queue. The first fleet is the buyer's own. |
+| 4.7 OEM certification instead of own hardware | When hardware is reconsidered | Unchanged. |
+| 4.8 Verified weights | After G3 | Aligns with the model-rights review in the operating plan. |
+| 4.9 RL environment marketplace | G4 or later | Unchanged. |
+| 4.10 Own the benchmark | Now, restricted to committed-harness results | This is the M3 configuration-report programme and the supported-configuration card. |
+| 4.11 Public "no new datacenters" counter | **Withdrawn as written** | Evidence review recommendation 6 and the FTC Green Guides require specific, measured environmental claims. A counter reporting zero litres of cooling water would not pass that test. Replace with a measured energy-per-accepted-task series once G3 exists. |
+| 4.12 CloudShield as business continuity | G4 | No failover claim before interruption and recovery are tested. |
+| 4.13 Hardware-tribe marketing | Now, through M3 | Consent and attribution rules from operating plan C7 apply. |
+| 4.14 Formalize the charter | Before G4 | Version 3 agrees that stewardship terms are proposals until adopted. |
+| 4.15 MCP-first developer distribution | Now | The nearest version 3 item is the reproducible migration recipe in launch plan §4. |
+| 4.16 Campus fabric sold to central IT | G1 onward | Version 3 already names the PI or IT administrator as the accountable buyer. |
+| 4.17 Supply-chain collateral for defence buyers | G5 | Unchanged. |
+| 4.18 Measurement as content | Now | This is the proof architecture in launch plan §2. |
 
 ---
 
