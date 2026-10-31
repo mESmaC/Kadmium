@@ -232,6 +232,33 @@ impl KadmiumMcpServer {
                     "required": []
                 }),
             },
+            McpToolDescriptor {
+                name: "kadmium_bucket_access".into(),
+                description: "Upload, download, verify, list, or inspect objects across Kadmium's multi-medium distributed storage bucket (kdm://pool-bucket/...) spanning GPU VRAM, Unified Memory, System RAM, PCIe NVMe SSD, UFS/eMMC/SD Flash, and NAS ZFS/RAID vaults.".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["status", "mediums", "list", "put", "get", "verify"],
+                            "description": "Bucket action: 'status' (full pool & medium report), 'mediums' (all storage mediums across systems), 'list' (list objects), 'put' (upload UTF-8 content), 'get' (download/inspect object), or 'verify' (verify shards & parity)."
+                        },
+                        "object_uri": {
+                            "type": "string",
+                            "description": "Object URI in kdm://pool-bucket/... format (required for 'put', 'get', 'verify')."
+                        },
+                        "content_utf8": {
+                            "type": "string",
+                            "description": "UTF-8 payload to store when action is 'put'."
+                        },
+                        "storage_class": {
+                            "type": "string",
+                            "description": "Optional storage class when action is 'put' (e.g. 'ModelCheckpointKtb', 'DatasetCorpusParquet', 'RlTrajectoryRollout', 'KvCacheSnapshot')."
+                        }
+                    },
+                    "required": []
+                }),
+            },
         ]
     }
 
@@ -260,6 +287,12 @@ impl KadmiumMcpServer {
                 uri: "kadmium://cluster/cloud-shield".into(),
                 name: "Multi-Provider Cloud Arbitrage & Failover Shield".into(),
                 description: "Real-time $/TFLOP/hr spot comparison and zero-downtime failover simulations.".into(),
+                mime_type: "application/json".into(),
+            },
+            McpResourceDescriptor {
+                uri: "kadmium://cluster/storage-bucket".into(),
+                name: "Multi-Medium Distributed Storage Pool Bucket (kdm://pool-bucket)".into(),
+                description: "Live multi-medium storage inventory (VRAM, Unified Memory, System RAM, NVMe, UFS/eMMC Flash, NAS ZFS/RAID), erasure-coded objects, and external/internal access guide.".into(),
                 mime_type: "application/json".into(),
             },
             McpResourceDescriptor {
@@ -571,6 +604,176 @@ impl KadmiumMcpServer {
                     "isError": false
                 }))
             }
+            "kadmium_bucket_access" => {
+                let action = args
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("status");
+                let store = state.bucket_store();
+                let coord_url = state.coordinator_http_url();
+                let payload = match action {
+                    "mediums" => {
+                        let summaries =
+                            kadmium_data::DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums(
+                                &state.nodes,
+                                &state.bucket_anchors,
+                                false,
+                            );
+                        let node_profiles: Vec<_> = state
+                            .nodes
+                            .iter()
+                            .map(|n| {
+                                json!({
+                                    "node_id": n.id.0,
+                                    "hostname": n.hostname,
+                                    "mediums": kadmium_data::DecentralizedStoragePoolEngine::inspect_node_storage_mediums(n, false),
+                                })
+                            })
+                            .collect();
+                        json!({
+                            "action": "mediums",
+                            "cluster_medium_summaries": summaries,
+                            "node_profiles": node_profiles,
+                        })
+                    }
+                    "list" => {
+                        let on_disk = store.list_objects().unwrap_or_default();
+                        let guide = store
+                            .access_guide("kdm://pool-bucket/example/object.bin", &coord_url)
+                            .ok();
+                        json!({
+                            "action": "list",
+                            "objects": state.bucket_objects,
+                            "persisted_manifests": on_disk.len(),
+                            "access_guide": guide,
+                        })
+                    }
+                    "put" => {
+                        let uri = args
+                            .get("object_uri")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("kdm://pool-bucket/mcp/artifact.txt");
+                        let content = args
+                            .get("content_utf8")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let class_str = args
+                            .get("storage_class")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("DatasetCorpusParquet");
+                        let live_nodes: &[kadmium_core::HardwareNode] = if state.live_only_mode {
+                            &state.nodes
+                        } else {
+                            &[]
+                        };
+                        let receipt = store
+                            .put_bytes(
+                                uri,
+                                None,
+                                Some(class_str),
+                                content.as_bytes(),
+                                8,
+                                2,
+                                live_nodes,
+                                Some(&coord_url),
+                            )
+                            .map_err(|e| McpJsonRpcError {
+                                code: -32602,
+                                message: e,
+                            })?;
+                        state
+                            .bucket_objects
+                            .retain(|o| o.object_uri != receipt.bucket_entry.object_uri);
+                        state.bucket_objects.push(receipt.bucket_entry.clone());
+                        let _ = state.save_persistent_state();
+                        json!({
+                            "action": "put",
+                            "receipt": receipt,
+                        })
+                    }
+                    "get" => {
+                        let uri =
+                            args.get("object_uri")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| McpJsonRpcError {
+                                    code: -32602,
+                                    message: "Missing 'object_uri' for bucket 'get'".into(),
+                                })?;
+                        let normalized_uri =
+                            kadmium_data::DecentralizedStoragePoolEngine::normalize_bucket_uri(uri)
+                                .map_err(|e| McpJsonRpcError {
+                                    code: -32602,
+                                    message: e,
+                                })?;
+                        if store.inspect_object(&normalized_uri).is_ok() {
+                            let result = store.get_bytes(&normalized_uri, None).map_err(|e| {
+                                McpJsonRpcError {
+                                    code: -32602,
+                                    message: e,
+                                }
+                            })?;
+                            let content_utf8 = String::from_utf8(result.bytes.clone()).ok();
+                            json!({
+                                "action": "get",
+                                "download": result,
+                                "content_utf8": content_utf8,
+                            })
+                        } else if let Some(entry) = state
+                            .bucket_objects
+                            .iter()
+                            .find(|o| o.object_uri == normalized_uri)
+                        {
+                            json!({
+                                "action": "get",
+                                "entry": entry,
+                                "access_guide": store.access_guide(&normalized_uri, &coord_url).ok(),
+                            })
+                        } else {
+                            return Err(McpJsonRpcError {
+                                code: -32602,
+                                message: format!("Bucket object '{normalized_uri}' not found"),
+                            });
+                        }
+                    }
+                    "verify" => {
+                        let uri =
+                            args.get("object_uri")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| McpJsonRpcError {
+                                    code: -32602,
+                                    message: "Missing 'object_uri' for bucket 'verify'".into(),
+                                })?;
+                        let report = store.verify_object(uri, 1).map_err(|e| McpJsonRpcError {
+                            code: -32602,
+                            message: e,
+                        })?;
+                        json!({
+                            "action": "verify",
+                            "verification": report,
+                        })
+                    }
+                    _ => {
+                        let report =
+                            kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+                                &state.nodes,
+                                &state.imported_models,
+                                &state.bucket_objects,
+                                &state.bucket_anchors,
+                            );
+                        json!({
+                            "action": "status",
+                            "report": report,
+                            "access_guide": store.access_guide("kdm://pool-bucket/checkpoints/deepseek-v3-671b/epoch-42.ktb", &coord_url).ok(),
+                        })
+                    }
+                };
+                let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                Ok(json!({
+                    "content": [{ "type": "text", "text": text }],
+                    "structuredContent": payload,
+                    "isError": false
+                }))
+            }
             other => Err(McpJsonRpcError {
                 code: -32602,
                 message: format!("Unknown Kadmium MCP tool: '{other}'"),
@@ -611,6 +814,19 @@ impl KadmiumMcpServer {
                 (
                     "application/json",
                     serde_json::to_string_pretty(&arb).unwrap_or_default(),
+                )
+            }
+            "kadmium://cluster/storage-bucket" => {
+                let report =
+                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+                        &state.nodes,
+                        &state.imported_models,
+                        &state.bucket_objects,
+                        &state.bucket_anchors,
+                    );
+                (
+                    "application/json",
+                    serde_json::to_string_pretty(&report).unwrap_or_default(),
                 )
             }
             "kadmium://docs/overview" => ("text/markdown", crate::DOC_OVERVIEW_MD.to_string()),

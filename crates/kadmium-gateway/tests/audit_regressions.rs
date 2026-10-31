@@ -502,3 +502,273 @@ fn journal_write_failure_preserves_original_and_cleans_temporary_file() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() {
+    let (app, state) = gateway();
+    let dir = temp_dir("bucket-routes");
+    state.lock().unwrap().persistent_state_dir = dir.clone();
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        "/api/v1/storage/pool-bucket/mediums",
+        json!(null),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let mediums: Value = serde_json::from_str(&body).unwrap();
+    assert!(mediums["cluster_mediums"].as_array().unwrap().len() >= 4);
+
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/api/v1/storage/pool-bucket/upload",
+        json!({
+            "object_uri": "kdm://pool-bucket/tests/route-payload.bin",
+            "storage_class": "ModelCheckpointKtb",
+            "content_utf8": "Kadmium multi-medium erasure-coded payload across all storage tiers!"
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let uploaded: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        uploaded["manifest"]["object_uri"],
+        "kdm://pool-bucket/tests/route-payload.bin"
+    );
+    assert!(
+        !uploaded["manifest"]["shards"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        uploaded["access_guide"]["cli_download_cmd"]
+            .as_str()
+            .unwrap()
+            .contains("kadmium bucket get")
+    );
+
+    let (status, body) = request(
+        &app,
+        "GET",
+        "/api/v1/storage/pool-bucket/download?uri=kdm://pool-bucket/tests/route-payload.bin",
+        json!(null),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let downloaded: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        downloaded["content_utf8"],
+        "Kadmium multi-medium erasure-coded payload across all storage tiers!"
+    );
+
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/api/v1/storage/pool-bucket/verify",
+        json!({"uri": "kdm://pool-bucket/tests/route-payload.bin", "simulate_drop_count": 2}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let verified: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(verified["bit_identical_verified"], true);
+    assert_eq!(verified["sha256_verified"], true);
+
+    // Arbitrary server-side source_path reads and output_path writes over HTTP must be rejected
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/v1/storage/pool-bucket/upload",
+        json!({
+            "object_uri": "kdm://pool-bucket/tests/forbidden-path.bin",
+            "source_path": "/etc/passwd"
+        }),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/v1/storage/pool-bucket/download",
+        json!({
+            "uri": "kdm://pool-bucket/tests/route-payload.bin",
+            "output_path": "/tmp/pwn.bin"
+        }),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    // Unbounded k+m amplification on stored payloads must be rejected
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/v1/storage/pool-bucket/upload",
+        json!({
+            "object_uri": "kdm://pool-bucket/tests/amp.bin",
+            "content_utf8": "test",
+            "data_shards_k": 1,
+            "parity_shards_m": 255
+        }),
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    // Cross-origin browser mutation without token must be rejected with 403
+    let cross_origin_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/storage/pool-bucket/upload")
+                .header("content-type", "application/json")
+                .header("origin", "https://evil.example")
+                .body(Body::from(
+                    json!({
+                        "object_uri": "kdm://pool-bucket/tests/csrf.bin",
+                        "content_utf8": "csrf"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cross_origin_resp.status().as_u16(), 403);
+
+    // Valid byte range returns 206 Partial Content + Content-Range + nosniff
+    let range_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(
+                    "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin",
+                )
+                .header("range", "bytes=0-6")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(range_resp.status().as_u16(), 206);
+    assert_eq!(
+        range_resp
+            .headers()
+            .get("content-range")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "bytes 0-6/68"
+    );
+    assert_eq!(
+        range_resp
+            .headers()
+            .get("x-content-type-options")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "nosniff"
+    );
+    let partial_bytes = to_bytes(range_resp.into_body(), 1024).await.unwrap();
+    assert_eq!(&partial_bytes[..], b"Kadmium");
+
+    // Unsatisfiable range returns 416 Range Not Satisfiable with Content-Range: bytes */68
+    let bad_range_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(
+                    "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin",
+                )
+                .header("range", "bytes=999-1000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_range_resp.status().as_u16(), 416);
+    assert_eq!(
+        bad_range_resp
+            .headers()
+            .get("content-range")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "bytes */68"
+    );
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeoffs() {
+    let (app, _) = gateway();
+    let (status, body) =
+        request(&app, "GET", "/api/v1/models/quality-tradeoffs", json!(null)).await;
+    assert_eq!(status, 200, "{body}");
+    let report: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(report["is_uncompromised_maximum_quality"], true);
+    assert_eq!(report["effective_context_window_tokens"], 163_840);
+    assert_eq!(report["effective_max_input_tokens"], 163_840);
+    assert_eq!(report["effective_max_output_tokens"], 64_000);
+    assert!(
+        report["tradeoffs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["manually_lowered"] == false)
+    );
+
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/api/v1/models/quality-tradeoffs",
+        json!({
+            "context_window_tokens": 32_768,
+            "max_input_tokens": 4,
+            "max_output_tokens": 4_096,
+            "active_experts_per_token": 4
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let lowered: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(lowered["is_uncompromised_maximum_quality"], false);
+    assert_eq!(
+        lowered["tradeoffs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["manually_lowered"] == true)
+            .count(),
+        4
+    );
+
+    // Lowered max_input_tokens (4 tokens) must actively reject longer prompts on /v1/chat/completions
+    let (chat_status, chat_body) = request(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        json!({
+            "model": "deepseek-ai/DeepSeek-V3",
+            "messages": [{"role": "user", "content": "This prompt has well over four estimated tokens and must be rejected when manual max_input_tokens=4"}]
+        }),
+    )
+    .await;
+    assert_eq!(chat_status, 400, "{chat_body}");
+
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/api/v1/models/quality-tradeoffs",
+        json!({"reset_to_native_maximum": true}),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let restored: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(restored["is_uncompromised_maximum_quality"], true);
+}

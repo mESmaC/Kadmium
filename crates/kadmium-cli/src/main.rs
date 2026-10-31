@@ -21,6 +21,7 @@ use kadmium_sharding::{
     SubClusterPartitioner,
 };
 
+mod bucket_ops;
 mod checkpoint_ops;
 mod diloco_ops;
 mod grid_ops;
@@ -42,6 +43,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Upload, download, verify, or inspect objects across Kadmium's multi-medium distributed storage bucket (kdm://pool-bucket/...).
+    Bucket(bucket_ops::BucketArgs),
     /// Normalize, list, and verify complete local checkpoints without reducing precision.
     Checkpoint(checkpoint_ops::CheckpointArgs),
     /// Run a full simulation of asymmetric model sharding, training, RL, Dream-RSI, FTS3 staging, and live responsibility shifting
@@ -326,6 +329,12 @@ async fn main() {
 
     let cli = Cli::parse();
     match cli.command.unwrap_or(Commands::Simulate) {
+        Commands::Bucket(args) => {
+            if let Err(error) = bucket_ops::run(args) {
+                eprintln!("kadmium bucket: {error}");
+                std::process::exit(2);
+            }
+        }
         Commands::Checkpoint(args) => {
             if let Err(error) = checkpoint_ops::run(args) {
                 eprintln!("kadmium checkpoint: {error}");
