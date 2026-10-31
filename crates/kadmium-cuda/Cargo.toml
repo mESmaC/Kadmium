@@ -1,0 +1,11 @@
+[package]
+name = "kadmium-cuda"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure-Rust CUDA kernels (NVIDIA cuda-oxide) that reproduce Kadmium's RepOps reference math bit for bit"
+
+# No dependencies: the device crate under `device/` compiles the lane math in this crate to PTX
+# through NVIDIA's cuda-oxide backend, so everything a kernel reaches must stay plain `core`
+# arithmetic. The workspace builds and tests this crate on any host, with or without a GPU.
+[dependencies]

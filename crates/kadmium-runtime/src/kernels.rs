@@ -89,6 +89,16 @@ impl HardwareKernelTarget {
             }
         }
     }
+
+    /// The pure-Rust cuda-oxide kernels in `kadmium-cuda` this target runs natively. Their output
+    /// is bit-identical to the RepOps reference (every NaN counted as one value), so a CUDA
+    /// worker's result for these operations can be checked against any other backend by digest.
+    pub fn native_cuda_kernels(&self) -> &'static [kadmium_cuda::CudaKernel] {
+        match self {
+            Self::CudaTensorCorePtx => &kadmium_cuda::CudaKernel::ALL,
+            _ => &[],
+        }
+    }
 }
 
 /// Rotary Position Embedding (`RoPE`) coordinate pairing layout, matching Ollama's

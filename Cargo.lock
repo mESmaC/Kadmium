@@ -1557,6 +1557,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kadmium-cuda"
+version = "0.1.0"
+
+[[package]]
 name = "kadmium-data"
 version = "0.1.0"
 dependencies = [
@@ -1633,6 +1637,7 @@ name = "kadmium-runtime"
 version = "0.1.0"
 dependencies = [
  "kadmium-core",
+ "kadmium-cuda",
  "kadmium-data",
  "kadmium-grid",
  "kadmium-network",
