@@ -33,6 +33,7 @@ Documents distinguish **implemented reference behavior**, **modelled/simulated o
 | [Ecosystem integration planners](guides/integrations-hf-github.md) | HF pull planning, simulated GitHub evaluation, and unimplemented remote connectors. |
 | [Model Context Protocol](guides/mcp-server.md) | Seven tools over isolated stdio or shared HTTP coordinator state. |
 | [USB-C delta bridges](guides/usbc-delta-bridge.md) | Multi-lane ordered transport, authenticated resume, unplug behavior, measurements, and security limits. |
+| [Interdevice communication protocol](guides/interdevice-protocol.md) | Per-system RAM/VRAM/storage routes, bounded transfer execution, completion fences, and the portable file/RAM backend. |
 | [Intel NPU kernels](../crates/kadmium-npu/README.md) | Level Zero MatMul setup, approximate-FP16 contract, hardware validation, and resource-lifetime limits. |
 | [Release runbook](guides/release.md) | Version/tag checks, release artifacts, CI requirements, and installer verification. |
 | [Contributing](../CONTRIBUTING.md) | Formatting, linting, Rust/Node/UI/Python/installer checks, and documentation conventions. |
