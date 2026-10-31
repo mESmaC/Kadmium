@@ -1,64 +1,63 @@
 # Model Context Protocol (MCP) Server (`kadmium-mcp`)
 
-Kadmium (`Cd-48`) includes a built-in **Model Context Protocol (MCP) Server** (`2025-03-26` spec) that lets AI coding agents and agentic harnesses—such as **Claude Code, Cursor, Antigravity, Windsurf, Zed, and OpenCode**—directly inspect, shard, stage, and execute workloads across your heterogeneous compute fabric.
+Kadmium includes a **Model Context Protocol (MCP) `2025-03-26`** JSON-RPC 2.0 server for inspecting planners and running reference workloads. Its model-related operations use synthetic tensors and simulations; they do not turn the gateway into a language-model serving endpoint.
 
 ---
 
-## 1. Dual Transports (`stdio` & Streamable HTTP)
+## 1. Transports and state
 
-### A. Local `stdio` Transport (`kadmium mcp`)
-Add `kadmium mcp` to your `.mcp.json`, `claude_desktop_config.json`, or IDE MCP configuration:
+### Local `stdio` transport
 
 ```json
 {
   "mcpServers": {
     "kadmium": {
       "command": "kadmium",
-      "args": ["mcp"],
-      "env": {
-        "KADMIUM_COORDINATOR_URL": "http://127.0.0.1:7848"
-      }
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-### B. Streamable HTTP JSON-RPC 2.0 (`POST /mcp`)
-When `kadmium-gateway` is running (`kadmium up`), it exposes a live JSON-RPC 2.0 MCP endpoint at:
-- **`POST http://127.0.0.1:7848/mcp`** — Execute MCP `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, and `prompts/get` over HTTP.
-- **`GET http://127.0.0.1:7848/api/v1/mcp`** — Retrieve the complete `KadmiumMcpManifest` JSON schema catalog.
+`kadmium mcp` creates a **fresh in-process `GatewayState`**. It does not attach to an already running coordinator, and `KADMIUM_COORDINATOR_URL` is not consumed by this transport. Use it for an isolated demonstration, not to inspect live shared coordinator state.
 
----
+### Streamable HTTP transport
 
-## 2. Exposed MCP Tools (`tools/list`)
+Start the coordinator with `kadmium serve` or `kadmium launch`, then use:
 
-| MCP Tool Name | Arguments | Description |
+- **`POST http://127.0.0.1:7848/mcp`** — `initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, and `prompts/get` against the running coordinator's state.
+- **`GET http://127.0.0.1:7848/api/v1/mcp`** — the tool, resource, prompt, and client-configuration manifest.
+
+There is no `kadmium up` command.
+
+## 2. Exposed MCP tools
+
+| Tool | Arguments | Current behavior |
 | :--- | :--- | :--- |
-| **`kadmium_cluster_status`** | `{}` | Inspect live heterogeneous cluster topology, aggregate VRAM/RAM capacity, effective TFLOPS, node polite states, and Bully+CRDT quorum leader. |
-| **`kadmium_plan_sharding`** | `{ "workload": "inference" \| "training" }` | Run the $Q^*$ water-filling sharding planner across local (`--cadmium`) and cloud (`--cherenkov`) nodes. |
-| **`kadmium_pull_artifact`** | `{ "uri": "hf://..." \| "gh://..." }` | Stage a Hugging Face model into selective 64 KB-aligned `.ktb` banks or mount a GitHub repository/Dream-RSI world onto a subcluster slice. |
-| **`kadmium_run_inference`** | `{ "prompt": "..." }` | Execute a distributed MoE forward pass with `rk3588-sbc-bramble` speculative draft verification and Verde RepOps checks. |
-| **`kadmium_verify_rl_sandbox`** | `{ "candidate_code": "..." }` | Score a candidate trajectory or kernel inside the deterministic fuel-metered `WasiMicroSandbox` and compute GRPO group advantages. |
-| **`kadmium_cloud_shield_arbitrage`** | `{}` | Query real-time multi-provider spot GPU arbitrage quotes (`RunPod`, `Vast.ai`, `Lambda`, `Prime Intellect`, `AWS`) and failover simulations. |
+| `kadmium_cluster_status` | `{}` | Returns cluster topology and planning metadata from the transport's gateway state. |
+| `kadmium_plan_sharding` | `{ "workload": "inference" \| "training" }` | Runs the asymmetric sharding planner. |
+| `kadmium_pull_artifact` | `{ "uri": "hf://..." \| "gh://..." }` | Produces a selective-pull plan or simulated GitHub result; performs no remote download or mount. |
+| `kadmium_run_inference` | `{ "prompt": "..." }` | Executes a synthetic reference pipeline, not language-model generation. |
+| `kadmium_verify_rl_sandbox` | `{ "candidate_code": "..." }` | Runs a fixed sequence in the custom fuel-metered stack machine and computes reference GRPO advantages. The supplied source text is not compiled or executed. |
+| `kadmium_cloud_shield_arbitrage` | `{}` | Returns fixed sample spot offers and simulated failover reports, not live quotes or provisioned capacity. |
+| `kadmium_supply_marketplace` | `{ "daily_lease_hours": 12, "payout_mode": "credits" }` (both optional) | Updates those local supply-policy fields, then returns the sample marketplace/lease snapshot. Hours clamp to `0..=24`; `payout_mode` accepts `credits` or `usd`. It does not create a paid lease. |
 
----
+The RL sandbox is a bounded custom instruction interpreter, not a general WebAssembly/WASI runtime. It does not execute arbitrary Rust, CUDA, or Triton candidate code and does not perform online model training.
 
-## 3. Exposed MCP Resources (`resources/list`)
+## 3. Exposed MCP resources
 
-- `kadmium://cluster/topology` — Live hardware nodes, VRAM/RAM budgets, bandwidth, and $Q^*$ ratios.
-- `kadmium://cluster/sharding` — Active layer-range assignments and `.ktb` tensor bank paths.
-- `kadmium://cluster/integrations` — Registered `hf://`, `gh://`, `oci://`, `s3://`, and `wandb://` connectors.
-- `kadmium://cluster/cloud-shield` — Real-time spot GPU arbitrage quotes and failover shield simulations.
-- `kadmium://docs/overview` — Embedded Markdown documentation for AI agents.
+- `kadmium://cluster/topology` — hardware and planning profiles.
+- `kadmium://cluster/sharding` — active layer assignments and tensor-bank metadata.
+- `kadmium://cluster/integrations` — sample integration descriptors, not verified remote connections.
+- `kadmium://cluster/cloud-shield` — sample arbitrage and failover simulations.
+- `kadmium://docs/overview` — embedded Markdown documentation.
 
----
-
-## 4. CLI Inspection & Self-Test
+## 4. CLI inspection
 
 ```bash
-# Inspect the MCP server manifest, tools, resources, and client configuration JSON
+# Print the manifest and client configuration without blocking on stdio.
 cargo run -p kadmium-cli -- mcp --inspect
 
-# Run the stdio JSON-RPC 2.0 MCP loop for IDE/agent attachment
+# Run the isolated stdio server.
 cargo run -p kadmium-cli -- mcp
 ```

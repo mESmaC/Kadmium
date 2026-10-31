@@ -15,6 +15,7 @@ pub mod live_mesh;
 pub mod nat_traversal;
 pub mod peer_channel;
 pub mod raid_striper;
+pub mod usbc_bridge;
 pub mod usbc_interconnect;
 pub use delta_link::{
     ChunkPlan, DeltaDecoder, DeltaEncoder, DeltaHello, DeltaLinkConfig, DeltaLinkSnapshot,
@@ -25,6 +26,11 @@ pub use live_mesh::*;
 pub use nat_traversal::*;
 pub use peer_channel::*;
 pub use raid_striper::*;
+pub use usbc_bridge::{
+    BRIDGE_ADDR_SCHEME, BridgeConfig, BridgeLane, BridgeLaneSnapshot, BridgeListenerConfig,
+    BridgeReader, BridgeSession, BridgeSnapshot, BridgeWriter, MAX_BRIDGE_LANES, UsbCBridge,
+    UsbCBridgeListener,
+};
 pub use usbc_interconnect::*;
 
 /// Transport path classification between two peers in the Kadmium mesh.

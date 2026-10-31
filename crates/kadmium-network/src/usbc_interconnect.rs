@@ -13,27 +13,48 @@
 //!   High-Speed USB 2.0 CDC-ACM / Bulk links (`480 Mbps`) for ultra-low-power RISC-V / MCU sidecars.
 //!
 //! ## Key Capabilities
-//! 1. **Zero-Config Link-Local (`169.254.0.0/16` & `fe80::`) Auto-Peering**:
-//!    Automatically discovers and pairs peers over point-to-point USB-C cables without requiring a DHCP
-//!    server or external router (`UDP 7848` `"KDMD"` beacons over link-local interfaces).
-//! 2. **Multi-Stream DMA Socket Striping (`4x–8x` Parallel Lanes + `64 KiB` Jumbo Frames)**:
-//!    Bypasses single-core OS TCP/NCM interrupt bottlenecks so a `30 Gbps` rated USB-C link achieves
-//!    `~26.5–28.5 Gbps` (`3.3–3.56 GB/s`) sustained tensor transfer goodput—**11.4x faster than 2.5GbE**
-//!    and **28.5x faster than a 1GbE patch cable**.
-//! 3. **Tensor Parallelism (TP) & MoE All-to-All Unlock**:
-//!    Links with `effective_goodput_gbps >= 18.0` and `rtt_latency_ms <= 0.25` are promoted from
-//!    pipeline-only links to **Tensor-Parallel / Expert-Parallel eligible interconnects**.
-//! 4. **Switchless Multi-Port USB-C Daisy-Chain / Ring Routing & `<200ms` Unplug Failover**:
-//!    Routes micro-batches across 2-port USB-C devices (`Desktop ⇄ Handheld ⇄ Mac Mini ⇄ SBC`) and bonds
-//!    USB-C with Wi-Fi 6E / Ethernet via [`MultiPathInterfaceStriper`](crate::MultiPathInterfaceStriper)
-//!    for zero-downtime failover if a cable is unplugged.
+//! 1. **Link-Local Peering Models (`169.254.0.0/16` & `fe80::`)**:
+//!    Describes peering candidates over configured point-to-point interfaces. The scanner does not
+//!    configure DHCP, addresses, or a cable's network interface.
+//! 2. **Multi-Stream Socket Striping Models (`4x–8x` Parallel Lanes + `64 KiB` Frames)**:
+//!    Derives goodput figures from rated bandwidth and scenario inputs. Values such as
+//!    `~26.5–28.5 Gbps` are estimates, not measured tensor throughput or DMA benchmarks.
+//! 3. **Tensor-Parallel / Expert-Parallel Eligibility Planning**:
+//!    Links with `effective_goodput_gbps >= 18.0` and `rtt_latency_ms <= 0.25` are marked eligible by
+//!    the planner; this does not establish native model execution on the link.
+//! 4. **Topology Scheduling & Delta-Bridge Failover**:
+//!    [`MultiPathInterfaceStriper`](crate::MultiPathInterfaceStriper) computes schedules across USB-C,
+//!    Wi-Fi, and Ethernet. Actual ordered-stream failover is provided by [`crate::UsbCBridge`], whose
+//!    default idle detection and resume grace are 750 ms and 30 s, not a sub-200 ms zero-downtime SLA.
+//! 5. **Delta Bridge Plan** ([`UsbCDeltaBridgePlan`]): sizes a [`crate::UsbCBridge`] that stripes one
+//!    ordered stream over the USB-C cable and its backup paths. Delta links layered on it keep their
+//!    chunk stores through an unplug, so failing over resends at most the bridge window instead of
+//!    every chunk the peer already held.
+//!
+//! ## Transport paths (as of October 2026)
+//!
+//! [`UsbCTransportPath`] records which byte transports each OS exposes on a USB-C link. The bridge
+//! runs over the IP paths today; the other two are detected so placement can prefer them once a
+//! lane type exists for them.
+//! - **USB4 / Thunderbolt IP networking** is built in everywhere: Linux `thunderbolt-net`, macOS
+//!   Thunderbolt Bridge, and the Windows 11 `USB4P2PNetAdapter`.
+//! - **CDC-NCM** carries USB 3.x gadget links; transfer blocks reach 64 KiB only when both the
+//!   gadget and the host's `cdc_ncm` `rx_max` / `tx_max` opt in (the default is 16 KiB).
+//! - **USB4STREAM** (`thunderbolt_stream`, Linux 7.2) exposes raw DMA tunnels as `/dev/tbstreamX`,
+//!   configured under `/sys/kernel/config/thunderbolt/stream/`, without the network stack.
+//! - **RDMA over Thunderbolt 5** (macOS 26.2+, enabled with `rdma_ctl enable` from recovery) is
+//!   what MLX's JACCL backend uses; it needs Thunderbolt 5 ports on both ends.
 
+use crate::usbc_bridge::{
+    BridgeLane, DEFAULT_BRIDGE_SEGMENT_BYTES, DEFAULT_LANE_IDLE_TIMEOUT, MAX_BRIDGE_WINDOW_BYTES,
+};
 use crate::{MultiPathInterfaceStriper, MultiPathStripedSchedule, PeerLinkMetrics, TransportKind};
 use kadmium_core::{
     ComputeBackend, DeviceKind, HardwareNode, MemoryTierProfile, NodeId, NodeRole, NodeTrustTier,
     PoliteState,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 
 /// Physical & protocol tier of a USB-C direct interconnect link.
@@ -42,7 +63,7 @@ use std::process::Command;
 pub enum UsbCInterconnectTier {
     /// USB4 v2 / Thunderbolt 5 Host-to-Host PCIe DMA Tunnel (`80–120 Gbps` rated, `~64.0 Gbps` goodput, `0.08 ms` RTT).
     Thunderbolt5Usb4V2_80Gbps,
-    /// USB4 v1 / Thunderbolt 3 & 4 Host-to-Host PCIe DMA Tunnel (`30–40 Gbps` rated, `~26.5–28.5 Gbps` goodput, `0.12 ms` RTT).
+    /// USB4 v1 / Thunderbolt 3 & 4 profile (`30–40 Gbps` rated; goodput/RTT fields are modelled estimates).
     Usb4Thunderbolt4_30To40Gbps,
     /// USB 3.2 Gen 2x2 (`20 Gbps`) Dual-Role-Data (`DRD`) `USB-NCM` / `FunctionFS` Bulk (`~15.2 Gbps` goodput, `0.18 ms` RTT).
     Usb32Gen2x2_20GbpsDrd,
@@ -103,6 +124,27 @@ impl UsbCInterconnectTier {
     }
 }
 
+/// Byte transport available on a USB-C link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UsbCTransportPath {
+    /// IP over the OS's USB4 / Thunderbolt network driver (Linux `thunderbolt-net`, macOS
+    /// Thunderbolt Bridge, Windows `USB4P2PNetAdapter`).
+    Usb4IpNetwork,
+    /// IP over a USB 3.x CDC-NCM gadget link (`usb_f_ncm` / `cdc_ncm`).
+    CdcNcmIp,
+    /// Raw USB4 DMA stream from Linux 7.2's `thunderbolt_stream` driver (`/dev/tbstreamX`).
+    Usb4RawStream,
+    /// RDMA over Thunderbolt 5 (macOS 26.2+, `rdma_ctl status` reports `enabled`).
+    RdmaThunderbolt5,
+}
+
+impl UsbCTransportPath {
+    /// Whether a [`crate::UsbCBridge`] lane can run over this path today (the IP paths).
+    pub fn carries_bridge_lanes(&self) -> bool {
+        matches!(self, Self::Usb4IpNetwork | Self::CdcNcmIp)
+    }
+}
+
 /// USB-C port data role negotiation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UsbCDataRole {
@@ -132,6 +174,9 @@ pub struct UsbCInterfaceDescriptor {
     pub rtt_latency_ms: f64,
     pub supports_tensor_parallel_allreduce: bool,
     pub live_detected_on_host: bool,
+    /// Byte transports this interface offers, IP paths first.
+    #[serde(default)]
+    pub transport_paths: Vec<UsbCTransportPath>,
 }
 
 /// Benchmark comparing naive single-stream TCP (`1500 B` MTU) vs. Kadmium Multi-Stream DMA Striping
@@ -194,6 +239,37 @@ pub struct UsbCHostDiscoveryReport {
     pub interfaces: Vec<UsbCInterfaceDescriptor>,
     pub handheld_30gbps_dma_benchmark: MultiStreamUsbCDmaBenchmark,
     pub switchless_daisy_chain_plan: UsbCDaisyChainTopologyPlan,
+    /// Bridge sizing for the first interface, backed by the daisy chain's LAN / Wi-Fi paths.
+    pub delta_bridge_plan: UsbCDeltaBridgePlan,
+}
+
+/// Sizing of a [`crate::UsbCBridge`] over one USB-C link plus its backup paths, with the cost of
+/// an unplug compared against a plain connection. These are model estimates from tier goodput and
+/// RTT, not measurements.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsbCDeltaBridgePlan {
+    /// The USB-C lanes first (one per DMA stream), then one per backup path. Backup lanes carry a
+    /// placeholder address: the peer's address on that path is only known once it registers.
+    pub lanes: Vec<BridgeLane>,
+    pub segment_bytes: usize,
+    /// Unacknowledged bytes per direction: enough for the USB-C lane to keep sending while a
+    /// segment crosses the slowest backup lane.
+    pub window_bytes: usize,
+    pub bonded_goodput_gbps: f64,
+    /// Fraction of payload bytes assumed to be chunks the peer already holds.
+    pub chunk_reuse_fraction: f64,
+    /// Payload bytes delivered per second once reused chunks travel as 13-byte references.
+    pub logical_goodput_gbps: f64,
+    /// Time for a pulled cable to be noticed (no data or heartbeat for the lane idle timeout).
+    pub unplug_detect_ms: f64,
+    /// Bytes resent after an unplug: the USB-C lane's share of the window, at most.
+    pub unplug_resend_bytes: u64,
+    /// Detection plus resending those bytes over the backup lanes.
+    pub unplug_recovery_ms: f64,
+    /// Bytes a plain connection resends after an unplug: its delta store starts empty, so every
+    /// hot chunk (up to the store budget) crosses the backup path again.
+    pub plain_reconnect_resend_bytes: u64,
+    pub plain_reconnect_recovery_ms: f64,
 }
 
 /// Cross-platform USB-C / USB4 / Thunderbolt & Dual-Role-Data (`USB-NCM`) scanner and DMA scheduler.
@@ -247,7 +323,11 @@ impl UsbCDirectInterconnectScanner {
             kadmium_multistream_striped_gbps: striped_goodput_gbps,
             sustained_throughput_gb_per_sec: sustained_gb_per_sec,
             parallel_socket_lanes: parallel_lanes,
-            negotiated_mtu_bytes: if clamped_rated >= 10.0 { 65_536 } else { 16_384 },
+            negotiated_mtu_bytes: if clamped_rated >= 10.0 {
+                65_536
+            } else {
+                16_384
+            },
             activation_64kb_transfer_us,
             kv_window_512mb_drain_ms,
             full_shard_2gb_drain_ms,
@@ -285,6 +365,7 @@ impl UsbCDirectInterconnectScanner {
                 rtt_latency_ms: 0.12,
                 supports_tensor_parallel_allreduce: true,
                 live_detected_on_host: false,
+                transport_paths: vec![UsbCTransportPath::Usb4IpNetwork],
             });
         }
 
@@ -305,6 +386,7 @@ impl UsbCDirectInterconnectScanner {
             rtt_latency_ms: 0.08,
             supports_tensor_parallel_allreduce: true,
             live_detected_on_host: false,
+            transport_paths: vec![UsbCTransportPath::Usb4IpNetwork],
         });
 
         detected_interfaces.push(UsbCInterfaceDescriptor {
@@ -323,10 +405,25 @@ impl UsbCDirectInterconnectScanner {
             rtt_latency_ms: 0.18,
             supports_tensor_parallel_allreduce: false,
             live_detected_on_host: false,
+            transport_paths: vec![UsbCTransportPath::CdcNcmIp],
         });
 
         let handheld_30gbps_dma_benchmark = Self::benchmark_multistream_dma(30.0, 0.12);
         let switchless_daisy_chain_plan = Self::build_daisy_chain_topology_plan(cluster_nodes);
+        let backups: Vec<PeerLinkMetrics> = switchless_daisy_chain_plan
+            .bonded_failover_schedule
+            .channel_allocations
+            .iter()
+            .filter(|c| c.transport != TransportKind::ThunderboltBridge)
+            .map(|c| PeerLinkMetrics {
+                from_node: NodeId("local".into()),
+                to_node: NodeId("peer".into()),
+                transport: c.transport,
+                bandwidth_gbps: c.bandwidth_gbps,
+                rtt_latency_ms: c.rtt_ms,
+            })
+            .collect();
+        let delta_bridge_plan = Self::plan_delta_bridge(&detected_interfaces[0], &backups, 0.9);
 
         UsbCHostDiscoveryReport {
             host_os: std::env::consts::OS.to_string(),
@@ -335,7 +432,116 @@ impl UsbCDirectInterconnectScanner {
             interfaces: detected_interfaces,
             handheld_30gbps_dma_benchmark,
             switchless_daisy_chain_plan,
+            delta_bridge_plan,
         }
+    }
+
+    /// Sizes a bridge over `primary` with `backups` as further lanes, assuming
+    /// `chunk_reuse_fraction` of payload bytes are chunks the peer already holds (0.9 is typical
+    /// of decode steps that resend an unchanged context with fresh activations).
+    pub fn plan_delta_bridge(
+        primary: &UsbCInterfaceDescriptor,
+        backups: &[PeerLinkMetrics],
+        chunk_reuse_fraction: f64,
+    ) -> UsbCDeltaBridgePlan {
+        const MIB: f64 = (1u64 << 20) as f64;
+        /// A reused chunk costs a 13-byte reference instead of its ~2 KiB (smallest average).
+        const REF_COST_PER_REUSED_BYTE: f64 = 13.0 / 2048.0;
+        /// Default per-direction delta store a plain reconnect has to refill.
+        const DELTA_STORE_BYTES: f64 = 128.0 * MIB;
+
+        let reuse = chunk_reuse_fraction.clamp(0.0, 1.0);
+        let primary_gbps = primary.effective_goodput_gbps.max(0.01);
+        let segment = DEFAULT_BRIDGE_SEGMENT_BYTES as f64;
+
+        // One lane per DMA stream on the cable: each lane is its own TCP connection, and a single
+        // connection cannot fill a USB4 link (on loopback one lane carries roughly a fifth of what
+        // four do).
+        let streams = primary.parallel_dma_streams.max(1);
+        let primary_addr = primary
+            .peer_link_local_addr
+            .clone()
+            .unwrap_or_else(|| primary.link_local_ipv4.clone());
+        let mut lanes: Vec<BridgeLane> = (0..streams)
+            .map(|i| {
+                BridgeLane::new(
+                    primary_addr.clone(),
+                    primary_gbps / streams as f64,
+                    format!("{}-{i}", primary.interface_id),
+                )
+            })
+            .collect();
+        let mut slowest_segment_s: f64 = 0.0;
+        let mut backup_gbps = 0.0;
+        for (i, link) in backups.iter().enumerate() {
+            let gbps = link.bandwidth_gbps.max(0.01);
+            backup_gbps += gbps;
+            let segment_s = segment * 8.0 / (gbps * 1e9) + link.rtt_latency_ms / 1000.0;
+            slowest_segment_s = slowest_segment_s.max(segment_s);
+            lanes.push(BridgeLane::new(
+                format!("<peer {:?} address>", link.transport),
+                gbps,
+                format!("backup{i}-{:?}", link.transport),
+            ));
+        }
+        // Twice what the USB-C lane sends while one segment crosses the slowest backup lane, so
+        // head-of-line waits on the slow lane never idle the fast one.
+        let window_bytes = (2.0 * primary_gbps * 1e9 / 8.0 * slowest_segment_s)
+            .max(4.0 * MIB)
+            .min(MAX_BRIDGE_WINDOW_BYTES as f64);
+        let window_bytes = ((window_bytes / MIB).ceil() * MIB) as usize;
+
+        let bonded_goodput_gbps = primary_gbps + backup_gbps;
+        let wire_per_logical = (1.0 - reuse) + reuse * REF_COST_PER_REUSED_BYTE;
+        let logical_goodput_gbps = bonded_goodput_gbps / wire_per_logical;
+
+        let unplug_detect_ms = DEFAULT_LANE_IDLE_TIMEOUT.as_secs_f64() * 1000.0;
+        let primary_share = primary_gbps / bonded_goodput_gbps;
+        let unplug_resend_bytes = (window_bytes as f64 * primary_share) as u64;
+        let backup_bytes_per_ms = backup_gbps.max(0.01) * 1e9 / 8.0 / 1000.0;
+        let unplug_recovery_ms =
+            unplug_detect_ms + unplug_resend_bytes as f64 / backup_bytes_per_ms;
+        let plain_reconnect_resend_bytes = DELTA_STORE_BYTES as u64;
+        let plain_reconnect_recovery_ms =
+            unplug_detect_ms + plain_reconnect_resend_bytes as f64 / backup_bytes_per_ms;
+
+        let round = |v: f64| (v * 100.0).round() / 100.0;
+        UsbCDeltaBridgePlan {
+            lanes,
+            segment_bytes: DEFAULT_BRIDGE_SEGMENT_BYTES,
+            window_bytes,
+            bonded_goodput_gbps: round(bonded_goodput_gbps),
+            chunk_reuse_fraction: reuse,
+            logical_goodput_gbps: round(logical_goodput_gbps),
+            unplug_detect_ms: round(unplug_detect_ms),
+            unplug_resend_bytes,
+            unplug_recovery_ms: round(unplug_recovery_ms),
+            plain_reconnect_resend_bytes,
+            plain_reconnect_recovery_ms: round(plain_reconnect_recovery_ms),
+        }
+    }
+
+    /// `base` plus the transports this host exposes beyond IP networking.
+    fn probe_transport_paths(base: UsbCTransportPath) -> Vec<UsbCTransportPath> {
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
+        let mut paths = vec![base];
+        #[cfg(target_os = "linux")]
+        {
+            if std::path::Path::new("/dev/tbstream0").exists()
+                || std::path::Path::new("/sys/kernel/config/thunderbolt/stream").exists()
+            {
+                paths.push(UsbCTransportPath::Usb4RawStream);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(output) = Command::new("rdma_ctl").arg("status").output()
+                && String::from_utf8_lossy(&output.stdout).trim() == "enabled"
+            {
+                paths.push(UsbCTransportPath::RdmaThunderbolt5);
+            }
+        }
+        paths
     }
 
     /// Builds a switchless USB-C daisy-chain / ring topology plan across the cluster nodes and computes
@@ -435,8 +641,7 @@ impl UsbCDirectInterconnectScanner {
 
         UsbCDaisyChainTopologyPlan {
             topology_mode: if count >= 3 {
-                "Switchless USB4 Ring / Daisy-Chain (Zero-Switch 169.254.x.x Point-to-Point)"
-                    .into()
+                "Switchless USB4 Ring / Daisy-Chain (Zero-Switch 169.254.x.x Point-to-Point)".into()
             } else {
                 "Direct Host-to-Host USB4 / Thunderbolt DMA Cable (Point-to-Point)".into()
             },
@@ -542,6 +747,7 @@ impl UsbCDirectInterconnectScanner {
                         rtt_latency_ms: 0.12,
                         supports_tensor_parallel_allreduce: true,
                         live_detected_on_host: true,
+                        transport_paths: Self::probe_transport_paths(UsbCTransportPath::Usb4IpNetwork),
                     });
                 }
             }
@@ -549,26 +755,27 @@ impl UsbCDirectInterconnectScanner {
 
         #[cfg(target_os = "macos")]
         {
-            if let Ok(output) = Command::new("ifconfig").arg("bridge0").output() {
-                if output.status.success() {
-                    out.push(UsbCInterfaceDescriptor {
-                        interface_id: "macos-tb-bridge0-live".into(),
-                        interface_name: "macOS Thunderbolt Bridge (bridge0)".into(),
-                        os_driver_stack: "macOS AppleThunderboltIP".into(),
-                        tier: UsbCInterconnectTier::Usb4Thunderbolt4_30To40Gbps,
-                        data_role: UsbCDataRole::HostToHostSymmetricP2p,
-                        link_local_ipv4: "169.254.78.10".into(),
-                        link_local_ipv6: "fe80::7848:tb:10".into(),
-                        peer_link_local_addr: Some("169.254.78.11:7848".into()),
-                        negotiated_mtu_bytes: 65_536,
-                        parallel_dma_streams: 6,
-                        rated_phy_gbps: 40.0,
-                        effective_goodput_gbps: 32.4,
-                        rtt_latency_ms: 0.10,
-                        supports_tensor_parallel_allreduce: true,
-                        live_detected_on_host: true,
-                    });
-                }
+            if let Ok(output) = Command::new("ifconfig").arg("bridge0").output()
+                && output.status.success()
+            {
+                out.push(UsbCInterfaceDescriptor {
+                    interface_id: "macos-tb-bridge0-live".into(),
+                    interface_name: "macOS Thunderbolt Bridge (bridge0)".into(),
+                    os_driver_stack: "macOS AppleThunderboltIP".into(),
+                    tier: UsbCInterconnectTier::Usb4Thunderbolt4_30To40Gbps,
+                    data_role: UsbCDataRole::HostToHostSymmetricP2p,
+                    link_local_ipv4: "169.254.78.10".into(),
+                    link_local_ipv6: "fe80::7848:tb:10".into(),
+                    peer_link_local_addr: Some("169.254.78.11:7848".into()),
+                    negotiated_mtu_bytes: 65_536,
+                    parallel_dma_streams: 6,
+                    rated_phy_gbps: 40.0,
+                    effective_goodput_gbps: 32.4,
+                    rtt_latency_ms: 0.10,
+                    supports_tensor_parallel_allreduce: true,
+                    live_detected_on_host: true,
+                    transport_paths: Self::probe_transport_paths(UsbCTransportPath::Usb4IpNetwork),
+                });
             }
         }
 
@@ -606,6 +813,11 @@ impl UsbCDirectInterconnectScanner {
                     rtt_latency_ms: if tb_exists { 0.12 } else { 0.18 },
                     supports_tensor_parallel_allreduce: tb_exists,
                     live_detected_on_host: true,
+                    transport_paths: Self::probe_transport_paths(if tb_exists {
+                        UsbCTransportPath::Usb4IpNetwork
+                    } else {
+                        UsbCTransportPath::CdcNcmIp
+                    }),
                 });
             }
         }
@@ -625,15 +837,40 @@ mod tests {
         assert_eq!(bench.rated_cable_gbps, 30.0);
         // Multi-stream striping must significantly beat naive single-stream 1500B MTU TCP
         assert!(bench.kadmium_multistream_striped_gbps >= 25.0);
-        assert!(
-            bench.kadmium_multistream_striped_gbps > bench.single_stream_1500_mtu_gbps * 2.0
-        );
+        assert!(bench.kadmium_multistream_striped_gbps > bench.single_stream_1500_mtu_gbps * 2.0);
         // Must beat 1GbE by >25x and 2.5GbE by >10x
         assert!(bench.vs_1gbe_patch_cable_speedup >= 25.0);
         assert!(bench.vs_2_5gbe_patch_cable_speedup >= 10.0);
         // Must unlock Tensor Parallelism and drain a 512MB KV window in < 200ms on gaming/unplug
         assert!(bench.unlocks_tensor_parallelism);
         assert!(bench.kv_window_512mb_drain_ms < 200.0);
+    }
+
+    #[test]
+    fn test_delta_bridge_plan_bounds_unplug_resend_to_the_window() {
+        let report =
+            UsbCDirectInterconnectScanner::scan_host_usbc_links(&sample_personal_cluster());
+        let plan = &report.delta_bridge_plan;
+        let usbc = &report.interfaces[0];
+        assert_eq!(
+            plan.lanes.len(),
+            usbc.parallel_dma_streams + 2,
+            "one lane per USB-C DMA stream plus LAN and Wi-Fi backups"
+        );
+        let wifi = plan.lanes.last().unwrap();
+        assert!(plan.lanes[0].weight_gbps > wifi.weight_gbps);
+        // The window covers the USB-C lane while a 64 KiB segment crosses Wi-Fi (~7 MB at 27.6 Gbps).
+        assert!(plan.window_bytes >= 8 << 20 && plan.window_bytes <= 64 << 20);
+        assert!(plan.logical_goodput_gbps > plan.bonded_goodput_gbps * 5.0);
+        // An unplug resends at most the window, far less than refilling a 128 MiB delta store.
+        assert!(plan.unplug_resend_bytes <= plan.window_bytes as u64);
+        assert!(plan.unplug_resend_bytes * 8 < plan.plain_reconnect_resend_bytes);
+        assert!(plan.unplug_recovery_ms < plan.plain_reconnect_recovery_ms);
+        assert!(report.interfaces.iter().all(|i| {
+            i.transport_paths
+                .first()
+                .is_some_and(|p| p.carries_bridge_lanes())
+        }));
     }
 
     #[test]

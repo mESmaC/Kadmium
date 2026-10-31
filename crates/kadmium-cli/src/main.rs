@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 use kadmium_core::{
-    HardwareNode, LiveHardwareProfiler, ModdedSwitchController, ModelSpec,
-    PhoneFarmBoxController, PhoneFarmBoxPreset, PhoneFarmTopologyMode, PhoneFarmTransportMode,
-    PoliteState, ReTerminalCm4LanBridge, SwitchRuntimeEnvironment, SwitchSiliconRevision,
-    WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
+    HardwareNode, LiveHardwareProfiler, ModdedSwitchController, ModelSpec, PhoneFarmBoxController,
+    PhoneFarmBoxPreset, PhoneFarmTopologyMode, PhoneFarmTransportMode, PoliteState,
+    ReTerminalCm4LanBridge, SwitchRuntimeEnvironment, SwitchSiliconRevision, WorkloadKind,
+    sample_cloud_burst_gpu_node, sample_node_pool, sample_personal_cluster,
 };
 use kadmium_data::{Fts3TransferScheduler, LocalModelDiskImporter};
 use kadmium_gateway::{CoordinatorOptions, run_coordinator};
@@ -21,6 +21,7 @@ use kadmium_sharding::{
     SubClusterPartitioner,
 };
 
+mod checkpoint_ops;
 mod diloco_ops;
 mod grid_ops;
 mod launch;
@@ -41,6 +42,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Normalize, list, and verify complete local checkpoints without reducing precision.
+    Checkpoint(checkpoint_ops::CheckpointArgs),
     /// Run a full simulation of asymmetric model sharding, training, RL, Dream-RSI, FTS3 staging, and live responsibility shifting
     Simulate,
     /// Run a Dream-RSI (Recursive Self-Improvement through Evolving Worlds) offline replay simulation cycle
@@ -323,6 +326,12 @@ async fn main() {
 
     let cli = Cli::parse();
     match cli.command.unwrap_or(Commands::Simulate) {
+        Commands::Checkpoint(args) => {
+            if let Err(error) = checkpoint_ops::run(args) {
+                eprintln!("kadmium checkpoint: {error}");
+                std::process::exit(2);
+            }
+        }
         Commands::Simulate => run_simulation(),
         Commands::Dream => run_dream_rsi(),
         Commands::Diloco {
@@ -351,7 +360,16 @@ async fn main() {
             demo,
             worker_port,
             spawn_fleet,
-        } => run_server(port, config.as_deref(), live || !demo, worker_port, spawn_fleet).await,
+        } => {
+            run_server(
+                port,
+                config.as_deref(),
+                live || !demo,
+                worker_port,
+                spawn_fleet,
+            )
+            .await
+        }
         Commands::Launch(args) => {
             if let Err(error) = launch::run(args).await {
                 eprintln!("kadmium launch: {error}");
@@ -796,11 +814,8 @@ fn run_plan(model_name: &str, workload_name: &str) {
         &model.id,
     );
     let popularity = (!usage.is_empty()).then(|| usage.popularity());
-    let (choice, placement) = kadmium_sharding::StrategyCostModel::default().choose(
-        &model,
-        &nodes,
-        popularity.as_ref(),
-    );
+    let (choice, placement) =
+        kadmium_sharding::StrategyCostModel::default().choose(&model, &nodes, popularity.as_ref());
     println!("\n--- Grid Execution Shape (modelled from the capability vectors, not measured) ---");
     if usage.is_empty() {
         println!("  * Learned usage: none recorded for this model; experts assumed equally likely");
@@ -1060,14 +1075,30 @@ fn run_phone_farm(preset_slug: &str, disaggregated: bool) {
         topology,
     );
 
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!("  KADMIUM (Cd-48) — 20-SLOT PHONE FARM BOX & MOBILE SWARM PROFILER");
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!("  Chassis Model:        {}", spec.display_name);
-    println!("  Slot Count:           {} stripped ARM64 motherboards (battery-free BMS cables)", spec.slot_count);
-    println!("  Power & Cooling:      {} | {:.0}W avg wall draw | {}", spec.psu_rating, spec.average_wall_power_watts, spec.cooling_system);
-    println!("  Est. Hardware Cost:   ~${:.0} USD", spec.estimated_hardware_cost_usd);
-    println!("  Aggregate CPU:        {} ARM64 cores", spec.aggregate_cpu_cores);
+    println!(
+        "  Slot Count:           {} stripped ARM64 motherboards (battery-free BMS cables)",
+        spec.slot_count
+    );
+    println!(
+        "  Power & Cooling:      {} | {:.0}W avg wall draw | {}",
+        spec.psu_rating, spec.average_wall_power_watts, spec.cooling_system
+    );
+    println!(
+        "  Est. Hardware Cost:   ~${:.0} USD",
+        spec.estimated_hardware_cost_usd
+    );
+    println!(
+        "  Aggregate CPU:        {} ARM64 cores",
+        spec.aggregate_cpu_cores
+    );
     println!(
         "  Aggregate Memory:     {:.0} GB Unified LPDDR ({:.1} GB/s aggregate parallel MoE bandwidth)",
         spec.aggregate_lpddr_unified_gb, spec.aggregate_parallel_mem_bw_gbps
@@ -1085,7 +1116,9 @@ fn run_phone_farm(preset_slug: &str, disaggregated: bool) {
         spec.adb_discovery.adb_binary_detected,
         spec.adb_discovery.connected_physical_devices.len()
     );
-    println!("------------------------------------------------------------------------------------");
+    println!(
+        "------------------------------------------------------------------------------------"
+    );
     println!("  Sample Motherboard Slots (1..=5 of 20):");
     for slot in spec.slots.iter().take(5) {
         println!(
@@ -1115,7 +1148,9 @@ fn run_phone_farm(preset_slug: &str, disaggregated: bool) {
     let env_suite = RlEnvironmentSuiteSpec::dream_rsi_evolving_world();
     let rl_plan = RlTopologyPlanner::compute_rl_plan(1, &model, &env_suite, &cluster);
 
-    println!("------------------------------------------------------------------------------------");
+    println!(
+        "------------------------------------------------------------------------------------"
+    );
     println!(
         "  DeepSeek-V3 671B MoE Shard Plan with Phone Farm Box Attached ({:.1} tok/s):",
         inf_plan.estimated_throughput
@@ -1136,7 +1171,9 @@ fn run_phone_farm(preset_slug: &str, disaggregated: bool) {
         "  Dream-RSI & RL Arena Capacity: {} parallel WASI/MCTS env slots ({:.1} rollouts/min)",
         rl_plan.total_vectorized_env_slots, rl_plan.estimated_cluster_episodes_per_min
     );
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
 }
 
 fn run_import(
@@ -1155,17 +1192,45 @@ fn run_import(
         None,
     ) {
         Ok(m) => {
-            println!("====================================================================================");
+            println!(
+                "===================================================================================="
+            );
             println!("  KADMIUM (Cd-48) — LOCAL GGUF / SAFETENSORS -> 64 KiB .KTB DISK IMPORTER");
-            println!("====================================================================================");
-            println!("  Model Identifier:     {} ({})", m.model_id, m.derived_model_spec.display_name);
+            println!(
+                "===================================================================================="
+            );
+            println!(
+                "  Model Identifier:     {} ({})",
+                m.model_id, m.derived_model_spec.display_name
+            );
             println!("  Source Format:        {:?}", m.source_format);
-            println!("  Source File Path:     {} ({} KiB)", m.source_file_path, m.source_file_bytes / 1024);
-            println!("  Compiled .ktb Path:   {} ({} KiB, {} x 64KiB pages)", m.compiled_ktb_path, m.ktb_size_bytes / 1024, m.ktb_page_count);
-            println!("  Transcoded Layers:    L{}..=L{} ({} tensor banks)", m.start_layer, m.end_layer, m.parsed_tensor_count);
+            println!(
+                "  Source File Path:     {} ({} KiB)",
+                m.source_file_path,
+                m.source_file_bytes / 1024
+            );
+            println!(
+                "  Compiled .ktb Path:   {} ({} KiB, {} x 64KiB pages)",
+                m.compiled_ktb_path,
+                m.ktb_size_bytes / 1024,
+                m.ktb_page_count
+            );
+            println!(
+                "  Transcoded Layers:    L{}..=L{} ({} tensor banks)",
+                m.start_layer, m.end_layer, m.parsed_tensor_count
+            );
             println!("  Merkle Root (FNV64):  {:#018x}", m.merkle_root_fnv64);
-            println!("  64 KiB Alignment:     {}", if m.zero_copy_alignment_verified { "VERIFIED (mmap / io_uring / IoRing ready)" } else { "FAILED" });
-            println!("====================================================================================");
+            println!(
+                "  64 KiB Alignment:     {}",
+                if m.zero_copy_alignment_verified {
+                    "VERIFIED (mmap / io_uring / IoRing ready)"
+                } else {
+                    "FAILED"
+                }
+            );
+            println!(
+                "===================================================================================="
+            );
         }
         Err(e) => {
             eprintln!("Failed to import model '{}': {}", model_id, e);
@@ -1176,16 +1241,20 @@ fn run_import(
 fn run_exl3(model_name: &str, target_bpw: f32) {
     let cluster = sample_personal_cluster();
     let model = resolve_model(model_name);
-    let report = DistributedExl3ConversionEngine::run_conversion_and_benchmark(
-        &model,
-        target_bpw,
-        &cluster,
-    );
+    let report =
+        DistributedExl3ConversionEngine::run_conversion_and_benchmark(&model, target_bpw, &cluster);
 
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!("  KADMIUM (Cd-48) — EXL3 / QTIP TRELLIS QUANTIZER & DISTRIBUTED CONVERTER");
-    println!("====================================================================================");
-    println!("  Model:                {} ({})", report.model_name, report.model_id);
+    println!(
+        "===================================================================================="
+    );
+    println!(
+        "  Model:                {} ({})",
+        report.model_name, report.model_id
+    );
     println!(
         "  Bitrate:              {:.2} bpw target -> {:.2} bpw effective (Bitshift Trellis L=4, 16 states)",
         report.target_average_bpw, report.achieved_effective_bpw
@@ -1213,7 +1282,9 @@ fn run_exl3(model_name: &str, target_bpw: f32) {
         report.estimated_cluster_conversion_minutes,
         report.node_conversion_shards.len()
     );
-    println!("------------------------------------------------------------------------------------");
+    println!(
+        "------------------------------------------------------------------------------------"
+    );
     println!("  Distributed Single-Step HF -> EXL3 .ktb Node Conversion Schedule:");
     for shard in &report.node_conversion_shards {
         println!(
@@ -1229,7 +1300,9 @@ fn run_exl3(model_name: &str, target_bpw: f32) {
             shard.estimated_conversion_seconds / 60.0
         );
     }
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
 }
 
 fn run_switch(revision_slug: &str) {
@@ -1238,10 +1311,17 @@ fn run_switch(revision_slug: &str) {
         ModdedSwitchController::build_spec(rev, SwitchRuntimeEnvironment::SwitchrootL4tJetPackCuda);
     let node = ModdedSwitchController::to_hardware_node(&spec);
 
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!("  KADMIUM (Cd-48) — MODDED NINTENDO SWITCH (TEGRA X1 / X1+) E-WASTE NODE PROFILER");
-    println!("====================================================================================");
-    println!("  Device Revision:      {} ({}nm TSMC)", spec.display_name, spec.process_node_nm);
+    println!(
+        "===================================================================================="
+    );
+    println!(
+        "  Device Revision:      {} ({}nm TSMC)",
+        spec.display_name, spec.process_node_nm
+    );
     println!("  Jetson Equivalency:   {}", spec.jetson_equivalent);
     println!("  Runtime Stack:        {:?}", spec.runtime_env);
     println!(
@@ -1268,19 +1348,30 @@ fn run_switch(revision_slug: &str) {
         spec.dock_safety.soc_temp_celsius,
         spec.dock_safety.fan_duty_pct
     );
-    println!("------------------------------------------------------------------------------------");
-    println!("  Optimal Kadmium Workloads for Switch 1 ({}):", node.hostname);
+    println!(
+        "------------------------------------------------------------------------------------"
+    );
+    println!(
+        "  Optimal Kadmium Workloads for Switch 1 ({}):",
+        node.hostname
+    );
     for w in &spec.recommended_kadmium_workloads {
         println!("    * {}", w);
     }
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
 }
 
 fn run_reterminal(custom_ip: Option<&str>) {
     let report = ReTerminalCm4LanBridge::probe_and_verify(custom_ip);
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!("  KADMIUM (Cd-48) — SEEED STUDIO reTERMINAL CM4 (ARMv8 NEON) LIVE LAN PROBE");
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!(
         "  Physical Board Online: {} ({})",
         report.physical_board_online, report.lan_endpoint
@@ -1288,7 +1379,10 @@ fn run_reterminal(custom_ip: Option<&str>) {
     println!("  Board Model:           {}", report.board_model);
     println!("  MAC Address / OUI:     {}", report.mac_address_oui);
     println!("  SoC Architecture:      {}", report.soc_architecture);
-    println!("  Kernel Uname:          {}", report.execution_proof.kernel_uname);
+    println!(
+        "  Kernel Uname:          {}",
+        report.execution_proof.kernel_uname
+    );
     println!(
         "  Live SoC Telemetry:    {:.1}°C | {} MHz | eMMC {:.2}/{:.2} GiB free",
         report.telemetry.temp_c,
@@ -1300,7 +1394,9 @@ fn run_reterminal(custom_ip: Option<&str>) {
         "  I2C HMI Peripherals:   {}",
         report.telemetry.i2c_peripherals.join(", ")
     );
-    println!("------------------------------------------------------------------------------------");
+    println!(
+        "------------------------------------------------------------------------------------"
+    );
     println!(
         "  LAN TCP Round-Trip:    {:.2} ms (persistent TCP_NODELAY socket)",
         report.execution_proof.lan_round_trip_ms
@@ -1324,14 +1420,19 @@ fn run_reterminal(custom_ip: Option<&str>) {
     if report.physical_board_online {
         let ip = custom_ip.unwrap_or(kadmium_core::DEFAULT_RETERMINAL_CM4_IP);
         if let Some(stress) = ReTerminalCm4LanBridge::run_stress_benchmark_on_cm4(ip, 200) {
-            println!("------------------------------------------------------------------------------------");
+            println!(
+                "------------------------------------------------------------------------------------"
+            );
             println!(
                 "  200-Iter NEON Stress:  min {:.3} ms | p50 {:.3} ms | p95 {:.3} ms | p99 {:.3} ms",
                 stress.min_ms, stress.p50_ms, stress.p95_ms, stress.p99_ms
             );
             println!(
                 "  1-Core vs 4-Core OMP:  128x128 GEMM 1c={:.3} ms -> 4c={:.3} ms ({:.2}x speedup | {:.2} GFLOP/s)",
-                stress.gemm128_1core_ms, stress.gemm128_4core_ms, stress.quad_core_speedup, stress.quad_core_gflops
+                stress.gemm128_1core_ms,
+                stress.gemm128_4core_ms,
+                stress.quad_core_speedup,
+                stress.quad_core_gflops
             );
             println!(
                 "  HW ARMv8 CRC32C:       {:.2} GB/s (__crc32cd 64 KiB .ktb page verification)",
@@ -1343,18 +1444,28 @@ fn run_reterminal(custom_ip: Option<&str>) {
             );
             println!(
                 "  Thermal & Clock Delta: {:.1}°C -> {:.1}°C | {} -> {} MHz (FNV-1a64: {:#018x})",
-                stress.temp_before_c, stress.temp_after_c, stress.freq_before_mhz, stress.freq_after_mhz, stress.last_fnv1a64
+                stress.temp_before_c,
+                stress.temp_after_c,
+                stress.freq_before_mhz,
+                stress.freq_after_mhz,
+                stress.last_fnv1a64
             );
         }
     }
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
 }
 
 fn run_m4_mac_mini(custom_ip: Option<&str>) {
     let report = kadmium_core::M4MacMiniLanBridge::probe_and_verify(custom_ip);
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!("  KADMIUM (Cd-48) — APPLE M4 MAC MINI (METAL 4 GPU + AMX ACCELERATE) LIVE PROBE");
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!(
         "  Physical Board Online: {} ({})",
         report.physical_board_online, report.lan_endpoint
@@ -1362,7 +1473,10 @@ fn run_m4_mac_mini(custom_ip: Option<&str>) {
     println!("  Machine Model:         {}", report.board_model);
     println!("  MAC Address / OUI:     {}", report.mac_address_oui);
     println!("  SoC Architecture:      {}", report.soc_architecture);
-    println!("  Kernel Uname:          {}", report.execution_proof.kernel_uname);
+    println!(
+        "  Kernel Uname:          {}",
+        report.execution_proof.kernel_uname
+    );
     println!(
         "  Metal 4 GPU & UMA:     {} (pipeline_ready={}) | {:.2}/{:.1} GiB Metal working set",
         report.telemetry.metal_gpu_name,
@@ -1380,7 +1494,9 @@ fn run_m4_mac_mini(custom_ip: Option<&str>) {
         report.telemetry.ssd_free_gib,
         report.telemetry.ssd_total_gib
     );
-    println!("------------------------------------------------------------------------------------");
+    println!(
+        "------------------------------------------------------------------------------------"
+    );
     println!(
         "  LAN TCP Round-Trip:    {:.2} ms (persistent TCP_NODELAY socket)",
         report.execution_proof.lan_round_trip_ms
@@ -1410,7 +1526,9 @@ fn run_m4_mac_mini(custom_ip: Option<&str>) {
     if report.physical_board_online {
         let ip = custom_ip.unwrap_or(kadmium_core::DEFAULT_M4_MAC_MINI_IP);
         if let Some(stress) = kadmium_core::M4MacMiniLanBridge::run_stress_benchmark_on_m4(ip, 25) {
-            println!("------------------------------------------------------------------------------------");
+            println!(
+                "------------------------------------------------------------------------------------"
+            );
             println!(
                 "  25-Iter Metal 4 GPU:   min {:.3} ms | p50 {:.3} ms | p95 {:.3} ms",
                 stress.metal_min_ms, stress.metal_p50_ms, stress.metal_p95_ms
@@ -1420,8 +1538,12 @@ fn run_m4_mac_mini(custom_ip: Option<&str>) {
                 stress.amx_sgemm_512_gflops, stress.amx_sgemm_512_ms, stress.hw_crc32c_gbps
             );
         }
-        if let Some(deep) = kadmium_core::M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(ip, 10, 256) {
-            println!("------------------------------------------------------------------------------------");
+        if let Some(deep) =
+            kadmium_core::M4MacMiniLanBridge::run_deep_metal4_suite_on_m4(ip, 10, 256)
+        {
+            println!(
+                "------------------------------------------------------------------------------------"
+            );
             println!(
                 "  Metal 4 Tiled 1024x1024 GEMM:  {:.3} ms ({:.2} GFLOP/s | FNV-1a64: {:#018x})",
                 deep.tiled_gemm1024_ms, deep.tiled_gemm1024_gflops, deep.tiled_gemm1024_fnv1a64
@@ -1452,7 +1574,9 @@ fn run_m4_mac_mini(custom_ip: Option<&str>) {
             );
         }
     }
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
 }
 
 /// Opens a page in the default browser. Used only when the desktop app is not built.
@@ -1501,9 +1625,13 @@ async fn run_desktop(port: u16, live_only: bool, open_control_room: bool, check_
     let cm4_probe = kadmium_core::ReTerminalCm4LanBridge::probe_and_verify(None);
     let k230_probe = kadmium_core::K230UsbComputeBridge::probe_attached_k230();
 
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!("  KADMIUM (Cd-48) — NATIVE DESKTOP APPLICATION & MULTI-PLATFORM COORDINATOR");
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
     println!(
         "  Local Workstation:     {} ({} [{:.1} TF FP16 / {:.1} TF FP8 / {:.1} TOPS FP4] + {} [{:.1} TF]{}, {:.1} GB VRAM + {:.1} GB RAM, q*={:.2})",
         local_node.hostname,
@@ -1568,7 +1696,9 @@ async fn run_desktop(port: u16, live_only: bool, open_control_room: bool, check_
     );
     println!("  Companion:             http://127.0.0.1:{port}/companion");
     println!("  Control Room:          http://127.0.0.1:{port}/");
-    println!("====================================================================================");
+    println!(
+        "===================================================================================="
+    );
 
     if check_only {
         return;

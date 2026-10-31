@@ -1,0 +1,18 @@
+/* Local operator surfaces use Kadmium's shared graphite and cadmium tokens. */
+#context-compute { background: var(--graphite-0); --surface-1: var(--graphite-1); --surface-2: var(--graphite-2); --surface-3: var(--graphite-3); --abyss: var(--graphite-0); --glow: var(--cadmium-text); --glow-hover: var(--cadmium-hover); --glow-soft: var(--cadmium-soft); }
+#context-compute h2 { margin: 0; font-size: 14px; }
+#context-compute .inspector-section { padding: var(--space-4); }
+#context-compute .field { margin-top: var(--space-3); }
+#context-compute .field-inline { flex-wrap: wrap; gap: var(--space-2); }
+#context-compute input, #context-compute select, #context-compute textarea { background: var(--graphite-0); border-color: var(--line-strong); }
+#context-compute pre { padding: var(--space-3); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--graphite-1); }
+#context-compute .compute-label, .local-compute-link { color: var(--cadmium-text); }
+#open-model-library { color: var(--cadmium-text); }
+#context-compute #checkpoint-import, #context-compute #checkpoint-use, #context-compute #compute-job-run { background: var(--cadmium); color: var(--on-cadmium); border-color: var(--cadmium); }
+#context-compute #checkpoint-import:hover, #context-compute #checkpoint-use:hover, #context-compute #compute-job-run:hover { background: var(--cadmium-hover); }
+#context-compute .run-facts dd { overflow-wrap: anywhere; }
+.compute-setup { margin: var(--space-4) 0; }
+.compute-setup summary { cursor: pointer; color: var(--ink); font-size: 14px; }
+.compute-setup a { color: var(--cadmium-text); }
+#context-compute button:focus-visible, #context-compute summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+@media (prefers-reduced-motion: reduce) { #context-compute * { transition: none; } }

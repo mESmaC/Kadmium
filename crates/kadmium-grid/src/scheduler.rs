@@ -22,8 +22,9 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    AppKind, ComputeEwma, ComputeSample, GridError, InstanceId, ReplicaCatalog, ValidationRule,
-    WorkGraph, WorkInstance, WorkResultRecord, WorkState, WorkUnit, WorkUnitId, trust_satisfies,
+    AppKind, ComputeEwma, ComputeSample, GridError, HopLine, InstanceId, ReplicaCatalog,
+    ValidationRule, WorkGraph, WorkInstance, WorkResultRecord, WorkState, WorkUnit, WorkUnitId,
+    trust_satisfies,
 };
 
 /// A worker as the scheduler sees it: the capability vector plus live load and measurements.
@@ -49,6 +50,11 @@ pub struct WorkerProfile {
     /// The owner's explicit offer, if the worker sent one; `None` means the node's default offer.
     #[serde(default)]
     pub offer: Option<ResourceOffer>,
+    /// The learned cost of a hop to this worker: a fixed term and a per-megabyte term fitted
+    /// from the coordinator's dispatch timings, used once it has
+    /// [`crate::MIN_HOP_SAMPLES`] samples.
+    #[serde(default)]
+    pub hop: Option<HopLine>,
 }
 
 impl WorkerProfile {
@@ -66,6 +72,7 @@ impl WorkerProfile {
             free_system_ram_gb: None,
             compute: BTreeMap::new(),
             offer: None,
+            hop: None,
         }
     }
 
@@ -116,6 +123,32 @@ impl WorkerProfile {
         }
     }
 
+    /// Folds one measured hop in: `wire_bytes` carried both ways and `ms` the dispatch spent
+    /// outside the worker's own execution. The line's prior is the round trip and the uplink
+    /// the profile already knows.
+    pub fn record_hop(&mut self, wire_bytes: u64, ms: f64, now: u64) {
+        let prior_rtt = self.hop_latency_ms();
+        let uplink = self.node.network_uplink_gbps;
+        self.hop
+            .get_or_insert_with(|| HopLine::with_prior(prior_rtt, uplink))
+            .observe(wire_bytes, ms, now);
+    }
+
+    /// The learned hop line, once it has enough samples to price hops.
+    pub fn learned_hop(&self) -> Option<&HopLine> {
+        self.hop.as_ref().filter(|h| h.is_learned())
+    }
+
+    /// What a hop carrying `wire_bytes` should cost: the learned line when it is learned,
+    /// else the round trip alone, as before hop lines existed (bytes are priced only once
+    /// measured, so an unmeasured mesh routes as it always did).
+    pub fn hop_estimate_ms(&self, wire_bytes: u64) -> f64 {
+        match self.learned_hop() {
+            Some(line) => line.predict_ms(wire_bytes),
+            None => self.hop_latency_ms(),
+        }
+    }
+
     pub fn has_capacity(&self) -> bool {
         self.online && self.in_flight < self.max_concurrent
     }
@@ -146,8 +179,7 @@ impl WorkerProfile {
         now: u64,
     ) -> Option<&ComputeEwma> {
         self.compute.get(app).filter(|e| {
-            e.samples >= policy.min_compute_samples
-                && e.is_fresh(now, policy.compute_sample_ttl_ms)
+            e.samples >= policy.min_compute_samples && e.is_fresh(now, policy.compute_sample_ttl_ms)
         })
     }
 
@@ -168,7 +200,13 @@ impl WorkerProfile {
         policy: &SchedulerPolicy,
         now: u64,
     ) -> Option<f64> {
-        self.completion_estimate_for(&unit.app.label(), unit.cost.work(), policy, now)
+        self.completion_estimate_with_bytes(
+            &unit.app.label(),
+            unit.cost.work(),
+            unit.cost.bytes_moved,
+            policy,
+            now,
+        )
     }
 
     /// [`WorkerProfile::completion_estimate_ms`] for `work` units of a kind of work, for callers
@@ -180,9 +218,22 @@ impl WorkerProfile {
         policy: &SchedulerPolicy,
         now: u64,
     ) -> Option<f64> {
+        self.completion_estimate_with_bytes(app, work, 0, policy, now)
+    }
+
+    /// [`WorkerProfile::completion_estimate_for`] with the bytes the hop carries, priced by
+    /// the learned hop line once it is learned.
+    pub fn completion_estimate_with_bytes(
+        &self,
+        app: &str,
+        work: f64,
+        wire_bytes: u64,
+        policy: &SchedulerPolicy,
+        now: u64,
+    ) -> Option<f64> {
         let ewma = self.compute_estimate(app, policy, now)?;
         let queued = self.in_flight as f64 + 1.0;
-        Some(self.hop_latency_ms() + ewma.predict_ms(work) * queued)
+        Some(self.hop_estimate_ms(wire_bytes) + ewma.predict_ms(work) * queued)
     }
 }
 
@@ -1484,8 +1535,8 @@ impl WorkQueue {
                     .find(|w| w.id() == &inst.node_id)
                     .map(|w| w.expected_wall_ms(&status.unit, &self.policy, now))
                     .unwrap_or(status.unit.cost.est_wall_ms);
-                let timeout_ms = (expected_ms * self.policy.straggler_factor)
-                    .max(self.policy.straggler_min_ms);
+                let timeout_ms =
+                    (expected_ms * self.policy.straggler_factor).max(self.policy.straggler_min_ms);
                 let since = inst.started_unix_ms.unwrap_or(inst.assigned_unix_ms);
                 if now.saturating_sub(since) as f64 > timeout_ms {
                     to_flag.push((status.unit.id.clone(), instance_id.clone()));
@@ -1994,7 +2045,10 @@ mod tests {
         assert_eq!(status.unit.placement.excluded_nodes.len(), 2);
         assert!(status.returned.is_empty());
         for i in &first {
-            assert_eq!(queue.instance(&i.instance_id).unwrap().state, WorkState::Invalid);
+            assert_eq!(
+                queue.instance(&i.instance_id).unwrap().state,
+                WorkState::Invalid
+            );
             workers
                 .iter_mut()
                 .find(|w| w.id() == &i.node_id)
@@ -2299,12 +2353,20 @@ mod tests {
             .unwrap();
         assert_eq!(queue.stats().total, 4);
         let ready: Vec<_> = queue.ready_units().iter().map(|u| u.id.0.clone()).collect();
-        assert_eq!(ready, vec!["sess/step-1/stage-00"], "step 2 waits for step 1's sink");
+        assert_eq!(
+            ready,
+            vec!["sess/step-1/stage-00"],
+            "step 2 waits for step 1's sink"
+        );
 
         let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
         let finish = |queue: &mut WorkQueue, workers: &mut Vec<WorkerProfile>, now: u64| {
             let assigned = queue.dispatch_push(workers, &catalog, now);
-            assert_eq!(assigned.len(), 1, "one unit ready at a time along the chain");
+            assert_eq!(
+                assigned.len(),
+                1,
+                "one unit ready at a time along the chain"
+            );
             queue
                 .report_result(
                     &assigned[0].instance_id,
@@ -2315,16 +2377,28 @@ mod tests {
             workers[0].in_flight = 0;
             assigned[0].unit_id.clone()
         };
-        assert_eq!(finish(&mut queue, &mut workers, 1).0, "sess/step-1/stage-00");
+        assert_eq!(
+            finish(&mut queue, &mut workers, 1).0,
+            "sess/step-1/stage-00"
+        );
         assert!(!queue.graph_settled(&first));
-        assert_eq!(finish(&mut queue, &mut workers, 2).0, "sess/step-1/stage-01");
+        assert_eq!(
+            finish(&mut queue, &mut workers, 2).0,
+            "sess/step-1/stage-01"
+        );
         assert!(queue.graph_settled(&first));
         assert!(queue.events().iter().any(|e| matches!(
             e.event,
             SchedulerEvent::Released { ref unit } if unit.0 == "sess/step-2/stage-00"
         )));
-        assert_eq!(finish(&mut queue, &mut workers, 3).0, "sess/step-2/stage-00");
-        assert_eq!(finish(&mut queue, &mut workers, 4).0, "sess/step-2/stage-01");
+        assert_eq!(
+            finish(&mut queue, &mut workers, 3).0,
+            "sess/step-2/stage-00"
+        );
+        assert_eq!(
+            finish(&mut queue, &mut workers, 4).0,
+            "sess/step-2/stage-01"
+        );
         assert!(queue.graph_settled(&second));
 
         // A prerequisite that already validated blocks nothing; a failed one is refused, and so
@@ -2337,7 +2411,12 @@ mod tests {
                 5,
             )
             .unwrap();
-        assert!(queue.ready_units().iter().any(|u| u.id.0 == "sess/step-3/stage-00"));
+        assert!(
+            queue
+                .ready_units()
+                .iter()
+                .any(|u| u.id.0 == "sess/step-3/stage-00")
+        );
         queue.cancel(&third.qualify(&"stage-01".into()), 6).unwrap();
         let fourth = step(4);
         assert!(matches!(
@@ -2414,7 +2493,13 @@ mod tests {
         catalog
     }
 
-    fn feed(worker: &mut WorkerProfile, app: &str, ms: f64, samples: u32, policy: &SchedulerPolicy) {
+    fn feed(
+        worker: &mut WorkerProfile,
+        app: &str,
+        ms: f64,
+        samples: u32,
+        policy: &SchedulerPolicy,
+    ) {
         for i in 0..samples {
             worker.record_compute(app, ms, policy, 1_000 + i as u64);
         }
@@ -2443,7 +2528,10 @@ mod tests {
         feed(&mut a, "ExpertSlice", 5.0, 7, &policy);
         feed(&mut b, "ExpertSlice", 2.0, 7, &policy);
         let ranked = Matchmaker::rank(&unit, &[a.clone(), b.clone()], &catalog, &policy, now);
-        assert_eq!(ranked[0].node_id.0, "a", "seven samples keep the modelled ranking");
+        assert_eq!(
+            ranked[0].node_id.0, "a",
+            "seven samples keep the modelled ranking"
+        );
         assert!(ranked.iter().all(|m| m.completion_estimate_ms.is_none()));
 
         // The eighth sample lets the measured cost decide.
@@ -2453,7 +2541,10 @@ mod tests {
         assert_eq!(ranked[0].node_id.0, "b");
         let est_b = ranked[0].completion_estimate_ms.expect("measured");
         let est_a = ranked[1].completion_estimate_ms.expect("measured");
-        assert!((est_b - 3.0).abs() < 1e-9, "hop plus one unit of work: {est_b}");
+        assert!(
+            (est_b - 3.0).abs() < 1e-9,
+            "hop plus one unit of work: {est_b}"
+        );
         assert!((est_a - 6.0).abs() < 1e-9, "{est_a}");
 
         // Queue pressure counts: three instances already on `b` put it behind `a`.
@@ -2485,7 +2576,10 @@ mod tests {
 
         let ranked = Matchmaker::rank(&unit, &workers, &catalog, &policy, 2_000);
         assert_eq!(ranked[0].node_id.0, "slow-resident");
-        assert!(ranked[0].score < ranked[1].score, "the remote node scores higher, yet loses");
+        assert!(
+            ranked[0].score < ranked[1].score,
+            "the remote node scores higher, yet loses"
+        );
         assert!(ranked[0].completion_estimate_ms > ranked[1].completion_estimate_ms);
 
         let mut lenient = policy.clone();
@@ -2550,14 +2644,13 @@ mod tests {
         for w in workers.iter_mut() {
             w.compute.clear();
         }
-        let audited = WorkUnit::new("audited", AppKind::VerdeAudit).with_redundancy(
-            RedundancyPolicy {
+        let audited =
+            WorkUnit::new("audited", AppKind::VerdeAudit).with_redundancy(RedundancyPolicy {
                 min_quorum: 2,
                 target_replicas: 3,
                 max_replicas: 3,
                 validation: ValidationRule::BitExactDigest,
-            },
-        );
+            });
         queue.submit(audited, 10).unwrap();
         let trio = queue.dispatch_push(&mut workers, &catalog, 10);
         assert_eq!(trio.len(), 3);
@@ -2578,7 +2671,10 @@ mod tests {
             .map(|w| w.id())
             .collect();
         assert_eq!(sampled.len(), 2);
-        assert!(!sampled.contains(&&trio[1].node_id), "the disagreeing node is not sampled");
+        assert!(
+            !sampled.contains(&&trio[1].node_id),
+            "the disagreeing node is not sampled"
+        );
     }
 
     #[test]

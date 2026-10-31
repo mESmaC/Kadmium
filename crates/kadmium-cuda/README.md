@@ -31,7 +31,7 @@ cuda-oxide supports Linux only; WSL2 with a current Windows NVIDIA driver works.
 
 - Rust 1.99.1 with `rust-src`, `rustc-dev` and `llvm-tools` (`device/rust-toolchain.toml` pins it)
 - CUDA Toolkit 13.x (`nvcc`, libNVVM, nvJitLink, libdevice) and clang/libclang 21 for `bindgen`
-- `cargo install --git https://github.com/NVIDIA/cuda-rust.git cargo-oxide`, then `cargo oxide doctor`
+- `cargo install --git https://github.com/NVIDIA/cuda-rust.git --rev 18a0407cc2 cargo-oxide`, then `cargo oxide doctor` (the revision matches the pinned device dependencies)
 
 No root is needed if you install the toolkit into a micromamba environment
 (`micromamba create -p ~/cuda-env -c nvidia -c conda-forge cuda-toolkit=13 clang=21 libclang=21`)
@@ -53,6 +53,8 @@ cargo test -p kadmium-runtime cuda_parity
 ```
 
 ## Results
+
+The figures below are reported hardware-harness results; exact checkout, run date, repetition count, and raw logs are not recorded here. They are also entered with Measured/Derived labels and provenance caveats in the [benchmark ledger](../../docs/BENCHMARKS_2026-10.md).
 
 RTX 5070 (sm_120), CUDA 13.3, driver 616.92, WSL2 Ubuntu: every case bit-identical, including
 partial and zero blocks, NaN and infinite inputs, every `E8M0` exponent (subnormal and

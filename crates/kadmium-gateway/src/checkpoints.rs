@@ -256,8 +256,36 @@ pub async fn post_training_resume(
         ));
     }
     let mut guard = state.lock().expect("gateway state lock");
+    let previous = (
+        guard.training_model.clone(),
+        guard.user_selected_model,
+        guard.training_step_counter,
+        guard.last_checkpoint_step,
+        guard.training_loss_history.clone(),
+        guard.last_training_loss,
+        guard.active_ktb_merkle_root_fnv64,
+        guard.resumed_from_checkpoint.clone(),
+        guard.epoch,
+    );
     let report = guard.resume_training_from(&checkpoint);
-    let _ = guard.save_persistent_state();
+    if let Err(error) = guard.save_persistent_state() {
+        (
+            guard.training_model,
+            guard.user_selected_model,
+            guard.training_step_counter,
+            guard.last_checkpoint_step,
+            guard.training_loss_history,
+            guard.last_training_loss,
+            guard.active_ktb_merkle_root_fnv64,
+            guard.resumed_from_checkpoint,
+            guard.epoch,
+        ) = previous;
+        guard.recompute_plans();
+        return Err(api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Training was not resumed because its journal could not be saved: {error}"),
+        ));
+    }
     Ok(Json(report))
 }
 

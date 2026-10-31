@@ -104,7 +104,10 @@ impl AppleM4ProductFormFactor {
             Self::IMac
         } else if m.starts_with("iPad16,") {
             Self::IPadPro
-        } else if matches!(tier, AppleM4SiliconTier::M4Max | AppleM4SiliconTier::M4Ultra) {
+        } else if matches!(
+            tier,
+            AppleM4SiliconTier::M4Max | AppleM4SiliconTier::M4Ultra
+        ) {
             Self::MacStudio
         } else {
             Self::MacMini
@@ -234,6 +237,10 @@ pub struct M4MacMiniExecutionProof {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct M4MacMiniProbeReport {
     pub physical_board_online: bool,
+    /// The LAN worker answered the probe RPC. Local host discovery alone does not
+    /// establish availability of the native worker's benchmark operations.
+    #[serde(default)]
+    pub lan_worker_online: bool,
     pub board_model: String,
     pub lan_endpoint: String,
     pub mac_address_oui: String,
@@ -265,7 +272,10 @@ struct PooledM4TcpConn {
 
 static M4_PERSISTENT_CONN: Mutex<Option<PooledM4TcpConn>> = Mutex::new(None);
 
-fn send_m4_json_rpc(addr_str: &str, payload: &serde_json::Value) -> Option<(serde_json::Value, f64)> {
+fn send_m4_json_rpc(
+    addr_str: &str,
+    payload: &serde_json::Value,
+) -> Option<(serde_json::Value, f64)> {
     let mut guard = M4_PERSISTENT_CONN.lock().ok()?;
     let mut line = serde_json::to_string(payload).ok()?;
     line.push('\n');
@@ -328,8 +338,8 @@ impl M4MacMiniLanBridge {
         let fp16_tflops = (telemetry.gpu_cores as f64) * 0.85;
         let int4_tops = (telemetry.gpu_cores as f64) * 1.70;
         let npu_tops = (telemetry.ane_cores as f64) * 2.375;
-        let cpu_tflops = (telemetry.cpu_cores_perf as f64) * 0.40
-            + (telemetry.cpu_cores_eff as f64) * 0.10;
+        let cpu_tflops =
+            (telemetry.cpu_cores_perf as f64) * 0.40 + (telemetry.cpu_cores_eff as f64) * 0.10;
         let polite_state = match form_factor {
             AppleM4ProductFormFactor::MacBookAir | AppleM4ProductFormFactor::IPadPro => {
                 PoliteState::LightDesktopUse
@@ -401,7 +411,8 @@ impl M4MacMiniLanBridge {
 
     /// Returns a reference catalog of all Apple M4-family product configurations (`Mac mini M4/M4 Pro`,
     /// `MacBook Pro M4/Pro/Max`, `MacBook Air M4`, `iMac 24" M4`, `Mac Studio M4 Max/Ultra`, and `iPad Pro M4`).
-    pub fn catalog_all_m4_products() -> Vec<(AppleM4ProductFormFactor, AppleM4SiliconTier, HardwareNode)> {
+    pub fn catalog_all_m4_products()
+    -> Vec<(AppleM4ProductFormFactor, AppleM4SiliconTier, HardwareNode)> {
         let configs = vec![
             (
                 "Mac16,10",
@@ -762,6 +773,7 @@ impl M4MacMiniLanBridge {
 
             return M4MacMiniProbeReport {
                 physical_board_online: true,
+                lan_worker_online: true,
                 board_model,
                 lan_endpoint: addr.clone(),
                 mac_address_oui,
@@ -811,7 +823,8 @@ impl M4MacMiniLanBridge {
                 local_telem.unified_mem_bw_gbps
             );
             return M4MacMiniProbeReport {
-                physical_board_online: true,
+                physical_board_online: false,
+                lan_worker_online: false,
                 board_model,
                 lan_endpoint: "127.0.0.1 (Local Apple Silicon Host)".to_string(),
                 mac_address_oui: format!(
@@ -822,7 +835,7 @@ impl M4MacMiniLanBridge {
                 telemetry: local_telem,
                 hardware_node: hw_node,
                 execution_proof: M4MacMiniExecutionProof {
-                    executed_on_physical_silicon: true,
+                    executed_on_physical_silicon: false,
                     endpoint_addr: "127.0.0.1".to_string(),
                     kernel_uname: "Darwin Local-Apple-Silicon arm64".to_string(),
                     lan_round_trip_ms: 0.05,
@@ -844,6 +857,7 @@ impl M4MacMiniLanBridge {
         let hw_node = Self::build_platform_hardware_node(ip, &default_telem);
         M4MacMiniProbeReport {
             physical_board_online: false,
+            lan_worker_online: false,
             board_model:
                 "Apple Mac mini (Mac16,10 · Apple M4 10-Core CPU / 10-Core Metal 4 GPU / 16-Core ANE · 16 GB Unified)"
                     .to_string(),
@@ -1167,10 +1181,8 @@ impl M4MacMiniLanBridge {
             tiled_gemm1024_gflops: resp.get("tiled_gemm1024_gflops")?.as_f64()?,
             tiled_gemm1024_fnv1a64: resp.get("tiled_gemm1024_fnv1a64")?.as_u64()?,
             rmsnorm_rope_ms: resp.get("rmsnorm_rope_ms")?.as_f64()?,
-            rmsnorm_rope_sample8: serde_json::from_value(
-                resp.get("rmsnorm_rope_sample8")?.clone(),
-            )
-            .ok()?,
+            rmsnorm_rope_sample8: serde_json::from_value(resp.get("rmsnorm_rope_sample8")?.clone())
+                .ok()?,
             rmsnorm_rope_repops_digest: resp.get("rmsnorm_rope_repops_digest")?.as_u64()?,
             flash_gqa_seq256_ms: resp.get("flash_gqa_seq256_ms")?.as_f64()?,
             flash_gqa_sample4: serde_json::from_value(resp.get("flash_gqa_sample4")?.clone())
@@ -1217,4 +1229,59 @@ pub struct AppleM4DeepMetalSuiteReport {
     pub zerocopy_mmap_sample4: Vec<f32>,
     pub zerocopy_mmap_repops_digest: u64,
     pub total_rpc_wall_ms: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn lan_worker_status_requires_a_successful_rpc_even_on_local_apple_silicon() {
+        for worker_online in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            let worker = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["op"], "probe");
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({
+                        "ok": worker_online,
+                        "telemetry": M4MacMiniTelemetry::default(),
+                    })
+                )
+                .unwrap();
+            });
+            let report = M4MacMiniLanBridge::probe_and_verify(Some(&endpoint));
+            worker.join().unwrap();
+            assert_eq!(report.lan_worker_online, worker_online);
+            assert_eq!(report.physical_board_online, worker_online);
+            assert_eq!(
+                report.execution_proof.executed_on_physical_silicon,
+                worker_online
+            );
+            if !worker_online
+                && let Some(local) = M4MacMiniLanBridge::probe_local_apple_silicon_telemetry()
+            {
+                // Local discovery retains hardware metadata without claiming a live worker.
+                assert_eq!(report.telemetry.hw_model, local.hw_model);
+                assert!(report.lan_endpoint.contains("Local Apple Silicon Host"));
+            }
+            // Older peers did not distinguish local hardware from a live worker.
+            let mut legacy = serde_json::to_value(&report).unwrap();
+            legacy.as_object_mut().unwrap().remove("lan_worker_online");
+            let restored: M4MacMiniProbeReport = serde_json::from_value(legacy).unwrap();
+            assert!(!restored.lan_worker_online);
+        }
+    }
 }

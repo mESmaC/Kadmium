@@ -19,19 +19,19 @@
 //! committed to, and re-runs that one layer on a trusted referee through a [`VerdeProbe`].
 
 use crate::{
-    BlockwiseInt8Tensor, DispatchPrecision, DistributedLanExecutor, ExpertPartial,
+    BlockwiseInt8Tensor, DispatchPrecision, DistributedLanExecutor, ExpertCache, ExpertPartial,
     ExpertPartialsBatch, HolderDispatchBatch, LAYER_BOUNDARY_BLOCK, LOW_LATENCY_COMBINE_MAGIC,
-    LayerHook, LayerReference, LayerRouting, LiveStageForwardRequest, LiveStageForwardResponse,
-    LowLatencyCombineBatch, MoERoutedExpertSelection, TokenBatchF32, TokenBatchInt8,
-    VERDE_CHALLENGE_INITIAL_ACTIVATION, execute_stage_layers_with_ktb_routed_hooked, repops,
-    verde_challenge_layers,
+    LayerCacheTrace, LayerHook, LayerReference, LayerRouting, LiveStageForwardRequest,
+    LiveStageForwardResponse, LowLatencyCombineBatch, MoERoutedExpertSelection, TokenBatchF32,
+    TokenBatchInt8, VERDE_CHALLENGE_INITIAL_ACTIVATION, execute_stage_layers_cached,
+    lock_expert_cache, repops, verde_challenge_layers,
 };
 use kadmium_core::{NodeId, VerifiedComputeReceipt};
 use kadmium_grid::{
     AppKind, ContentAccess, ContentKind, ContentRef, CreditEntry, CreditLedger, CreditPolicy,
     InstanceId, LayerDigest, RecordedAccess, ReplicaCatalog, SchedulerEvent, SchedulerEventRecord,
     SchedulerPolicy, ValidationOutcome, WorkGraph, WorkQueue, WorkResultRecord, WorkUnit,
-    WorkUnitId, WorkerProfile,
+    WorkUnitId, WorkerProfile, fnv1a_64,
 };
 use kadmium_network::{LiveWorkerRegistration, WireFrameKind};
 use kadmium_sharding::{
@@ -142,6 +142,12 @@ pub struct ExecutorContext {
     pub node_id: String,
     pub hostname: String,
     pub resident_ktb_bank: Arc<Mutex<Vec<u8>>>,
+    /// The node's expert cache, shared by every unit it runs; `None` serves every expert
+    /// from its source.
+    pub expert_cache: Option<Arc<Mutex<ExpertCache>>>,
+    /// The fingerprint of the node's weights (its resident bank's root), the revision term of
+    /// every cache key the node's units use.
+    pub weights_revision: u64,
 }
 
 impl ExecutorContext {
@@ -150,7 +156,19 @@ impl ExecutorContext {
             node_id: node_id.to_string(),
             hostname: hostname.to_string(),
             resident_ktb_bank,
+            expert_cache: None,
+            weights_revision: 0,
         }
+    }
+
+    pub fn with_expert_cache(mut self, cache: Arc<Mutex<ExpertCache>>) -> Self {
+        self.expert_cache = Some(cache);
+        self
+    }
+
+    pub fn with_weights_revision(mut self, revision: u64) -> Self {
+        self.weights_revision = revision;
+        self
     }
 }
 
@@ -244,6 +262,7 @@ impl ExecutorRegistry {
         registry.register(Arc::new(VerdeAuditExecutor::default()));
         registry.register(Arc::new(crate::DraftVerifyExecutor));
         registry.register(Arc::new(crate::KvReplayExecutor));
+        registry.register(Arc::new(crate::matrix_job::MatrixProductExecutor));
         registry
     }
 
@@ -622,9 +641,14 @@ impl StageForwardExecutor {
     /// The stage's output batch from the rows' boundary tensors: the exact codes and scales
     /// each row produced, concatenated, when rows are whole blocks; a flat re-quantization of
     /// the dequantized rows otherwise.
-    fn output_batch(batch: &TokenBatchInt8, runs: &[StageRowRun]) -> Result<TokenBatchInt8, String> {
-        let boundaries: Vec<BlockwiseInt8Tensor> =
-            runs.iter().map(|(r, _)| r.boundary_output.clone()).collect();
+    fn output_batch(
+        batch: &TokenBatchInt8,
+        runs: &[StageRowRun],
+    ) -> Result<TokenBatchInt8, String> {
+        let boundaries: Vec<BlockwiseInt8Tensor> = runs
+            .iter()
+            .map(|(r, _)| r.boundary_output.clone())
+            .collect();
         if batch.rows == 1 || (batch.dim as usize).is_multiple_of(LAYER_BOUNDARY_BLOCK) {
             return TokenBatchInt8::from_row_tensors(batch.dim, &boundaries);
         }
@@ -674,7 +698,7 @@ impl StageForwardExecutor {
             } else {
                 None
             };
-            runs.push(execute_stage_layers_with_ktb_routed_hooked(
+            runs.push(execute_stage_layers_cached(
                 &ctx.node_id,
                 &ctx.hostname,
                 &request,
@@ -682,6 +706,8 @@ impl StageForwardExecutor {
                 params.experts_per_layer,
                 params.active_experts_per_token,
                 hook,
+                ctx.expert_cache.as_deref(),
+                ctx.weights_revision,
             ));
         }
         runs
@@ -693,7 +719,9 @@ type StageRowRun = (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>);
 
 /// Folds per-row layer chains into one chain for the batch: per layer, the rows' digests in
 /// row order, as [`LayerReference::batch_boundary_digest`] folds a batch.
-pub(crate) fn fold_layer_chains<'a>(rows: impl Iterator<Item = &'a [LayerDigest]>) -> Vec<LayerDigest> {
+pub(crate) fn fold_layer_chains<'a>(
+    rows: impl Iterator<Item = &'a [LayerDigest]>,
+) -> Vec<LayerDigest> {
     let rows: Vec<&[LayerDigest]> = rows.collect();
     let Some(first) = rows.first() else {
         return Vec::new();
@@ -962,12 +990,8 @@ impl WorkExecutor for TrunkForwardExecutor {
             ),
         ];
         for slice in &params.slices {
-            let dispatch = HolderDispatchBatch::for_slice(
-                &out,
-                &routing,
-                slice,
-                DispatchPrecision::ExactF32,
-            );
+            let dispatch =
+                HolderDispatchBatch::for_slice(&out, &routing, slice, DispatchPrecision::ExactF32);
             outputs.push((
                 StepGraphBuilder::holder_dispatch_ref(graph_id, &unit.id, &slice.holder),
                 dispatch.to_le_bytes(),
@@ -999,57 +1023,134 @@ impl WorkExecutor for ExpertSliceExecutor {
         &self,
         unit: &WorkUnit,
         inputs: &WorkInputs,
-        _ctx: &ExecutorContext,
+        ctx: &ExecutorContext,
     ) -> Result<WorkOutput, String> {
         let params: ExpertSliceParams = unit.params_json().map_err(|e| e.to_string())?;
-        let batch = if let Ok((_, dispatch_bytes)) =
-            activation_input(unit, inputs, |id| id.contains("/dispatch/"))
-        {
-            let dispatch = HolderDispatchBatch::from_le_bytes(dispatch_bytes)?;
-            dispatch.evaluate_partials()
-        } else {
-            let (_, trunk_bytes) = activation_input(unit, inputs, |id| id.ends_with("/out"))?;
-            let (_, routing_bytes) =
-                activation_input(unit, inputs, |id| id.ends_with("/routing"))?;
-            let trunk = TokenBatchF32::from_le_bytes(trunk_bytes)?;
-            let routing = LayerRouting::from_json_bytes(routing_bytes)?;
-            if routing.rows.len() != trunk.rows as usize {
-                return Err(format!(
-                    "routing covers {} rows but the trunk output has {}",
-                    routing.rows.len(),
-                    trunk.rows
-                ));
+        let mut cache_trace = LayerCacheTrace::default();
+        // The holder's input: the selective dispatch packet (DeepEP), or the full trunk output
+        // and routing. Either way the experts the holder serves are loaded once, through the
+        // node's expert cache when it has one (a miss admits under the cache's policy), else
+        // straight from their source, and every row's partial is computed from those weights.
+        let dispatch = match activation_input(unit, inputs, |id| id.contains("/dispatch/")) {
+            Ok((_, bytes)) => Some(HolderDispatchBatch::from_le_bytes(bytes)?),
+            Err(_) => None,
+        };
+        let full = match dispatch {
+            Some(_) => None,
+            None => {
+                let (_, trunk_bytes) = activation_input(unit, inputs, |id| id.ends_with("/out"))?;
+                let (_, routing_bytes) =
+                    activation_input(unit, inputs, |id| id.ends_with("/routing"))?;
+                let trunk = TokenBatchF32::from_le_bytes(trunk_bytes)?;
+                let routing = LayerRouting::from_json_bytes(routing_bytes)?;
+                if routing.rows.len() != trunk.rows as usize {
+                    return Err(format!(
+                        "routing covers {} rows but the trunk output has {}",
+                        routing.rows.len(),
+                        trunk.rows
+                    ));
+                }
+                Some((trunk, routing))
             }
-
-            let mut partials = Vec::new();
-            for (row, selections) in routing.rows.iter().enumerate() {
-                let h = trunk.row(row);
-                // The experts this holder serves for this row: its resident experts, minus the rows
-                // of a replicated expert that another copy takes (EPLB's even split).
-                let mut mine: Vec<&MoERoutedExpertSelection> = selections
-                    .iter()
-                    .filter(|s| params.serves(s.expert_id, row as u32))
-                    .collect();
-                mine.sort_by_key(|s| s.expert_id);
-                for selection in mine {
-                    partials.push(ExpertPartial {
-                        row: row as u32,
-                        expert: selection.expert_id,
-                        data: LayerReference::expert_contribution(
-                            h,
-                            params.layer,
-                            selection.expert_id,
-                            selection.gating_weight,
-                        ),
-                    });
+        };
+        let dim = match (&dispatch, &full) {
+            (Some(d), _) => d.dim as usize,
+            (None, Some((trunk, _))) => trunk.dim as usize,
+            (None, None) => 0,
+        };
+        let needed: Vec<u32> = match (&dispatch, &full) {
+            (Some(d), _) => d.expert_ids(),
+            (None, Some((_, routing))) => {
+                let mut needed: Vec<u32> = Vec::new();
+                for (row, selections) in routing.rows.iter().enumerate() {
+                    for s in selections {
+                        if params.serves(s.expert_id, row as u32) && !needed.contains(&s.expert_id)
+                        {
+                            needed.push(s.expert_id);
+                        }
+                    }
+                }
+                needed
+            }
+            (None, None) => Vec::new(),
+        };
+        let mut weights: BTreeMap<u32, Vec<f32>> = BTreeMap::new();
+        if let Some(cache) = ctx.expert_cache.as_deref()
+            && !needed.is_empty()
+        {
+            // Locked for the lookups and loads only; the partials below run unlocked. A cache
+            // with no budget is skipped outright. The token clock advances once per step graph
+            // (every layer of a decode step shares the graph id).
+            let mut cache = lock_expert_cache(cache);
+            if cache.budget_bytes() > 0 {
+                let revision = LayerReference::expert_revision(ctx.weights_revision, dim);
+                cache.begin_token(Some(fnv1a_64(
+                    unit.graph_id.as_deref().unwrap_or("graph").as_bytes(),
+                )));
+                let before = cache.stats();
+                let fetched = cache.fetch(
+                    &params.model_id,
+                    revision,
+                    params.layer,
+                    &needed,
+                    dim as u64 * 4,
+                    |expert| LayerReference::expert_weight_bytes(params.layer, expert, dim),
+                );
+                for (expert, bytes) in fetched {
+                    if let Some(w) = LayerReference::expert_weights_from_bytes(&bytes, dim) {
+                        weights.insert(expert, w);
+                    }
+                }
+                let after = cache.stats();
+                cache_trace.hits = after.hits - before.hits;
+                cache_trace.misses = after.misses - before.misses;
+                cache_trace.bypassed = after.bypassed - before.bypassed;
+                cache_trace.prefetch_hits = after.prefetch_hits - before.prefetch_hits;
+            }
+        }
+        let batch = match (dispatch, full) {
+            (Some(dispatch), _) => dispatch.evaluate_partials_with(&weights),
+            (None, Some((trunk, routing))) => {
+                let mut partials = Vec::new();
+                for (row, selections) in routing.rows.iter().enumerate() {
+                    let h = trunk.row(row);
+                    // The experts this holder serves for this row: its resident experts, minus
+                    // the rows of a replicated expert that another copy takes (EPLB's even
+                    // split).
+                    let mut mine: Vec<&MoERoutedExpertSelection> = selections
+                        .iter()
+                        .filter(|s| params.serves(s.expert_id, row as u32))
+                        .collect();
+                    mine.sort_by_key(|s| s.expert_id);
+                    for selection in mine {
+                        let data = match weights.get(&selection.expert_id) {
+                            Some(w) => LayerReference::expert_contribution_from_weights(
+                                h,
+                                w,
+                                selection.gating_weight,
+                            ),
+                            None => LayerReference::expert_contribution(
+                                h,
+                                params.layer,
+                                selection.expert_id,
+                                selection.gating_weight,
+                            ),
+                        };
+                        partials.push(ExpertPartial {
+                            row: row as u32,
+                            expert: selection.expert_id,
+                            data,
+                        });
+                    }
+                }
+                ExpertPartialsBatch {
+                    layer: params.layer,
+                    rows: trunk.rows,
+                    dim: trunk.dim,
+                    partials,
                 }
             }
-            ExpertPartialsBatch {
-                layer: params.layer,
-                rows: trunk.rows,
-                dim: trunk.dim,
-                partials,
-            }
+            (None, None) => unreachable!("an expert slice has a dispatch or a trunk input"),
         };
         let applied = batch.partials.len();
         let mut served_hits: BTreeMap<(u32, u32), u64> = BTreeMap::new();
@@ -1069,6 +1170,7 @@ impl WorkExecutor for ExpertSliceExecutor {
                 "layer": params.layer,
                 "holder": params.holder.0,
                 "experts_applied": applied,
+                "expert_cache": cache_trace,
             }))
             .unwrap_or_default(),
             digest_fnv1a: digest,
@@ -1214,6 +1316,9 @@ pub struct GridDispatchTrace {
     pub dispatched_at_ms: f64,
     #[serde(default)]
     pub returned_at_ms: f64,
+    /// Bytes the dispatch and its reply carried over the wire, 0 in process.
+    #[serde(default)]
+    pub wire_bytes: u64,
 }
 
 /// One Verde dispute and how the referee settled it.
@@ -1306,6 +1411,8 @@ struct DispatchOutcome {
     wall_ms: f64,
     dispatched_at_ms: f64,
     returned_at_ms: f64,
+    /// Bytes the dispatch and its reply carried over the wire, 0 in process.
+    wire_bytes: u64,
     result: Result<WorkResultPayload, String>,
 }
 
@@ -1398,14 +1505,14 @@ fn referee_trace(
         },
         dispatched_at_ms: ((returned_at_ms - wall_ms).max(0.0) * 1000.0).round() / 1000.0,
         returned_at_ms,
+        wire_bytes: 0,
     }
 }
 
 /// Which unit a scheduler event is about.
 fn event_unit_id(event: &SchedulerEvent) -> Option<WorkUnitId> {
-    let from_instance = |i: &InstanceId| {
-        WorkUnitId::new(i.0.rsplit_once('#').map_or(i.0.as_str(), |(u, _)| u))
-    };
+    let from_instance =
+        |i: &InstanceId| WorkUnitId::new(i.0.rsplit_once('#').map_or(i.0.as_str(), |(u, _)| u));
     Some(match event {
         SchedulerEvent::Submitted { unit }
         | SchedulerEvent::Released { unit }
@@ -1555,6 +1662,7 @@ impl<'a> GridRunner<'a> {
             error: Some(error),
             dispatched_at_ms: now_ms,
             returned_at_ms: now_ms,
+            wire_bytes: 0,
         }
     }
 
@@ -1566,6 +1674,7 @@ impl<'a> GridRunner<'a> {
             .queue
             .dispatch_push(self.workers, self.catalog, now_unix_ms());
         let count = assigned.len();
+        let batch_dispatched_at_ms = ms_since(self.config.clock_origin);
         for instance in assigned {
             let unit = match self.queue.status(&instance.unit_id) {
                 Some(status) => status.unit.clone(),
@@ -1611,19 +1720,22 @@ impl<'a> GridRunner<'a> {
                 instance.node_id.clone(),
             );
             let origin = self.config.clock_origin;
+            let dispatched_at_ms = batch_dispatched_at_ms;
 
             if let Some(reg) = self.live_workers.get(&node_id.0).filter(|w| w.online) {
                 let addr = reg.worker_tcp_addr.clone();
                 let bytes = payload.to_le_bytes();
                 let timeout = self.config.call_timeout;
                 let epoch = self.config.epoch as u32;
-                let dispatched_at_ms = ms_since(origin);
+                let sent_bytes = bytes.len() as u64;
                 self.in_flight.spawn(async move {
                     let t0 = Instant::now();
-                    let result = DistributedLanExecutor::channel_pool()
+                    let reply = DistributedLanExecutor::channel_pool()
                         .call(&addr, WireFrameKind::WorkDispatch, epoch, bytes, timeout)
-                        .await
-                        .and_then(|frame| WorkResultPayload::from_le_bytes(&frame.payload));
+                        .await;
+                    let reply_bytes = reply.as_ref().map_or(0, |f| f.payload.len() as u64);
+                    let result =
+                        reply.and_then(|frame| WorkResultPayload::from_le_bytes(&frame.payload));
                     DispatchOutcome {
                         instance_id,
                         unit_id,
@@ -1633,13 +1745,13 @@ impl<'a> GridRunner<'a> {
                         wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
                         dispatched_at_ms,
                         returned_at_ms: ms_since(origin),
+                        wire_bytes: sent_bytes + reply_bytes,
                         result,
                     }
                 });
             } else if let Some(local) = self.local {
                 let registry = local.registry.clone();
                 let ctx = local.ctx.clone();
-                let dispatched_at_ms = ms_since(origin);
                 self.in_flight.spawn(async move {
                     let t0 = Instant::now();
                     let result = tokio::task::spawn_blocking(move || {
@@ -1656,6 +1768,7 @@ impl<'a> GridRunner<'a> {
                         wall_ms: (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0,
                         dispatched_at_ms,
                         returned_at_ms: ms_since(origin),
+                        wire_bytes: 0,
                         result,
                     }
                 });
@@ -1685,6 +1798,18 @@ impl<'a> GridRunner<'a> {
             Err(_) => return false,
         };
         GridDispatcher::release_slot(self.workers, &outcome.node_id);
+        // A validated-looking reply over the wire is a sample of the hop's cost: the wall time
+        // less what the worker reports it spent executing, against the bytes carried.
+        if outcome.wire_bytes > 0
+            && let Ok(payload) = &outcome.result
+            && payload.header.ok
+        {
+            let exec_ms = payload.header.result.as_ref().map_or(0.0, |r| r.exec_ms);
+            let hop_ms = (outcome.wall_ms - exec_ms).max(0.0);
+            if let Some(worker) = self.workers.iter_mut().find(|w| w.id() == &outcome.node_id) {
+                worker.record_hop(outcome.wire_bytes, hop_ms, now_unix_ms());
+            }
+        }
 
         match outcome.result {
             Ok(payload) if payload.header.ok => {
@@ -1718,10 +1843,11 @@ impl<'a> GridRunner<'a> {
                     error: None,
                     dispatched_at_ms: outcome.dispatched_at_ms,
                     returned_at_ms: outcome.returned_at_ms,
+                    wire_bytes: outcome.wire_bytes,
                 });
-                let validation = self
-                    .queue
-                    .report_result(&outcome.instance_id, record, now_unix_ms());
+                let validation =
+                    self.queue
+                        .report_result(&outcome.instance_id, record, now_unix_ms());
                 if let Ok(ValidationOutcome::DisputeOpened { nodes }) = validation {
                     GridDispatcher::referee_dispute(
                         &mut self.queue,
@@ -1770,6 +1896,7 @@ impl<'a> GridRunner<'a> {
                     error: Some(error.clone()),
                     dispatched_at_ms: outcome.dispatched_at_ms,
                     returned_at_ms: outcome.returned_at_ms,
+                    wire_bytes: outcome.wire_bytes,
                 });
                 let _ = self
                     .queue
@@ -1791,6 +1918,7 @@ impl<'a> GridRunner<'a> {
                     error: Some(error.clone()),
                     dispatched_at_ms: outcome.dispatched_at_ms,
                     returned_at_ms: outcome.returned_at_ms,
+                    wire_bytes: outcome.wire_bytes,
                 });
                 let _ = self
                     .queue
@@ -1949,8 +2077,7 @@ impl<'a> GridRunner<'a> {
             .collect();
 
         // Books: credit for every validated unit, a penalty for every invalidated instance.
-        let mut ledger =
-            CreditLedger::new(self.config.credit_policy.clone().unwrap_or_default());
+        let mut ledger = CreditLedger::new(self.config.credit_policy.clone().unwrap_or_default());
         if self.config.credit_policy.is_some() {
             let now = now_unix_ms();
             for status in &statuses {
@@ -1997,7 +2124,6 @@ impl<'a> GridRunner<'a> {
         }
     }
 }
-
 
 pub struct GridDispatcher;
 
@@ -2279,7 +2405,7 @@ impl GridDispatcher {
                         transport,
                         wall_ms,
                         &outcome,
-                    ms_since(config.clock_origin),
+                        ms_since(config.clock_origin),
                     ));
                     if let Ok(payload) = &outcome
                         && payload.header.ok
@@ -2324,7 +2450,7 @@ impl GridDispatcher {
                         transport,
                         wall_ms,
                         &outcome,
-                    ms_since(config.clock_origin),
+                        ms_since(config.clock_origin),
                     ));
                     match outcome {
                         Ok(payload) if payload.header.ok => {
@@ -2369,7 +2495,7 @@ impl GridDispatcher {
                     transport,
                     wall_ms,
                     &outcome,
-                ms_since(config.clock_origin),
+                    ms_since(config.clock_origin),
                 ));
                 verdict = match outcome {
                     Ok(payload) if payload.header.ok => {
@@ -2427,7 +2553,7 @@ impl GridDispatcher {
                 transport,
                 wall_ms,
                 &outcome,
-            ms_since(config.clock_origin),
+                ms_since(config.clock_origin),
             ));
             verdict = match outcome {
                 Ok(payload) if payload.header.ok => {
@@ -2506,6 +2632,7 @@ impl GridRunReport {
             error: Some(error),
             dispatched_at_ms: 0.0,
             returned_at_ms: 0.0,
+            wire_bytes: 0,
         });
         self
     }
@@ -2658,7 +2785,10 @@ mod tests {
             outbound.wire_bytes * 4 < outbound.logical_bytes,
             "{outbound:?}"
         );
-        assert!(inbound.wire_bytes * 4 < inbound.logical_bytes, "{inbound:?}");
+        assert!(
+            inbound.wire_bytes * 4 < inbound.logical_bytes,
+            "{inbound:?}"
+        );
     }
 
     #[test]
@@ -2701,7 +2831,7 @@ mod tests {
     fn registry_runs_registered_kinds_and_reports_missing_ones() {
         let local = local_executor("node-a");
         assert!(local.registry.get(&AppKind::StageForward).is_some());
-        assert_eq!(local.registry.kinds().len(), 11);
+        assert_eq!(local.registry.kinds().len(), 12);
 
         let input = ContentRef::named(ContentKind::Activation, "g/in", 3);
         let mut unit = WorkUnit::new("rev", AppKind::Custom("echo-reverse".into()));
@@ -3019,9 +3149,8 @@ mod fanout_tests {
             registration(&nodes[1], &w1.local_addr.to_string(), 0.2),
         );
         let model = toy_moe();
-        let seed =
-            TokenBatchInt8::quantize(&prompt_seed_hidden("replica serving", 64), 1, 64, 16)
-                .unwrap();
+        let seed = TokenBatchInt8::quantize(&prompt_seed_hidden("replica serving", 64), 1, 64, 16)
+            .unwrap();
         let (chain_report, chain_bytes) = run_shape(
             ExecutionStrategy::PipelineChain,
             &model,
@@ -3038,12 +3167,9 @@ mod fanout_tests {
             .filter(|a| a.app == "StageForward")
             .collect();
         assert!(!routed.is_empty());
-        assert!(
-            routed
-                .iter()
-                .all(|a| ModelContentNames::parse_expert(&a.content_id)
-                    .is_some_and(|(m, _, _)| m == model.id))
-        );
+        assert!(routed.iter().all(|a| {
+            ModelContentNames::parse_expert(&a.content_id).is_some_and(|(m, _, _)| m == model.id)
+        }));
         let routed_hits: u64 = routed.iter().map(|a| a.hits).sum();
         assert_eq!(
             routed_hits,
@@ -3067,8 +3193,7 @@ mod fanout_tests {
             .expect("a replicated expert")
             .clone();
         let replica = replicated.holders[1].clone();
-        let serving = placement
-            .serving_assignment(|n| Some(if *n == replica { 1.0 } else { 9.0 }));
+        let serving = placement.serving_assignment(|n| Some(if *n == replica { 1.0 } else { 9.0 }));
         assert!(serving.contains_key(&(replicated.layer, replicated.expert)));
         let graph = StepGraphBuilder::decode_step_served(
             &model,
@@ -3100,7 +3225,9 @@ mod fanout_tests {
             &graph.id,
             &format!("L{:03}-experts-{}", replicated.layer, replica.0),
         );
-        let trace = report.trace_for(&leaf).expect("the replica ran a slice unit");
+        let trace = report
+            .trace_for(&leaf)
+            .expect("the replica ran a slice unit");
         assert!(trace.ok);
         assert_eq!(trace.node_id, replica);
         assert!(
@@ -3361,7 +3488,10 @@ mod fanout_tests {
             ExecutionStrategy::ExpertParallel,
             Some(&heat),
         );
-        assert!(balanced.replicated_experts > 0, "the toy mesh has room for copies");
+        assert!(
+            balanced.replicated_experts > 0,
+            "the toy mesh has room for copies"
+        );
         for (strategy, heat) in [
             (ExecutionStrategy::PipelineChain, None),
             (ExecutionStrategy::ExpertParallel, None),
@@ -3384,15 +3514,17 @@ mod fanout_tests {
                 assert_eq!(out.rows, 1);
                 alone.push(out.tensor.to_le_bytes());
             }
-            assert!(alone.windows(2).all(|w| w[0] != w[1]), "distinct rows decode differently");
+            assert!(
+                alone.windows(2).all(|w| w[0] != w[1]),
+                "distinct rows decode differently"
+            );
 
             for (b, batch) in batches.iter().enumerate() {
                 let values: Vec<f32> = batch
                     .iter()
                     .flat_map(|&i| rows[i].iter().copied())
                     .collect();
-                let seed =
-                    TokenBatchInt8::quantize(&values, batch.len() as u32, 64, 16).unwrap();
+                let seed = TokenBatchInt8::quantize(&values, batch.len() as u32, 64, 16).unwrap();
                 let (report, bytes) = run_shape_with_heat(
                     strategy,
                     &model,
@@ -3720,7 +3852,9 @@ impl WorkExecutor for VerdeAuditExecutor {
                     return Err("an opened audit state is a vector of f64".to_string());
                 }
                 bytes
-                    .chunks_exact(8)
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
                     .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
                     .collect()
             }

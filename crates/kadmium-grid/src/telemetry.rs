@@ -9,7 +9,7 @@
 //! ranks replicas by measured run cost. A [`TelemetryStore`] is the coordinator's memory of these
 //! estimates across runs and restarts.
 
-use kadmium_core::NodeId;
+use kadmium_core::{DEFAULT_LINE_WINDOW, NodeId, WindowedLine};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -61,6 +61,68 @@ impl ComputeEwma {
     }
 }
 
+/// Validated hops a worker needs before its learned line prices its hops.
+pub const MIN_HOP_SAMPLES: u32 = 4;
+
+/// A learned line for the cost of one hop to a worker, `ms = fixed + ms_per_mb * MB` over the
+/// bytes the hop carried both ways, fitted by least squares toward a prior over a window of the
+/// last [`DEFAULT_LINE_WINDOW`] hops (InferSSD's cost lines: a fixed term and a per-byte term,
+/// each learned from the executor's own timings rather than taken from a probe, over a window
+/// so a link that degrades is followed). The sample is the coordinator's wall time for a
+/// dispatch less the worker's reported execution time: everything the wire, the framing and
+/// the queue cost. A worker that over-reports `exec_ms` lowers its own apparent hop cost; the
+/// line is a routing hint, not a settlement figure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HopLine {
+    pub line: WindowedLine,
+    pub fixed_ms: f64,
+    pub ms_per_mb: f64,
+    pub samples: u32,
+    pub last_sample_unix_ms: u64,
+}
+
+impl HopLine {
+    /// A line with its prior: the node's nominal round trip and its uplink's per-megabyte cost.
+    pub fn with_prior(rtt_ms: f64, uplink_gbps: f64) -> Self {
+        let per_mb = if uplink_gbps > 0.0 {
+            8.0 / uplink_gbps // 8e6 bit per MB over Gb/s: ms per MB
+        } else {
+            8.0
+        };
+        Self {
+            line: WindowedLine::new(rtt_ms.max(0.0), per_mb, DEFAULT_LINE_WINDOW),
+            fixed_ms: rtt_ms.max(0.0),
+            ms_per_mb: per_mb,
+            samples: 0,
+            last_sample_unix_ms: 0,
+        }
+    }
+
+    pub fn prior_ms_per_mb(&self) -> f64 {
+        self.line.prior_slope
+    }
+
+    /// Folds one hop in: `bytes` carried both ways, `ms` outside the worker's execution.
+    pub fn observe(&mut self, bytes: u64, ms: f64, now: u64) {
+        if !ms.is_finite() || ms < 0.0 {
+            return;
+        }
+        self.line.observe(bytes as f64 / 1e6, ms);
+        self.fixed_ms = self.line.fixed;
+        self.ms_per_mb = self.line.slope;
+        self.samples = self.samples.saturating_add(1);
+        self.last_sample_unix_ms = self.last_sample_unix_ms.max(now);
+    }
+
+    pub fn predict_ms(&self, bytes: u64) -> f64 {
+        self.fixed_ms + self.ms_per_mb * bytes as f64 / 1e6
+    }
+
+    pub fn is_learned(&self) -> bool {
+        self.samples >= MIN_HOP_SAMPLES
+    }
+}
+
 /// One validated result as a sample of its worker's compute cost.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ComputeSample {
@@ -83,6 +145,9 @@ pub struct WorkerTelemetry {
     /// System RAM the worker last reported free, in GiB.
     #[serde(default)]
     pub free_system_ram_gb: Option<f64>,
+    /// The learned cost of a hop to the worker, from the coordinator's own dispatch timings.
+    #[serde(default)]
+    pub hop: Option<HopLine>,
     #[serde(default)]
     pub updated_unix_ms: u64,
 }
@@ -123,6 +188,11 @@ impl TelemetryStore {
             if t.free_system_ram_gb.is_some() {
                 worker.free_system_ram_gb = t.free_system_ram_gb;
             }
+            if let Some(hop) = &t.hop
+                && worker.hop.as_ref().is_none_or(|h| h.samples < hop.samples)
+            {
+                worker.hop = Some(hop.clone());
+            }
         }
     }
 
@@ -154,6 +224,13 @@ impl TelemetryStore {
         }
         if worker.free_system_ram_gb.is_some() {
             entry.free_system_ram_gb = worker.free_system_ram_gb;
+        }
+        if let Some(hop) = &worker.hop
+            && entry.hop.as_ref().is_none_or(|h| {
+                hop.samples > h.samples || hop.last_sample_unix_ms > h.last_sample_unix_ms
+            })
+        {
+            entry.hop = Some(hop.clone());
         }
         entry.updated_unix_ms = entry.updated_unix_ms.max(now);
     }
@@ -273,5 +350,79 @@ mod tests {
             TelemetryStore::default()
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod hop_line_tests {
+    use super::*;
+    use kadmium_core::sample_personal_cluster;
+
+    #[test]
+    fn hop_line_learns_fixed_and_per_megabyte_terms_and_is_absorbed_by_the_store() {
+        let mut line = HopLine::with_prior(2.0, 1.0);
+        assert!(
+            (line.prior_ms_per_mb() - 8.0).abs() < 1e-9,
+            "1 Gb/s is 8 ms per MB"
+        );
+        assert!(!line.is_learned());
+        // A hop that costs 1 ms fixed plus 4 ms per MB.
+        for (i, mb) in [0.5f64, 1.0, 2.0, 4.0, 1.0, 3.0].iter().enumerate() {
+            line.observe((mb * 1e6) as u64, 1.0 + 4.0 * mb, 100 + i as u64);
+        }
+        assert!(line.is_learned());
+        assert!((line.ms_per_mb - 4.0).abs() < 0.3, "{}", line.ms_per_mb);
+        assert!(
+            (line.predict_ms(2_000_000) - 9.0).abs() < 0.6,
+            "{}",
+            line.predict_ms(2_000_000)
+        );
+        assert_eq!(line.last_sample_unix_ms, 105);
+
+        // The window forgets: after many slow hops the line follows them, old fast ones gone.
+        for i in 0..200 {
+            line.observe(1_000_000, 20.0 + 4.0, 200 + i);
+        }
+        assert!(
+            (line.predict_ms(1_000_000) - 24.0).abs() < 1.0,
+            "{}",
+            line.predict_ms(1_000_000)
+        );
+        assert_eq!(line.line.samples.len(), DEFAULT_LINE_WINDOW);
+
+        let node = sample_personal_cluster().remove(0);
+        let mut worker = WorkerProfile::from_node(node);
+        assert!(worker.learned_hop().is_none());
+        // Until a line is learned the bytes are not priced: the choice between workers is
+        // what it was before hop lines existed.
+        let nominal = worker.hop_estimate_ms(1_000_000);
+        assert_eq!(nominal, worker.hop_latency_ms());
+        for i in 0..MIN_HOP_SAMPLES as u64 {
+            worker.record_hop(1_000_000, 3.0, i);
+        }
+        assert!(worker.learned_hop().is_some());
+        assert!((worker.hop_estimate_ms(1_000_000) - 3.0).abs() < 0.5);
+
+        let mut store = TelemetryStore::new();
+        store.absorb(&worker, 10);
+        let stored = store.get(worker.id()).unwrap().hop.as_ref().unwrap();
+        assert_eq!(stored.samples, MIN_HOP_SAMPLES);
+        let mut fresh = WorkerProfile::from_node(worker.node.clone());
+        store.apply_to(&mut fresh);
+        assert_eq!(fresh.hop, worker.hop);
+        // A worker with fewer samples never overwrites the store's line.
+        let mut stale = WorkerProfile::from_node(worker.node.clone());
+        stale.record_hop(1, 1.0, 1);
+        store.absorb(&stale, 11);
+        assert_eq!(
+            store
+                .get(worker.id())
+                .unwrap()
+                .hop
+                .as_ref()
+                .unwrap()
+                .samples,
+            MIN_HOP_SAMPLES
+        );
     }
 }

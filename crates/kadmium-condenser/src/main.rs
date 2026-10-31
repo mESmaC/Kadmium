@@ -31,12 +31,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Verify and load a normalized checkpoint into local Ollama, preserving source precision.
+    LoadCheckpoint {
+        id: String,
+        #[arg(long)]
+        library: Option<PathBuf>,
+        #[arg(long, default_value = "http://127.0.0.1:11434")]
+        base_url: String,
+    },
     /// Open the Condenser native UI (default command).
     Ui(UiArgs),
     /// Serve the same UI and JSON API on loopback without a native window.
     Serve(ServeArgs),
     /// Run one inference turn, including tool calls when explicitly enabled.
-    Chat(ChatArgs),
+    Chat(Box<ChatArgs>),
     /// List models exposed by a provider.
     Models(ProviderArgs),
     /// Describe Condenser's built-in provider adapters.
@@ -230,6 +238,19 @@ fn main() {
         cli.plugin_dirs
     };
     let result = match cli.command.unwrap_or(Commands::Ui(UiArgs::default())) {
+        Commands::LoadCheckpoint {
+            id,
+            library,
+            base_url,
+        } => block_on(async move {
+            let library = library
+                .map(kadmium_data::checkpoint::CheckpointLibrary::new)
+                .unwrap_or_default();
+            let loaded =
+                kadmium_condenser::local_models::load_ollama(&library, &id, &base_url).await?;
+            println!("{}", serde_json::to_string_pretty(&loaded)?);
+            Ok(())
+        }),
         Commands::Ui(args) => ui::run(UiOptions {
             port: args.port,
             browser: args.browser,
@@ -248,7 +269,7 @@ fn main() {
             }
             future.await
         }),
-        Commands::Chat(args) => block_on(run_chat(args, roots)),
+        Commands::Chat(args) => block_on(run_chat(*args, roots)),
         Commands::Models(args) => block_on(async move {
             let provider = ProviderFactory::build(args.resolve()?)?;
             let models = provider.list_models().await?;

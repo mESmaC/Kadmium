@@ -14,11 +14,12 @@ linux-native = ["dep:wry", "dep:tao"]
 
 [dependencies]
 kadmium-core.workspace = true
+kadmium-data.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
 axum.workspace = true
 clap.workspace = true
 async-trait = "0.1"

@@ -34,8 +34,9 @@ use kadmium_network::{
     FleetUpdatePushSummary, HolePunchNegotiationResult, JoinTicket, LanPairingCandidate,
     LiveClusterWorkersOverview, MultiPathInterfaceStriper, MultiPathStripedSchedule,
     NatTraversalCoordinator, PairingApprovalStatus, RaidStripedPassReport, SwarmRaidStriper,
-    UpdatePayloadKind, UpdateTargetScope, UsbCDirectInterconnectScanner, UsbCHostDiscoveryReport, WorkerHeartbeatAck, WorkerHeartbeatRequest,
-    WorkerRegisterRequest, WorkerRegistrationAck, WorkerUpdatePushAck, ZeroClickLanPairingEngine,
+    UpdatePayloadKind, UpdateTargetScope, UsbCDirectInterconnectScanner, UsbCHostDiscoveryReport,
+    WorkerHeartbeatAck, WorkerHeartbeatRequest, WorkerRegisterRequest, WorkerRegistrationAck,
+    WorkerUpdatePushAck, ZeroClickLanPairingEngine,
 };
 use kadmium_rl::{
     DiscoveryTree, DreamRsiWorldRegistry, GrpoEpochExecutor, GrpoVerifiedStepReport,
@@ -139,6 +140,7 @@ pub struct ChatCompletionRequest {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EmbeddingsRequest {
     pub model: Option<String>,
+    #[serde(default)]
     pub input: serde_json::Value,
     #[serde(default)]
     pub dimensions: Option<usize>,
@@ -164,6 +166,8 @@ pub struct DreamRsiReplayRequest {
 pub struct ModelImportRequest {
     pub model_id: Option<String>,
     pub source_path: Option<String>,
+    #[serde(default)]
+    pub demo_fixture: bool,
     pub format_hint: Option<String>,
     pub start_layer: Option<u32>,
     pub end_layer: Option<u32>,
@@ -382,8 +386,14 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         )
         .route("/api/v1/runtime/kernels", get(get_runtime_kernels))
         .route("/api/v1/network/nat", get(get_network_nat_matrix))
-        .route("/api/v1/network/usbc", get(get_network_usbc_interconnect).post(get_network_usbc_interconnect))
-        .route("/api/v1/network/usbc-interconnect", get(get_network_usbc_interconnect).post(get_network_usbc_interconnect))
+        .route(
+            "/api/v1/network/usbc",
+            get(get_network_usbc_interconnect).post(get_network_usbc_interconnect),
+        )
+        .route(
+            "/api/v1/network/usbc-interconnect",
+            get(get_network_usbc_interconnect).post(get_network_usbc_interconnect),
+        )
         .route("/api/v1/companion/pairing", get(get_companion_pairing))
         .route(
             "/api/v1/cloud-shield/watcher",
@@ -471,7 +481,10 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             "/api/v1/cluster/switch-tegra",
             get(post_switch_tegra_node).post(post_switch_tegra_node),
         )
-        .route("/api/v1/grid/inventory", get(crate::grid_api::get_grid_inventory))
+        .route(
+            "/api/v1/grid/inventory",
+            get(crate::grid_api::get_grid_inventory),
+        )
         .route("/api/v1/grid/plan", get(crate::grid_api::get_grid_plan))
         .route(
             "/api/v1/grid/plan/approve",
@@ -483,9 +496,16 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             post(crate::grid_api::post_grid_calibrate),
         )
         .route("/api/v1/grid/run", post(crate::grid_api::post_grid_run))
-        .route("/api/v1/grid/decode", post(crate::grid_api::post_grid_decode))
+        .route("/api/v1/compute/jobs", post(crate::grid_api::jobs::run))
+        .route(
+            "/api/v1/grid/decode",
+            post(crate::grid_api::post_grid_decode),
+        )
         .route("/api/v1/grid/sweep", post(crate::grid_api::post_grid_sweep))
-        .route("/api/v1/grid/sessions", get(crate::grid_api::get_grid_sessions))
+        .route(
+            "/api/v1/grid/sessions",
+            get(crate::grid_api::get_grid_sessions),
+        )
         .route(
             "/api/v1/grid/sessions/tier",
             post(crate::grid_api::post_grid_sessions_tier),
@@ -495,8 +515,14 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             post(crate::grid_api::post_grid_sessions_replay),
         )
         .route("/api/v1/grid/train", post(crate::grid_api::post_grid_train))
-        .route("/api/v1/grid/replay", post(crate::grid_api::post_grid_replay))
-        .route("/api/v1/grid/credits", get(crate::grid_api::get_grid_credits))
+        .route(
+            "/api/v1/grid/replay",
+            post(crate::grid_api::post_grid_replay),
+        )
+        .route(
+            "/api/v1/grid/credits",
+            get(crate::grid_api::get_grid_credits),
+        )
         .route("/v1/models", get(openai_list_models))
         .route("/v1/embeddings", post(openai_embeddings))
         .route("/v1/chat/completions", post(openai_chat_completions))
@@ -517,12 +543,18 @@ async fn serve_companion_app() -> Html<&'static str> {
 }
 
 async fn serve_workspace_css() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], WORKSPACE_CSS)
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        WORKSPACE_CSS,
+    )
 }
 
 async fn serve_workspace_js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         WORKSPACE_JS,
     )
 }
@@ -657,11 +689,54 @@ async fn get_cluster_overview(
     Json(guard.snapshot())
 }
 
+type ApiError = (axum::http::StatusCode, Json<serde_json::Value>);
+
+fn invalid_request(message: impl Into<String>) -> ApiError {
+    (
+        axum::http::StatusCode::BAD_REQUEST,
+        Json(serde_json::json!({
+            "error": {"type": "invalid_request_error", "message": message.into()}
+        })),
+    )
+}
+
+fn persistence_error(message: String) -> ApiError {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({
+            "error": {"type": "persistence_error", "message": format!("Could not save state: {message}. Check disk access before retrying.")}
+        })),
+    )
+}
+
 async fn post_cluster_model(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ModelSwapRequest>,
-) -> Json<ClusterOverviewResponse> {
+) -> Result<Json<ClusterOverviewResponse>, ApiError> {
     let mut guard = state.lock().expect("gateway state lock");
+    // Resolve the entire request before touching state, including mixed valid/invalid IDs.
+    let resolve = |id: &str| {
+        guard
+            .resolve_model(id)
+            .ok_or_else(|| invalid_request(format!("Unsupported model ID: {id:?}")))
+    };
+    let inference = req
+        .inference_model_id
+        .as_deref()
+        .filter(|id| *id != "none")
+        .map(resolve)
+        .transpose()?;
+    let training = req.training_model_id.as_deref().map(resolve).transpose()?;
+    let previous = (
+        guard.inference_model.clone(),
+        guard.training_model.clone(),
+        guard.active_model_loaded,
+        guard.user_selected_model,
+        guard.epoch,
+        guard.executed_inference_requests,
+        guard.last_measured_tokens_per_sec,
+        guard.last_measured_pipeline_latency_ms,
+    );
     if req.unload == Some(true) || req.inference_model_id.as_deref() == Some("none") {
         guard.active_model_loaded = false;
         guard.user_selected_model = false;
@@ -669,19 +744,33 @@ async fn post_cluster_model(
         guard.last_measured_tokens_per_sec = None;
         guard.last_measured_pipeline_latency_ms = None;
     } else {
-        if let Some(inf_id) = req.inference_model_id.as_deref() {
-            guard.inference_model = ModelSpec::from_id(inf_id);
+        if let Some(model) = inference {
+            guard.inference_model = model;
             guard.active_model_loaded = true;
             guard.user_selected_model = true;
         }
-        if let Some(trn_id) = req.training_model_id.as_deref() {
-            guard.training_model = ModelSpec::from_id(trn_id);
+        if let Some(model) = training {
+            guard.training_model = model;
             guard.user_selected_model = true;
         }
     }
     guard.epoch += 1;
     guard.recompute_plans();
-    Json(guard.snapshot())
+    if let Err(error) = guard.save_persistent_state() {
+        (
+            guard.inference_model,
+            guard.training_model,
+            guard.active_model_loaded,
+            guard.user_selected_model,
+            guard.epoch,
+            guard.executed_inference_requests,
+            guard.last_measured_tokens_per_sec,
+            guard.last_measured_pipeline_latency_ms,
+        ) = previous;
+        guard.recompute_plans();
+        return Err(persistence_error(error));
+    }
+    Ok(Json(guard.snapshot()))
 }
 
 async fn get_phone_farm_status(
@@ -1075,46 +1164,41 @@ async fn post_ota_update_push(
                     .pending_wan_updates
                     .insert(w.node.id.0.clone(), manifest.clone());
             }
-            let ack = match DistributedLanExecutor::push_update_tcp(
-                &w.worker_tcp_addr,
-                epoch,
-                &manifest,
-            )
-            .await
-            {
-                Ok(mut tcp_ack) => {
-                    tcp_ack.delivery_mechanism = "Online WAN Heartbeat Pull + DERP Relay".into();
-                    tcp_ack
-                }
-                Err(_) => apply_ota_update_manifest_local(
-                    &w.node.id,
-                    &w.node.hostname,
-                    &w.installed_version,
-                    w.ktb_merkle_root_fnv64,
-                    "Online WAN Heartbeat Pull + DERP Relay",
-                    &manifest,
-                ),
-            };
+            let ack =
+                match DistributedLanExecutor::push_update_tcp(&w.worker_tcp_addr, epoch, &manifest)
+                    .await
+                {
+                    Ok(mut tcp_ack) => {
+                        tcp_ack.delivery_mechanism =
+                            "Online WAN Heartbeat Pull + DERP Relay".into();
+                        tcp_ack
+                    }
+                    Err(_) => apply_ota_update_manifest_local(
+                        &w.node.id,
+                        &w.node.hostname,
+                        &w.installed_version,
+                        w.ktb_merkle_root_fnv64,
+                        "Online WAN Heartbeat Pull + DERP Relay",
+                        &manifest,
+                    ),
+                };
             wan_count += 1;
             receipts.push(ack);
         } else {
-            let ack = match DistributedLanExecutor::push_update_tcp(
-                &w.worker_tcp_addr,
-                epoch,
-                &manifest,
-            )
-            .await
-            {
-                Ok(tcp_ack) => tcp_ack,
-                Err(_) => apply_ota_update_manifest_local(
-                    &w.node.id,
-                    &w.node.hostname,
-                    &w.installed_version,
-                    w.ktb_merkle_root_fnv64,
-                    "LAN Direct TCP WireFrame (KDMF)",
-                    &manifest,
-                ),
-            };
+            let ack =
+                match DistributedLanExecutor::push_update_tcp(&w.worker_tcp_addr, epoch, &manifest)
+                    .await
+                {
+                    Ok(tcp_ack) => tcp_ack,
+                    Err(_) => apply_ota_update_manifest_local(
+                        &w.node.id,
+                        &w.node.hostname,
+                        &w.installed_version,
+                        w.ktb_merkle_root_fnv64,
+                        "LAN Direct TCP WireFrame (KDMF)",
+                        &manifest,
+                    ),
+                };
             local_count += 1;
             receipts.push(ack);
         }
@@ -1168,10 +1252,7 @@ fi
     );
 
     (
-        [(
-            header::CONTENT_TYPE,
-            "text/x-shellscript; charset=utf-8",
-        )],
+        [(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")],
         script,
     )
 }
@@ -1258,13 +1339,10 @@ async fn post_fts3_live_stream(
 
 async fn post_export_training_checkpoint(
     State(state): State<Arc<Mutex<GatewayState>>>,
-) -> Json<KtbCheckpointExportReport> {
+) -> Result<Json<KtbCheckpointExportReport>, ApiError> {
     let (model_id, step_idx) = {
         let guard = state.lock().expect("gateway state lock");
-        (
-            guard.training_model.id.clone(),
-            guard.training_step_counter,
-        )
+        (guard.training_model.id.clone(), guard.training_step_counter)
     };
 
     let output_dir = crate::checkpoints::checkpoint_dir();
@@ -1286,12 +1364,14 @@ async fn post_export_training_checkpoint(
     {
         let mut guard = state.lock().expect("gateway state lock");
         if report.zero_copy_verified {
+            let previous = (
+                guard.last_checkpoint_step,
+                guard.active_ktb_merkle_root_fnv64,
+                guard.bucket_objects.clone(),
+            );
             guard.last_checkpoint_step = report.step_index;
             guard.active_ktb_merkle_root_fnv64 = report.merkle_root_fnv64;
-            let ckpt_uri = format!(
-                "kdm://pool-bucket/checkpoints/{}.ktb",
-                report.checkpoint_id
-            );
+            let ckpt_uri = format!("kdm://pool-bucket/checkpoints/{}.ktb", report.checkpoint_id);
             let obj = DecentralizedStoragePoolEngine::create_bucket_object(
                 &ckpt_uri,
                 &format!(
@@ -1304,17 +1384,27 @@ async fn post_export_training_checkpoint(
                 2,
                 Some(report.merkle_root_fnv64),
                 &guard.nodes,
-            );
+            )
+            .expect("valid checkpoint shard configuration");
             guard
                 .bucket_objects
                 .retain(|o| o.object_uri != obj.object_uri);
             guard.bucket_objects.push(obj);
-            let _ = guard.save_persistent_state();
+            if let Err(error) = guard.save_persistent_state() {
+                (
+                    guard.last_checkpoint_step,
+                    guard.active_ktb_merkle_root_fnv64,
+                    guard.bucket_objects,
+                ) = previous;
+                return Err(persistence_error(format!(
+                    "Checkpoint file was exported, but its journal update failed: {error}"
+                )));
+            }
         }
         guard.last_checkpoint_report = Some(report.clone());
     }
 
-    Json(report)
+    Ok(Json(report))
 }
 
 async fn get_pipeline_execution(
@@ -1518,7 +1608,10 @@ async fn get_companion_pairing(
                     candidate_id: w.node.id.0.clone(),
                     hostname: w.node.hostname.clone(),
                     lan_socket_addr: addr,
-                    hardware_summary: format!("{} ({} / {})", w.board_or_model, w.os_name, w.cpu_arch),
+                    hardware_summary: format!(
+                        "{} ({} / {})",
+                        w.board_or_model, w.os_name, w.cpu_arch
+                    ),
                     fp16_tflops: w.node.fp16_tflops,
                     fast_memory_gb: (w.node.memory.vram_gb + w.node.memory.unified_mem_gb)
                         .max(w.node.memory.system_ram_gb),
@@ -1823,7 +1916,8 @@ async fn post_live_verde_audit(
         let guard = state.lock().expect("gateway state lock");
         (
             guard.epoch,
-            req.total_layers.unwrap_or(guard.inference_plan.total_layers),
+            req.total_layers
+                .unwrap_or(guard.inference_plan.total_layers),
             guard.live_workers.clone(),
         )
     };
@@ -1932,25 +2026,27 @@ async fn openai_list_models(
 async fn openai_embeddings(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<EmbeddingsRequest>,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let (plan, workers) = {
         let guard = state.lock().expect("gateway state lock");
         (guard.inference_plan.clone(), guard.live_workers.clone())
     };
     let model_name = req.model.unwrap_or_else(|| "kadmium-embed-v1".to_string());
     let dims = req.dimensions.unwrap_or(64);
-    let inputs: Vec<String> = match &req.input {
-        serde_json::Value::String(s) => vec![s.clone()],
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect(),
-        _ => vec!["Kadmium distributed embedding pass".to_string()],
-    };
-    let inputs = if inputs.is_empty() {
-        vec!["Kadmium distributed embedding pass".to_string()]
-    } else {
-        inputs
+    let inputs: Vec<String> = match req.input {
+        serde_json::Value::String(s) if !s.is_empty() => vec![s],
+        serde_json::Value::Array(arr) if !arr.is_empty() => arr
+            .into_iter()
+            .map(|value| match value {
+                serde_json::Value::String(s) if !s.is_empty() => Ok(s),
+                _ => Err(invalid_request("input must contain only non-empty strings")),
+            })
+            .collect::<Result<_, _>>()?,
+        _ => {
+            return Err(invalid_request(
+                "input must be a non-empty string or array of non-empty strings",
+            ));
+        }
     };
 
     let report =
@@ -1979,7 +2075,7 @@ async fn openai_embeddings(
         })
         .collect();
 
-    Json(serde_json::json!({
+    Ok(Json(serde_json::json!({
         "object": "list",
         "model": model_name,
         "data": data,
@@ -1993,10 +2089,13 @@ async fn openai_embeddings(
             "total_wall_ms": report.total_wall_ms,
             "live_hops": report.live_hops
         }
-    }))
+    })))
 }
 
-fn extract_prompt_and_vision_flag(messages: &[serde_json::Value], explicit_vision: Option<bool>) -> (String, bool) {
+fn extract_prompt_and_vision_flag(
+    messages: &[serde_json::Value],
+    explicit_vision: Option<bool>,
+) -> (String, bool) {
     let mut has_vision = explicit_vision.unwrap_or(false);
     let mut extracted = String::new();
 
@@ -2187,10 +2286,24 @@ async fn anthropic_messages(
     }
 
     if req.stream == Some(true) {
-        let sse = format!(
-            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_kadmium_e{epoch}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"{model_name}\"}}}}\n\nevent: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"Executed via Kadmium Strata Anthropic /v1/messages gateway ({:.1} tok/s).\"}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
-            exec_report.effective_tokens_per_sec
-        );
+        let events = [
+            (
+                "message_start",
+                serde_json::json!({"type":"message_start", "message": {
+                    "id":format!("msg_kadmium_e{epoch}"), "type":"message", "role":"assistant", "model":model_name
+                }}),
+            ),
+            (
+                "content_block_delta",
+                serde_json::json!({"type":"content_block_delta", "index":0,
+                "delta":{"type":"text_delta", "text":format!("Kadmium reference diagnostic ({:.1} tok/s).", exec_report.effective_tokens_per_sec)}}),
+            ),
+            ("message_stop", serde_json::json!({"type":"message_stop"})),
+        ];
+        let sse: String = events
+            .into_iter()
+            .map(|(event, data)| format!("event: {event}\ndata: {data}\n\n"))
+            .collect();
         return (
             [(header::CONTENT_TYPE, "text/event-stream; charset=utf-8")],
             sse,
@@ -2258,8 +2371,13 @@ async fn post_live_kv_migrate(
 async fn post_import_local_model(
     State(state): State<Arc<Mutex<GatewayState>>>,
     req: Option<Json<ModelImportRequest>>,
-) -> Json<ImportedModelManifest> {
+) -> Result<Json<ImportedModelManifest>, ApiError> {
     let params = req.map(|Json(r)| r).unwrap_or_default();
+    if params.source_path.is_none() && !params.demo_fixture {
+        return Err(invalid_request(
+            "source_path is required; set demo_fixture=true to generate a synthetic reference fixture",
+        ));
+    }
     let model_id = params
         .model_id
         .unwrap_or_else(|| "qwen2.5-coder-32b-instruct".to_string());
@@ -2274,24 +2392,43 @@ async fn post_import_local_model(
         end_layer,
         None,
     )
-    .expect("import local model to disk KTB");
+    .map_err(invalid_request)?;
 
     {
         let mut guard = state.lock().expect("gateway state lock");
+        let previous = (
+            guard.active_ktb_merkle_root_fnv64,
+            guard.imported_models.clone(),
+            guard.inference_model.clone(),
+            guard.active_model_loaded,
+            guard.user_selected_model,
+            guard.epoch,
+        );
         guard.active_ktb_merkle_root_fnv64 = manifest.merkle_root_fnv64;
         guard
             .imported_models
             .retain(|m| m.model_id != manifest.model_id);
         guard.imported_models.push(manifest.clone());
-        guard.inference_model = ModelSpec::from_id(&model_id);
+        guard.inference_model = manifest.derived_model_spec.clone();
         guard.active_model_loaded = true;
         guard.user_selected_model = true;
         guard.epoch += 1;
         guard.recompute_plans();
-        let _ = guard.save_persistent_state();
+        if let Err(error) = guard.save_persistent_state() {
+            (
+                guard.active_ktb_merkle_root_fnv64,
+                guard.imported_models,
+                guard.inference_model,
+                guard.active_model_loaded,
+                guard.user_selected_model,
+                guard.epoch,
+            ) = previous;
+            guard.recompute_plans();
+            return Err(persistence_error(error));
+        }
     }
 
-    Json(manifest)
+    Ok(Json(manifest))
 }
 
 async fn post_exl3_convert_and_benchmark(
@@ -2310,11 +2447,7 @@ async fn post_exl3_convert_and_benchmark(
         guard.nodes.clone()
     };
 
-    Json(DistributedExl3ConversionEngine::run_conversion_and_benchmark(
-        &model,
-        target_bpw,
-        &nodes,
-    ))
+    Json(DistributedExl3ConversionEngine::run_conversion_and_benchmark(&model, target_bpw, &nodes))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2393,7 +2526,9 @@ async fn get_storage_pool_bucket_report(
     });
 
     if let Some(sz) = mapped_pool_size {
-        return Json(DecentralizedStoragePoolEngine::run_pool_storage_benchmark(sz));
+        return Json(DecentralizedStoragePoolEngine::run_pool_storage_benchmark(
+            sz,
+        ));
     }
 
     let (nodes, imported_models, bucket_objects, bucket_anchors) = {
@@ -2405,20 +2540,28 @@ async fn get_storage_pool_bucket_report(
             guard.bucket_anchors.clone(),
         )
     };
-    Json(DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
-        &nodes,
-        &imported_models,
-        &bucket_objects,
-        &bucket_anchors,
-    ))
+    Json(
+        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+            &nodes,
+            &imported_models,
+            &bucket_objects,
+            &bucket_anchors,
+        ),
+    )
 }
 
 async fn post_storage_pool_bucket_object(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<StorageBucketPutObjectRequest>,
-) -> Json<DecentralizedStoragePoolReport> {
+) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
+    DecentralizedStoragePoolEngine::validate_shard_counts(
+        req.data_shards_k.unwrap_or(8),
+        req.parity_shards_m.unwrap_or(2),
+    )
+    .map_err(invalid_request)?;
     let (nodes, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
+        let previous = guard.bucket_objects.clone();
         if let Some(del_uri) = req.delete_uri.as_deref() {
             guard.bucket_objects.retain(|o| o.object_uri != del_uri);
         } else {
@@ -2472,13 +2615,17 @@ async fn post_storage_pool_bucket_object(
                 m,
                 merkle,
                 &guard.nodes,
-            );
+            )
+            .map_err(invalid_request)?;
             guard
                 .bucket_objects
                 .retain(|o| o.object_uri != entry.object_uri);
             guard.bucket_objects.push(entry);
         }
-        let _ = guard.save_persistent_state();
+        if let Err(error) = guard.save_persistent_state() {
+            guard.bucket_objects = previous;
+            return Err(persistence_error(error));
+        }
         (
             guard.nodes.clone(),
             guard.imported_models.clone(),
@@ -2487,20 +2634,23 @@ async fn post_storage_pool_bucket_object(
         )
     };
 
-    Json(DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
-        &nodes,
-        &imported_models,
-        &bucket_objects,
-        &bucket_anchors,
+    Ok(Json(
+        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+            &nodes,
+            &imported_models,
+            &bucket_objects,
+            &bucket_anchors,
+        ),
     ))
 }
 
 async fn post_storage_pool_bucket_anchor(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<StorageBucketAnchorRequest>,
-) -> Json<DecentralizedStoragePoolReport> {
+) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
     let (nodes, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
+        let previous = guard.bucket_anchors.clone();
         let kind = match req.anchor_kind.as_deref() {
             Some("LocalNasZfsVault") | Some("nas") => BucketGroundingAnchorKind::LocalNasZfsVault,
             Some("CloudObjectBucketS3R2") | Some("s3") | Some("r2") => {
@@ -2535,11 +2685,15 @@ async fn post_storage_pool_bucket_anchor(
             capacity_tb: req.capacity_tb.unwrap_or(4.0).max(0.1),
             sustained_bandwidth_gbps: req.sustained_bandwidth_gbps.unwrap_or(10.0).max(0.5),
             egress_cost_per_gb_usd: req.egress_cost_per_gb_usd.unwrap_or(0.0).max(0.0),
-            merkle_grounded_coverage_pct: 100.0,
+            // Configuration alone is not evidence of synchronized object bytes.
+            merkle_grounded_coverage_pct: 0.0,
         };
         guard.bucket_anchors.retain(|a| a.anchor_uri != uri);
         guard.bucket_anchors.push(anchor);
-        let _ = guard.save_persistent_state();
+        if let Err(error) = guard.save_persistent_state() {
+            guard.bucket_anchors = previous;
+            return Err(persistence_error(error));
+        }
         (
             guard.nodes.clone(),
             guard.imported_models.clone(),
@@ -2548,11 +2702,13 @@ async fn post_storage_pool_bucket_anchor(
         )
     };
 
-    Json(DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
-        &nodes,
-        &imported_models,
-        &bucket_objects,
-        &bucket_anchors,
+    Ok(Json(
+        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+            &nodes,
+            &imported_models,
+            &bucket_objects,
+            &bucket_anchors,
+        ),
     ))
 }
 
@@ -2579,8 +2735,7 @@ async fn get_throughput_boost_report(
     };
 
     let cross_system_matrix = CrossSystemComputeHarness::run_full_matrix(Some(nodes.clone()));
-    let hyper_training_suite =
-        TrainingComputeAcceleratorSuite::run_full_suite(Some(nodes.clone()));
+    let hyper_training_suite = TrainingComputeAcceleratorSuite::run_full_suite(Some(nodes.clone()));
     let hyper_inference_suite = HyperInferenceComputeReport::run_all();
     let hierarchical_pool_scale = HierarchicalPoolPlanner::run_multi_scale_benchmark();
     let storage_pool_report = DecentralizedStoragePoolEngine::run_pool_storage_benchmark(100);
@@ -2776,13 +2931,15 @@ pub struct PlatformFamiliesOverviewResponse {
     pub phone_farm_catalog: Vec<PlatformCatalogSkuEntry>,
 }
 
-fn build_platform_catalogs() -> (
+type PlatformCatalogs = (
     Vec<PlatformCatalogSkuEntry>,
     Vec<PlatformCatalogSkuEntry>,
     Vec<PlatformCatalogSkuEntry>,
     Vec<PlatformCatalogSkuEntry>,
     Vec<PlatformCatalogSkuEntry>,
-) {
+);
+
+fn build_platform_catalogs() -> PlatformCatalogs {
     let apple_m4_catalog: Vec<PlatformCatalogSkuEntry> =
         AppleM4PlatformBridge::catalog_all_m4_products()
             .into_iter()
@@ -2964,6 +3121,8 @@ pub struct PlatformAttachResponse {
     pub workers: LiveClusterWorkersOverview,
 }
 
+// Bridge metadata is passed through to the existing registration API.
+#[allow(clippy::too_many_arguments)]
 async fn register_bridged_worker_if_needed(
     state: &Arc<Mutex<GatewayState>>,
     node: HardwareNode,
@@ -2978,38 +3137,39 @@ async fn register_bridged_worker_if_needed(
         let guard = state.lock().expect("gateway state lock");
         guard.live_workers.contains_key(&node.id.0)
     };
-    if !already_has_bridge {
-        if let Ok(srv) =
+    if !already_has_bridge
+        && let Ok(srv) =
             LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, node.clone(), true).await
+    {
+        let bridge_addr = srv.local_addr.to_string();
+        let mut guard = state.lock().expect("gateway state lock");
+        let live_only = guard.live_only_mode;
+        guard.register_live_worker_with_meta(
+            node.clone(),
+            bridge_addr,
+            rtt_ms.max(0.25),
+            live_only,
+            os_name.clone(),
+            cpu_arch.clone(),
+            board_or_model.clone(),
+            network_channel.clone(),
+        );
+        if let Some((dip, dport)) = display_ip_port
+            && let Some(w) = guard.live_workers.get_mut(&node.id.0)
         {
-            let bridge_addr = srv.local_addr.to_string();
-            let mut guard = state.lock().expect("gateway state lock");
-            let live_only = guard.live_only_mode;
-            guard.register_live_worker_with_meta(
-                node.clone(),
-                bridge_addr,
-                rtt_ms.max(0.25),
-                live_only,
-                os_name.clone(),
-                cpu_arch.clone(),
-                board_or_model.clone(),
-                network_channel.clone(),
-            );
-            if let Some((dip, dport)) = display_ip_port
-                && let Some(w) = guard.live_workers.get_mut(&node.id.0)
-            {
-                w.worker_lan_ip = dip;
-                w.worker_tcp_port = dport;
-            }
-            guard.spawned_fleet_instances.push(SpawnedLocalWorkerInstance {
+            w.worker_lan_ip = dip;
+            w.worker_tcp_port = dport;
+        }
+        guard
+            .spawned_fleet_instances
+            .push(SpawnedLocalWorkerInstance {
                 server: srv,
                 os_name,
                 cpu_arch,
                 board_or_model,
                 network_channel,
             });
-            return;
-        }
+        return;
     }
     let mut guard = state.lock().expect("gateway state lock");
     if let Some(existing) = guard.nodes.iter_mut().find(|n| n.id == node.id) {
@@ -3130,7 +3290,9 @@ async fn post_attach_platform(
         }
         "kendryte-k230" | "k230" => {
             if let Some(slug) = sku_slug
-                && let Some(sku) = kendryte_k230_catalog.into_iter().find(|e| e.sku_slug == slug)
+                && let Some(sku) = kendryte_k230_catalog
+                    .into_iter()
+                    .find(|e| e.sku_slug == slug)
             {
                 attached_hostnames.push(sku.node.hostname.clone());
                 let mut guard = state.lock().expect("gateway state lock");
@@ -3234,7 +3396,10 @@ async fn post_attach_platform(
                     2.5,
                     "rt-smart v1.8 (CanMV K230)".into(),
                     "riscv64-c908-rvv1.0 (6 TOPS KPU)".into(),
-                    format!("{} [{}]", k230_probe.board_model, k230_probe.chip_unique_die_id),
+                    format!(
+                        "{} [{}]",
+                        k230_probe.board_model, k230_probe.chip_unique_die_id
+                    ),
                     format!(
                         "USB-CDC ({})",
                         k230_probe.detected_serial_port.as_deref().unwrap_or("USB")

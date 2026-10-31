@@ -7,11 +7,48 @@ When `kadmium launch` or `kadmium serve` is running, [`kadmium-gateway`](../crat
 
 Condenser runs separately on loopback port `7856`. Its [inference workspace guide](guides/condenser-workspace.md) covers provider routing, compute inspection, task history and run cancellation. Kadmium's read-only `GET /api/v1/inference/workspace?model_id=<catalog-id>` returns fleet and placement context for that workspace without loading a model or changing cluster selection.
 
+## Condenser checkpoints and compute jobs
+
+These routes run on Condenser's loopback server, with its existing Host/Origin guard:
+
+| Method and path | Contract |
+| --- | --- |
+| `GET /api/v1/checkpoints` | Returns `{directory, checkpoints}` from the local package library. Listing is not an integrity check. |
+| `POST /api/v1/checkpoints/import` | `{source_path}` returns a checkpoint summary after lossless normalization and atomic publication. |
+| `POST /api/v1/checkpoints/load` | `{checkpoint_id, base_url}` verifies the package, imports preserved source files into loopback Ollama without requesting quantization, checks tensor metadata and preloads the declared context. Returns `{checkpoint, provider, tensor_metadata_verified, execution}`. |
+| `POST /api/v1/compute/jobs` | `{base_url, api_key?, job}` proxies a job to the coordinator below with a 75-second timeout. Credentials are request-scoped; redirects are disabled. |
+
+Only one import/load runs per server. A load response does not change a task's route; the user explicitly chooses **Use in this task**. KTB banks are storage artifacts, and the external backend's arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for exact formats and failure behavior.
+
+## Live worker jobs
+
+The **coordinator** also exposes `POST /api/v1/compute/jobs`, accepting the job itself:
+
+```json
+{"kind":"matrix_multiply","matrix":{"rows":2,"inner":3,"columns":2,"left":[1,2,3,4,5,6],"right":[7,8,9,10,11,12]}}
+```
+
+Other shapes are `{"kind":"training_preview","step_index":1,"learning_rate":0.01}` and `{"kind":"replay","rollouts":8,"simulations":32}`. Matrix inputs use row-major FP32, dimensions 1–256 (at least two rows), and finite values. The kernel uses RepOps dot/reduction order without quantized transport. Training is a stateless synthetic stage preview, not imported-model learning. Replay uses the bundled in-memory reference world. Learning rate must be in `(0, 1]`; replay accepts 2–64 rollouts and 8–256 simulations. Unknown fields/kinds are rejected.
+
+At least two online `TrustedCore` TCP workers without outstanding approval requirements are required. Matrix row ranges are pinned to distinct workers. Demo and in-process fallback are disabled, including after a worker failure. Responses include `graph_id`, `kind`, `execution`, `success`, `distributed`, `nodes_used`, `wall_ms`, `units_total`, `units_validated`, `traces`, `result` and `error`. A matrix result contains `{rows, columns, values}` in submitted row order. Execution failures can return HTTP 200 with `success:false`; inspect both the status and report. Validation failures return HTTP 400 and the 60-second deadline returns HTTP 504. Dispatches have 15-second per-call deadlines. No monetary credits are issued. See [distributed compute](guides/distributed-compute.md) for setup and real learner integration.
+
 ---
 
 ## 1. Reference API Endpoints
 
-These routes retain their existing behavior. They execute small reference workloads and return diagnostic output, not generated language-model responses. There is no external inference relay or backend URL/key setting. This setup change keeps the existing Cargo dependencies and does not replace these routes with an unconfigured-backend error.
+### Validation, imports and saved state
+
+`POST /api/v1/cluster/model` accepts known preset IDs/aliases or IDs with an imported manifest. Unknown or empty IDs return HTTP 400 with `{"error":{"type":"invalid_request_error","message":"..."}}`. Both inference and training IDs are validated before changing either plan, the epoch, or diagnostic state.
+
+`POST /api/v1/models/import` requires a readable `source_path`. Missing, unreadable, truncated or malformed files return a structured HTTP 400 error without updating active/imported model state. To intentionally generate a small synthetic reference fixture, omit `source_path` and explicitly set `demo_fixture: true`. The returned manifest includes `synthetic_fixture`; compiling such a file does not import real model weights. EXL3 conversion currently supports synthetic fixtures only. The Companion requires an existing path; the Control Room's **Compile reference fixture** action explicitly requests demo data.
+
+`POST /api/v1/storage/pool-bucket/object` requires positive data/parity shard counts whose checked sum is at most 256 (defaults: 8 + 2). Invalid counts return structured HTTP 400 errors before shared state is changed. Entries record metadata and planned placement, not uploaded object bytes. Live storage reports use `report_kind: "live_placement_estimate"`, `durability_verified: false`, and a `protection_status` explaining unverified protection or insufficient distinct holders. Configured anchors have zero verified coverage until byte synchronization and independent failure domains can be verified. Synthetic recovery exercises remain separate in the benchmark reports (`report_kind: "synthetic_benchmark"`).
+
+The coordinator restores model plans, imports, object/anchor metadata, training progress, checkpoint step and runtime version before serving requests. CLI and desktop coordinators store `cluster_state.json` (live) and `cluster_state.demo.json` (demo) separately, so demo saves cannot overwrite live progress. The journal directory is `%LOCALAPPDATA%\Kadmium\state` on Windows, `~/Library/Application Support/Kadmium` on macOS, and `$XDG_STATE_HOME/kadmium` (or `~/.local/state/kadmium`) on Linux. Set `KADMIUM_STATE_DIR` to an absolute writable directory to use a separate workspace. Without that override, the first launch migrates a journal found under `target/kadmium-state` in the working directory, leaving the original file intact. Launch once from the old working directory when upgrading. Other model/checkpoint and diagnostic artifact paths are unchanged.
+
+Missing journals start a fresh workspace; corrupt JSON or unsupported schema versions stop startup with an error and preserve the original file for recovery. Unsupported legacy custom imports are skipped with a warning, without deleting their model files. Supported imports and unrelated state still restore. A selected custom model falls back to the startup model plan, and training progress tied to that unsupported model is not restored. New custom IDs remain rejected. Journal replacement writes and syncs a unique temporary file first. Restored plans and imports do not establish that weights are resident or workers are running. Versionless journals from earlier releases are accepted as schema version 1; progress with missing provenance is never treated as live training.
+
+The gateway's `/v1` routes retain their existing behavior. They execute small reference workloads and return diagnostic output, not generated language-model responses. They do not relay requests to Condenser's inference providers.
 
 The API shapes are useful for inspecting reference execution, but are not a promise of full OpenAI/Anthropic protocol or SDK compatibility. A model ID in a response or `active_loaded` in the catalog is diagnostic state, not evidence that production model weights were loaded. Throughput fields describe reference execution or estimates, not measured language-model generation.
 
@@ -82,7 +119,7 @@ Accepts the same limited request structure as the chat route and returns a fixed
 | Endpoint | Current behavior |
 | :--- | :--- |
 | `GET /v1/models` | Returns Kadmium's planning catalog and reference activity metadata, not a list of loaded language models. |
-| `POST /v1/embeddings` | Takes string input or an array of strings, optional `model` and `dimensions` (default `64`), and returns reference hidden-state vectors with telemetry. These are not pretrained semantic embeddings. |
+| `POST /v1/embeddings` | Takes a non-empty string or non-empty array of non-empty strings, optional `model` and `dimensions` (default `64`), and returns reference hidden-state vectors with telemetry. Invalid or omitted input returns a structured HTTP 400 error; batches are accepted in full or rejected, preserving input indices. These are not pretrained semantic embeddings. |
 
 Client API keys do not authenticate access to these routes. Keep the all-interface coordinator on a trusted network or provide external access controls. A future external inference relay requires a separate dependency and downstream-access design decision; none is included here. The MCP endpoint remains separately available at `/mcp`.
 
@@ -97,13 +134,13 @@ Returns [`ClusterOverviewResponse`](../crates/kadmium-gateway/src/lib.rs), a com
 - `inference_plan` & `training_plan`: Current [`ClusterShardPlan`](../crates/kadmium-sharding/src/lib.rs) layer and MoE expert assignments.
 - `rl_plan`: Disaggregated `Actor`/`Environment`/`Learner` assignments + `DreamRsiEvolutionReport`.
 - `training_telemetry`: Planning/sample metadata with the current legacy preview counters, loss and checkpoint position. Its island count, local-step interval and `verde_repops_verified` flag are sampled metadata, not evidence of island synchronization or the last preview's digest check. Use `/api/v1/training/step`'s `all_stages_repops_verified` for payload consistency and the separate session API for actual barrier progress.
-- `fts3_transfers`: Active CERN FTS3 P2P shard transfer jobs from `home-nas-vault`.
+- `fts3_transfers`: Scheduler-generated transfer planning records associated with the sample `node-home-nas` / `truenas-core-vault` profile, not active CERN FTS3 network jobs.
 - `boinc_workunits` & `mesh_links`: Workunit canary verification status and P2P latency/bandwidth matrix.
 
 ---
 
 ### `POST /api/v1/cluster/shift`
-Triggers a live responsibility shift or coordinator failover and returns the updated `ClusterOverviewResponse`.
+Applies a responsibility-shift or coordinator-failover scenario to coordinator state and returns the updated `ClusterOverviewResponse`. Layer movement and timings are planner/reference behavior, not proof of uninterrupted model migration.
 
 **Request Body:**
 ```json
@@ -114,25 +151,30 @@ Triggers a live responsibility shift or coordinator failover and returns the upd
 
 | `scenario` Value | Behavior |
 | :--- | :--- |
-| `"gaming_mode"` | Transitions `main-gaming-pc` to `PoliteState::GamingOrHeavyApp` (`<200ms` auto-yield), migrating its layers & MoE experts to `mac-mini-m4-pro` and `gaming-laptop-rtx4070` via FTS3 background pre-staging + live KV boundary delta handoff. |
-| `"cloud_burst"` | Joins a spot `H100-80GB` node into the cluster and rebalances the shard plan for higher throughput. |
-| `"coordinator_failover"` | Simulates a coordinator outage on the primary node and promotes the highest-priority standby (`home-nas-vault`) to leader in a new election term. |
-| `"reset"` | Resets the cluster to Epoch 1 baseline (`PoliteState::IdleDedicated`). |
+| `"gaming_mode"` | Sets the first node (sample ID `node-main-pc`) to `PoliteState::GamingOrHeavyApp` and computes a relief placement. The sub-200 ms figure is a policy target/estimate. |
+| `"cloud_burst"` | Adds a sample spot `H100-80GB` profile and rebalances the plan; it does not rent an instance. |
+| `"coordinator_failover"` | Simulates a coordinator outage and promotes the highest-priority standby in coordinator state. |
+| `"phone_farm_box"` | Applies the phone-farm platform scenario. |
+| `"usb4_handheld"` | Applies the USB4 30 Gbps handheld scenario. |
+| `"usbc_handheld"` | Alias for the same USB4 30 Gbps handheld branch, not a distinct profile. |
+| `"reset"` | Resets the cluster to its baseline state. |
+
+Unrecognized scenario strings currently take the same reset branch rather than returning `400`; clients should send only documented values.
 
 ---
 
 ### `GET /api/v1/slices`
-Returns [`ClusterPoolSliceLayout`](../crates/kadmium-sharding/src/lib.rs), demonstrating a 100-node heterogeneous pool partitioned into 5 isolated 20-node sub-clusters (`ProductionDeployment`, `TestingAndStaging`, `DistributedTraining`, `RlAndDreamRsi`, and `BatchDataProcessing`).
+Returns [`ClusterPoolSliceLayout`](../crates/kadmium-sharding/src/lib.rs). Outside live-only mode this is a 100-node/five-slice demonstration with purposes `ProductionDeployment`, `StagingAndTesting`, `DistributedTrainingLab`, `RlAndDreamRsiArena`, and `BatchAndEvalPool` (including `slice-03-train-diloco` and `slice-05-batch-eval`). Live-only mode returns no slices without an active model, otherwise one live partition. The partitions are planning data, not isolated network namespaces or separately authenticated coordinators.
 
 ---
 
 ### `GET /api/v1/dataflow`
-Returns [`DataflowComparisonReport`](../crates/kadmium-sharding/src/lib.rs), comparing TPU/CIM **Weight-Stationary Dynamic Token Streaming** vs. **Token-Stationary Dynamic Weight Streaming** vs. **Hybrid CIM-Adaptive** execution across the cluster.
+Returns [`DataflowComparisonReport`](../crates/kadmium-sharding/src/lib.rs) with modelled profiles for `AdaptiveTieredHybrid`, `ComputeInMemoryTokenStreaming`, `TokenStationaryWeightStreaming`, and `DisaggregatedDualStream`.
 
 ---
 
 ### `GET /api/v1/training/schedule`
-Returns [`Pipeline1F1BSchedule`](../crates/kadmium-runtime/src/lib.rs), the exact micro-batch timeline (`Warmup`, `Steady 1F1B`, and `Cooldown` phases, pipeline bubble %, and `DeMo` DCT outer-step synchronization time) across heterogeneous pipeline stages.
+Returns [`Pipeline1F1BSchedule`](../crates/kadmium-runtime/src/lib.rs): stage/micro-batch counts, total modelled duration, bubble percentage, peak activations, and the `Warmup`, `Steady 1F1B`, and `Cooldown` event timeline. It does not contain a DeMo outer-step synchronization measurement.
 
 ---
 
@@ -211,7 +253,7 @@ For a working local learner, see [`kadmium diloco`](cli-reference.md#kadmium-dil
 ---
 
 ### `POST /api/v1/training/checkpoint`
-Saves a `.ktb` checkpoint of the training model at the current step to `kadmium-checkpoints/kadmium-<model>-step-<n>.ktb` in the system temp folder, lists it in the bucket under `kdm://pool-bucket/checkpoints/`, and returns its `checkpoint_id`, `file_path`, `merkle_root_fnv64` and `zero_copy_verified` (every page matched its checksum).
+Writes a deterministic **synthetic reference KTB** tagged with the current model and step to `kadmium-checkpoints/kadmium-<model>-step-<n>.ktb` in the system temp folder. It is not a snapshot of learned stage weights. The checkpoint is listed under `kdm://pool-bucket/checkpoints/`; the response includes `checkpoint_id`, `file_path`, `merkle_root_fnv64`, and `zero_copy_verified` (every page matched its checksum).
 
 ---
 
@@ -225,7 +267,7 @@ curl -s http://127.0.0.1:7848/api/v1/training/checkpoints
 ---
 
 ### `POST /api/v1/training/resume`
-Points training at a saved checkpoint: its model, its step and its weights' Merkle root. The next step continues from `step_index + 1`, and loss history after that step is dropped. Unknown ids answer `404`; a damaged file or a model this coordinator has no profile for answers `422`, both as `{"error": "..."}`.
+Restores coordinator metadata from a saved reference checkpoint: model profile, step counter, history position, and Merkle root. The next preview uses `step_index + 1`, and later loss history is dropped. Persistent learner/stage weights are not restored. Unknown ids answer `404`; a damaged file or a model this coordinator has no profile for answers `422`, both as `{"error": "..."}`.
 
 ```bash
 curl -s http://127.0.0.1:7848/api/v1/training/resume \
@@ -236,17 +278,17 @@ curl -s http://127.0.0.1:7848/api/v1/training/resume \
 ---
 
 ### `GET /api/v1/rl/dream-rsi`
-Returns [`DreamRsiApiResponse`](../crates/kadmium-gateway/src/lib.rs), including the full [`DiscoveryTree`](../crates/kadmium-rl/src/lib.rs) and the offline causal replay [`DreamRsiEvolutionReport`](../crates/kadmium-rl/src/lib.rs) executed on low-power SBCs/legacy laptops.
+Returns [`DreamRsiApiResponse`](../crates/kadmium-gateway/src/lib.rs), including the sample [`DiscoveryTree`](../crates/kadmium-rl/src/lib.rs) and in-process [`DreamRsiEvolutionReport`](../crates/kadmium-rl/src/lib.rs). `executed_on_replay_nodes` lists node profiles selected as replay-host labels; the replay evaluations run in the coordinator process, not on those labelled SBCs/laptops.
 
 ---
 
 ### `GET /api/v1/cloud-shield`
-Returns [`CloudShieldApiResponse`](../crates/kadmium-gateway/src/lib.rs), containing the Multi-Datacenter Spot Arbitrage plan (`~62%` savings vs. single-cloud on-demand) and Bidirectional Failover Shield (`Local -> Cloud` and `Cloud -> Local`) simulations.
+Returns [`CloudShieldApiResponse`](../crates/kadmium-gateway/src/lib.rs) with fixed sample arbitrage and failover scenarios. Current sample offers total $1.82/hr versus $13.70/hr (86.7% modelled savings); simulated timings are 340 ms local-to-cloud, 185 ms cloud-to-local/multicloud, and 210 ms failback. These are not live quotes, provisioned capacity, or measured service guarantees.
 
 ---
 
 ### `GET /api/v1/host/probe`
-Probes the local machine running the gateway in real time using [`LiveHardwareProfiler::probe_local_host()`](../crates/kadmium-core/src/lib.rs), returning its detected hardware profile, FreeToken $q^*$ ratio, and a signed `kdm1_...` Join Ticket.
+Probes the gateway host using [`LiveHardwareProfiler::probe_local_host()`](../crates/kadmium-core/src/lib.rs), returning its hardware profile, $q^*$ heuristic, and a `kdm1_...` endpoint descriptor. The ticket has an unkeyed FNV-1a integrity checksum, not a signature; it does not authenticate registration or authorize a trust tier.
 
 ---
 
@@ -256,7 +298,7 @@ Probes the local machine running the gateway in real time using [`LiveHardwarePr
 Returns [`CompanionAppStatus`](../crates/kadmium-gateway/src/lib.rs) for the system tray / Desktop Companion UI:
 ```json
 {
-  "app_version": "0.1.0",
+  "app_version": "v0.1.0-cd48",
   "mode": {
     "SelfHostedOpenSource": {
       "local_coordinator_url": "http://127.0.0.1:7848"
@@ -265,13 +307,13 @@ Returns [`CompanionAppStatus`](../crates/kadmium-gateway/src/lib.rs) for the sys
   "local_host_polite_state": "IdleDedicated",
   "gaming_auto_yield_active": true,
   "active_cluster_nodes": 7,
-  "active_coordinator_leader": "main-gaming-pc",
+  "active_coordinator_leader": "node-main-pc",
   "current_hourly_cloud_burn_usd": 0.0
 }
 ```
 
 ### `POST /api/v1/companion/mode`
-Hot-switches the Desktop Companion App between **100% Free Self-Hosted Open-Source Mode** and **`kadmium.ai` Cloud Managed Mode** without restarting the node:
+Changes the local Companion mode/status value without restarting the node:
 
 ```bash
 curl -X POST http://127.0.0.1:7848/api/v1/companion/mode \
@@ -287,6 +329,8 @@ curl -X POST http://127.0.0.1:7848/api/v1/companion/mode \
   }'
 ```
 
+This endpoint only stores the supplied mode fields. It does not contact the cloud endpoint, establish WAN connectivity, provision capacity, enable failover, or enforce `max_hourly_spend_cap_usd`. Cloud-burn values in Companion status are sample state, not billing records.
+
 ---
 
 ## 4. Model Context Protocol (`POST /mcp` & `GET /api/v1/mcp`)
@@ -295,14 +339,16 @@ curl -X POST http://127.0.0.1:7848/api/v1/companion/mode \
 Streamable HTTP JSON-RPC 2.0 endpoint implementing the **Model Context Protocol (`2025-03-26`)** (`initialize`, `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`).
 
 ### `GET /api/v1/mcp`
-Returns [`KadmiumMcpManifest`](../crates/kadmium-gateway/src/mcp.rs), including all 6 MCP tool JSON Schemas, 5 resources, 2 prompts, and the `.mcp.json` configuration snippet.
+Returns [`KadmiumMcpManifest`](../crates/kadmium-gateway/src/mcp.rs), including all 7 MCP tool JSON Schemas, 5 resources, 2 prompts, and the `.mcp.json` configuration snippet.
+
+`kadmium mcp` over stdio creates a fresh in-process demonstration state and does not read `KADMIUM_COORDINATOR_URL`. Use `POST /mcp` when tools must operate on a running coordinator's shared state.
 
 ---
 
 ## 5. Ecosystem Integrations & Observability (`/api/v1/integrations`, `/metrics`, `/api/v1/telemetry/wandb`)
 
 ### `GET /api/v1/integrations`
-Returns [`EcosystemIntegrationsOverview`](../crates/kadmium-data/src/lib.rs) covering `hf://` selective layer-range pulls, `gh://` slice check runs, `oci://`, `s3://`, and `wandb://`.
+Returns [`EcosystemIntegrationsOverview`](../crates/kadmium-data/src/lib.rs) containing sample descriptors for `hf://`, `gh://`, `oci://`, `s3://`, and `wandb://`. These do not represent verified remote connections. Current `pull` support is HF planning and simulated GitHub evaluation only; no OCI/S3/W&B network connector is implemented.
 
 ### `GET /metrics`
 Exports live cluster gauges (`kadmium_cluster_epoch`, `kadmium_inference_throughput_tokens_per_sec`, `kadmium_diloco_demo_compression_ratio`, `kadmium_cloud_shield_hourly_burn_usd`, `kadmium_node_fast_memory_gb`) in standard **Prometheus / OpenMetrics (`text/plain; version=0.0.4`)** exposition format.
@@ -315,32 +361,35 @@ Returns a structured **Weights & Biases (`wandb://`) / OpenTelemetry** run summa
 ## 6. Runtime Kernels, Supply Grid & `v1.0 GA` Governance Endpoints
 
 ### `GET /api/v1/pipeline/execute`
-Executes a live forward pass through [`DistributedMoEPipelineExecutor`](../crates/kadmium-runtime/src/lib.rs), returning stage-by-stage Top-4 MoE softmax routing weights, Colibri double-buffered cold NVMe `.ktb` page fetches, Hivemind INT8 boundary payloads, and Leviathan speculative draft acceptance speedup.
+Executes a synthetic reference forward pass through [`DistributedMoEPipelineExecutor`](../crates/kadmium-runtime/src/lib.rs), returning stage routing, buffer/page metadata, boundary payloads, and modelled draft-acceptance figures. It is not language-model generation or a hardware benchmark.
 
 ### `GET /api/v1/runtime/kernels`
-Runs [`HardwareKernelDispatcher::run_cluster_kernel_benchmark`](../crates/kadmium-runtime/src/kernels.rs) across all cluster nodes (`FusedRmsNormRopeKernel` $\to$ `PagedGqaAttentionKernel` $\to$ `FusedSwiGluExpertKernel`) and verifies bit-identical `Verde RepOps` FNV-1a digests across CUDA, Metal, Vulkan, AVX-512, and ARM NEON backends.
+Runs [`HardwareKernelDispatcher::run_cluster_kernel_benchmark`](../crates/kadmium-runtime/src/kernels.rs) on a synthetic host-side tensor and labels results with sample node targets. It does not execute every labelled native backend; cross-silicon digest flags and performance figures are reference/model outputs. Native device parity is limited to the separately tested CUDA kernels.
 
 ### `GET /api/v1/network/nat`
-Returns the cluster-wide [`NatTraversalCoordinator`](../crates/kadmium-network/src/nat.rs) STUN/QUIC UDP hole-punch matrix and `kadmium.ai` DERP/TURN mTLS fallback routes.
+Returns [`NatTraversalCoordinator`](../crates/kadmium-network/src/nat_traversal.rs) route-planning output and a loopback UDP self-test result. STUN/DERP addresses are descriptor strings; this endpoint does not establish a managed QUIC, DERP, or TURN connection.
+
+### `GET` or `POST /api/v1/network/usbc`
+Returns [`UsbCHostDiscoveryReport`](../crates/kadmium-network/src/usbc_interconnect.rs) from the current host/node profiles. `/api/v1/network/usbc-interconnect` is an alias. Scanner ratings and `delta_bridge_plan` values are modelled estimates, not cable benchmarks. Actual multi-lane sessions use `kdbr://` addresses and `KADMIUM_USBC_BRIDGE_BIND`; see the [USB-C delta bridge guide](guides/usbc-delta-bridge.md) for transport behavior and security limits.
 
 ### `GET /api/v1/companion/pairing`
-Returns discovered UDP `KDMD` LAN peers awaiting 6-digit SAS approval (`ZeroClickLanPairingEngine`) and the live OS swapchain/thermal/battery hysteresis timeline (`OsSwapchainHysteresisEngine`).
+Returns sample/discovered `KDMD` LAN pairing candidates and an `OsSwapchainHysteresisEngine` policy timeline. The timeline is not proof that native swapchain, thermal, or battery hooks are active on every platform.
 
 ### `GET /api/v1/cloud-shield/watcher`
-Returns the [`CloudShieldCutoverWatcher`](../crates/kadmium-sharding/src/cloud_watcher.rs) heartbeat monitor simulation (`380 ms` Local $\to$ Cloud cutover RTO, `0` dropped requests, and automatic local failback).
+Returns the [`CloudShieldCutoverWatcher`](../crates/kadmium-sharding/src/cloud_shield_watcher.rs) fixed incident-timeline simulation (340 ms local-to-cloud scenario time, zero dropped requests in the sample, and simulated local failback). It does not monitor or migrate a live service.
 
 ### `GET /api/v1/rl/grpo-step`
-Executes a verified online GRPO training step (`GrpoEpochExecutor`) using the deterministic [`WasiMicroSandbox`](../crates/kadmium-rl/src/wasi_sandbox.rs) and `DreamRsiMctsEngine` PUCT tree search.
+Runs `GrpoEpochExecutor::run_verified_grpo_step`: eight synthesized programs for a fixed polynomial are executed in the custom fuel-metered [`WasiMicroSandbox`](../crates/kadmium-rl/src/sandbox_grpo.rs), then reference group advantages are calculated. It does not invoke Dream MCTS/PUCT or train a model, and the sandbox is not a general WASI runtime.
 
 ### `GET /api/v1/supply/marketplace` & `POST /api/v1/supply/configure`
-Inspects or updates the [`SupplyLeasePolicy`](../crates/kadmium-core/src/governance.rs) for leasing idle local silicon (`1.25×` Kadmium Cloud credits or direct USD payout).
+Inspects or updates the local [`SupplyLeasePolicy`](../crates/kadmium-core/src/governance.rs) and its illustrative credit/USD calculations. These endpoints do not create paid leases, settle funds, or issue redeemable credits.
 
 ### `GET /api/v1/ga/governance`
-Returns the complete `v1.0 GA` governance bundle:
-- `spot_orderbook` & `provisioned_spot_container`: Live multi-provider spot quotes (`SpotOrderbookBidEngine`) and ephemeral middle-layer container descriptor.
-- `slice_quotas` & `scoped_api_keys`: Multi-tenant sub-cluster resource quotas and MAC-signed `kdm_live_...` API keys (`SubClusterRbacEngine`).
-- `dream_rsi_world_registry`: Public catalog of commit-pinned `gh://` WASI RL worlds (`DreamRsiWorldRegistry`).
-- `sample_fraud_proof`: Self-verifying $O(\log_2 L)$ `VerdeFraudProofCertificate` (`VerdeFraudProofEngine`).
+Returns a sample governance bundle:
+- `spot_orderbook` & `provisioned_spot_container`: fixed quotes and a constructed container descriptor; no provider API or provisioning occurs.
+- `slice_quotas` & `scoped_api_keys`: the sample `SubClusterRbacEngine` catalog, not endpoint authentication or enforced tenant quotas.
+- `dream_rsi_world_registry`: a hard-coded world catalog, not a remote public registry or general WASI execution.
+- `sample_fraud_proof`: a reference `VerdeFraudProofCertificate`. Its FNV-based digest/MAC is not cryptographic authentication, automatic slashing, or financial settlement.
 
 ## 7. Grid Substrate Endpoints (`/api/v1/grid/*`)
 
@@ -362,13 +411,13 @@ Records (or with `approve: false` withdraws) the owner's approval of the placeme
 ```json
 { "prompt": "text", "rows": 1, "strategy": "chain", "repin": false }
 ```
-Runs one decode step as a work graph over live workers, with simulated nodes executed in-process on the coordinator, on the placement in force; replicated experts are served by the copy with the lowest measured completion estimate. Returns the shape, graph id, units total and validated, measured wall time, the modelled ms per token for that shape, the final boundary digest, per-unit hop telemetry, credit granted and receipts issued, whether the placement came from the cache, how many routing accesses the usage ledger recorded, with `repin: true` how many swaps the re-pin boundary after the step made, and `disputes`: every Verde dispute the step settled (see ARCHITECTURE 9.6), each with the unit, the disputants, the referee, the `method` (`layer-bisection` or `whole-unit`), `layers_in_unit`, `digest_comparisons`, `openings_requested` and `openings_verified`, the `divergent_layer`, `referee_layers_run`, the `winner`, the `losers` and the `outcome`. Digests in every response are RepOps digests under the current manifest: a layer boundary's digest covers the manifest id, the layer and the exact INT8 bytes, and a unit's digest is the fold of its layer digests.
+Runs one decode step as a work graph over live workers, with simulated nodes executed in-process on the coordinator, on the placement in force; replicated experts are served by the copy with the lowest measured completion estimate. Returns the shape, graph id, units total and validated, measured wall time, the modelled ms per token for that shape, the final boundary digest, per-unit hop telemetry, credit granted and receipts issued, whether the placement came from the cache, how many routing accesses the usage ledger recorded, with `repin: true` the total re-pin change count (tier swaps plus replica additions/drops) after the step, and `disputes`: every Verde dispute the step settled (see ARCHITECTURE 9.6), each with the unit, the disputants, the referee, the `method` (`layer-bisection` or `whole-unit`), `layers_in_unit`, `digest_comparisons`, `openings_requested` and `openings_verified`, the `divergent_layer`, `referee_layers_run`, the `winner`, the `losers` and the `outcome`. Digests in every response are RepOps digests under the current manifest: a layer boundary's digest covers the manifest id, the layer and the exact INT8 bytes, and a unit's digest is the fold of its layer digests.
 
 ### `POST /api/v1/grid/repin`
 ```json
-{ "model": "deepseek-v3-671b-moe-q4k", "max_swaps": 4, "apply": true }
+{ "model": "deepseek-v3-671b-moe-q4k", "max_swaps": 4, "apply": true, "payback": false }
 ```
-One re-pin boundary on the placement in force, with the load balancer in its incremental mode (ARCHITECTURE 9.9): per layer, the hottest streamed expert against the coldest pinned one, swapped when the learned heat clears a 25% hysteresis; then, within whatever of `max_swaps` is left, copies of hot experts onto nodes with free fast memory where a copy lowers the layer's busiest node by more than the same hysteresis. Returns the `swaps`, the `replica_changes` (each with the layer's busiest node before and after, in bytes and modelled ms), the `balance` report for the expert-parallel shape, the staging transfers they imply (a promoted expert into the node's fast tier, pinned, the demoted one out, and each copy from its primary), the placement digest afterwards, the running totals, and `expert_read_ms_before` and `_after`: the cost model's expert reads on the step's critical path at one row, modelled. With `apply: false` it only proposes.
+One re-pin boundary on the placement in force, with the load balancer in its incremental mode (ARCHITECTURE 9.9): per layer, the hottest streamed expert against the coldest pinned one, swapped when the learned heat clears a 25% hysteresis; then, within whatever of `max_swaps` is left, copies of hot experts onto nodes with free fast memory where a copy lowers the layer's busiest node by more than the same hysteresis. Returns the `swaps`, the `replica_changes` (each with the layer's busiest node before and after, in bytes and modelled ms), the `balance` report for the expert-parallel shape, the staging transfers they imply (a promoted expert into the node's fast tier, pinned, the demoted one out, and each copy from its primary), the placement digest afterwards, the running totals, and `expert_read_ms_before` and `_after`: the cost model's expert reads on the step's critical path at one row, modelled. With `apply: false` it only proposes. With `payback: true` (default `false`, like the boundary a decode step asks for) a swap is proposed only when the extra hits the promoted expert should earn, beyond the demoted one, repay its two transfers against what a fast-tier hit saves over a streamed read: across the mesh's slowest uplink between two nodes, or two memory copies when both experts sit on one node (ARCHITECTURE 9.19, InferSSD's adaptive admission). On a slow link that keeps most swaps streamed; the rationale says how many hotter experts stayed streamed for that reason, and each swap reports its `required_hits`.
 
 The plan response carries the same balancer's account when it ran at planning time: `placement.balance` (per layer) and `choice.balance` (a summary with the cost model's figures at its batch width, where at one row every expert's rows go to its primary and a copy changes nothing yet).
 

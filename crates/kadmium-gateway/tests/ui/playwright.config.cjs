@@ -16,6 +16,7 @@ module.exports = defineConfig({
   webServer: {
     command: 'cargo run -p kadmium-cli --bin kadmium -- serve --port 17948 --worker-port 17949',
     cwd: path.resolve(__dirname, '../../../..'),
+    env: { KADMIUM_STATE_DIR: path.resolve(__dirname, '../../../../target/workspace-ui-state') },
     url: 'http://127.0.0.1:17948/workspace.js',
     reuseExistingServer: !process.env.CI,
     timeout: 300000

@@ -69,10 +69,10 @@ impl MultiHeadLatentAttentionMlaEngine {
     ///
     /// Returns `(decompressed_out, weight_absorbed_out)`.
     pub fn evaluate_single_head_mla_absorption(
-        query: &[f64],         // [d_h]
+        query: &[f64],           // [d_h]
         latent_kv_cache: &[f64], // [seq_len * d_c]
-        w_uk: &[f64],          // [d_c * d_h] up-projection for K
-        w_uv: &[f64],          // [d_c * d_h] up-projection for V
+        w_uk: &[f64],            // [d_c * d_h] up-projection for K
+        w_uv: &[f64],            // [d_c * d_h] up-projection for V
         seq_len: usize,
         d_c: usize,
         d_h: usize,
@@ -201,7 +201,7 @@ impl MultiHeadLatentAttentionMlaEngine {
         // DeepSeek-V3 production dimensions: 64 heads * 128 head_dim * 2 (K+V) * 2B = 32,768 B/token
         // vs. MLA compressed latent d_c = 512 (+ 64 RoPE) * 2B = 1,152 B/token (96.5% / 28.4x vs MHA, 93.8% / 16.0x core latent)
         let std_bytes = 2 * 64 * 128 * 2; // 32,768 bytes/token
-        let mla_bytes = 512 * 2 * 2;      // 2,048 bytes/token
+        let mla_bytes = 512 * 2 * 2; // 2,048 bytes/token
         let red_pct = (1.0 - (mla_bytes as f64 / std_bytes as f64)) * 100.0;
         let ratio = (std_bytes as f64) / (mla_bytes as f64);
 
@@ -370,8 +370,7 @@ impl KiviAsymmetric2BitKvQuantizer {
                 } else {
                     0.0
                 };
-                keys[t * head_dim + c] =
-                    ch_bias + (((t * 11 + c * 7) % 19) as f32 - 9.0) * 0.06;
+                keys[t * head_dim + c] = ch_bias + (((t * 11 + c * 7) % 19) as f32 - 9.0) * 0.06;
                 vals[t * head_dim + c] = (((t * 13 + c * 5) % 23) as f32 - 11.0) * 0.08;
             }
         }
@@ -380,11 +379,7 @@ impl KiviAsymmetric2BitKvQuantizer {
         let (deq_k, _deq_v) = Self::dequantize_kv(&kivi);
 
         // Compare Key reconstruction error: KIVI per-channel INT2 vs. naive per-token INT2
-        let k_norm = keys
-            .iter()
-            .map(|&v| (v as f64).powi(2))
-            .sum::<f64>()
-            .sqrt();
+        let k_norm = keys.iter().map(|&v| (v as f64).powi(2)).sum::<f64>().sqrt();
         let kivi_err = keys
             .iter()
             .zip(deq_k.iter())
@@ -471,7 +466,9 @@ impl FlashDecodingSplitKvEngine {
         let test_len = 64usize;
         let scale = 1.0 / (d_head as f64).sqrt();
 
-        let q: Vec<f64> = (0..d_head).map(|i| ((i as f64) * 0.19).sin() * 0.7).collect();
+        let q: Vec<f64> = (0..d_head)
+            .map(|i| ((i as f64) * 0.19).sin() * 0.7)
+            .collect();
         let k_mat: Vec<f64> = (0..(test_len * d_head))
             .map(|i| (((i * 11 + 5) % 29) as f64 - 14.0) * 0.07)
             .collect();
@@ -491,7 +488,11 @@ impl FlashDecodingSplitKvEngine {
 
         for s in 0..splits {
             let start = s * chunk;
-            let end = if s + 1 == splits { test_len } else { (s + 1) * chunk };
+            let end = if s + 1 == splits {
+                test_len
+            } else {
+                (s + 1) * chunk
+            };
             let (o_part, m_part, l_part) =
                 Self::eval_kv_slice(&q, &k_mat, &v_mat, start, end, d_head, scale);
             let (o_next, m_next, l_next) = ZigZagRingContextParallelEngine::merge_online_lse_blocks(
@@ -535,12 +536,7 @@ impl FlashDecodingSplitKvEngine {
         let mut scores = Vec::with_capacity(end_tok - start_tok);
         for t in start_tok..end_tok {
             let k_row = &k_mat[(t * d_head)..((t + 1) * d_head)];
-            let s = q
-                .iter()
-                .zip(k_row.iter())
-                .map(|(a, b)| a * b)
-                .sum::<f64>()
-                * scale;
+            let s = q.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum::<f64>() * scale;
             m = m.max(s);
             scores.push((t, s));
         }
@@ -593,8 +589,8 @@ impl ContextualSparsityAndLutTernaryEngine {
     /// then evaluates $y = W x$ across all output rows using **zero multiplications** (pure base-3 index
     /// table lookups + additions)!
     pub fn evaluate_tmac_lut_ternary_matvec(
-        x: &[f64],      // [in_dim] (multiple of 4)
-        w_trit: &[i8],  // [out_dim * in_dim] with entries in {-1, 0, +1}
+        x: &[f64],     // [in_dim] (multiple of 4)
+        w_trit: &[i8], // [out_dim * in_dim] with entries in {-1, 0, +1}
         out_dim: usize,
         in_dim: usize,
     ) -> (Vec<f64>, Vec<f64>) {
@@ -659,7 +655,9 @@ impl ContextualSparsityAndLutTernaryEngine {
         let d_ffn = 128usize;
 
         // Simulate realistic heavy-tailed SwiGLU FFN activations where ~22% of neurons carry >99.5% of energy
-        let x: Vec<f64> = (0..d_model).map(|i| ((i as f64) * 0.31).sin() * 0.8).collect();
+        let x: Vec<f64> = (0..d_model)
+            .map(|i| ((i as f64) * 0.31).sin() * 0.8)
+            .collect();
         let mut w_gate = vec![0.0f64; d_ffn * d_model];
         let mut w_up = vec![0.0f64; d_ffn * d_model];
         let mut w_down = vec![0.0f64; d_model * d_ffn];
@@ -669,8 +667,8 @@ impl ContextualSparsityAndLutTernaryEngine {
             // remaining 78% cold neurons have near-zero or negative pre-activations
             let scale = if n < 28 { 0.35 } else { 0.012 };
             for c in 0..d_model {
-                w_gate[n * d_model + c] =
-                    if n < 28 { x[c] * 0.9 } else { -0.4 } + (((n * 7 + c * 3) % 11) as f64 - 5.0) * scale;
+                w_gate[n * d_model + c] = if n < 28 { x[c] * 0.9 } else { -0.4 }
+                    + (((n * 7 + c * 3) % 11) as f64 - 5.0) * scale;
                 w_up[n * d_model + c] = (((n * 13 + c * 5) % 17) as f64 - 8.0) * scale;
                 w_down[c * d_ffn + n] = (((c * 11 + n * 7) % 19) as f64 - 9.0) * 0.05;
             }
@@ -958,7 +956,9 @@ impl CrossLayerMoEExpertPrefetcher {
         let d_model = 32usize;
 
         // Residual hidden state at layer l-2 (`h_prev2`) vs. layer l (`h_curr` = h_prev2 + small residual delta)
-        let h_prev2: Vec<f64> = (0..d_model).map(|i| ((i as f64) * 0.27).cos() * 0.9).collect();
+        let h_prev2: Vec<f64> = (0..d_model)
+            .map(|i| ((i as f64) * 0.27).cos() * 0.9)
+            .collect();
         let h_curr: Vec<f64> = h_prev2
             .iter()
             .enumerate()
@@ -1236,8 +1236,16 @@ mod tests {
         let full = HyperInferenceComputeReport::run_all();
         assert!(full.lookahead_jacobi_report.accepted_tokens_per_jacobi_step > 1.5);
         assert!(full.lookahead_jacobi_report.exact_lossless_verification);
-        assert!(full.prefill_ttft_report.minference_vertical_slash_flops_saved_pct > 75.0);
-        assert!(full.prefill_ttft_report.minference_attention_mass_preserved_pct > 99.0);
+        assert!(
+            full.prefill_ttft_report
+                .minference_vertical_slash_flops_saved_pct
+                > 75.0
+        );
+        assert!(
+            full.prefill_ttft_report
+                .minference_attention_mass_preserved_pct
+                > 99.0
+        );
         assert!(full.moe_prefetch_report.two_layer_ahead_expert_hit_rate_pct >= 75.0);
         assert!(full.moe_prefetch_report.moe_expert_stall_reduction_pct > 95.0);
         assert_eq!(full.node_inference_rows.len(), 9);

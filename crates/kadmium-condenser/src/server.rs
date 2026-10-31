@@ -24,6 +24,8 @@ const CONDENSER_HTML: &str = include_str!("assets/condenser.html");
 const CONDENSER_CSS: &str = include_str!("assets/condenser.css");
 const CONDENSER_JS: &str = include_str!("assets/condenser.js");
 const WORKFLOW_JS: &str = include_str!("assets/workflow.js");
+const KADMIUM_TOKENS: &str = include_str!("../../../design-system/tokens.css");
+const LOCAL_COMPUTE_CSS: &str = include_str!("assets/local-compute.css");
 const CONDENSER_MARK: &str = include_str!("assets/condenser-mark.svg");
 const CONDENSER_FAVICON: &str = include_str!("assets/condenser-favicon.svg");
 const CONDENSER_FONT_ARCHIVO: &[u8] = include_bytes!("assets/fonts/Archivo-Variable.woff2");
@@ -31,6 +33,8 @@ const CONDENSER_FONT_MONO: &[u8] = include_bytes!("assets/fonts/JetBrainsMono-Va
 
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
+    /// Durable local checkpoint packages, shared with the checkpoint CLI.
+    pub model_library: PathBuf,
     /// Zero asks the OS for an available loopback port.
     pub port: u16,
     pub plugin_roots: Vec<PathBuf>,
@@ -41,6 +45,9 @@ pub struct ServerOptions {
 impl Default for ServerOptions {
     fn default() -> Self {
         Self {
+            model_library: kadmium_data::checkpoint::CheckpointLibrary::default()
+                .root()
+                .to_path_buf(),
             port: DEFAULT_HTTP_PORT,
             plugin_roots: default_plugin_roots(),
             max_concurrent_turns: 2,
@@ -50,6 +57,8 @@ impl Default for ServerOptions {
 
 #[derive(Clone)]
 pub(crate) struct ServerState {
+    pub(crate) model_library: kadmium_data::checkpoint::CheckpointLibrary,
+    pub(crate) model_operations: Arc<tokio::sync::Semaphore>,
     plugin_roots: Arc<Vec<PathBuf>>,
     client: reqwest::Client,
     turn_permits: Arc<tokio::sync::Semaphore>,
@@ -88,6 +97,8 @@ pub async fn bind(
         .build()
         .map_err(|error| CondenserError::provider("server", error.to_string()))?;
     let state = ServerState {
+        model_library: kadmium_data::checkpoint::CheckpointLibrary::new(options.model_library),
+        model_operations: Arc::new(tokio::sync::Semaphore::new(1)),
         plugin_roots: Arc::new(options.plugin_roots),
         client,
         turn_permits: Arc::new(tokio::sync::Semaphore::new(options.max_concurrent_turns)),
@@ -118,6 +129,13 @@ fn router(state: ServerState) -> Router {
         .route("/api/v1/mcl4/probe-decision", post(mcl4_probe_decision))
         .route("/api/v1/workspace", get(crate::workspace::workspace))
         .route("/api/v1/compute/inspect", post(crate::compute::inspect))
+        .route("/api/v1/compute/jobs", post(crate::compute::run_job))
+        .route("/api/v1/checkpoints", get(crate::local_models::list))
+        .route(
+            "/api/v1/checkpoints/import",
+            post(crate::local_models::import),
+        )
+        .route("/api/v1/checkpoints/load", post(crate::local_models::load))
         .route("/api/v1/runs/{id}/cancel", post(cancel_run))
         .route("/api/v1/files/list", post(crate::workspace::list_files))
         .route("/api/v1/files/read", post(crate::workspace::read_file))
@@ -133,6 +151,14 @@ fn router(state: ServerState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/condenser.css", get(condenser_css))
+        .route(
+            "/kadmium-tokens.css",
+            get(|| async { text_asset("text/css; charset=utf-8", KADMIUM_TOKENS) }),
+        )
+        .route(
+            "/local-compute.css",
+            get(|| async { text_asset("text/css; charset=utf-8", LOCAL_COMPUTE_CSS) }),
+        )
         .route("/condenser.js", get(condenser_js))
         .route(
             "/workflow.js",
@@ -182,9 +208,7 @@ fn loopback_headers(headers: &HeaderMap) -> bool {
         .is_some_and(|uri| {
             uri.scheme_str()
                 .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http"))
-                && uri
-                    .path_and_query()
-                    .map_or(true, |path| path.as_str() == "/")
+                && uri.path_and_query().is_none_or(|path| path.as_str() == "/")
                 && uri.authority().is_some_and(|authority| {
                     !authority.as_str().contains('@') && loopback_authority(authority)
                 })

@@ -13,6 +13,7 @@ members = [
     "crates/kadmium-desktop",
     "crates/kadmium-condenser",
     "crates/kadmium-cuda",
+    "crates/kadmium-npu",
 ]
 # Built by `cargo oxide` against the pinned cuda-oxide toolchain, not by the workspace.
 exclude = ["crates/kadmium-cuda/device"]
@@ -36,6 +37,7 @@ kadmium-rl = { path = "crates/kadmium-rl" }
 kadmium-network = { path = "crates/kadmium-network" }
 kadmium-gateway = { path = "crates/kadmium-gateway" }
 kadmium-cuda = { path = "crates/kadmium-cuda" }
+kadmium-npu = { path = "crates/kadmium-npu" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -45,3 +47,5 @@ axum = { version = "0.8", features = ["json"] }
 clap = { version = "4.5", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+getrandom = "0.3"
+sha2 = "0.10"

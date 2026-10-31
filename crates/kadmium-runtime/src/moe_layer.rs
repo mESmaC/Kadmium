@@ -17,6 +17,7 @@
 //! RepOps digest ([`LayerReference::boundary_digest`]): the commitment a Verde bisection
 //! compares layer by layer.
 
+use crate::expert_cache::{ExpertCache, lock_expert_cache};
 use crate::{
     BlockwiseInt8Tensor, DEFAULT_SUBBLOCK_SIZE, FusedRmsNormRopeKernel, KvPageBlock,
     MoEGatingRouter, MoERoutedExpertSelection, PagedGqaAttentionKernel, PerTokenBlockQuantized,
@@ -51,7 +52,7 @@ impl LayerReference {
                 .find(|e| e.tensor_name == "layer.rmsnorm.gamma")
             && let Ok(raw_slice) = reader.get_verified_tensor_slice(entry)
         {
-            for chunk in raw_slice.chunks_exact(4).take(dim) {
+            for chunk in raw_slice.as_chunks::<4>().0.iter().take(dim) {
                 gamma.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
         }
@@ -134,15 +135,105 @@ impl LayerReference {
         ((((layer as usize) * 19 + (expert as usize) * 23 + idx * 7) % 53) as f32 - 26.0) * 0.004
     }
 
-    /// One expert's contribution to the layer output: `gate * swish(h) * w_expert`.
-    pub fn expert_contribution(hidden: &[f32], layer: u32, expert: u32, gate: f32) -> Vec<f32> {
+    /// The weight vector of an expert over `dim` hidden indices: what a weight bank holds
+    /// for the expert, and what the expert cache keeps resident.
+    pub fn expert_weights(layer: u32, expert: u32, dim: usize) -> Vec<f32> {
+        (0..dim)
+            .map(|i| Self::expert_weight(layer, expert, i))
+            .collect()
+    }
+
+    /// [`LayerReference::expert_weights`] as little-endian `f32` bytes: the expert's slot.
+    pub fn expert_weight_bytes(layer: u32, expert: u32, dim: usize) -> Vec<u8> {
+        Self::expert_weights(layer, expert, dim)
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect()
+    }
+
+    /// The weights back from an entry's bytes, or `None` when the bytes are not exactly `dim`
+    /// little-endian `f32`s: a caller then computes the weights from their source rather than
+    /// pad or truncate, so a cached entry of the wrong width is never used.
+    pub fn expert_weights_from_bytes(bytes: &[u8], dim: usize) -> Option<Vec<f32>> {
+        if bytes.len() != dim * 4 {
+            return None;
+        }
+        Some(
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
+                .collect(),
+        )
+    }
+
+    /// The revision term of an [`crate::ExpertKey`] for a node's weights: the resident bank's root
+    /// with the vector width folded in, so a width change or a new checkpoint never aliases.
+    pub fn expert_revision(bank_root_fnv64: u64, dim: usize) -> u64 {
+        bank_root_fnv64 ^ (dim as u64).wrapping_mul(0x9e3779b97f4a7c15)
+    }
+
+    /// One expert's contribution from its weight vector: `gate * swish(h) * w_expert`, in the
+    /// same operation order whether the weights came from a slot or were computed on the spot.
+    pub fn expert_contribution_from_weights(
+        hidden: &[f32],
+        weights: &[f32],
+        gate: f32,
+    ) -> Vec<f32> {
         hidden
             .iter()
-            .enumerate()
-            .map(|(i, &v)| {
+            .zip(weights)
+            .map(|(&v, &w)| {
                 let swish = repops::silu(v);
-                swish * Self::expert_weight(layer, expert, i) * gate
+                swish * w * gate
             })
+            .collect()
+    }
+
+    /// One expert's contribution to the layer output: `gate * swish(h) * w_expert`.
+    pub fn expert_contribution(hidden: &[f32], layer: u32, expert: u32, gate: f32) -> Vec<f32> {
+        let weights = Self::expert_weights(layer, expert, hidden.len());
+        Self::expert_contribution_from_weights(hidden, &weights, gate)
+    }
+
+    /// A speculative run of the next layer's router on this layer's trunk output: the next
+    /// layer's norm at its position, then its routing (InferSSD's `build_moe_prefetch_hint`,
+    /// which applies layer `l + 1`'s norm and router to layer `l`'s FFN input). The hint is
+    /// advisory. It fills cache slots for layer `next_layer` and never changes what that
+    /// layer computes, so the output is the same with the hint and without it.
+    pub fn prefetch_hint(
+        trunk_out: &[f32],
+        next_layer: u32,
+        gamma: &[f32],
+        experts_per_layer: u32,
+        top_k: u32,
+        q_star: f64,
+    ) -> Vec<u32> {
+        if experts_per_layer == 0 || top_k == 0 {
+            return Vec::new();
+        }
+        let dim = trunk_out.len().max(16);
+        let mut h = trunk_out.to_vec();
+        h.resize(dim, 0.1);
+        let gamma: Vec<f32> = if gamma.len() >= dim {
+            gamma[..dim].to_vec()
+        } else {
+            let mut g = gamma.to_vec();
+            g.extend((g.len()..dim).map(|i| 1.0 + (i as f32) * 0.002));
+            g
+        };
+        let probe = FusedRmsNormRopeKernel::forward(
+            &h,
+            &gamma,
+            next_layer as usize + 1,
+            ROPE_THETA,
+            RMSNORM_EPS,
+        );
+        let (hot, warm) = Self::routing_cutoffs(experts_per_layer, q_star);
+        MoEGatingRouter::route_top_k(&probe, next_layer, experts_per_layer, top_k, hot, warm)
+            .into_iter()
+            .map(|r| r.expert_id)
             .collect()
     }
 
@@ -233,6 +324,116 @@ impl LayerReference {
         }
     }
 
+    /// [`LayerReference::run_layers`] with the experts' weights served through an
+    /// [`ExpertCache`]: every layer first asks the cache for the experts it routed to (a miss
+    /// loads the expert's weights and admits them under the cache's policy), and when
+    /// `prefetch_depth > 0` runs the next layer's router on this layer's trunk output and
+    /// prefetches the predicted experts into the next layer's entries. The prefetch costs a
+    /// second router run per layer, so it is off unless asked for. The cache is locked only
+    /// around the lookups and the prefetch, never across the layer's arithmetic. The
+    /// arithmetic is the uncached one: the bytes at every boundary are identical, which the
+    /// tests check. `revision` is the key term for these weights ([`Self::expert_revision`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_layers_cached(
+        model_id: &str,
+        revision: u64,
+        hidden_in: &[f32],
+        start: u32,
+        end: u32,
+        gamma: &[f32],
+        experts_per_layer: u32,
+        top_k: u32,
+        q_star: f64,
+        mut hook: Option<LayerHook<'_>>,
+        cache: &std::sync::Mutex<ExpertCache>,
+        prefetch_depth: usize,
+    ) -> (LayerRun, LayerCacheTrace) {
+        let mut hidden = hidden_in.to_vec();
+        let mut boundary = None;
+        let mut layer_digests = Vec::new();
+        let mut routed = Vec::new();
+        let mut trace = LayerCacheTrace::default();
+        let mut pending_hint: Option<Vec<u32>> = None;
+        lock_expert_cache(cache).begin_token(None);
+        for layer in start..=end {
+            let (h, routing) =
+                Self::trunk_forward(&hidden, layer, gamma, experts_per_layer, top_k, q_star);
+            let dim = h.len();
+            let ids: Vec<u32> = routing.iter().map(|r| r.expert_id).collect();
+            if let Some(hint) = pending_hint.take() {
+                trace.hint_predicted += hint.len() as u64;
+                trace.hint_correct += hint.iter().filter(|e| ids.contains(e)).count() as u64;
+            }
+            let expert_bytes = dim as u64 * 4;
+            let fetched = {
+                let mut cache = lock_expert_cache(cache);
+                let before = cache.stats();
+                let fetched =
+                    cache.fetch(model_id, revision, layer, &ids, expert_bytes, |expert| {
+                        Self::expert_weight_bytes(layer, expert, dim)
+                    });
+                let after = cache.stats();
+                trace.hits += after.hits - before.hits;
+                trace.misses += after.misses - before.misses;
+                trace.bypassed += after.bypassed - before.bypassed;
+                trace.prefetch_hits += after.prefetch_hits - before.prefetch_hits;
+                fetched
+            };
+            let partials: Vec<(u32, Vec<f32>)> = routing
+                .iter()
+                .map(|r| {
+                    let weights = fetched
+                        .iter()
+                        .find(|(e, _)| *e == r.expert_id)
+                        .and_then(|(_, b)| Self::expert_weights_from_bytes(b, dim))
+                        .unwrap_or_else(|| Self::expert_weights(layer, r.expert_id, dim));
+                    (
+                        r.expert_id,
+                        Self::expert_contribution_from_weights(&h, &weights, r.gating_weight),
+                    )
+                })
+                .collect();
+            let mut out = Self::combine(&h, &partials);
+            if prefetch_depth > 0 && layer < end {
+                let hint =
+                    Self::prefetch_hint(&h, layer + 1, gamma, experts_per_layer, top_k, q_star);
+                let mut cache = lock_expert_cache(cache);
+                let (_, requests) = cache.plan_prefetch(
+                    model_id,
+                    revision,
+                    layer + 1,
+                    &hint,
+                    prefetch_depth,
+                    expert_bytes,
+                );
+                for request in requests {
+                    let bytes = Self::expert_weight_bytes(layer + 1, request.key.expert, dim);
+                    if cache.prefetch_done(request, bytes) {
+                        trace.prefetched += 1;
+                    }
+                }
+                pending_hint = Some(hint);
+            }
+            if let Some(hook) = hook.as_mut() {
+                hook(layer, &mut out);
+            }
+            routed.push((layer, ids));
+            let q = Self::boundary_quantize(&out);
+            layer_digests.push(LayerDigest::new(layer, Self::boundary_digest(layer, &q)));
+            hidden = q.dequantize();
+            boundary = Some(q);
+        }
+        (
+            LayerRun {
+                hidden,
+                boundary,
+                layer_digests,
+                routed,
+            },
+            trace,
+        )
+    }
+
     /// The RepOps digest of one layer boundary: the manifest id, the layer, and the exact INT8
     /// codes and block scales. No floating-point reduction is involved, so two nodes that
     /// produced the same bytes produce the same digest, and nothing else does.
@@ -306,6 +507,50 @@ impl LayerReference {
 
 /// A per-layer hook: the layer index and its output before boundary quantization.
 pub type LayerHook<'a> = &'a mut dyn FnMut(u32, &mut Vec<f32>);
+
+/// What the expert cache did for one run of layers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct LayerCacheTrace {
+    pub hits: u64,
+    pub misses: u64,
+    pub bypassed: u64,
+    /// Experts the run found resident because a prefetch put them there.
+    pub prefetch_hits: u64,
+    /// Experts prefetched during the run.
+    pub prefetched: u64,
+    /// Experts the next-layer hint predicted, and how many the next layer then routed to.
+    pub hint_predicted: u64,
+    pub hint_correct: u64,
+}
+
+impl LayerCacheTrace {
+    pub fn hit_rate(&self) -> f64 {
+        let served = self.hits + self.misses;
+        if served == 0 {
+            0.0
+        } else {
+            self.hits as f64 / served as f64
+        }
+    }
+
+    pub fn hint_precision(&self) -> f64 {
+        if self.hint_predicted == 0 {
+            0.0
+        } else {
+            self.hint_correct as f64 / self.hint_predicted as f64
+        }
+    }
+
+    pub fn add(&mut self, other: &LayerCacheTrace) {
+        self.hits += other.hits;
+        self.misses += other.misses;
+        self.bypassed += other.bypassed;
+        self.prefetch_hits += other.prefetch_hits;
+        self.prefetched += other.prefetched;
+        self.hint_predicted += other.hint_predicted;
+        self.hint_correct += other.hint_correct;
+    }
+}
 
 /// What [`LayerReference::run_layers`] produced.
 #[derive(Debug, Clone)]
@@ -385,7 +630,9 @@ impl TokenBatchF32 {
             ));
         }
         let data = body
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         Ok(Self { rows, dim, data })
@@ -471,7 +718,9 @@ impl ExpertPartialsBatch {
             let row = u32_at(at);
             let expert = u32_at(at + 4);
             let data = bytes[at + 8..at + entry_len]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             partials.push(ExpertPartial { row, expert, data });
@@ -526,7 +775,9 @@ impl DispatchPrecision {
             0 => Ok(Self::ExactF32),
             1 => Ok(Self::LowLatencyFp8F32Scale),
             2 => Ok(Self::LowLatencyFp8Ue8m0),
-            other => Err(format!("HolderDispatchBatch: unknown precision tag {other}")),
+            other => Err(format!(
+                "HolderDispatchBatch: unknown precision tag {other}"
+            )),
         }
     }
 }
@@ -598,26 +849,22 @@ impl HolderDispatchBatch {
 
         let row_data = match precision {
             DispatchPrecision::ExactF32 => raw_rows,
-            DispatchPrecision::LowLatencyFp8F32Scale => {
-                PerTokenBlockQuantized::quantize(
-                    &raw_rows,
-                    included_rows.len(),
-                    dim,
-                    DEFAULT_SUBBLOCK_SIZE,
-                    ScaleFormat::ExactF32,
-                )
-                .dequantize()
-            }
-            DispatchPrecision::LowLatencyFp8Ue8m0 => {
-                PerTokenBlockQuantized::quantize(
-                    &raw_rows,
-                    included_rows.len(),
-                    dim,
-                    DEFAULT_SUBBLOCK_SIZE,
-                    ScaleFormat::Ue8m0PowerOfTwo,
-                )
-                .dequantize()
-            }
+            DispatchPrecision::LowLatencyFp8F32Scale => PerTokenBlockQuantized::quantize(
+                &raw_rows,
+                included_rows.len(),
+                dim,
+                DEFAULT_SUBBLOCK_SIZE,
+                ScaleFormat::ExactF32,
+            )
+            .dequantize(),
+            DispatchPrecision::LowLatencyFp8Ue8m0 => PerTokenBlockQuantized::quantize(
+                &raw_rows,
+                included_rows.len(),
+                dim,
+                DEFAULT_SUBBLOCK_SIZE,
+                ScaleFormat::Ue8m0PowerOfTwo,
+            )
+            .dequantize(),
         };
 
         Self {
@@ -640,18 +887,42 @@ impl HolderDispatchBatch {
 
     /// Evaluates every assignment in this dispatch packet using `LayerReference::expert_contribution`.
     pub fn evaluate_partials(&self) -> ExpertPartialsBatch {
+        self.evaluate_partials_with(&std::collections::BTreeMap::new())
+    }
+
+    /// The distinct experts the packet's assignments ask for, ascending.
+    pub fn expert_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self.assignments.iter().map(|a| a.expert).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
+    /// [`HolderDispatchBatch::evaluate_partials`] with weight vectors a cache served for some
+    /// experts; an expert missing from `weights` is computed from its source. Same operation
+    /// order either way, so the bytes do not depend on what was cached.
+    pub fn evaluate_partials_with(
+        &self,
+        weights: &std::collections::BTreeMap<u32, Vec<f32>>,
+    ) -> ExpertPartialsBatch {
         let mut partials = Vec::with_capacity(self.assignments.len());
         for assign in &self.assignments {
             if let Some(h) = self.row_slice(assign.row) {
-                partials.push(ExpertPartial {
-                    row: assign.row,
-                    expert: assign.expert,
-                    data: LayerReference::expert_contribution(
+                let data = match weights.get(&assign.expert) {
+                    Some(w) => {
+                        LayerReference::expert_contribution_from_weights(h, w, assign.gating_weight)
+                    }
+                    None => LayerReference::expert_contribution(
                         h,
                         self.layer,
                         assign.expert,
                         assign.gating_weight,
                     ),
+                };
+                partials.push(ExpertPartial {
+                    row: assign.row,
+                    expert: assign.expert,
+                    data,
                 });
             }
         }
@@ -772,7 +1043,9 @@ impl HolderDispatchBatch {
                         body.len()
                     ));
                 }
-                body.chunks_exact(4)
+                body.as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect()
             }
@@ -784,7 +1057,9 @@ impl HolderDispatchBatch {
                     return Err("HolderDispatchBatch: truncated FP8+f32 payload".to_string());
                 }
                 let scales: Vec<f32> = body[..scale_bytes]
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 let codes: Vec<i8> = body[scale_bytes..].iter().map(|&b| b as i8).collect();
@@ -967,7 +1242,9 @@ impl LowLatencyCombineBatch {
         }
         let scales: Vec<f32> = match format {
             ScaleFormat::ExactF32 => body[..scale_bytes]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
             ScaleFormat::Ue8m0PowerOfTwo => body[..scale_bytes]
@@ -1072,6 +1349,159 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::expert_cache::ExpertCacheAllocation;
+
+    /// The reviewer's benchmark shape: 60 layers, width 1024, 256 experts, top-8, release
+    /// build. Run with `cargo test --release -p kadmium-runtime cached_path_overhead --
+    /// --ignored --nocapture`. Without the prefetch the cached path must stay within a few
+    /// percent of the uncached one once warm; with it, the second router run per layer shows.
+    #[test]
+    #[ignore = "timing; run in release on a quiet machine"]
+    fn cached_path_overhead_stays_small_without_prefetch() {
+        let hidden: Vec<f32> = (0..1024).map(|i| ((i as f32) * 0.07).sin() * 0.6).collect();
+        let gamma = LayerReference::gamma_from_bank(None, 1024);
+        let cache = std::sync::Mutex::new(ExpertCache::new(1 << 30, ExpertCacheAllocation::Global));
+        let time = |f: &dyn Fn()| {
+            let t0 = std::time::Instant::now();
+            for _ in 0..5 {
+                f();
+            }
+            t0.elapsed().as_secs_f64() * 1000.0 / 5.0
+        };
+        // Warm both paths once.
+        LayerReference::run_layers(&hidden, 0, 59, &gamma, 256, 8, 0.8, None);
+        LayerReference::run_layers_cached(
+            "bench", 1, &hidden, 0, 59, &gamma, 256, 8, 0.8, None, &cache, 0,
+        );
+        let plain = time(&|| {
+            LayerReference::run_layers(&hidden, 0, 59, &gamma, 256, 8, 0.8, None);
+        });
+        let cached = time(&|| {
+            LayerReference::run_layers_cached(
+                "bench", 1, &hidden, 0, 59, &gamma, 256, 8, 0.8, None, &cache, 0,
+            );
+        });
+        let prefetching = time(&|| {
+            LayerReference::run_layers_cached(
+                "bench", 1, &hidden, 0, 59, &gamma, 256, 8, 0.8, None, &cache, 8,
+            );
+        });
+        let stats = lock_expert_cache(&cache).stats();
+        eprintln!(
+            "per token: uncached {plain:.1} ms, cached {cached:.1} ms, cached + prefetch {prefetching:.1} ms; {stats:?}"
+        );
+        assert!(stats.hit_rate() > 0.9, "{stats:?}");
+        assert!(
+            cached <= plain * 1.15,
+            "cached {cached:.1} ms vs uncached {plain:.1} ms"
+        );
+    }
+
+    #[test]
+    fn cached_layers_produce_the_uncached_bytes_and_prefetch_next_layer_experts() {
+        let hidden: Vec<f32> = (0..64).map(|i| ((i as f32) * 0.07).sin() * 0.6).collect();
+        let gamma = LayerReference::gamma_from_bank(None, 64);
+        let plain = LayerReference::run_layers(&hidden, 0, 5, &gamma, 8, 2, 0.8, None);
+        let cache = std::sync::Mutex::new(ExpertCache::new(
+            64 * 4096,
+            ExpertCacheAllocation::Uniform { layers: 6 },
+        ));
+        let (cached, trace) = LayerReference::run_layers_cached(
+            "toy", 1, &hidden, 0, 5, &gamma, 8, 2, 0.8, None, &cache, 2,
+        );
+        assert_eq!(cached.hidden, plain.hidden);
+        assert_eq!(cached.layer_digests, plain.layer_digests);
+        assert_eq!(cached.routed, plain.routed);
+        assert_eq!(trace.hits + trace.misses, 12, "{trace:?}");
+        assert!(trace.prefetched > 0, "{trace:?}");
+        assert_eq!(
+            trace.hint_predicted, 10,
+            "two predictions for each of layers 1..=5"
+        );
+        assert!(trace.hint_precision() <= 1.0);
+
+        // A second pass of the same token routes the same way: every expert is a hit now.
+        let (again, trace2) = LayerReference::run_layers_cached(
+            "toy", 1, &hidden, 0, 5, &gamma, 8, 2, 0.8, None, &cache, 0,
+        );
+        assert_eq!(again.hidden, plain.hidden);
+        assert_eq!(trace2.misses, 0, "{trace2:?}");
+        assert_eq!(trace2.hits, 12);
+        assert_eq!(trace2.hit_rate(), 1.0);
+
+        // With a hook the fault lands the same way in both paths.
+        let mut fault = |layer: u32, out: &mut Vec<f32>| {
+            if layer == 3 {
+                out[0] += 0.5;
+            }
+        };
+        let faulty_plain =
+            LayerReference::run_layers(&hidden, 0, 5, &gamma, 8, 2, 0.8, Some(&mut fault));
+        let (faulty_cached, _) = LayerReference::run_layers_cached(
+            "toy",
+            1,
+            &hidden,
+            0,
+            5,
+            &gamma,
+            8,
+            2,
+            0.8,
+            Some(&mut fault),
+            &cache,
+            2,
+        );
+        assert_eq!(faulty_cached.hidden, faulty_plain.hidden);
+        assert_ne!(faulty_cached.hidden, plain.hidden);
+
+        // A global cache of one expert's bytes bypasses most experts and still produces the
+        // same bytes; the other model's experts never alias this one's.
+        let tiny = std::sync::Mutex::new(ExpertCache::new(256, ExpertCacheAllocation::Global));
+        let (small, trace3) = LayerReference::run_layers_cached(
+            "toy", 1, &hidden, 0, 5, &gamma, 8, 2, 0.8, None, &tiny, 2,
+        );
+        assert_eq!(small.hidden, plain.hidden);
+        assert!(trace3.misses > 0);
+        let (other, trace4) = LayerReference::run_layers_cached(
+            "other-model",
+            1,
+            &hidden,
+            0,
+            5,
+            &gamma,
+            8,
+            2,
+            0.8,
+            None,
+            &cache,
+            0,
+        );
+        assert_eq!(other.hidden, plain.hidden);
+        assert_eq!(trace4.hits, 0, "{trace4:?}");
+        // Another revision of the same model's weights is a different entry too.
+        let (revised, trace5) = LayerReference::run_layers_cached(
+            "toy", 2, &hidden, 0, 5, &gamma, 8, 2, 0.8, None, &cache, 0,
+        );
+        assert_eq!(revised.hidden, plain.hidden);
+        assert_eq!(trace5.hits, 0, "{trace5:?}");
+        // An entry of the wrong width is never decoded.
+        assert!(LayerReference::expert_weights_from_bytes(&[0u8; 12], 4).is_none());
+        assert_eq!(
+            LayerReference::expert_weights_from_bytes(&[0u8; 16], 4)
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_ne!(
+            LayerReference::expert_revision(1, 64),
+            LayerReference::expert_revision(1, 128)
+        );
+
+        // The hint itself is a top-k of the next layer's router.
+        let hint = LayerReference::prefetch_hint(&hidden, 1, &gamma, 8, 2, 0.8);
+        assert_eq!(hint.len(), 2);
+        assert!(LayerReference::prefetch_hint(&hidden, 1, &gamma, 0, 2, 0.8).is_empty());
+    }
 
     fn hidden() -> Vec<f32> {
         (0..64).map(|i| ((i as f32) * 0.11).sin() * 0.8).collect()

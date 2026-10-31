@@ -40,6 +40,36 @@ impl Default for CoordinatorOptions {
     }
 }
 
+/// Journals must remain writable when a desktop launcher chooses `/` as its cwd.
+fn coordinator_journal_directory() -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+    if let Some(directory) = std::env::var_os("KADMIUM_STATE_DIR") {
+        let path = PathBuf::from(directory);
+        return if path.is_absolute() {
+            Ok(path)
+        } else {
+            Err("KADMIUM_STATE_DIR must be an absolute directory path".into())
+        };
+    }
+    #[cfg(target_os = "windows")]
+    let directory = std::env::var_os("LOCALAPPDATA")
+        .map(|base| PathBuf::from(base).join("Kadmium").join("state"));
+    #[cfg(target_os = "macos")]
+    let directory = std::env::var_os("HOME")
+        .map(|base| PathBuf::from(base).join("Library/Application Support/Kadmium"));
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let directory = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|base| base.join("kadmium"))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|base| PathBuf::from(base).join(".local/state/kadmium"))
+        });
+    directory.filter(|path| path.is_absolute()).ok_or_else(|| {
+        "Cannot determine a user state directory; set KADMIUM_STATE_DIR to an absolute writable directory".into()
+    })
+}
+
 /// Starts the coordinator and serves until the HTTP server stops.
 ///
 /// Returns an error instead of panicking when a port is already taken, so a caller such as
@@ -54,6 +84,7 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
     } = options;
     let config_path = config_path.as_deref();
     let mut gw_state = GatewayState::new();
+    gw_state.persistent_state_dir = coordinator_journal_directory()?;
     gw_state.coordinator_http_port = port;
     match gw_state.load_grid_telemetry() {
         Ok(n) if n > 0 => println!(
@@ -340,6 +371,19 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         }
     }
 
+    // Live-mode initialization clears demo progress; restore after it, before readiness.
+    // Abort on a bad journal so a later request cannot overwrite recoverable state.
+    let restored = if std::env::var_os("KADMIUM_STATE_DIR").is_none() {
+        gw_state.load_persistent_state_with_legacy(std::path::Path::new("target/kadmium-state"))?
+    } else {
+        gw_state.load_persistent_state()?
+    };
+    if restored {
+        println!(
+            "  [State] Restored cluster journal ({})",
+            gw_state.persistent_state_path().display()
+        );
+    }
     let overview = gw_state.workers_overview();
     let announcement = LanCoordinatorAnnouncement {
         coordinator_id: gw_state.coordinator_quorum.active_leader.clone(),

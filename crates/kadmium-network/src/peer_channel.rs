@@ -17,19 +17,23 @@
 //! [`PeerChannelPool::with_delta_link`] does) first negotiates a [`crate::delta_link`], so frames
 //! in both directions carry only the chunks the other side does not already hold. A peer from
 //! before delta links gets an ordinary channel.
+//!
+//! An address in the [`crate::BRIDGE_ADDR_SCHEME`] form (`kdbr://usb4-addr@27.6,wifi-addr@1.2`)
+//! dials a [`crate::UsbCBridge`] instead of one TCP connection: the channel's frames are striped
+//! over every lane, and unplugging a lane neither fails a call nor resets the delta link.
 
 use crate::delta_link::{
     ChunkPlan, DeltaDecoder, DeltaEncoder, DeltaHello, DeltaLinkConfig, DeltaLinkSnapshot,
     DeltaLinkStats, FrameReader, FrameWriter,
 };
+use crate::usbc_bridge::{BridgeConfig, UsbCBridge};
 use crate::{WireFrame, WireFrameKind};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
-use tokio::io::BufReader;
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::net::TcpStream;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -41,12 +45,20 @@ pub const DEFAULT_PEER_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 type ReplySender = oneshot::Sender<Result<WireFrame, String>>;
 
+/// Read and write halves of whatever carries a channel: one TCP connection or a bridge.
+type ChannelRead = Box<dyn AsyncRead + Send + Unpin>;
+type ChannelWrite = Box<dyn AsyncWrite + Send + Unpin>;
+
 /// State shared between a [`PeerChannel`] and its background reader task.
 struct ChannelShared {
     addr: String,
     pending: Mutex<HashMap<u64, ReplySender>>,
     healthy: AtomicBool,
     close_reason: Mutex<Option<String>>,
+    /// The bridge carrying this channel, when it was dialed with a bridge address. It is closed
+    /// with the channel: a bridge whose stream broke mid-frame must not linger, heartbeating, while
+    /// the peer waits for the rest of the frame.
+    bridge: Option<UsbCBridge>,
 }
 
 impl ChannelShared {
@@ -76,6 +88,9 @@ impl ChannelShared {
             }
         }
         let reason = self.close_reason();
+        if let Some(bridge) = &self.bridge {
+            bridge.close();
+        }
         let drained: Vec<(u64, ReplySender)> = self.pending().drain().collect();
         for (request_id, tx) in drained {
             let _ = tx.send(Err(format!(
@@ -109,7 +124,7 @@ impl ChannelShared {
 }
 
 /// Runs on its own task for the lifetime of the connection: reads replies and demultiplexes them.
-async fn run_reader(mut reader: FrameReader<BufReader<OwnedReadHalf>>, shared: Arc<ChannelShared>) {
+async fn run_reader(mut reader: FrameReader<BufReader<ChannelRead>>, shared: Arc<ChannelShared>) {
     /// Fails pending calls even when this task is cancelled (runtime shutdown, channel drop).
     struct FailPendingOnDrop(Arc<ChannelShared>);
     impl Drop for FailPendingOnDrop {
@@ -139,7 +154,7 @@ async fn run_reader(mut reader: FrameReader<BufReader<OwnedReadHalf>>, shared: A
 /// in-flight call fails and the channel reports unhealthy; it is never reused after that.
 pub struct PeerChannel {
     shared: Arc<ChannelShared>,
-    writer: tokio::sync::Mutex<FrameWriter<OwnedWriteHalf>>,
+    writer: tokio::sync::Mutex<FrameWriter<ChannelWrite>>,
     next_request_id: AtomicU64,
     reader_task: JoinHandle<()>,
     /// Outbound and inbound byte counts, when a delta link was negotiated.
@@ -176,6 +191,9 @@ impl std::fmt::Debug for PeerChannel {
 impl PeerChannel {
     /// Connects to `addr` within `connect_timeout` and starts the reply reader task.
     pub async fn connect(addr: &str, connect_timeout: Duration) -> Result<Arc<Self>, String> {
+        if BridgeConfig::parse_addr(addr).is_some() {
+            return Self::connect_bridge(addr, connect_timeout, &DeltaLinkConfig::disabled()).await;
+        }
         let stream = Self::dial(addr, connect_timeout).await?;
         Ok(Self::from_stream(addr, stream))
     }
@@ -191,34 +209,48 @@ impl PeerChannel {
         connect_timeout: Duration,
         delta: &DeltaLinkConfig,
     ) -> Result<Arc<Self>, String> {
+        if BridgeConfig::parse_addr(addr).is_some() {
+            return Self::connect_bridge(addr, connect_timeout, delta).await;
+        }
         if !delta.enabled {
             return Self::connect(addr, connect_timeout).await;
         }
         let stream = Self::dial(addr, connect_timeout).await?;
         let _ = stream.set_nodelay(true);
         let (read_half, write_half) = stream.into_split();
-        let mut reader = FrameReader::new(BufReader::new(read_half));
-        let mut writer = FrameWriter::new(write_half);
-        let hello = async {
-            writer.write_plain(&DeltaHello::request(delta)).await?;
-            let reply = reader.read_frame().await?;
-            if reply.kind != WireFrameKind::DeltaHello {
-                return Err(format!("peer answered DeltaHello with {:?}", reply.kind));
-            }
-            DeltaHello::from_bytes(&reply.payload)
-        };
-        match tokio::time::timeout(connect_timeout, hello).await {
-            Ok(Ok(agreed)) => {
-                // Never trust a reply that raises the budget this side proposed.
-                let budget = agreed.store_bytes.min(delta.store_bytes);
-                if budget > 0 {
-                    reader.enable_delta(DeltaDecoder::new(budget));
-                    writer.enable_delta(DeltaEncoder::new(budget));
-                }
-                Ok(Self::from_halves(addr, reader, writer))
-            }
-            _ => Self::connect(addr, connect_timeout).await,
+        let mut reader = FrameReader::new(BufReader::new(Box::new(read_half) as ChannelRead));
+        let mut writer = FrameWriter::new(Box::new(write_half) as ChannelWrite);
+        match negotiate_delta(&mut reader, &mut writer, connect_timeout, delta).await {
+            Ok(()) => Ok(Self::from_halves(addr, reader, writer, None)),
+            Err(_) => Self::connect(addr, connect_timeout).await,
         }
+    }
+
+    /// Dials a bridge address and, when `delta` is enabled, negotiates a delta link across it.
+    /// Bridge listeners are newer than delta links, so a failed hello is an error rather than a
+    /// reason to retry without one.
+    async fn connect_bridge(
+        addr: &str,
+        connect_timeout: Duration,
+        delta: &DeltaLinkConfig,
+    ) -> Result<Arc<Self>, String> {
+        let mut config = BridgeConfig::parse_addr(addr).expect("caller checked the scheme")?;
+        config.connect_timeout = connect_timeout;
+        let session = UsbCBridge::connect(config).await?;
+        let mut reader = FrameReader::new(BufReader::new(Box::new(session.reader) as ChannelRead));
+        let mut writer = FrameWriter::new(Box::new(session.writer) as ChannelWrite);
+        if delta.enabled
+            && let Err(e) = negotiate_delta(&mut reader, &mut writer, connect_timeout, delta).await
+        {
+            session.bridge.close();
+            return Err(format!("delta link over bridge {addr}: {e}"));
+        }
+        Ok(Self::from_halves(
+            addr,
+            reader,
+            writer,
+            Some(session.bridge),
+        ))
     }
 
     async fn dial(addr: &str, connect_timeout: Duration) -> Result<TcpStream, String> {
@@ -235,15 +267,17 @@ impl PeerChannel {
         let (read_half, write_half) = stream.into_split();
         Self::from_halves(
             addr,
-            FrameReader::new(BufReader::new(read_half)),
-            FrameWriter::new(write_half),
+            FrameReader::new(BufReader::new(Box::new(read_half) as ChannelRead)),
+            FrameWriter::new(Box::new(write_half) as ChannelWrite),
+            None,
         )
     }
 
     fn from_halves(
         addr: &str,
-        reader: FrameReader<BufReader<OwnedReadHalf>>,
-        writer: FrameWriter<OwnedWriteHalf>,
+        reader: FrameReader<BufReader<ChannelRead>>,
+        writer: FrameWriter<ChannelWrite>,
+        bridge: Option<UsbCBridge>,
     ) -> Arc<Self> {
         let delta = writer.delta_stats().zip(reader.delta_stats());
         let shared = Arc::new(ChannelShared {
@@ -251,6 +285,7 @@ impl PeerChannel {
             pending: Mutex::new(HashMap::new()),
             healthy: AtomicBool::new(true),
             close_reason: Mutex::new(None),
+            bridge,
         });
         let reader_task = tokio::spawn(run_reader(reader, Arc::clone(&shared)));
         Arc::new(Self {
@@ -260,6 +295,11 @@ impl PeerChannel {
             reader_task,
             delta,
         })
+    }
+
+    /// The bridge carrying this channel, when it was dialed with a bridge address.
+    pub fn bridge(&self) -> Option<&UsbCBridge> {
+        self.shared.bridge.as_ref()
     }
 
     /// `true` when this channel negotiated a delta link.
@@ -290,7 +330,8 @@ impl PeerChannel {
         self.shared.pending().len()
     }
 
-    /// Closes the channel: fails in-flight calls, stops the reader, and lets the socket drop.
+    /// Closes the channel: fails in-flight calls, stops the reader, closes the bridge it runs on,
+    /// if any, and lets the socket drop.
     pub fn close(&self) {
         self.shared.fail_all("closed locally".to_string());
         self.reader_task.abort();
@@ -384,6 +425,34 @@ impl PeerChannel {
             }
         }
     }
+}
+
+/// Client side of the delta-link hello on a fresh connection. On success the halves encode and
+/// decode delta frames, unless the peer declined (an agreed budget of 0).
+async fn negotiate_delta(
+    reader: &mut FrameReader<BufReader<ChannelRead>>,
+    writer: &mut FrameWriter<ChannelWrite>,
+    timeout: Duration,
+    delta: &DeltaLinkConfig,
+) -> Result<(), String> {
+    let hello = async {
+        writer.write_plain(&DeltaHello::request(delta)).await?;
+        let reply = reader.read_frame().await?;
+        if reply.kind != WireFrameKind::DeltaHello {
+            return Err(format!("peer answered DeltaHello with {:?}", reply.kind));
+        }
+        DeltaHello::from_bytes(&reply.payload)
+    };
+    let agreed = tokio::time::timeout(timeout, hello)
+        .await
+        .map_err(|_| format!("no DeltaHello answer within {timeout:?}"))??;
+    // Never trust a reply that raises the budget this side proposed.
+    let budget = agreed.store_bytes.min(delta.store_bytes);
+    if budget > 0 {
+        reader.enable_delta(DeltaDecoder::new(budget));
+        writer.enable_delta(DeltaEncoder::new(budget));
+    }
+    Ok(())
 }
 
 impl Drop for PeerChannel {

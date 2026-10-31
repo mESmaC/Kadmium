@@ -4,6 +4,7 @@ set -eu
 repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -p "$repo_root/target"
 test_root=$(mktemp -d "$repo_root/target/installer-shell.XXXXXXXX")
+trap 'rm -rf -- "$test_root"' EXIT
 fixture="$test_root/fixture"
 fixture_platform=linux-x86_64
 mkdir "$fixture"
@@ -61,4 +62,4 @@ tar -czf "$fixture/kadmium-macos-arm64.tar.gz" -C "$fixture" kadmium kadmium-des
 manifest
 install_case macos
 [ -x "$test_root/macos/releases/v0.1.0-macos-arm64/kadmium-desktop" ]
-printf 'PASS: Linux/macOS install, spaces, no overwrite, bad checksum and extra member rejection. Fixtures: %s\n' "$test_root"
+printf 'PASS: Linux/macOS install, spaces, no overwrite, bad checksum and extra member rejection.\n'

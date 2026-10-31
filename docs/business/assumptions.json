@@ -1,0 +1,120 @@
+{
+  "as_of": "2026-10-30",
+  "status": "Illustrative proposals, not observed demand, current prices, or company cash.",
+  "currency": "USD",
+  "payment": {
+    "rate": "0.029",
+    "fixed": "0.30",
+    "source": "https://stripe.com/en-us/pricing",
+    "scope": "US domestic card benchmark; excludes extra payment products, international cards and dispute fees."
+  },
+  "service": {
+    "pilot_price": "1500",
+    "recurring_price": "299",
+    "labor_hourly": "75",
+    "recurring_infra_monthly": "15",
+    "refund_loss_rate": "0.02",
+    "fixed_product_admin_monthly": "5000",
+    "fixed_overhead_monthly": "750",
+    "illustrative_opening_cash": "30000",
+    "commercial_hours_per_week": "16",
+    "weeks": "13"
+  },
+  "scenarios": [
+    {
+      "name": "No sales",
+      "delivered_pilots": [
+        0,
+        0,
+        0
+      ],
+      "new_recurring_accounts": [
+        0,
+        0,
+        0
+      ],
+      "pilot_hours": "12",
+      "support_hours_per_account_month": "1",
+      "acquisition_hours": "20",
+      "marketing_cash": "300"
+    },
+    {
+      "name": "Downside",
+      "delivered_pilots": [
+        0,
+        1,
+        1
+      ],
+      "new_recurring_accounts": [
+        0,
+        0,
+        1
+      ],
+      "pilot_hours": "16",
+      "support_hours_per_account_month": "2",
+      "acquisition_hours": "35",
+      "marketing_cash": "600"
+    },
+    {
+      "name": "Planning",
+      "delivered_pilots": [
+        1,
+        2,
+        3
+      ],
+      "new_recurring_accounts": [
+        0,
+        1,
+        2
+      ],
+      "pilot_hours": "12",
+      "support_hours_per_account_month": "1",
+      "acquisition_hours": "45",
+      "marketing_cash": "1200"
+    },
+    {
+      "name": "Upside",
+      "delivered_pilots": [
+        2,
+        4,
+        3
+      ],
+      "new_recurring_accounts": [
+        0,
+        2,
+        4
+      ],
+      "pilot_hours": "10",
+      "support_hours_per_account_month": "0.75",
+      "acquisition_hours": "52",
+      "marketing_cash": "1400"
+    }
+  ],
+  "legacy_credit_bundle": {
+    "price": "29",
+    "included_credit": "35",
+    "wholesale_markup": "0.25",
+    "monthly_support_cost": "4",
+    "monthly_infra_cost": "1",
+    "redemption_rates": [
+      "0",
+      "0.52",
+      "1"
+    ]
+  },
+  "prepaid_example": {
+    "sold": "100",
+    "consumed": "40"
+  },
+  "notes": [
+    "Prices and all non-payment inputs are hypotheses, not vendor or customer facts.",
+    "Recurring accounts begin no earlier than the month after pilot delivery. No later churn is assumed inside the short model; do not infer lifetime retention.",
+    "Recurring service includes individually scoped pilot extensions. Standardizing the offer and expanding acquisition remain subject to G1/G2 in the business plan.",
+    "All modeled services are delivered, invoiced and collected within the month. No unpaid receivables or deferred service balances at month end; stress collection delay separately.",
+    "Direct delivery and acquisition hours are additional paid/loaded labor capacity, not hours also charged to fixed product/admin expense.",
+    "Operating result is a planning contribution after risk allowances, acquisition and fixed costs, not GAAP profit. Taxes, financing, exceptional disputes, custom legal work and hardware are excluded.",
+    "Cash proxy assumes all modeled labor and risk allowances are cash-funded in the period. Opening cash is illustrative and is not a statement of actual company funds.",
+    "First 90 days exclude cloud resale, host payouts, grants, hardware and annual prepayments.",
+    "Dollar amounts are rounded at the per-transaction line level using decimal half-up rounding."
+  ]
+}

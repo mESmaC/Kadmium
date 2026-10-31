@@ -1,0 +1,78 @@
+// Build: cargo build -p kadmium-condenser --locked
+// Setup: npm ci --prefix crates/kadmium-gateway/tests/ui
+// Run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
+const { spawn } = require('node:child_process');
+const { chromium } = require(path.resolve('crates/kadmium-gateway/tests/ui/node_modules/playwright'));
+
+test('local checkpoint setup, explicit task routing, recovery and distributed jobs fit desktop and mobile', { timeout: 120000 }, async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'condenser-compute-ui-'));
+  const source = path.join(cwd, 'source'); fs.mkdirSync(source);
+  fs.writeFileSync(path.join(source, 'config.json'), JSON.stringify({ model_type: 'llama', max_position_embeddings: 8192 }));
+  fs.writeFileSync(path.join(source, 'tokenizer.json'), '{}');
+  const header = Buffer.from(JSON.stringify({ 'model.weight': { dtype: 'F32', shape: [2], data_offsets: [0, 8] } }));
+  const length = Buffer.alloc(8); length.writeBigUInt64LE(BigInt(header.length));
+  fs.writeFileSync(path.join(source, 'model.safetensors'), Buffer.concat([length, header, Buffer.from([0,0,128,63,1,0,128,63])]));
+  const server = spawn(path.resolve('target/debug/kadmium-condenser' + (process.platform === 'win32' ? '.exe' : '')), ['serve', '--port', '0'], { cwd, windowsHide: true, env: { ...process.env, KADMIUM_MODEL_LIBRARY: path.join(cwd, 'library') } });
+  let browser;
+  try {
+    const base = await new Promise((resolve,reject) => {
+      server.once('error',reject);
+      server.stdout.on('data',chunk => { const match=String(chunk).match(/http:\/\/127\.0\.0\.1:\d+/); if(match) resolve(match[0]); });
+      server.once('exit',code=>reject(new Error('server exited: '+code)));
+    });
+    browser=await chromium.launch({channel:process.env.KADMIUM_TEST_BROWSER || (process.platform==='win32'?'msedge':undefined),headless:true});
+    const page=await browser.newPage({viewport:{width:1440,height:1000},reducedMotion:'reduce'});
+    const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.goto(base);
+    await page.locator('#open-model-library').click();
+    await page.locator('#checkpoint-path').fill(source);
+    await page.locator('#checkpoint-import').click();
+    await page.waitForFunction(()=>document.querySelector('#checkpoint-status').textContent.includes('Normalized 1 tensors'));
+    const id=await page.locator('#checkpoint-select').inputValue(); assert.match(id,/^[a-f0-9]{64}$/);
+    assert.match(await page.locator('#checkpoint-facts').innerText(),/F32/);
+    const before=await page.locator('#header-model').textContent();
+    await page.route('**/api/v1/checkpoints/load',route=>route.fulfill({status:502,contentType:'application/json',body:JSON.stringify({error:'Backend changed F32 to F16; task route was not changed'})}));
+    await page.locator('#checkpoint-load').click();
+    await page.getByText('Backend changed F32 to F16; task route was not changed').waitFor();
+    assert.equal(await page.locator('#header-model').textContent(),before);
+    assert.equal(await page.locator('#checkpoint-use').isDisabled(),true);
+    await page.unroute('**/api/v1/checkpoints/load');
+    await page.route('**/api/v1/checkpoints/load',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({checkpoint:{id,name:'source'},provider:{kind:'ollama',model:'kadmium-'+id+':latest',base_url:'http://127.0.0.1:11434'},execution:'Local Ollama; source precision preserved.'})}));
+    await page.locator('#checkpoint-load').click();
+    await page.waitForFunction(()=>!document.querySelector('#checkpoint-use').disabled);
+    assert.equal(await page.locator('#header-model').textContent(),before);
+    await page.locator('#checkpoint-use').click();
+    assert.match(await page.locator('#header-model').textContent(),new RegExp(id));
+    await page.locator('#checkpoint-backend').fill('http://127.0.0.1:11435');
+    assert.equal(await page.locator('#checkpoint-use').isDisabled(),true);
+    await page.route('**/api/v1/compute/jobs',route=>{
+      const body=route.request().postDataJSON();assert.equal(body.job.kind,'matrix_multiply');
+      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({success:true,distributed:true,units_total:2,units_validated:2,nodes_used:['a','b'],wall_ms:3.25,traces:[],result:{values:[58,64,139,154]}})});
+    });
+    await page.locator('#compute-job-run').click();
+    await page.getByText('Completed · 2/2 units · 2 workers · 3.25 ms').waitFor();
+    assert.match(await page.locator('#compute-job-result').textContent(),/154/);
+    await page.reload();await page.locator('#open-model-library').click();
+    await page.waitForFunction(id=>Array.from(document.querySelector('#checkpoint-select').options).some(option=>option.value===id),id);
+    await page.locator('#checkpoint-select').selectOption(id);
+    fs.mkdirSync(path.resolve('target/checkpoint-smoke'),{recursive:true});
+    for(const width of [1440,768,390]) {
+      await page.setViewportSize({width,height:900});
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      await page.waitForFunction(()=>document.querySelector('#context-compute').getBoundingClientRect().width<=innerWidth);
+      const bounds=await page.locator('#context-compute').boundingBox();await page.screenshot({path:path.resolve('target/checkpoint-smoke/compute-'+width+'.png')});assert.ok(bounds.width<=width, JSON.stringify({width,bounds}));
+    }
+    await page.setViewportSize({width:1440,height:1000});
+    await page.screenshot({path:path.resolve('target/checkpoint-smoke/condenser-compute.png')});
+    assert.deepEqual(errors,[]);
+  } finally {
+    if(browser) await browser.close();
+    server.kill(); await new Promise(resolve=>server.exitCode===null?server.once('exit',resolve):resolve());
+    fs.rmSync(cwd,{recursive:true,force:true});
+  }
+});

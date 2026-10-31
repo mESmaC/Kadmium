@@ -154,6 +154,7 @@
       text-transform: uppercase;
       color: var(--ink-muted);
     }
+    .doc-content :is(h1, h2, h3, h4, h5, h6) { scroll-margin-top: 90px; }
     .doc-content h1 {
       font-family: var(--font-sans);
       font-size: clamp(28px, 3.5vw, 40px);
@@ -518,6 +519,18 @@
 
     function renderMarkdown(md) {
       const blocks = [];
+      const headingIds = new Set();
+      const heading = (level, text) => {
+        const content = formatInline(text);
+        const template = document.createElement("template");
+        template.innerHTML = content;
+        const base = template.content.textContent.toLowerCase()
+          .replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, "").replace(/ /g, "-");
+        let id = base;
+        for (let suffix = 1; headingIds.has(id); suffix++) id = `${base}-${suffix}`;
+        headingIds.add(id);
+        return `<h${level} id="${escapeHtml(id)}">${content}</h${level}>`;
+      };
       md = md.replace(/```([\w-]*)[^\n]*\n([\s\S]*?)```/g, (_, lang, code) => {
         const idx = blocks.length;
         blocks.push(lang === "mermaid" ? renderMermaid(code) : `<pre><code class="lang-${lang}">${escapeHtml(code.replace(/\s+$/, ""))}</code></pre>`);
@@ -579,11 +592,9 @@
         closeLists();
 
         const display = trimmed.match(/^\$\$([\s\S]+)\$\$$/);
+        const title = line.match(/^(#{1,6})\s+(.+?)(?:\s+#+)?\s*$/);
         if (display) html += '<div class="math-block">' + tex(display[1].trim()) + "</div>";
-        else if (line.startsWith("#### ")) html += `<h4>${formatInline(line.slice(5))}</h4>`;
-        else if (line.startsWith("### ")) html += `<h3>${formatInline(line.slice(4))}</h3>`;
-        else if (line.startsWith("## ")) html += `<h2>${formatInline(line.slice(3))}</h2>`;
-        else if (line.startsWith("# ")) html += `<h1>${formatInline(line.slice(2))}</h1>`;
+        else if (title) html += heading(title[1].length, title[2]);
         else if (trimmed === "---" || trimmed === "***") html += "<hr />";
         else if (trimmed.startsWith("@@CODEBLOCK_")) html += trimmed;
         else html += `<p>${formatInline(line)}</p>`;
@@ -598,17 +609,50 @@
     }
 
     const DOC_LINKS = {
-      "./getting-started.md": "getting-started",
-      "./cli-reference.md": "cli-reference",
-      "./api-reference.md": "api-reference",
-      "./SPECSHEET_AND_ROADMAP.md": "specsheet-and-roadmap",
-      "./ARCHITECTURE.md": "architecture",
-      "./guides/hardware-and-sharding.md": "hardware-and-sharding",
-      "./guides/training-and-dream-rsi.md": "training-and-dream-rsi",
-      "./guides/subclusters-and-cloud-shield.md": "subclusters-and-cloud-shield",
-      "./guides/integrations-hf-github.md": "integrations-hf-github",
-      "./guides/mcp-server.md": "mcp-server"
+      "docs/README.md": "overview",
+      "docs/getting-started.md": "getting-started",
+      "docs/guides/cli.md": "launch-guide",
+      "docs/cli-reference.md": "cli-reference",
+      "docs/api-reference.md": "api-reference",
+      "docs/SPECSHEET_AND_ROADMAP.md": "specsheet-and-roadmap",
+      "docs/ARCHITECTURE.md": "architecture",
+      "docs/BENCHMARKS_2026-10.md": "benchmarks",
+      "docs/guides/hardware-and-sharding.md": "hardware-and-sharding",
+      "docs/guides/condenser-workspace.md": "condenser-workspace",
+      "docs/guides/local-checkpoints.md": "local-checkpoints",
+      "docs/guides/distributed-compute.md": "distributed-compute",
+      "docs/guides/training-and-dream-rsi.md": "training-and-dream-rsi",
+      "docs/guides/subclusters-and-cloud-shield.md": "subclusters-and-cloud-shield",
+      "docs/guides/integrations-hf-github.md": "integrations-hf-github",
+      "docs/guides/mcp-server.md": "mcp-server",
+      "docs/guides/usbc-delta-bridge.md": "usbc-delta-bridge",
+      "crates/kadmium-npu/README.md": "npu-kernels",
+      "docs/guides/release.md": "release-runbook",
+      "docs/MARKET_RESEARCH_AND_LAUNCH_PLAN.md": "market-research-and-launch-plan",
+      "CONTRIBUTING.md": "contributing"
     };
+    function normalizeRepoPath(path) {
+      const parts = [];
+      for (const part of path.split("/")) {
+        if (!part || part === ".") continue;
+        if (part === "..") {
+          if (!parts.length) return null;
+          parts.pop();
+        } else {
+          parts.push(part);
+        }
+      }
+      return parts.join("/");
+    }
+    function resolveRepoHref(raw) {
+      const hashAt = raw.indexOf("#");
+      const path = hashAt >= 0 ? raw.slice(0, hashAt) : raw;
+      const anchor = hashAt >= 0 ? raw.slice(hashAt) : "";
+      const doc = allDocs.find(d => d.slug === activeSlug);
+      const base = doc ? doc.file_path.split("/").slice(0, -1).join("/") : "docs";
+      const normalized = normalizeRepoPath(`${base}/${path}`);
+      return { normalized, anchor };
+    }
     function formatInline(text) {
       const held = [];
       const hold = html => "\u0000" + (held.push(html) - 1) + "\u0000";
@@ -620,8 +664,14 @@
         .replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?![\w*])/g, "$1<em>$2</em>")
         .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
           const raw = href.replace(/&amp;/g, "&");
-          if (DOC_LINKS[raw]) return `<a href="#${DOC_LINKS[raw]}" onclick="selectDoc('${DOC_LINKS[raw]}'); return false;">${label}</a>`;
+          if (raw.startsWith("#")) return `<a href="#${activeSlug}/${href.slice(1)}">${label}</a>`;
           if (/^(https?:|mailto:|\/)/i.test(raw)) return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+          const { normalized, anchor } = resolveRepoHref(raw);
+          if (normalized && DOC_LINKS[normalized]) {
+            const slug = DOC_LINKS[normalized];
+            return `<a href="#${slug}${anchor ? '/' + anchor.slice(1) : ''}">${label}</a>`;
+          }
+          if (normalized) return `<a href="https://github.com/mESmaC/Kadmium/blob/main/${normalized}${anchor}" target="_blank" rel="noopener">${label}</a>`;
           return label;
         });
       return out.replace(/\u0000(\d+)\u0000/g, (_, n) => held[Number(n)]);
@@ -652,10 +702,15 @@
       container.innerHTML = html;
     }
 
-    function selectDoc(slug) {
-      activeSlug = slug;
+    function selectDoc(slug, anchor = "", updateHash = true) {
       const doc = allDocs.find(d => d.slug === slug) || allDocs[0];
       if (!doc) return;
+      activeSlug = doc.slug;
+      const hash = `#${activeSlug}${anchor ? '/' + encodeURIComponent(anchor) : ''}`;
+      if (updateHash && location.hash !== hash) {
+        location.hash = hash;
+        return;
+      }
       document.getElementById("currentPath").textContent = doc.file_path;
       document.getElementById("currentCat").textContent = doc.category;
       const body = document.getElementById("docBody");
@@ -667,8 +722,24 @@
       });
       renderSidebar(document.getElementById("docSearch").value);
       const calm = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      window.scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" });
+      const target = anchor && document.getElementById(anchor);
+      if (target && body.contains(target)) {
+        target.setAttribute("tabindex", "-1");
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ behavior: calm ? "auto" : "smooth" });
+      } else {
+        window.scrollTo({ top: 0, behavior: calm ? "auto" : "smooth" });
+      }
     }
+
+    function selectDocFromHash() {
+      const [slug, ...fragment] = location.hash.slice(1).split("/");
+      let anchor = fragment.join("/");
+      try { anchor = decodeURIComponent(anchor); } catch (_) { /* Keep malformed fragments inert. */ }
+      selectDoc(slug || "overview", anchor, false);
+    }
+
+    window.addEventListener("hashchange", selectDocFromHash);
 
     function filterDocs() {
       renderSidebar(document.getElementById("docSearch").value);
@@ -677,7 +748,7 @@
     async function initDocs() {
       const res = await fetch("/api/v1/docs");
       allDocs = await res.json();
-      selectDoc("overview");
+      selectDocFromHash();
     }
 
     initDocs();

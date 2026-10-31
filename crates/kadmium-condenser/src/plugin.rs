@@ -440,9 +440,7 @@ fn resolve_command_and_args(root: &Path, manifest: &PluginManifest) -> (String, 
         .map(|arg| substitute_plugin_dir(arg, root))
         .collect();
 
-    if manifest.command.trim() == "cargo"
-        && default_args.first().is_some_and(|a| a == "run")
-    {
+    if manifest.command.trim() == "cargo" && default_args.first().is_some_and(|a| a == "run") {
         let bin_stem = format!("condenser-plugin-{}", manifest.id);
         let exe_name = if cfg!(windows) {
             format!("{bin_stem}.exe")
@@ -463,21 +461,21 @@ fn resolve_command_and_args(root: &Path, manifest: &PluginManifest) -> (String, 
 
         for profile in ["release", "debug"] {
             let candidate = root.join("target").join(profile).join(&exe_name);
-            if let Ok(meta) = candidate.metadata() {
-                if meta.is_file() {
-                    let bin_fresh = match (meta.modified().ok(), src_mtime, toml_mtime) {
-                        (Some(bm), Some(sm), Some(tm)) => bm >= sm && bm >= tm,
-                        (Some(bm), Some(sm), None) => bm >= sm,
-                        _ => true,
-                    };
-                    if bin_fresh {
-                        let passthrough_args = default_args
-                            .iter()
-                            .position(|a| a == "--")
-                            .map(|pos| default_args[pos + 1..].to_vec())
-                            .unwrap_or_default();
-                        return (candidate.to_string_lossy().into_owned(), passthrough_args);
-                    }
+            if let Ok(meta) = candidate.metadata()
+                && meta.is_file()
+            {
+                let bin_fresh = match (meta.modified().ok(), src_mtime, toml_mtime) {
+                    (Some(bm), Some(sm), Some(tm)) => bm >= sm && bm >= tm,
+                    (Some(bm), Some(sm), None) => bm >= sm,
+                    _ => true,
+                };
+                if bin_fresh {
+                    let passthrough_args = default_args
+                        .iter()
+                        .position(|a| a == "--")
+                        .map(|pos| default_args[pos + 1..].to_vec())
+                        .unwrap_or_default();
+                    return (candidate.to_string_lossy().into_owned(), passthrough_args);
                 }
             }
         }
