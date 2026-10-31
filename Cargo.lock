@@ -1628,6 +1628,7 @@ dependencies = [
  "kadmium-rl",
  "kadmium-runtime",
  "kadmium-sharding",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

@@ -11,6 +11,7 @@ pub mod dsv41_mcl4;
 pub mod error;
 pub mod harness;
 pub mod local_models;
+pub mod model_transport;
 pub mod plugin;
 pub mod provider;
 mod runs;

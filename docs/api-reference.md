@@ -21,7 +21,10 @@ These routes run on standalone Condenser's loopback server, with its Host/Origin
 | `POST /api/v1/checkpoints/load` | `{checkpoint_id, base_url, context_length?}` verifies the package, imports preserved source files into loopback Ollama without quantization, checks tensor metadata and preloads the declared context or an explicitly smaller allocation. Returns `{checkpoint, provider, context_length, tensor_metadata_verified, execution}`. |
 | `POST /api/v1/compute/jobs` | `{base_url, api_key?, job}` proxies a job to the coordinator below with a 75-second timeout. Credentials are request-scoped; redirects are disabled. |
 
-Only one import/load runs per server. A load response does not change a task's route; the user explicitly chooses **Use in this task**. KTB banks are storage artifacts, and the external backend's arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for exact formats and failure behavior.
+| `POST /api/v1/checkpoints/transport` | `{checkpoint_id}` returns the package's transport summary, building and caching `transport.json` on first use. |
+| `POST /api/v1/checkpoints/publish` | `{checkpoint_id, endpoint, api_key?, context_length?}` sends a prepared model to a Kadmium coordinator over the [model transport](guides/model-transport.md) protocol and loads it at full context by default; `api_key` is the coordinator's access token. `GET ?checkpoint_id=` returns that model's progress `{state, total_bytes, sent_bytes, skipped_bytes, message, result?}`; `result.provider` is ready to use in a task. |
+
+Only one import, load or send runs per server. A load or send does not change a task's route; the user explicitly chooses **Use in current task**. KTB banks are storage artifacts, and the external backend's arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for exact formats and failure behavior.
 
 Import's optional `working_directory` selects an existing directory for temporary files. Omitted, `null` or empty uses the source model directory or the GGUF file's parent, on that path's filesystem. A missing or unwritable workspace is an error. The configured model library remains the final destination; publication across filesystems requires a verified copy and temporary package space on both drives.
 

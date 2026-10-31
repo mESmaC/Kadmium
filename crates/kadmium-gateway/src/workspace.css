@@ -13,14 +13,19 @@
     --workspace-edge: color-mix(in srgb, var(--line) 85%, var(--ink) 15%);
   }
 }
-body { background-image: radial-gradient(ellipse at 70% 0%, var(--graphite-3), transparent 65%); background-attachment: fixed; }
+body { background-image: var(--ambient, none), radial-gradient(ellipse at 70% 0%, var(--graphite-3), transparent 65%); background-attachment: fixed; font-family: var(--font-sans); }
 .cr-side, .cp-rail, .cr-top, .cp-top {
-  background: var(--workspace-glass); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+  background: var(--glass-1, var(--workspace-glass)); border-color: var(--glass-edge, var(--workspace-edge));
+  backdrop-filter: var(--glass-blur, blur(24px)); -webkit-backdrop-filter: var(--glass-blur, blur(24px));
 }
 .cr-panel, .cr-stat, .cp-card, .cp-tile {
-  background: linear-gradient(145deg, #ffffff04, transparent 55%), var(--workspace-surface);
-  border-color: var(--workspace-edge); border-radius: 16px; box-shadow: var(--workspace-shadow);
+  background: linear-gradient(145deg, #ffffff05, transparent 55%), var(--glass-1, var(--workspace-surface));
+  border-color: var(--glass-edge, var(--workspace-edge)); border-radius: 20px; box-shadow: var(--glass-shadow, var(--workspace-shadow));
+  backdrop-filter: var(--glass-blur, none); -webkit-backdrop-filter: var(--glass-blur, none);
 }
+.cr-head h1, .cp-hero h1, .cr-panel-head h2, .cp-card > header h2 { font-family: var(--font-display, var(--font-sans)); }
+.kd-btn { border-radius: 10px; transition: transform 140ms var(--ease-out, ease), background 140ms, border-color 140ms; }
+.kd-btn:active:not(:disabled) { transform: scale(.98); }
 .cr-panel-head, .cp-card > header { padding-top: 16px; padding-bottom: 16px; }
 .cr-content { max-width: 1600px; padding: 32px; gap: 24px; margin: 0 auto; }
 .cr-head h1 { font-size: 30px; letter-spacing: -.035em; line-height: 1.2; }
@@ -138,10 +143,25 @@ body { background-image: radial-gradient(ellipse at 70% 0%, var(--graphite-3), t
   .kw-dialog::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; background: #06090de6; }
 }
 
-.kw-model-setup { display:flex; flex-wrap:wrap; gap:20px; justify-content:space-between; align-items:center; padding:24px; margin-bottom:20px; border:1px solid var(--cadmium-text); border-radius:12px; background:var(--cadmium-soft); }
-.kw-model-setup h2 { margin:8px 0; font-size:22px; }
-.kw-model-setup p { max-width:720px; margin:8px 0; color:var(--ink-muted); line-height:1.5; }
-.kw-model-actions { display:flex; flex-wrap:wrap; gap:12px; }
-.kw-model-actions a { padding:12px 16px; border-radius:6px; background:var(--graphite-2); color:var(--ink); text-decoration:none; font-weight:600; }
-.kw-model-actions a:first-child { background:var(--cadmium); color:var(--on-cadmium); }
-.kw-model-actions a:focus-visible { outline:none; box-shadow:var(--focus-ring); }
+/* Bring-your-own-model journey, shared by the Control Room and the desktop Companion. */
+.kw-model-setup { display: grid; gap: 20px; padding: 28px; margin-bottom: 20px; border: 1px solid var(--glass-edge, var(--workspace-edge)); border-radius: 24px; background: linear-gradient(135deg, color-mix(in srgb, var(--cadmium) 9%, transparent), transparent 55%), var(--glass-1, var(--workspace-surface)); box-shadow: var(--glass-shadow, var(--workspace-shadow)); backdrop-filter: var(--glass-blur, none); -webkit-backdrop-filter: var(--glass-blur, none); }
+.kw-model-head { display: grid; gap: 8px; }
+.kw-model-setup h2 { margin: 0; font: 700 28px/1.15 var(--font-display, var(--font-sans)); letter-spacing: -.03em; }
+.kw-model-setup p { max-width: 72ch; margin: 0; color: var(--ink-muted); font-size: 15px; line-height: 1.55; }
+.kw-model-setup .k-steps { margin-top: 8px; }
+.kw-destinations { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 14px; }
+.kw-destination-card { display: grid; gap: 10px; align-content: start; padding: 20px; border-radius: 18px; border: 1px solid var(--glass-edge, var(--line)); background: var(--glass-2, var(--graphite-2)); box-shadow: var(--glass-highlight, none); }
+.kw-destination-card header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.kw-destination-card h3 { margin: 0; font: 600 17px/1.3 var(--font-display, var(--font-sans)); letter-spacing: -.01em; }
+.kw-destination-card p { font-size: 14px; }
+.kw-cta { justify-self: start; display: inline-flex; align-items: center; gap: 4px; margin-top: 4px; padding: 10px 16px; border-radius: 10px; background: var(--graphite-0); border: 1px solid var(--glass-edge-strong, var(--line-strong)); color: var(--ink); font: 600 14px/1 var(--font-sans); text-decoration: none; transition: transform 140ms, background 140ms; }
+.kw-destination-card.local .kw-cta { background: var(--cadmium); border-color: var(--cadmium); color: var(--on-cadmium); }
+.kw-cta:hover { filter: brightness(1.08); }
+.kw-cta:active { transform: scale(.98); }
+.kw-cta:focus-visible, .kw-model-foot a:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.kw-received h3 { margin: 0 0 8px; font-size: 13px; color: var(--ink-muted); font-weight: 600; }
+.kw-received ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.kw-received li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-radius: 12px; background: var(--glass-2, var(--graphite-2)); border: 1px solid var(--glass-edge, var(--line)); font-size: 14px; overflow-wrap: anywhere; }
+.kw-model-foot { font-size: 13px !important; }
+.kw-model-foot a { color: var(--cadmium-text); font-weight: 600; text-decoration: none; }
+@media (max-width: 720px) { .kw-model-setup { padding: 20px; } .kw-model-setup h2 { font-size: 24px; } }

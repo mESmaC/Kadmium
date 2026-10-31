@@ -8,6 +8,7 @@
 <link rel="icon" href="assets/condenser-favicon.svg">
 <link rel="stylesheet" href="condenser.css">
 <link rel="stylesheet" href="kadmium-tokens.css">
+<link rel="stylesheet" href="kadmium-glass.css">
 <link rel="stylesheet" href="local-compute.css">
 <script src="workflow.js" defer></script>
 <script src="condenser.js" defer></script>
@@ -47,14 +48,14 @@
     </div>
     <nav class="rail-navigation" aria-label="Workspace">
       <button class="rail-nav active" data-view="harness"><span class="rail-nav-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v11H9l-4 3V5Z"/></svg>Tasks</span><span id="task-count" class="rail-count">0</span></button>
+      <button id="open-model-library" class="rail-nav" data-view="models"><span class="rail-nav-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></svg>Models</span><span id="nav-model-count" class="rail-count">0</span></button>
       <button class="rail-nav" data-view="capabilities"><span class="rail-nav-label"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.2 4.6L19 10l-4.8 2.4L12 17l-2.2-4.6L5 10l4.8-2.4L12 3Z"/><path d="m18 16 .9 2.1L21 19l-2.1.9L18 22l-.9-2.1L15 19l2.1-.9L18 16Z"/></svg>Capabilities</span><span id="nav-plugin-count" class="rail-count">0</span></button>
     </nav>
-    <button id="open-model-library" class="rail-nav local-compute-link"><span class="rail-nav-label">Models &amp; compute</span></button>
     <div class="rail-section-head"><span class="label">RECENT TASKS</span><span class="local-only caption">LOCAL</span></div>
     <div id="session-list" class="session-list"></div>
     <div class="rail-footer">
       <div class="local-workspace"><span class="status-dot"></span><span>Local workspace</span></div>
-      <p class="caption">Tasks stay in this browser profile by default. Optional task memory saves a local copy for recall. API-key settings remain memory-only.</p>
+      <p class="caption">Private by default. Tasks stay in this browser; optional task memory keeps a local copy for recall. API keys are kept in memory only.</p>
       <p class="caption muted">Kadmium Power Plant · plugin protocol v1</p>
     </div>
     <div id="resize-sessions" class="pane-resizer" role="separator" aria-label="Resize task sidebar" aria-orientation="vertical" aria-controls="session-rail" aria-valuemin="200" aria-valuemax="420" aria-valuenow="264" tabindex="0" title="Drag to resize · Double-click to reset"></div>
@@ -129,6 +130,88 @@
       </div>
     </section>
 
+    <section id="view-models" class="view" aria-labelledby="models-title">
+      <div class="models-page">
+        <header class="models-hero">
+          <p class="k-eyebrow">Models</p>
+          <h1 id="models-title">Bring your own model</h1>
+          <p class="models-lede">Pick a model on this computer. Condenser prepares it without changing a single weight, then you run it here or send it to a Kadmium coordinator. Full context and full output by default.</p>
+          <ol class="k-steps" aria-label="Progress">
+            <li id="step-choose" data-state="current">Choose</li>
+            <li id="step-prepare">Prepare</li>
+            <li id="step-run">Run</li>
+          </ol>
+        </header>
+
+        <section class="model-card k-glass" aria-labelledby="choose-title">
+          <div class="model-card-head"><span class="model-step">1</span><div><h2 id="choose-title">Choose a model</h2><p>A GGUF file, or a SafeTensors folder with its config and tokenizer files. Split models need every part.</p></div></div>
+          <form id="checkpoint-form">
+            <div class="field"><label for="checkpoint-path">Model file or folder</label>
+              <div class="path-row"><input id="checkpoint-path" class="code-sm" required spellcheck="false" placeholder="C:\Models\my-model  or  ~/models/model.gguf"><button id="checkpoint-browse" class="secondary-btn" type="button">Browse files…</button><button id="checkpoint-browse-folder" class="secondary-btn" type="button">Choose folder…</button></div>
+              <p id="checkpoint-picker-note" class="caption muted">Browse files on the computer running Kadmium, or paste a path.</p>
+              <button id="checkpoint-embedded" class="text-btn" type="button" hidden>Use embedded browser</button>
+            </div>
+            <div id="checkpoint-browser" class="model-browser" hidden>
+              <div class="model-browser-bar"><button id="checkpoint-parent" class="text-btn" type="button">↑ Up one folder</button><span id="checkpoint-browser-path" class="code-sm"></span><button id="checkpoint-choose-folder" class="text-btn" type="button">Use this folder</button><button id="checkpoint-browser-close" class="icon-btn" type="button" aria-label="Close file browser">×</button></div>
+              <div id="checkpoint-files"></div>
+            </div>
+            <details class="model-advanced">
+              <summary>Advanced</summary>
+              <div class="field"><label for="checkpoint-working-directory">Temporary working folder</label><input id="checkpoint-working-directory" class="code-sm" spellcheck="false" placeholder="On the model's drive"></div>
+              <p class="caption muted">Blank uses a temporary folder inside the model folder, or beside a GGUF file. A folder on another drive means a verified copy into the library, so allow room for the originals and shards in both places while it copies.</p>
+              <label class="caption"><input id="checkpoint-accept-quantized" type="checkbox"> Accept a model that was already quantized</label>
+              <p class="tradeoff" data-tone="warn">Off by default. A pre-quantized model (GGUF Q and IQ types, GPTQ, AWQ, bitsandbytes, FP8, FP4 and similar) lost precision before it reached Kadmium. Turning this on keeps its bytes exactly and Kadmium never quantizes further, but answers reflect the lower precision and the lost detail can't be recovered. Leave it off to accept only 16-bit or wider weights.</p>
+            </details>
+
+            <div class="model-card-head inset"><span class="model-step">2</span><div><h2>Prepare it</h2><p>Condenser checks every byte, keeps your original files untouched, and writes a transport-ready copy: shards aligned to 4 KiB for direct streaming, split into 16 MiB verified chunks, ordered expert by expert. Allow free space of about twice the model's size.</p></div></div>
+            <div class="model-actions"><button id="checkpoint-import" class="primary-btn" type="submit">Prepare model</button><p id="checkpoint-status" class="caption muted" role="status">Nothing is converted, quantized, pruned, or skipped.</p></div>
+          </form>
+        </section>
+
+        <section class="model-card k-glass" aria-labelledby="library-title">
+          <div class="model-card-head"><div><h2 id="library-title">Your models</h2><p>Prepared models stay in your library, ready to run again at any time.</p></div><button id="checkpoint-refresh" class="text-btn" type="button">Refresh</button></div>
+          <div class="field"><label for="checkpoint-select">Model to run</label><select id="checkpoint-select"><option value="">Select a prepared model</option></select></div>
+          <dl id="checkpoint-facts" class="model-facts"></dl>
+          <p id="checkpoint-warnings" class="caption muted"></p>
+          <p class="caption muted library-path">Library: <code id="checkpoint-directory">Loading…</code></p>
+        </section>
+
+        <section id="run-card" class="model-card k-glass" aria-labelledby="run-title">
+          <div class="model-card-head"><span class="model-step">3</span><div><h2 id="run-title">Run it</h2><p>Choose where the model runs. You can switch at any time.</p></div></div>
+          <div class="k-segmented destination-switch" role="radiogroup" aria-label="Where the model runs">
+            <label><input type="radio" name="destination" id="destination-local" value="local" checked>This computer</label>
+            <label><input type="radio" name="destination" id="destination-cloud" value="cloud">Remote coordinator</label>
+          </div>
+
+          <div id="destination-local-panel" class="destination-panel">
+            <p class="destination-lede">Runs privately through Ollama on this computer. Nothing leaves your machine. Start Ollama first.</p>
+            <div class="field-grid two">
+              <div class="field"><label for="checkpoint-backend">Ollama address</label><input id="checkpoint-backend" class="code-sm" type="url" value="http://127.0.0.1:11434" spellcheck="false"></div>
+              <div class="field"><label for="checkpoint-context">Context window (tokens)</label><input id="checkpoint-context" type="number" min="1" step="1" placeholder="Maximum"></div>
+            </div>
+            <p id="checkpoint-context-hint" class="tradeoff" data-tone="ok">Maximum — the model's full context.</p>
+            <div class="model-actions"><button id="checkpoint-load" class="primary-btn" disabled>Load on this computer</button><button id="checkpoint-use" class="secondary-btn" disabled>Use in current task</button></div>
+            <p id="checkpoint-load-status" class="caption muted" role="status">Select a prepared model to load it.</p>
+          </div>
+
+          <div id="destination-cloud-panel" class="destination-panel" hidden>
+            <p class="destination-lede">Sends your prepared model to a Kadmium coordinator you run, in verified, resumable chunks. If the connection drops, send again and it picks up where it stopped. The coordinator loads it in its own Ollama at the model's full context unless you lower it, and Condenser asks for unlimited output on every request; what the coordinator's hardware can hold is up to that computer. Kadmium Cloud, the planned premium hosted service, will accept models through this same flow.</p>
+            <div class="field-grid two">
+              <div class="field"><label for="cloud-endpoint">Coordinator address</label><input id="cloud-endpoint" class="code-sm" type="url" placeholder="https://coordinator.example:7848" spellcheck="false"></div>
+              <div class="field"><label for="cloud-key">Access token</label><input id="cloud-key" type="password" autocomplete="off" placeholder="The coordinator's token · memory only"></div>
+              <div class="field"><label for="cloud-context">Context window (tokens)</label><input id="cloud-context" type="number" min="1" step="1" placeholder="Maximum"></div>
+            </div>
+            <p id="cloud-context-hint" class="tradeoff" data-tone="ok">Maximum — the model's full context.</p>
+            <div id="cloud-progress-wrap" class="cloud-progress" hidden><div id="cloud-progress" class="k-progress" role="progressbar" aria-label="Sending model" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div><span id="cloud-progress-label" class="caption muted"></span></div>
+            <div class="model-actions"><button id="cloud-send" class="primary-btn" disabled>Send to coordinator</button><button id="cloud-use" class="secondary-btn" disabled>Use in current task</button></div>
+            <p id="cloud-status" class="caption muted" role="status">Select a prepared model to send it.</p>
+          </div>
+        </section>
+
+        <p class="models-footnote caption muted">Weights are never quantized, pruned, or shortened. The backend you choose runs the original files; KTB shards are a storage layout, not a different model.</p>
+      </div>
+    </section>
+
     <section id="view-capabilities" class="view">
       <div class="capabilities-header">
         <div>
@@ -170,35 +253,8 @@
     <div class="context-panels">
       <section id="context-compute" class="context-panel" role="region" aria-label="Kadmium compute" hidden>
         <div class="inspector-scroll">
-          <section class="inspector-section local-models">
-            <div class="inspector-title-row"><h2 class="inspector-title">Prepare a model for Condenser</h2><span class="compute-label">LOSSLESS</span></div>
-            <p class="caption muted">Preserve the model you chose. Normalize its storage, load it in local Ollama, then use it for coding, research, questions, math, or science.</p>
-            <form id="checkpoint-form">
-              <div class="field"><label for="checkpoint-path">1. Choose a GGUF or SafeTensors model on this computer</label><input id="checkpoint-path" class="code-sm" required spellcheck="false" placeholder="C:\Models\my-model or /models/model.gguf"></div>
-              <button id="checkpoint-browse" class="text-btn" type="button">Browse model files</button>
-              <button id="checkpoint-browse-folder" class="text-btn" type="button">Choose model folder</button>
-              <button id="checkpoint-embedded" class="text-btn" type="button" hidden>Use embedded browser</button>
-              <p id="checkpoint-picker-note" class="caption muted">Browse files on the computer running Kadmium. You can also enter a path above.</p>
-              <div id="checkpoint-browser" hidden><div class="field-inline"><button id="checkpoint-parent" class="text-btn" type="button">Parent folder</button><button id="checkpoint-choose-folder" class="text-btn" type="button">Select this model folder</button><button id="checkpoint-browser-close" class="text-btn" type="button">Close browser</button></div><p id="checkpoint-browser-path" class="code-sm"></p><div id="checkpoint-files"></div></div>
-              <p class="caption muted">Choose a GGUF v3 file or a complete model directory. SafeTensors needs config and tokenizer files; split checkpoints need every shard. Normalization keeps originals and writes an additional copy in KTB banks.</p>
-              <div class="field"><label for="checkpoint-working-directory">Temporary working directory</label><input id="checkpoint-working-directory" class="code-sm" spellcheck="false" placeholder="On the checkpoint's drive"></div>
-              <p class="caption muted">Blank uses a temporary folder inside the model folder, or beside a GGUF file. Enter an existing folder to use another location. The completed package goes to the model library shown below; another drive requires a verified copy there. Allow space for originals and KTB banks in both locations during that copy.</p>
-              <label class="caption"><input id="checkpoint-accept-quantized" type="checkbox"> Accept a pre-quantized source for this import</label>
-              <p class="caption muted">Off by default. A pre-quantized checkpoint (GGUF Q and IQ types, GPTQ, AWQ, bitsandbytes, FP8, FP4 and similar) was reduced in precision before it reached Kadmium. You choose to keep that precision: its bytes are copied exactly and Kadmium never quantizes further, but responses reflect the lower precision and the lost detail cannot be recovered. Leave this off to import only 16-bit or wider weights.</p>
-              <button id="checkpoint-import" class="secondary-btn" type="submit">2. Normalize checkpoint</button>
-            </form>
-            <p id="checkpoint-status" class="caption muted" role="status">No precision conversion, expert removal, or layer skipping.</p>
-            <p class="caption muted">Model library: <code id="checkpoint-directory">Loading…</code>. Each package contains manifest.json, source/ originals, and banks/ normalized .ktb shards. Allow at least twice the source size, plus the backend's copy.</p>
-            <div class="field"><label for="checkpoint-select">Normalized checkpoints</label><select id="checkpoint-select"><option value="">Select a checkpoint</option></select></div>
-            <button id="checkpoint-refresh" class="text-btn">Refresh library</button>
-            <dl id="checkpoint-facts" class="run-facts"></dl>
-            <p id="checkpoint-warnings" class="caption muted"></p>
-            <div class="field"><label for="checkpoint-backend">Local Ollama URL</label><input id="checkpoint-backend" class="code-sm" type="url" value="http://127.0.0.1:11434" spellcheck="false"></div>
-            <p class="caption muted">Start Ollama first. Loading uses the preserved source files, checks tensor metadata, and keeps the checkpoint's declared context size. If it cannot load at that size and precision, it reports the failure.</p>
-            <div class="field"><label for="checkpoint-context">Context window for loading (tokens)</label><input id="checkpoint-context" type="number" min="1" step="1" placeholder="Maximum from model metadata"></div>
-            <p class="caption muted">Tradeoff: a smaller window lowers KV-cache memory and prefill time, but the model can attend to less prompt, history and output at once, and long-context recall and reasoning degrade.</p>
-            <div class="field-inline"><button id="checkpoint-load" class="secondary-btn" disabled>3. Load in Ollama</button><button id="checkpoint-use" class="secondary-btn" disabled>4. Use in this task</button></div>
-            <p id="checkpoint-load-status" class="caption muted" role="status">KTB is a storage format. Generation runs in Ollama; backend arithmetic is not RepOps-certified.</p>
+          <section class="inspector-section">
+            <p class="caption muted">Want to run your own model? <button id="compute-open-models" class="text-btn" type="button">Open Models →</button></p>
           </section>
           <section class="inspector-section">
             <div class="inspector-title-row"><h2 class="inspector-title">Connect distributed compute</h2><span class="compute-label">TCP WORKERS</span></div>
@@ -357,38 +413,42 @@
 <div id="settings-layer" class="modal-layer hidden" role="dialog" aria-modal="true" aria-label="Provider settings">
   <button class="modal-backdrop" data-close="settings" aria-label="Close provider settings"></button>
   <aside class="settings-drawer">
-    <div class="drawer-header"><div><p class="eyebrow label">RUNTIME</p><h2 class="title">Provider settings</h2></div><button class="icon-btn" data-close="settings" aria-label="Close provider settings">×</button></div>
+    <div class="drawer-header"><div><p class="k-eyebrow">This task</p><h2 class="title">Model &amp; quality</h2></div><button class="icon-btn" data-close="settings" aria-label="Close provider settings">×</button></div>
     <div class="drawer-body">
-      <div class="field"><label for="provider">Backend</label><select id="provider"></select></div>
-      <div class="field"><label for="base-url">Base URL</label><input id="base-url" class="code-sm" spellcheck="false" autocomplete="off"></div>
+      <div class="field"><label for="provider">Provider</label><select id="provider"></select></div>
+      <div class="field"><label for="base-url">Server address</label><input id="base-url" class="code-sm" spellcheck="false" autocomplete="off"></div>
       <div class="field"><label for="model">Model</label><input id="model" class="code-sm" list="model-options" spellcheck="false" autocomplete="off" placeholder="provider-model-id"><datalist id="model-options"></datalist></div>
       <div class="field-inline"><button id="load-models" class="secondary-btn">Fetch models</button><span id="models-status" class="caption muted"></span></div>
-      <div class="field"><label for="api-key">API key</label><input id="api-key" type="password" autocomplete="off" placeholder="optional for local providers"><p id="key-hint" class="caption muted">Memory-only. Never written to task history.</p></div>
+      <div class="field"><label for="api-key">API key</label><input id="api-key" type="password" autocomplete="off" placeholder="optional for local providers"><p id="key-hint" class="caption muted">Kept in memory only. Never saved with your tasks.</p></div>
       <p id="provider-note" class="provider-note caption"></p>
-      <button id="settings-local-model" class="secondary-btn">Load a local checkpoint</button>
-      <details class="sampling-settings" open>
-        <summary>Quality &amp; token limits</summary>
-        <p class="caption muted">Blank means maximum: full model input/context and maximum output. Input and output share the model's context window. Original precision is preserved; no automatic history pruning. If an OpenAI-compatible server does not advertise an output maximum, Condenser omits the limit so the server's own maximum applies. Anthropic requires a value; enter its documented limit if it is not reported.</p>
-        <div class="field-grid">
-          <div class="field"><label for="temperature">Temperature</label><input id="temperature" type="number" min="0" step="0.1" placeholder="provider default"></div>
-          <div class="field"><label for="max-tokens">Output tokens per response</label><input id="max-tokens" type="number" min="1" max="4294967295" step="1" placeholder="Maximum supported"></div>
-          <div class="field"><label for="context-window">Context / input window (Ollama)</label><input id="context-window" type="number" min="1" max="2147483647" step="1" placeholder="Full model context"></div>
-          <div class="field"><label for="provider-timeout">Request timeout (seconds)</label><input id="provider-timeout" type="number" min="1" step="1" placeholder="No limit"></div>
+      <button id="settings-local-model" class="secondary-btn">Bring your own model…</button>
+      <details class="sampling-settings quality-settings" open>
+        <summary>Quality &amp; limits</summary>
+        <p id="quality-summary" class="quality-summary" data-tone="ok">Maximum quality — full context, full output, no time limit.</p>
+        <p class="caption muted">Leave a field blank for the maximum the model supports. Lower a limit only when you want to trade quality for speed, memory, or cost; each field explains what you give up.</p>
+        <div class="quality-field">
+          <div class="field"><label for="max-tokens">Longest response (output tokens)</label><input id="max-tokens" type="number" min="1" max="4294967295" step="1" placeholder="Maximum"></div>
+          <p id="max-tokens-hint" class="tradeoff" data-tone="ok">Maximum — responses can be as long as the model allows.</p>
         </div>
-          <p class="caption muted">For other providers, context is configured on the server. Condenser sends all input; backend limits still apply. Lower limits only when you choose to. Temperature controls randomness, not model precision.</p>
-          <ul class="caption muted">
-            <li><strong>Output tokens:</strong> a lower value caps generation length and can truncate multi-step reasoning or long code and answers mid-response.</li>
-            <li><strong>Context / input window:</strong> a lower value reduces KV memory and prefill time, but shrinks total input + output capacity and degrades long-range recall.</li>
-            <li><strong>Request timeout:</strong> a short timeout bounds waiting, but can abort deep reasoning or large-context prefill before the turn completes.</li>
-          </ul>
-          <p class="caption muted">Run budgets can also leave work incomplete. Memory retrieval adds evidence without shrinking the conversation.</p>
-        <button id="quality-maximum" class="text-btn" type="button">Reset to maximum</button>
+        <div class="quality-field">
+          <div class="field"><label for="context-window">Context window (input + output tokens)</label><input id="context-window" type="number" min="1" max="2147483647" step="1" placeholder="Maximum"></div>
+          <p id="context-window-hint" class="tradeoff" data-tone="ok">Maximum — the model sees your whole task. Applies to Ollama; other providers set context on their server.</p>
+        </div>
+        <div class="quality-field">
+          <div class="field"><label for="provider-timeout">Time limit per request (seconds)</label><input id="provider-timeout" type="number" min="1" step="1" placeholder="No limit"></div>
+          <p id="provider-timeout-hint" class="tradeoff" data-tone="ok">No limit — long answers are never cut off by a timer.</p>
+        </div>
+        <div class="quality-field">
+          <div class="field"><label for="temperature">Temperature</label><input id="temperature" type="number" min="0" step="0.1" placeholder="Provider default"></div>
+          <p id="temperature-hint" class="tradeoff">Provider default. Lower is more focused and repeatable; higher is more varied. Precision is unaffected.</p>
+        </div>
+        <p class="caption muted">Condenser always sends your full input and never shortens history unless you turn on compaction below. If an OpenAI-compatible server doesn't report its output maximum, Condenser leaves the limit off so the server's own maximum applies. Anthropic requires a value; enter its documented limit.</p>
+        <button id="quality-maximum" class="text-btn" type="button">Restore maximum quality</button>
         <p id="quality-error" class="caption error" role="alert"></p>
       </details>
       <details id="dsv41-mcl4-settings" class="sampling-settings">
         <summary>DeepSeek-V4.1 &amp; MCL4-COE controls</summary>
-        <label class="caption"><input id="compact-history" type="checkbox"> Allow history compaction and old tool-result pruning</label>
-        <p class="caption muted">Tradeoff: uses fewer tokens per turn, but strips earlier reasoning traces and truncates older tool outputs that later turns may rely on.</p>
+        <label class="caption compact-toggle"><input id="compact-history" type="checkbox"> Compact long histories <span class="muted">— off keeps every message. On summarizes old turns and drops old tool results to fit very long tasks; the model loses that detail.</span></label>
         <div class="field-grid">
           <div class="field">
             <label for="mcl4-mode">COE Mode</label>
