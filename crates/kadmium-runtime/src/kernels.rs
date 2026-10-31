@@ -902,6 +902,25 @@ impl MulMatIdExpertBank {
     }
 }
 
+/// Participant state for `HardwareKernelDispatcher` verification runs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum KernelBenchmarkParticipant {
+    /// Host CPU reference pass alongside a modelled hardware target profile; does not claim
+    /// that the target node itself executed the kernel.
+    HostReference(HardwareNode),
+    /// Unreachable or offline participant that did not execute the kernel pass.
+    Unreachable(HardwareNode),
+    /// Participant that actually executed the kernel pass on `machine_id` and reported its
+    /// measured timing and RepOps digest.
+    VerifiedDevice {
+        node: HardwareNode,
+        machine_id: String,
+        repops_digest_fnv1a: u64,
+        elapsed_execution_us: f64,
+        measured_gflops: f64,
+    },
+}
+
 /// Per-node kernel dispatch profile produced by `HardwareKernelDispatcher`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeKernelDispatchProfile {
@@ -909,18 +928,40 @@ pub struct NodeKernelDispatchProfile {
     pub backend: ComputeBackend,
     pub kernel_target: HardwareKernelTarget,
     pub intrinsic_signature: String,
+    /// Provenance of the execution (`"host_reference"`, `"verified_device_execution"`, or `"unreachable_node"`).
+    pub execution_source: String,
+    /// True only when this participant actually executed the kernel pass on its device (`VerifiedDevice`).
+    pub execution_verified: bool,
+    /// Measured wall-clock duration in microseconds (`0.0` when not executed on device, or host reference timing).
+    pub elapsed_execution_us: f64,
+    /// Measured GFLOP/s computed from actual FLOPs divided by `elapsed_execution_us`.
     pub achieved_gflops: f64,
+    /// Measured host reference GFLOP/s.
+    pub measured_host_gflops: f64,
+    /// Planning estimate GFLOP/s derived from the node's hardware profile (`effective_fp16_tflops * 1000 * 0.78`).
+    pub modelled_target_gflops: f64,
+    /// Modelled memory bandwidth utilization percentage from the node's $q^*$ profile.
     pub memory_bw_utilization_pct: f64,
+    /// Explicit alias for `memory_bw_utilization_pct` indicating it is a planning model estimate.
+    pub modelled_memory_bw_utilization_pct: f64,
+    /// FNV-1a digest of this participant's kernel output (`0` if `Unreachable`).
     pub repops_digest_fnv1a: u64,
 }
 
 /// Complete report from benchmarking and verifying the fused Transformer/MoE kernel suite across a cluster.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HardwareKernelSuiteReport {
+    /// Explicit provenance tag describing what was executed vs modelled.
+    pub measurement_kind: String,
+    /// Human-readable verification status (`"unverified_insufficient_participants"`, `"host_reference_only"`, `"unverified_unreachable_participant"`, `"unverified_single_machine"`, `"divergent_digest_detected"`, or `"bit_identical_across_participants"`).
+    pub verification_status: String,
+    /// Number of participants that completed a verified device kernel execution.
+    pub verified_participant_count: usize,
     pub hidden_dim: usize,
     pub intermediate_dim: usize,
     pub kv_pages_streamed: usize,
     pub canonical_repops_digest_fnv1a: u64,
+    /// True only when at least 2 participants executed on at least 2 distinct machines, all participants were verified device executions, and all produced identical digests.
     pub cross_silicon_bit_identical: bool,
     pub sample_output_norm: f64,
     pub node_profiles: Vec<NodeKernelDispatchProfile>,
@@ -930,10 +971,85 @@ pub struct HardwareKernelSuiteReport {
 pub struct HardwareKernelDispatcher;
 
 impl HardwareKernelDispatcher {
-    /// Executes a full fused Transformer layer micro-benchmark (`FusedRmsNormRopeKernel` ->
-    /// `PagedGqaAttentionKernel` -> `FusedSwiGluExpertKernel`) and verifies `Verde RepOps` parity
-    /// across all nodes in `cluster`.
+    /// Executes one fused Transformer layer pass (`FusedRmsNormRopeKernel` -> `PagedGqaAttentionKernel`
+    /// -> `FusedSwiGluExpertKernel`) and returns `(digest_fnv1a, output_norm, total_flops)`.
+    fn execute_single_pass(
+        hidden_dim: usize,
+        intermediate_dim: usize,
+        input: &[f32],
+        gamma: &[f32],
+        kv_pages: &[KvPageBlock],
+        swiglu: &FusedSwiGluExpertKernel,
+    ) -> (u64, f64, u64) {
+        let q_rope = FusedRmsNormRopeKernel::forward(input, gamma, 42, 10_000.0, 1e-5);
+        let attn_out = PagedGqaAttentionKernel::forward_flash_paged(&q_rope, kv_pages);
+        let post_attn: Vec<f32> = input.iter().zip(&attn_out).map(|(&x, &a)| x + a).collect();
+        let mlp_out = swiglu.forward(&post_attn);
+
+        let final_out_f64: Vec<f64> = post_attn
+            .iter()
+            .zip(&mlp_out)
+            .map(|(&r, &m)| (r + m) as f64)
+            .collect();
+        let tree_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&final_out_f64);
+        let quantized_milliscale = (tree_sum * 1_000_000.0).round() as i64;
+        let digest = 0xcbf2_9ce4_8422_2325_u64
+            ^ (quantized_milliscale as u64).wrapping_mul(0x0100_0000_01b3);
+        let output_norm = final_out_f64.iter().map(|v| v * v).sum::<f64>().sqrt();
+
+        // Approximate FLOP count for RMSNorm+RoPE + PagedGQA + 3x SwiGLU matvecs (gate, up, down):
+        let total_tokens: usize = kv_pages.iter().map(|p| p.tokens_stored).sum();
+        let rms_rope_flops = (hidden_dim * 6) as u64;
+        let attn_flops = (total_tokens * hidden_dim * 4) as u64;
+        let swiglu_flops = (3 * 2 * hidden_dim * intermediate_dim + intermediate_dim * 4) as u64;
+        let total_flops = rms_rope_flops + attn_flops + swiglu_flops;
+
+        (digest, output_norm, total_flops)
+    }
+
+    /// Runs the canonical reference pass on the current machine and wraps the measured result as a
+    /// [`KernelBenchmarkParticipant::VerifiedDevice`] receipt for `machine_id`.
+    pub fn measure_local_device_receipt(
+        node: HardwareNode,
+        machine_id: impl Into<String>,
+    ) -> KernelBenchmarkParticipant {
+        let single =
+            Self::run_verified_kernel_benchmark(&[KernelBenchmarkParticipant::HostReference(
+                node.clone(),
+            )]);
+        let p = &single.node_profiles[0];
+        KernelBenchmarkParticipant::VerifiedDevice {
+            node,
+            machine_id: machine_id.into(),
+            repops_digest_fnv1a: p.repops_digest_fnv1a,
+            elapsed_execution_us: p.elapsed_execution_us,
+            measured_gflops: p.measured_host_gflops,
+        }
+    }
+
+    /// Evaluates the fused Transformer layer reference pass alongside the modelled target profiles
+    /// for `cluster`. Because `cluster` provides only node descriptors (not remote execution receipts),
+    /// every reachable descriptor is labelled `host_reference` (`execution_verified: false`) and
+    /// `cross_silicon_bit_identical` is `false`.
     pub fn run_cluster_kernel_benchmark(cluster: &[HardwareNode]) -> HardwareKernelSuiteReport {
+        let participants: Vec<KernelBenchmarkParticipant> = cluster
+            .iter()
+            .cloned()
+            .map(|n| {
+                if n.network_uplink_gbps <= 0.0 {
+                    KernelBenchmarkParticipant::Unreachable(n)
+                } else {
+                    KernelBenchmarkParticipant::HostReference(n)
+                }
+            })
+            .collect();
+        Self::run_verified_kernel_benchmark(&participants)
+    }
+
+    /// Executes the fused Transformer/MoE kernel benchmark across explicit [`KernelBenchmarkParticipant`] entries.
+    pub fn run_verified_kernel_benchmark(
+        participants: &[KernelBenchmarkParticipant],
+    ) -> HardwareKernelSuiteReport {
         let hidden_dim = 64usize;
         let intermediate_dim = 128usize;
 
@@ -944,10 +1060,6 @@ impl HardwareKernelDispatcher {
             .collect();
         let gamma: Vec<f32> = vec![1.0; hidden_dim];
 
-        // 1. Fused RMSNorm + RoPE
-        let q_rope = FusedRmsNormRopeKernel::forward(&input, &gamma, 42, 10_000.0, 1e-5);
-
-        // 2. Paged GQA Attention over two 16-token KV pages (32 tokens total)
         let build_page = |page_id: u32, seed: f32| -> KvPageBlock {
             let tokens = 16usize;
             let keys = (0..(tokens * hidden_dim))
@@ -965,12 +1077,7 @@ impl HardwareKernelDispatcher {
             }
         };
         let kv_pages = vec![build_page(0, 0.1), build_page(1, 0.7)];
-        let attn_out = PagedGqaAttentionKernel::forward_flash_paged(&q_rope, &kv_pages);
 
-        // Residual connection before SwiGLU MoE expert
-        let post_attn: Vec<f32> = input.iter().zip(&attn_out).map(|(&x, &a)| x + a).collect();
-
-        // 3. Fused SwiGLU Expert over Q4_K quantized weights
         let w_gate: Vec<f32> = (0..(intermediate_dim * hidden_dim))
             .map(|i| repops::sin((i as f32) * 0.017) * 0.25)
             .collect();
@@ -988,44 +1095,171 @@ impl HardwareKernelDispatcher {
             &w_up,
             &w_down,
         );
-        let mlp_out = swiglu.forward(&post_attn);
 
-        let final_out_f64: Vec<f64> = post_attn
-            .iter()
-            .zip(&mlp_out)
-            .map(|(&r, &m)| (r + m) as f64)
-            .collect();
-        let tree_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&final_out_f64);
-        let quantized_milliscale = (tree_sum * 1_000_000.0).round() as i64;
-        let canonical_digest = 0xcbf2_9ce4_8422_2325_u64
-            ^ (quantized_milliscale as u64).wrapping_mul(0x0100_0000_01b3);
-        let output_norm = final_out_f64.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let (canonical_digest, output_norm, _) = Self::execute_single_pass(
+            hidden_dim,
+            intermediate_dim,
+            &input,
+            &gamma,
+            &kv_pages,
+            &swiglu,
+        );
 
-        let node_profiles = cluster
-            .iter()
-            .map(|n| {
-                let target = HardwareKernelTarget::from_node(n);
-                let achieved_gflops =
-                    ((n.effective_fp16_tflops() * 1000.0 * 0.78) * 10.0).round() / 10.0;
-                let bw_util = (74.0 + (n.compute_q_star_ratio() * 18.0)).min(94.5);
-                NodeKernelDispatchProfile {
-                    hostname: n.hostname.clone(),
-                    backend: n.backend,
-                    kernel_target: target,
-                    intrinsic_signature: target.intrinsic_signature().into(),
-                    achieved_gflops,
-                    memory_bw_utilization_pct: (bw_util * 10.0).round() / 10.0,
-                    repops_digest_fnv1a: canonical_digest,
+        let mut node_profiles = Vec::with_capacity(participants.len());
+        let mut verified_participant_count = 0usize;
+        let mut distinct_machines = std::collections::BTreeSet::new();
+        let mut any_unreachable = false;
+        let mut any_host_reference_only = false;
+        let mut any_divergent = false;
+
+        for participant in participants {
+            match participant {
+                KernelBenchmarkParticipant::Unreachable(n) => {
+                    any_unreachable = true;
+                    let target = HardwareKernelTarget::from_node(n);
+                    let modelled_target_gflops =
+                        ((n.effective_fp16_tflops() * 1000.0 * 0.78) * 10.0).round() / 10.0;
+                    let modelled_bw = ((74.0 + (n.compute_q_star_ratio() * 18.0)).min(94.5) * 10.0)
+                        .round()
+                        / 10.0;
+                    node_profiles.push(NodeKernelDispatchProfile {
+                        hostname: n.hostname.clone(),
+                        backend: n.backend,
+                        kernel_target: target,
+                        intrinsic_signature: target.intrinsic_signature().into(),
+                        execution_source: "unreachable_node".into(),
+                        execution_verified: false,
+                        elapsed_execution_us: 0.0,
+                        achieved_gflops: 0.0,
+                        measured_host_gflops: 0.0,
+                        modelled_target_gflops,
+                        memory_bw_utilization_pct: 0.0,
+                        modelled_memory_bw_utilization_pct: modelled_bw,
+                        repops_digest_fnv1a: 0,
+                    });
                 }
-            })
-            .collect();
+                KernelBenchmarkParticipant::HostReference(n) => {
+                    any_host_reference_only = true;
+                    let target = HardwareKernelTarget::from_node(n);
+                    let started = std::time::Instant::now();
+                    let (digest, _, flops) = Self::execute_single_pass(
+                        hidden_dim,
+                        intermediate_dim,
+                        &input,
+                        &gamma,
+                        &kv_pages,
+                        &swiglu,
+                    );
+                    let elapsed = started.elapsed();
+                    let elapsed_secs = elapsed.as_secs_f64().max(1e-7);
+                    let elapsed_us = ((elapsed_secs * 1_000_000.0) * 100.0).round() / 100.0;
+                    let measured_gflops =
+                        (((flops as f64 / elapsed_secs) / 1e9) * 1000.0).round() / 1000.0;
+                    let modelled_target_gflops =
+                        ((n.effective_fp16_tflops() * 1000.0 * 0.78) * 10.0).round() / 10.0;
+                    let modelled_bw = ((74.0 + (n.compute_q_star_ratio() * 18.0)).min(94.5) * 10.0)
+                        .round()
+                        / 10.0;
+
+                    node_profiles.push(NodeKernelDispatchProfile {
+                        hostname: n.hostname.clone(),
+                        backend: n.backend,
+                        kernel_target: target,
+                        intrinsic_signature: target.intrinsic_signature().into(),
+                        execution_source: "host_reference".into(),
+                        execution_verified: false,
+                        elapsed_execution_us: elapsed_us,
+                        achieved_gflops: measured_gflops.max(0.001),
+                        measured_host_gflops: measured_gflops.max(0.001),
+                        modelled_target_gflops,
+                        memory_bw_utilization_pct: modelled_bw,
+                        modelled_memory_bw_utilization_pct: modelled_bw,
+                        repops_digest_fnv1a: digest,
+                    });
+                }
+                KernelBenchmarkParticipant::VerifiedDevice {
+                    node: n,
+                    machine_id,
+                    repops_digest_fnv1a,
+                    elapsed_execution_us,
+                    measured_gflops,
+                } => {
+                    let target = HardwareKernelTarget::from_node(n);
+                    let modelled_target_gflops =
+                        ((n.effective_fp16_tflops() * 1000.0 * 0.78) * 10.0).round() / 10.0;
+                    let modelled_bw = ((74.0 + (n.compute_q_star_ratio() * 18.0)).min(94.5) * 10.0)
+                        .round()
+                        / 10.0;
+
+                    verified_participant_count += 1;
+                    let trimmed_machine = machine_id.trim();
+                    if !trimmed_machine.is_empty() {
+                        distinct_machines.insert(trimmed_machine.to_string());
+                    }
+                    if *repops_digest_fnv1a != canonical_digest {
+                        any_divergent = true;
+                    }
+                    let gflops = (*measured_gflops).max(0.001);
+                    node_profiles.push(NodeKernelDispatchProfile {
+                        hostname: n.hostname.clone(),
+                        backend: n.backend,
+                        kernel_target: target,
+                        intrinsic_signature: target.intrinsic_signature().into(),
+                        execution_source: "verified_device_execution".into(),
+                        execution_verified: true,
+                        elapsed_execution_us: *elapsed_execution_us,
+                        achieved_gflops: gflops,
+                        measured_host_gflops: gflops,
+                        modelled_target_gflops,
+                        memory_bw_utilization_pct: modelled_bw,
+                        modelled_memory_bw_utilization_pct: modelled_bw,
+                        repops_digest_fnv1a: *repops_digest_fnv1a,
+                    });
+                }
+            }
+        }
+
+        let cross_silicon_bit_identical = participants.len() >= 2
+            && verified_participant_count == participants.len()
+            && distinct_machines.len() >= 2
+            && !any_unreachable
+            && !any_host_reference_only
+            && !any_divergent
+            && node_profiles
+                .iter()
+                .all(|p| p.execution_verified && p.repops_digest_fnv1a == canonical_digest);
+
+        let verification_status = if participants.len() < 2 {
+            "unverified_insufficient_participants".into()
+        } else if any_unreachable {
+            "unverified_unreachable_participant".into()
+        } else if any_host_reference_only {
+            "host_reference_only".into()
+        } else if distinct_machines.len() < 2 {
+            "unverified_single_machine".into()
+        } else if any_divergent {
+            "divergent_digest_detected".into()
+        } else {
+            "bit_identical_across_participants".into()
+        };
 
         HardwareKernelSuiteReport {
+            measurement_kind: if participants.is_empty() {
+                "unverified_empty_cluster".into()
+            } else if verified_participant_count == participants.len()
+                && distinct_machines.len() >= 2
+            {
+                "verified_multi_machine_device_execution".into()
+            } else {
+                "host_reference_kernel_execution_with_modelled_targets".into()
+            },
+            verification_status,
+            verified_participant_count,
             hidden_dim,
             intermediate_dim,
             kv_pages_streamed: kv_pages.len(),
             canonical_repops_digest_fnv1a: canonical_digest,
-            cross_silicon_bit_identical: true,
+            cross_silicon_bit_identical,
             sample_output_norm: (output_norm * 1000.0).round() / 1000.0,
             node_profiles,
         }
@@ -1226,5 +1460,100 @@ mod ollama_kernel_tests {
         );
         assert_eq!(yarn_out.len(), d);
         assert!(repops::tree_sum_squares_f64(&yarn_out) > norm_neox);
+    }
+
+    #[test]
+    fn kernel_benchmark_distinguishes_host_reference_unreachable_single_machine_and_verified_multi_machine()
+     {
+        use kadmium_core::sample_personal_cluster;
+
+        // 1. Zero nodes -> empty profiles and cross_silicon_bit_identical == false
+        let empty = HardwareKernelDispatcher::run_cluster_kernel_benchmark(&[]);
+        assert!(empty.node_profiles.is_empty());
+        assert!(!empty.cross_silicon_bit_identical);
+        assert_eq!(empty.verified_participant_count, 0);
+        assert_eq!(
+            empty.verification_status,
+            "unverified_insufficient_participants"
+        );
+
+        let cluster = sample_personal_cluster();
+        // 2. Host-reference cluster benchmark over descriptor list -> host_reference_only, unverified
+        let host_ref = HardwareKernelDispatcher::run_cluster_kernel_benchmark(&cluster[..2]);
+        assert_eq!(host_ref.node_profiles.len(), 2);
+        assert!(!host_ref.cross_silicon_bit_identical);
+        assert_eq!(host_ref.verified_participant_count, 0);
+        assert_eq!(host_ref.verification_status, "host_reference_only");
+        for p in &host_ref.node_profiles {
+            assert_eq!(p.execution_source, "host_reference");
+            assert!(!p.execution_verified);
+            assert!(p.elapsed_execution_us > 0.0);
+            assert!(p.measured_host_gflops > 0.0);
+            assert!(p.modelled_target_gflops > 0.0);
+            assert_ne!(p.measured_host_gflops, p.modelled_target_gflops);
+            assert_eq!(
+                p.repops_digest_fnv1a,
+                host_ref.canonical_repops_digest_fnv1a
+            );
+        }
+
+        // 3. Unreachable node -> unverified participant fails cross-silicon parity
+        let r0 =
+            HardwareKernelDispatcher::measure_local_device_receipt(cluster[0].clone(), "machine-a");
+        let unreachable_report = HardwareKernelDispatcher::run_verified_kernel_benchmark(&[
+            r0.clone(),
+            KernelBenchmarkParticipant::Unreachable(cluster[1].clone()),
+        ]);
+        assert!(!unreachable_report.cross_silicon_bit_identical);
+        assert_eq!(
+            unreachable_report.verification_status,
+            "unverified_unreachable_participant"
+        );
+        assert!(!unreachable_report.node_profiles[1].execution_verified);
+        assert_eq!(unreachable_report.node_profiles[1].repops_digest_fnv1a, 0);
+
+        // 4. Two verified device receipts from the SAME machine -> unverified_single_machine
+        let same_machine_r1 =
+            HardwareKernelDispatcher::measure_local_device_receipt(cluster[1].clone(), "machine-a");
+        let single_machine_report =
+            HardwareKernelDispatcher::run_verified_kernel_benchmark(&[r0.clone(), same_machine_r1]);
+        assert!(!single_machine_report.cross_silicon_bit_identical);
+        assert_eq!(single_machine_report.verified_participant_count, 2);
+        assert_eq!(
+            single_machine_report.verification_status,
+            "unverified_single_machine"
+        );
+
+        // 5. Divergent device digest from a second machine -> divergent_digest_detected
+        let divergent_r1 = KernelBenchmarkParticipant::VerifiedDevice {
+            node: cluster[1].clone(),
+            machine_id: "machine-b".to_string(),
+            repops_digest_fnv1a: host_ref.canonical_repops_digest_fnv1a ^ 0xdead_beef,
+            elapsed_execution_us: 42.0,
+            measured_gflops: 12.5,
+        };
+        let divergent_report =
+            HardwareKernelDispatcher::run_verified_kernel_benchmark(&[r0.clone(), divergent_r1]);
+        assert!(!divergent_report.cross_silicon_bit_identical);
+        assert_eq!(
+            divergent_report.verification_status,
+            "divergent_digest_detected"
+        );
+
+        // 6. Two verified device receipts across two distinct machines with matching digests -> bit-identical
+        let r1 =
+            HardwareKernelDispatcher::measure_local_device_receipt(cluster[1].clone(), "machine-b");
+        let two_ok = HardwareKernelDispatcher::run_verified_kernel_benchmark(&[r0, r1]);
+        assert!(two_ok.cross_silicon_bit_identical);
+        assert_eq!(two_ok.verified_participant_count, 2);
+        assert_eq!(
+            two_ok.verification_status,
+            "bit_identical_across_participants"
+        );
+        for p in &two_ok.node_profiles {
+            assert_eq!(p.execution_source, "verified_device_execution");
+            assert!(p.execution_verified);
+            assert_eq!(p.repops_digest_fnv1a, two_ok.canonical_repops_digest_fnv1a);
+        }
     }
 }

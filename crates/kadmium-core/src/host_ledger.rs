@@ -713,12 +713,18 @@ mod tests {
     }
 
     #[test]
-    fn the_platform_probe_is_consistent_where_it_reads() {
+    fn the_platform_probe_snapshot_sets_the_envelope_where_it_reads() {
         let probe = SystemMemoryProbe;
         if let Some(available) = probe.available_bytes() {
             assert!(available > 0);
-            let ledger = HostMemoryLedger::for_this_host(0);
-            assert!(ledger.envelope_bytes() >= available);
+            // Reuse these readings: a second live probe can observe less available memory.
+            let snapshot = FixedMemoryProbe {
+                available: Some(available),
+                process: probe.process_bytes(),
+            };
+            let expected = available.saturating_add(snapshot.process.unwrap_or(0));
+            let ledger = HostMemoryLedger::from_probe(snapshot, 0);
+            assert_eq!(ledger.envelope_bytes(), expected);
         }
     }
 }

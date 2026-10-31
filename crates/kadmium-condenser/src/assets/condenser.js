@@ -54,6 +54,8 @@
   };
 
   const $ = (id) => document.getElementById(id);
+  // Relative assets and requests work both standalone and mounted at /condenser/.
+  const apiPath = (path) => new URL(path.replace(/^\//, ''), document.baseURI).pathname;
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -68,7 +70,7 @@
   }
 
   async function api(path, options) {
-    const response = await fetch(path, options);
+    const response = await fetch(apiPath(path), options);
     const text = await response.text();
     let body = {};
     if (text) {
@@ -102,10 +104,16 @@
       allowed_tools: [],
       interview: false,
       max_steps: 8,
+      timeout_secs: 0,
       max_run_seconds: null,
       max_output_tokens: null,
       max_tool_calls: null,
       system_prompt: '',
+      research_required: false,
+      memory_enabled: false,
+      allow_host_commands: false,
+      command_timeout_secs: null,
+      operating_instructions: true,
       sampling: {}
     };
   }
@@ -115,12 +123,17 @@
     const base = defaultConfig(kind);
     const config = Object.assign(base, raw || {});
     config.kind = kind;
-    config.max_steps = Math.max(1, Math.min(32, Number(config.max_steps) || 8));
+    config.max_steps = Math.max(1, Math.min(256, Number(config.max_steps) || 8));
     config.enable_tools = Boolean(config.enable_tools);
     // Omitted lists from older tasks retain their original all-tools semantics.
     config.allowed_tools = raw && Array.isArray(raw.allowed_tools) ? [...new Set(raw.allowed_tools.filter(name => typeof name === 'string'))] : null;
     config.interview = Boolean(config.interview);
     config.system_prompt = typeof config.system_prompt === 'string' ? config.system_prompt : '';
+    config.research_required = config.research_required === true;
+    config.memory_enabled = config.memory_enabled === true;
+    config.allow_host_commands = config.allow_host_commands === true;
+    config.operating_instructions = config.operating_instructions !== false;
+    config.command_timeout_secs = Number.isInteger(config.command_timeout_secs) ? config.command_timeout_secs : null;
     config.sampling = config.sampling && typeof config.sampling === 'object' ? config.sampling : {};
     config.sampling = JSON.parse(JSON.stringify(config.sampling));
     delete config.api_key;
@@ -308,8 +321,15 @@
     return state.plugins.flatMap(plugin => plugin.manifest.tools.map(tool => plugin.manifest.id + '__' + tool.name));
   }
 
+  // Side-effecting built-ins are never part of "all"; each must be checked by name.
+  const EXPLICIT_TOOLS = new Set(['condenser__command', 'condenser__file_edit', 'condenser__web_fetch', 'condenser__delegate']);
+
+  function implicitToolNames() {
+    return toolNames().filter(name => !EXPLICIT_TOOLS.has(name));
+  }
+
   function selectedToolNames(config) {
-    return config.allowed_tools === null ? toolNames() : config.allowed_tools;
+    return config.allowed_tools === null ? implicitToolNames() : config.allowed_tools;
   }
 
   function captureConfig(config) {
@@ -409,13 +429,88 @@
     });
   }
 
+  function syncSessionRailAccessibility() {
+    const rail = $('session-rail');
+    if (!rail) return;
+    const overlay = overlayPanes();
+    const mobileOpen = overlay && document.body.classList.contains('sessions-open');
+    const desktopOpen = !overlay && !document.body.classList.contains('sidebar-closed');
+    const hidden = !(mobileOpen || desktopOpen);
+    rail.inert = hidden;
+    if (hidden) rail.setAttribute('inert', '');
+    else rail.removeAttribute('inert');
+    rail.setAttribute('aria-hidden', String(hidden));
+    const toggleSessions = $('toggle-sessions');
+    if (toggleSessions) toggleSessions.setAttribute('aria-expanded', String(mobileOpen));
+    const toggleSidebar = $('toggle-sidebar');
+    if (toggleSidebar) toggleSidebar.setAttribute('aria-expanded', String(desktopOpen));
+    if (hidden && rail.contains(document.activeElement)) {
+      const target = overlay ? toggleSessions : toggleSidebar;
+      if (target) target.focus();
+    }
+  }
+
+  function railFocusableElements() {
+    const rail = $('session-rail');
+    if (!rail) return [];
+    return Array.from(rail.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+      .filter((node) => !node.classList.contains('pane-resizer') && !node.closest('[hidden], .hidden'));
+  }
+
+  function openMobileSessions(focusTarget) {
+    document.body.classList.add('sessions-open');
+    syncSessionRailAccessibility();
+    const rail = $('session-rail');
+    if (rail) void rail.offsetWidth;
+    const target = focusTarget || $('new-task') || railFocusableElements()[0];
+    if (target) target.focus();
+  }
+
+  function closeMobileSessions(restoreFocus) {
+    const wasOpen = document.body.classList.contains('sessions-open');
+    document.body.classList.remove('sessions-open');
+    syncSessionRailAccessibility();
+    if (wasOpen && restoreFocus && overlayPanes()) {
+      const toggle = $('toggle-sessions');
+      if (toggle) toggle.focus();
+    }
+  }
+
+  function trapSessionRailFocus(event) {
+    if (event.key !== 'Tab' || !overlayPanes() || !document.body.classList.contains('sessions-open')) return;
+    const focusables = railFocusableElements();
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const rail = $('session-rail');
+    const active = document.activeElement;
+    if (!rail.contains(active)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+      return;
+    }
+    if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   function setView(name) {
+    const railHadFocus = Boolean($('session-rail') && $('session-rail').contains(document.activeElement));
     document.body.dataset.view = name;
     document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === 'view-' + name));
     document.querySelectorAll('.rail-nav').forEach((button) => button.classList.toggle('active', button.dataset.view === name));
-    document.body.classList.remove('sessions-open');
+    closeMobileSessions(false);
     applyPaneWidths();
-    if (name === 'capabilities') loadPlugins();
+    if (name === 'capabilities') {
+      loadPlugins();
+      if (overlayPanes() && railHadFocus && $('refresh-plugins')) $('refresh-plugins').focus();
+    } else if (overlayPanes() && railHadFocus && $('prompt')) {
+      $('prompt').focus();
+    }
   }
 
   function saveDockLayout() {
@@ -457,6 +552,7 @@
   }
 
   function applyPaneWidths() {
+    syncSessionRailAccessibility();
     if (overlayPanes()) return;
     const railLimits = paneLimits('rail');
     const contextLimits = paneLimits('context');
@@ -1153,6 +1249,7 @@
     runbook.replaceChildren();
     const events = [];
     session.runs.forEach((run, runIndex) => {
+      if (run.instructions) events.push({ type: 'instructions', runIndex, detail: run.instructions });
       if (run.error) events.push({ type: run.status === 'cancelled' ? 'cancelled' : 'error', runIndex, detail: run.error });
       if (run.partial_output) events.push({ type: 'partial', runIndex, detail: run.partial_output });
       (run.steps || []).forEach((step) => {
@@ -1178,6 +1275,9 @@
       } else if (event.type === 'tool') {
         name = 'Tool · ' + event.execution.tool_name;
         detail = Number(event.execution.duration_ms).toFixed(1) + ' ms' + (event.execution.result.is_error ? ' · error' : ' · complete');
+      } else if (event.type === 'instructions') {
+        name = 'Operating rules sent R' + (event.runIndex + 1);
+        detail = event.detail;
       } else {
         name = event.type === 'cancelled' ? 'Run stopped' : event.type === 'partial' ? 'Partial response (not replayed)' : 'Turn failed';
         detail = event.detail;
@@ -1206,6 +1306,12 @@
     });
     renderRunbook(session);
     if (document.activeElement !== $('system-prompt')) $('system-prompt').value = session.config.system_prompt;
+    $('research-required').checked = session.config.research_required;
+    $('memory-enabled').checked = session.config.memory_enabled;
+    $('allow-host-commands').checked = session.config.allow_host_commands;
+    $('operating-instructions').checked = session.config.operating_instructions;
+    if (document.activeElement !== $('command-timeout')) $('command-timeout').value = session.config.command_timeout_secs == null ? '' : session.config.command_timeout_secs;
+    $('command-timeout').disabled = state.busy;
   }
 
   function renderTask() {
@@ -1293,7 +1399,7 @@
         updateTaskConfig();
         renderTask();
       });
-      row.append(input, element('span', '', name + (available.includes(name) ? '' : ' · unavailable')));
+      row.append(input, element('span', '', name + (EXPLICIT_TOOLS.has(name) ? ' · side effects' : '') + (available.includes(name) ? '' : ' · unavailable')));
       summary.append(row);
     });
   }
@@ -1411,7 +1517,8 @@
       const result = await api('/api/v1/plugins/invoke', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ plugin_id: state.selectedTool.pluginId, tool: state.selectedTool.toolName, arguments: argumentsValue })
+        body: JSON.stringify({ plugin_id: state.selectedTool.pluginId, tool: state.selectedTool.toolName, arguments: argumentsValue,
+          agent: { session_id: currentSession().config.memory_enabled ? currentSession().id : null } })
       });
       showToolResult(result.content, result.is_error);
     } catch (error) {
@@ -1461,6 +1568,10 @@
     $('model').value = session.config.model;
     $('temperature').value = session.config.sampling.temperature === undefined ? '' : session.config.sampling.temperature;
     $('max-tokens').value = session.config.sampling.max_tokens === undefined ? '' : session.config.sampling.max_tokens;
+    $('context-window').value = session.config.sampling.context_window === undefined ? '' : session.config.sampling.context_window;
+    $('compact-history').checked = session.config.sampling.compact_history === true;
+    $('quality-error').textContent = '';
+    $('provider-timeout').value = session.config.timeout_secs || '';
     const mcl4 = session.config.sampling.mcl4_coe || {};
     if ($('mcl4-mode')) $('mcl4-mode').value = mcl4.mode || 'uta';
     if ($('mcl4-effort')) $('mcl4-effort').value = mcl4.reasoning_effort || 'high';
@@ -1473,15 +1584,24 @@
   function saveSettings() {
     const session = currentSession();
     if (!session) return;
+    for (const id of ['max-tokens', 'context-window', 'temperature', 'provider-timeout']) {
+      if (!$(id).checkValidity()) { $('quality-error').textContent = 'Enter a valid ' + (id === 'max-tokens' ? 'output token limit' : id.replace('-', ' ')) + ', or leave it blank for the default.'; $(id).reportValidity(); return; }
+    }
+    if ($('provider').value !== 'ollama' && $('context-window').value !== '') {
+      $('quality-error').textContent = 'Context allocation is an Ollama option. Clear it for this provider and configure context on its server.'; return;
+    }
     const kind = $('provider').value;
     const config = session.config;
     if (config.kind !== kind || config.base_url !== $('base-url').value.trim() || config.model !== $('model').value.trim()) delete config.checkpoint_id;
     config.kind = kind;
     config.base_url = $('base-url').value.trim();
     config.model = $('model').value.trim();
+    config.timeout_secs = $('provider-timeout').value === '' ? 0 : Number($('provider-timeout').value);
     config.sampling = {};
     if ($('temperature').value !== '') config.sampling.temperature = Number($('temperature').value);
     if ($('max-tokens').value !== '') config.sampling.max_tokens = Number($('max-tokens').value);
+    if ($('context-window').value !== '') config.sampling.context_window = Number($('context-window').value);
+    if (kind === 'mcl4-coe') config.sampling.compact_history = $('compact-history').checked;
     if (kind === 'mcl4-coe' || (config.model && config.model.toLowerCase().includes('v4.1'))) {
       const mcl4 = {
         mode: $('mcl4-mode') ? $('mcl4-mode').value : 'uta',
@@ -1513,7 +1633,7 @@
       model: $('model').value.trim(),
       base_url: $('base-url').value.trim(),
       api_key: $('api-key').value || null,
-      timeout_secs: 300
+      timeout_secs: 30
     };
   }
 
@@ -1546,11 +1666,16 @@
     closeLayer('settings');
     setView('harness');
     setContextPanel('compute');
+    state.contextWide = true;
+    state.contextWidth = state.expandedContextWidth;
+    document.body.classList.add('context-wide');
+    applyPaneWidths();
+    $('checkpoint-path').focus();
   }
 
   function checkpointControls() {
     const busy = state.localModels.busy;
-    ['checkpoint-path', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend'].forEach(id => { $(id).disabled = busy; });
+    ['checkpoint-path', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse'].forEach(id => { $(id).disabled = busy; });
     $('checkpoint-load').disabled = busy || !$('checkpoint-select').value;
     $('checkpoint-use').disabled = busy || state.busy || !state.localModels.loaded;
   }
@@ -1560,7 +1685,7 @@
     const facts = $('checkpoint-facts');
     facts.replaceChildren();
     if (selected) {
-      const pairs = [['Format', selected.source_format], ['Architecture', selected.architecture || 'Unknown'], ['Tensors', selected.tensor_count], ['Source bytes', selected.source_bytes.toLocaleString()], ['KTB bytes', selected.bank_bytes.toLocaleString()], ['Source types', selected.dtypes.join(', ')], ['Context tokens', selected.context_length || 'Not declared'], ['Checkpoint', selected.id]];
+      const pairs = [['Format', selected.source_format], ['Architecture', selected.architecture || 'Unknown'], ['Tensors', selected.tensor_count], ['Normalized shards', selected.bank_count], ['Source bytes', selected.source_bytes.toLocaleString()], ['KTB bytes', selected.bank_bytes.toLocaleString()], ['Source types', selected.dtypes.join(', ')], ['Maximum context tokens', selected.context_length || 'Not declared'], ['Checkpoint', selected.id], ['Shard folder', state.localModels.directory + '/' + selected.id + '/banks']];
       pairs.forEach(([key, value]) => { const row = element('div'); row.append(element('dt', '', key), element('dd', 'code-sm', value)); facts.append(row); });
     }
     $('checkpoint-warnings').textContent = selected ? selected.warnings.join(' ') : '';
@@ -1572,8 +1697,10 @@
     try {
       const list = await api('/api/v1/checkpoints');
       if (request !== state.localModels.request) return;
-      const selected = wanted || $('checkpoint-select').value;
+      const selected = wanted || $('checkpoint-select').value || (currentSession() && currentSession().config.checkpoint_id);
       state.localModels.items = list.checkpoints;
+      $('checkpoint-directory').textContent = list.directory;
+      state.localModels.directory = list.directory;
       $('checkpoint-select').replaceChildren(new Option('Select a checkpoint', ''));
       list.checkpoints.forEach(item => $('checkpoint-select').append(new Option(item.name + ' · ' + item.id.slice(0, 12), item.id)));
       $('checkpoint-select').value = selected;
@@ -1599,13 +1726,14 @@
 
   async function loadCheckpoint() {
     if (state.localModels.busy || !$('checkpoint-select').value) return;
+    if (!$('checkpoint-context').reportValidity()) return;
     state.localModels.busy = true;
     state.localModels.loaded = null;
     checkpointControls();
-    $('checkpoint-load-status').textContent = 'Verifying package, uploading local blobs, checking tensor metadata, and loading the original context size. No smaller model or precision is selected on failure.';
+    $('checkpoint-load-status').textContent = 'Verifying package, uploading local blobs, checking tensor metadata, and loading the requested context (maximum by default). No smaller model or precision is selected on failure.';
     try {
-      state.localModels.loaded = await postJson('/api/v1/checkpoints/load', { checkpoint_id: $('checkpoint-select').value, base_url: $('checkpoint-backend').value.trim() });
-      $('checkpoint-load-status').textContent = 'Loaded. Tensor metadata matches. Choose Use in this task to change its provider. ' + state.localModels.loaded.execution;
+      state.localModels.loaded = await postJson('/api/v1/checkpoints/load', { checkpoint_id: $('checkpoint-select').value, base_url: $('checkpoint-backend').value.trim(), context_length: $('checkpoint-context').value === '' ? null : Number($('checkpoint-context').value) });
+      $('checkpoint-load-status').textContent = 'Loaded at ' + state.localModels.loaded.context_length + ' context tokens. Tensor metadata matches. Choose Use in this task to change its provider. ' + state.localModels.loaded.execution;
     } catch (error) { $('checkpoint-load-status').textContent = error.message; }
     finally { state.localModels.busy = false; checkpointControls(); }
   }
@@ -1619,6 +1747,9 @@
     session.config.base_url = loaded.provider.base_url;
     session.config.checkpoint_id = loaded.checkpoint.id;
     delete session.config.sampling.mcl4_coe;
+    delete session.config.sampling.compact_history;
+    delete session.config.sampling.context_window;
+    if (loaded.context_length < loaded.checkpoint.context_length) session.config.sampling.context_window = loaded.context_length;
     session.lastError = null;
     session.status = 'ready';
     session.updatedAt = Date.now();
@@ -1626,6 +1757,36 @@
     renderAll();
     $('checkpoint-load-status').textContent = 'This task now uses ' + loaded.checkpoint.name + ' through local Ollama. Enter a prompt to run inference.';
     $('prompt').focus();
+  }
+
+  async function browseCheckpoints(path) {
+    const request = state.localModels.browseRequest = (state.localModels.browseRequest || 0) + 1;
+    $('checkpoint-browser').hidden = false;
+    $('checkpoint-files').textContent = 'Reading model folders…';
+    try {
+      const listing = await postJson('/api/v1/checkpoints/browse', { path: path || null });
+      if (request !== state.localModels.browseRequest) return;
+      state.localModels.browse = listing;
+      $('checkpoint-browser-path').textContent = listing.path;
+      $('checkpoint-parent').disabled = !listing.parent;
+      $('checkpoint-files').replaceChildren();
+      listing.entries.forEach(entry => {
+        const button = element('button', 'text-btn checkpoint-file', (entry.directory ? 'Folder: ' : 'Model: ') + entry.name);
+        button.type = 'button';
+        button.addEventListener('click', () => {
+          if (state.localModels.busy) return;
+          if (entry.directory) browseCheckpoints(entry.path);
+          else {
+            // A SafeTensors file needs its full sibling package, including tokenizer/config.
+            $('checkpoint-path').value = entry.name.endsWith('.safetensors') ? listing.path : entry.path;
+            $('checkpoint-browser').hidden = true;
+          }
+        });
+        $('checkpoint-files').append(button);
+      });
+      if (!listing.entries.length) $('checkpoint-files').textContent = 'No model files or subfolders here. You can still select this folder.';
+      if (listing.truncated) $('checkpoint-files').append(element('p', 'caption', 'Showing the first 500 entries. Enter a more specific path to find other files.'));
+    } catch (error) { if (request === state.localModels.browseRequest) $('checkpoint-files').textContent = error.message; }
   }
 
   function resetJobInputs() {
@@ -1766,7 +1927,7 @@
 
   async function cancelAcceptedRun(run) {
     try {
-      const response = await fetch('/api/v1/runs/' + encodeURIComponent(run.id) + '/cancel', { method: 'POST' });
+      const response = await fetch(apiPath('/api/v1/runs/' + encodeURIComponent(run.id) + '/cancel'), { method: 'POST' });
       // A completed run may win the race; its final stream report still decides the outcome.
       if (!response.ok && response.status !== 404) throw new Error('Could not stop the run (HTTP ' + response.status + ').');
     } catch (error) {
@@ -1989,9 +2150,10 @@
       model: config.model,
       base_url: config.base_url,
       api_key: state.credentials[workflow.credentialKey(config.kind, config.base_url)] || null,
-      timeout_secs: 300
+      timeout_secs: config.timeout_secs || 0
     };
     const requestPayload = {
+      agent: { session_id: config.memory_enabled ? session.id : null, research_required: config.research_required, allow_host_commands: config.allow_host_commands, command_timeout_secs: config.command_timeout_secs, operating_instructions: config.operating_instructions },
       run_id: uid(),
       provider,
       messages,
@@ -2038,7 +2200,7 @@
       return liveMessage;
     };
 
-    const streamResp = await fetch('/api/v1/chat/stream', {
+    const streamResp = await fetch(apiPath('/api/v1/chat/stream'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(requestPayload)
@@ -2090,7 +2252,7 @@
     target.messages = report.messages.filter((message) => message.role !== 'system');
     const partialOutput = report.status !== 'completed' && liveMessage ? liveMessage.content : null;
     const terminalError = report.status === 'completed' ? null : (report.error || ('Run ended: ' + report.status));
-    target.runs.push({ id: requestPayload.run_id, at: Date.now(), route, config, message_start: messageStart, message_end: target.messages.length, partial_output: partialOutput, steps: report.steps, usage: report.usage, diagnostics: report.diagnostics, status: report.status, error: terminalError });
+    target.runs.push({ id: requestPayload.run_id, at: Date.now(), route, config, message_start: messageStart, message_end: target.messages.length, partial_output: partialOutput, steps: report.steps, usage: report.usage, diagnostics: report.diagnostics, instructions: report.instructions || null, status: report.status, error: terminalError });
     target.status = report.status === 'cancelled' ? 'cancelled' : terminalError ? 'error' : 'complete';
     target.lastError = terminalError;
     target.updatedAt = Date.now();
@@ -2264,7 +2426,8 @@
       $(id).addEventListener('click', () => {
         const session = currentSession();
         if (!session || state.busy) return;
-        session.config.allowed_tools = all ? toolNames() : [];
+        const explicit = selectedToolNames(session.config).filter(name => EXPLICIT_TOOLS.has(name));
+        session.config.allowed_tools = all ? [...new Set([...implicitToolNames(), ...explicit])] : [];
         updateTaskConfig();
         renderTask();
       });
@@ -2277,6 +2440,12 @@
     $('open-model-library').addEventListener('click', openModelLibrary);
     $('settings-local-model').addEventListener('click', openModelLibrary);
     $('checkpoint-form').addEventListener('submit', event => { event.preventDefault(); importCheckpoint(); });
+    $('quality-maximum').addEventListener('click', () => { $('max-tokens').value = ''; $('context-window').value = ''; $('compact-history').checked = false; $('provider-timeout').value = ''; $('quality-error').textContent = ''; });
+    $('checkpoint-browse').addEventListener('click', () => browseCheckpoints($('checkpoint-path').value.trim()));
+    $('checkpoint-parent').addEventListener('click', () => { if (state.localModels.browse) browseCheckpoints(state.localModels.browse.parent); });
+    $('checkpoint-choose-folder').addEventListener('click', () => { if (!state.localModels.busy && state.localModels.browse) { $('checkpoint-path').value = state.localModels.browse.path; $('checkpoint-browser').hidden = true; } });
+    $('checkpoint-browser-close').addEventListener('click', () => { $('checkpoint-browser').hidden = true; });
+    $('checkpoint-context').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Context changed. Load again to verify this allocation.'; });
     $('checkpoint-refresh').addEventListener('click', () => refreshCheckpoints());
     $('checkpoint-select').addEventListener('change', () => { state.localModels.loaded = null; $('checkpoint-load-status').textContent = 'Load this checkpoint before using it in a task.'; renderCheckpoint(); });
     $('checkpoint-backend').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Endpoint changed. Load the checkpoint at this endpoint before using it.'; });
@@ -2289,7 +2458,7 @@
     $('compute-model').addEventListener('change', invalidateCompute);
     $('attach-compute').addEventListener('click', attachCompute);
     $('base-url').addEventListener('input', () => { $('api-key').value = state.credentials[workflow.credentialKey($('provider').value, $('base-url').value)] || ''; });
-    [['run-seconds', 'max_run_seconds'], ['run-output-budget', 'max_output_tokens'], ['run-tool-budget', 'max_tool_calls']].forEach(([id, key]) => {
+    [['run-seconds', 'max_run_seconds'], ['run-output-budget', 'max_output_tokens'], ['run-tool-budget', 'max_tool_calls'], ['command-timeout', 'command_timeout_secs']].forEach(([id, key]) => {
       $(id).addEventListener('change', () => {
         const session = currentSession();
         if (!session || !$(id).reportValidity()) return;
@@ -2341,7 +2510,7 @@
       const session = currentSession();
       if (!session) return;
       session.config.enable_tools = $('enable-tools').checked;
-      if (session.config.allowed_tools === null) session.config.allowed_tools = toolNames();
+      if (session.config.allowed_tools === null) session.config.allowed_tools = implicitToolNames();
       session.updatedAt = Date.now();
       saveSessions();
       renderTask();
@@ -2351,14 +2520,21 @@
     $('step-budget').addEventListener('change', () => {
       const session = currentSession();
       if (!session) return;
-      session.config.max_steps = Math.max(1, Math.min(32, Number($('step-budget').value) || 8));
+      session.config.max_steps = Math.max(1, Math.min(256, Number($('step-budget').value) || 8));
       $('step-budget').value = session.config.max_steps;
       updateTaskConfig();
+      if (session.config.max_steps > 32 && $('composer-status')) {
+        $('composer-status').textContent = 'Long-horizon budget (' + session.config.max_steps + ' steps): higher latency and token usage; default 64-call and 30m guardrails apply unless overridden.';
+      }
     });
     $('save-instructions').addEventListener('click', () => {
       const session = currentSession();
       if (!session) return;
       session.config.system_prompt = $('system-prompt').value;
+      session.config.research_required = $('research-required').checked;
+      session.config.memory_enabled = $('memory-enabled').checked;
+      session.config.allow_host_commands = $('allow-host-commands').checked;
+      session.config.operating_instructions = $('operating-instructions').checked;
       session.updatedAt = Date.now();
       saveSessions();
       renderTask();
@@ -2385,22 +2561,32 @@
     $('session-search').addEventListener('input', renderSessions);
     document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => closeLayer(button.dataset.close)));
     document.addEventListener('keydown', (event) => {
+      trapSessionRailFocus(event);
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        if (window.matchMedia('(max-width: 980px)').matches) document.body.classList.add('sessions-open');
-        $('session-search').focus();
+        if (overlayPanes()) openMobileSessions($('session-search'));
+        else if (document.body.classList.contains('sidebar-closed')) {
+          document.body.classList.remove('sidebar-closed');
+          applyPaneWidths();
+          $('session-search').focus();
+        } else {
+          $('session-search').focus();
+        }
       }
       if (event.key === 'Escape') {
         closeLayer('settings');
         closeLayer('tool');
-        document.body.classList.remove('sessions-open');
+        closeMobileSessions(true);
       }
     });
     $('toggle-context').addEventListener('click', () => { document.body.classList.toggle('context-closed'); applyPaneWidths(); });
     $('close-context').addEventListener('click', () => { document.body.classList.add('context-closed'); applyPaneWidths(); });
     $('toggle-sidebar').addEventListener('click', () => { document.body.classList.toggle('sidebar-closed'); applyPaneWidths(); });
-    $('toggle-sessions').addEventListener('click', () => document.body.classList.toggle('sessions-open'));
-    $('session-backdrop').addEventListener('click', () => document.body.classList.remove('sessions-open'));
+    $('toggle-sessions').addEventListener('click', () => {
+      if (document.body.classList.contains('sessions-open')) closeMobileSessions(true);
+      else openMobileSessions();
+    });
+    $('session-backdrop').addEventListener('click', () => closeMobileSessions(true));
     bindPaneResizer('rail', $('resize-sessions'));
     bindPaneResizer('context', $('resize-context'));
 
@@ -2480,7 +2666,7 @@
       const files = state.files;
       if (!files.selected || !files.dirty || files.saving) return;
       const payload = JSON.stringify({ path: files.selected, content: $('file-editor').value });
-      navigator.sendBeacon('/api/v1/files/write', new Blob([payload], { type: 'application/json' }));
+      navigator.sendBeacon(apiPath('/api/v1/files/write'), new Blob([payload], { type: 'application/json' }));
     });
 
     $('terminal-form').addEventListener('submit', (event) => { event.preventDefault(); executeTerminal(); });
@@ -2535,8 +2721,13 @@
     bindEvents();
     resetJobInputs();
     const paneObserver = new ResizeObserver(() => {
-      if (overlayPanes()) finishPaneDrag();
-      else applyPaneWidths();
+      if (overlayPanes()) {
+        finishPaneDrag();
+        syncSessionRailAccessibility();
+      } else {
+        document.body.classList.remove('sessions-open');
+        applyPaneWidths();
+      }
     });
     paneObserver.observe(document.querySelector('.app-shell'));
     $('toggle-context-width').title = state.contextWide ? 'Collapse dock width' : 'Expand dock';
@@ -2544,9 +2735,17 @@
     setContextPanel(state.contextPanel, false);
     updateBrowserHistory();
     if (window.matchMedia('(max-width: 980px)').matches) document.body.classList.add('context-closed');
+    syncSessionRailAccessibility();
     await loadProviders();
     loadSessions();
     renderAll();
+    if (location.pathname.startsWith('/condenser/')) {
+      $('return-kadmium').hidden = false;
+      $('return-kadmium').href = window.__KADMIUM_DESKTOP__ ? '/companion#models' : '/#/models';
+      $('compute-url').value = location.origin;
+    }
+    if (location.hash === '#models') openModelLibrary();
+    window.addEventListener('hashchange', () => { if (location.hash === '#models') openModelLibrary(); });
     await Promise.all([loadPlugins(), loadSystem()]);
   }
 

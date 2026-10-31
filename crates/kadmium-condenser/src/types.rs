@@ -129,6 +129,13 @@ impl ToolResult {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SamplingParams {
+    /// Ollama `num_ctx`. None keeps the server/Modelfile setting; an explicit value is
+    /// validated against the model's native maximum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    /// Explicit opt-in to MCL4 conversation pruning; maximum-quality runs preserve history.
+    #[serde(default)]
+    pub compact_history: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -147,6 +154,14 @@ pub struct SamplingParams {
 
 impl SamplingParams {
     pub fn validate(&self) -> Result<()> {
+        if self
+            .context_window
+            .is_some_and(|v| v == 0 || v > i32::MAX as u32)
+        {
+            return Err(CondenserError::Config(
+                "context_window must be between 1 and 2147483647".into(),
+            ));
+        }
         if self.temperature.is_some_and(|v| !v.is_finite() || v < 0.0) {
             return Err(CondenserError::Config(
                 "temperature must be finite and non-negative".into(),
@@ -168,6 +183,11 @@ impl SamplingParams {
         if self.max_tokens == Some(0) {
             return Err(CondenserError::Config(
                 "max_tokens must be at least 1 when supplied".into(),
+            ));
+        }
+        if self.context_window == Some(0) {
+            return Err(CondenserError::Config(
+                "context_window must be at least 1 when supplied".into(),
             ));
         }
         if self.stop.iter().any(|value| value.is_empty()) {
@@ -359,7 +379,7 @@ impl fmt::Debug for ProviderConfig {
 }
 
 fn default_timeout_secs() -> u64 {
-    300
+    0
 }
 
 impl ProviderConfig {
@@ -392,11 +412,6 @@ impl ProviderConfig {
     /// Validates the fields needed to contact a provider. Model catalogs use
     /// this alone; completion calls also use `validate` and require a model.
     pub fn validate_connection(&self) -> Result<()> {
-        if self.timeout_secs == 0 {
-            return Err(CondenserError::Config(
-                "timeout_secs must be at least 1".into(),
-            ));
-        }
         let url = reqwest::Url::parse(self.base_url()).map_err(|error| {
             CondenserError::Config(format!("invalid provider base URL: {error}"))
         })?;

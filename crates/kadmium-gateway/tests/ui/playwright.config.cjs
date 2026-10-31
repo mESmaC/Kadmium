@@ -14,11 +14,14 @@ module.exports = defineConfig({
     trace: 'retain-on-failure'
   },
   webServer: {
-    command: 'cargo run -p kadmium-cli --bin kadmium -- serve --port 17948 --worker-port 17949',
+    command: 'cargo run -p kadmium-gateway --example control_room_fixture -- --port 17948',
     cwd: path.resolve(__dirname, '../../../..'),
-    env: { KADMIUM_STATE_DIR: path.resolve(__dirname, '../../../../target/workspace-ui-state') },
+    env: {
+      KADMIUM_STATE_DIR: path.resolve(__dirname, '../../../../target/workspace-ui-state'),
+      KADMIUM_DISABLE_LIVE_PROBES: '1'
+    },
     url: 'http://127.0.0.1:17948/workspace.js',
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 300000
   }
 });

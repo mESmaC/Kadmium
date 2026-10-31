@@ -192,7 +192,7 @@ test('Control Room mobile navigation, recovery, and honest diagnostic status', {
     const companion = await browser.newPage();
     companion.on('pageerror', e => errors.push(e.message));
     await companion.goto(base + '/companion#/models');
-    await companion.getByText(/Model selection creates a placement plan/).waitFor();
+    await companion.getByText(/The catalog below creates a placement plan/).waitFor();
     assert.doesNotMatch(await companion.locator('body').innerText(), /Running now|No model loaded|Load one and Kadmium/);
     await companion.close();
     assert.deepEqual(errors, []);
@@ -200,6 +200,6 @@ test('Control Room mobile navigation, recovery, and honest diagnostic status', {
     if (browser) await browser.close();
     server.kill();
     await new Promise(resolve => { if (server.exitCode !== null) resolve(); else server.once('exit', resolve); });
-    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

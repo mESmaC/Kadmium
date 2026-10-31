@@ -14,10 +14,11 @@
 </head>
 <body data-view="harness">
 <header class="topbar">
-  <button id="toggle-sessions" class="icon-btn mobile-only" aria-label="Toggle task history" title="Task history">
+  <a id="return-kadmium" class="text-btn" hidden>← Kadmium</a>
+  <button id="toggle-sessions" class="icon-btn mobile-only" aria-label="Toggle task history" aria-controls="session-rail" aria-expanded="false" title="Task history">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
   </button>
-  <button id="toggle-sidebar" class="icon-btn desktop-sidebar-toggle" aria-label="Collapse sidebar" title="Toggle sidebar">
+  <button id="toggle-sidebar" class="icon-btn desktop-sidebar-toggle" aria-label="Collapse sidebar" aria-controls="session-rail" aria-expanded="true" title="Toggle sidebar">
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
   </button>
   <div class="brand">
@@ -53,7 +54,7 @@
     <div id="session-list" class="session-list"></div>
     <div class="rail-footer">
       <div class="local-workspace"><span class="status-dot"></span><span>Local workspace</span></div>
-      <p class="caption">Private by default. Tasks stay in this browser profile and API keys remain memory-only.</p>
+      <p class="caption">Tasks stay in this browser profile by default. Optional task memory saves a local copy for recall. API-key settings remain memory-only.</p>
       <p class="caption muted">Kadmium Power Plant · plugin protocol v1</p>
     </div>
     <div id="resize-sessions" class="pane-resizer" role="separator" aria-label="Resize task sidebar" aria-orientation="vertical" aria-controls="session-rail" aria-valuemin="200" aria-valuemax="420" aria-valuenow="264" tabindex="0" title="Drag to resize · Double-click to reset"></div>
@@ -112,8 +113,8 @@
                 <input id="interview-mode" type="checkbox">
                 <span>Q/A</span>
               </label>
-              <label class="budget-control" title="Maximum model and tool steps for one turn">
-                <span>Steps</span><input id="step-budget" type="number" min="1" max="32" value="8" aria-label="Step budget">
+              <label class="budget-control" title="Maximum model and tool steps for one turn (steps > 32 enable a 64-call / 30m default safety cap)">
+                <span>Steps</span><input id="step-budget" type="number" min="1" max="256" value="8" aria-label="Step budget">
               </label>
             </div>
             <div class="composer-submit">
@@ -170,21 +171,26 @@
       <section id="context-compute" class="context-panel" role="region" aria-label="Kadmium compute" hidden>
         <div class="inspector-scroll">
           <section class="inspector-section local-models">
-            <div class="inspector-title-row"><h2 class="inspector-title">Load a local checkpoint</h2><span class="compute-label">LOCAL</span></div>
+            <div class="inspector-title-row"><h2 class="inspector-title">Prepare a model for Condenser</h2><span class="compute-label">LOSSLESS</span></div>
             <p class="caption muted">Preserve the model you chose. Normalize its storage, load it in local Ollama, then use it for coding, research, questions, math, or science.</p>
             <form id="checkpoint-form">
-              <div class="field"><label for="checkpoint-path">Checkpoint path on this computer</label><input id="checkpoint-path" class="code-sm" required spellcheck="false" placeholder="C:\Models\my-model or /models/model.gguf"></div>
+              <div class="field"><label for="checkpoint-path">1. Choose a GGUF or SafeTensors model on this computer</label><input id="checkpoint-path" class="code-sm" required spellcheck="false" placeholder="C:\Models\my-model or /models/model.gguf"></div>
+              <button id="checkpoint-browse" class="text-btn" type="button">Browse model files</button>
+              <div id="checkpoint-browser" hidden><div class="field-inline"><button id="checkpoint-parent" class="text-btn" type="button">Parent folder</button><button id="checkpoint-choose-folder" class="text-btn" type="button">Select this model folder</button><button id="checkpoint-browser-close" class="text-btn" type="button">Close browser</button></div><p id="checkpoint-browser-path" class="code-sm"></p><div id="checkpoint-files"></div></div>
               <p class="caption muted">Choose a GGUF v3 file or a complete model directory. SafeTensors needs config and tokenizer files; split checkpoints need every shard. Normalization keeps originals and writes an additional copy in KTB banks.</p>
-              <button id="checkpoint-import" class="secondary-btn" type="submit">Normalize checkpoint</button>
+              <button id="checkpoint-import" class="secondary-btn" type="submit">2. Normalize checkpoint</button>
             </form>
             <p id="checkpoint-status" class="caption muted" role="status">No precision conversion, expert removal, or layer skipping.</p>
+            <p class="caption muted">Model library: <code id="checkpoint-directory">Loading…</code>. Each package contains manifest.json, source/ originals, and banks/ normalized .ktb shards. Allow at least twice the source size, plus the backend's copy.</p>
             <div class="field"><label for="checkpoint-select">Normalized checkpoints</label><select id="checkpoint-select"><option value="">Select a checkpoint</option></select></div>
             <button id="checkpoint-refresh" class="text-btn">Refresh library</button>
             <dl id="checkpoint-facts" class="run-facts"></dl>
             <p id="checkpoint-warnings" class="caption muted"></p>
             <div class="field"><label for="checkpoint-backend">Local Ollama URL</label><input id="checkpoint-backend" class="code-sm" type="url" value="http://127.0.0.1:11434" spellcheck="false"></div>
             <p class="caption muted">Start Ollama first. Loading uses the preserved source files, checks tensor metadata, and keeps the checkpoint's declared context size. If it cannot load at that size and precision, it reports the failure.</p>
-            <div class="field-inline"><button id="checkpoint-load" class="secondary-btn" disabled>Load in Ollama</button><button id="checkpoint-use" class="secondary-btn" disabled>Use in this task</button></div>
+            <div class="field"><label for="checkpoint-context">Context window for loading (tokens)</label><input id="checkpoint-context" type="number" min="1" step="1" placeholder="Maximum from model metadata"></div>
+            <p class="caption muted">Tradeoff: a smaller window lowers KV-cache memory and prefill time, but the model can attend to less prompt, history and output at once, and long-context recall and reasoning degrade.</p>
+            <div class="field-inline"><button id="checkpoint-load" class="secondary-btn" disabled>3. Load in Ollama</button><button id="checkpoint-use" class="secondary-btn" disabled>4. Use in this task</button></div>
             <p id="checkpoint-load-status" class="caption muted" role="status">KTB is a storage format. Generation runs in Ollama; backend arithmetic is not RepOps-certified.</p>
           </section>
           <section class="inspector-section">
@@ -255,6 +261,13 @@
           <section class="inspector-section">
             <div class="inspector-title-row"><div class="inspector-title">Task instructions</div><button id="save-instructions" class="text-btn">Apply</button></div>
             <textarea id="system-prompt" rows="5" placeholder="Guide the agent’s behavior for this task…"></textarea>
+            <label class="caption"><input id="research-required" type="checkbox"> Require a source before completion</label>
+            <label class="caption"><input id="memory-enabled" type="checkbox"> Save task memory for workspace recall</label>
+            <label class="caption"><input id="allow-host-commands" type="checkbox"> Allow host commands (condenser__command) for this task</label>
+            <p class="caption muted">Commands run with your account's full authority in the workspace root; this is not a sandbox. With web_fetch also selected, fetched pages can try to steer commands. Side-effecting tools (command, file_edit, web_fetch, delegate) are never included by "all" and must be checked by name.</p>
+            <label class="caption"><input id="operating-instructions" type="checkbox" checked> Send Condenser operating rules with built-in tools</label>
+            <p class="caption muted">The exact rules sent are shown in the runbook for each run. They are not sent when no built-in tool is selected.</p>
+            <p class="caption muted">Memory saves full chats, notes and source text on this computer. Selected memory tools can recall other saved tasks in this workspace. Subagent targets are configured in ~/.condenser/subagents.json; discover them with the subagents_list tool.</p>
             <p class="caption muted">Applied to the next model request and saved with this task.</p>
           </section>
           <section class="inspector-section">
@@ -262,6 +275,7 @@
             <div class="field"><label for="run-seconds">Time limit (seconds)</label><input id="run-seconds" type="number" min="1" max="86400" step="1" placeholder="No limit"></div>
             <div class="field"><label for="run-output-budget">Total output tokens</label><input id="run-output-budget" type="number" min="1" step="1" placeholder="No limit"></div>
             <div class="field"><label for="run-tool-budget">Total tool calls</label><input id="run-tool-budget" type="number" min="0" step="1" placeholder="No limit"></div>
+            <div class="field"><label for="command-timeout">Command time limit (seconds)</label><input id="command-timeout" type="number" min="1" max="86400" step="1" placeholder="600"></div>
             <p class="caption muted">Saved per task and applied to the next run. Output limits are checked between model steps.</p>
           </section>
           <section class="inspector-section">
@@ -342,15 +356,29 @@
       <div class="field"><label for="api-key">API key</label><input id="api-key" type="password" autocomplete="off" placeholder="optional for local providers"><p id="key-hint" class="caption muted">Memory-only. Never written to task history.</p></div>
       <p id="provider-note" class="provider-note caption"></p>
       <button id="settings-local-model" class="secondary-btn">Load a local checkpoint</button>
-      <details class="sampling-settings">
-        <summary>Sampling controls</summary>
+      <details class="sampling-settings" open>
+        <summary>Quality &amp; token limits</summary>
+        <p class="caption muted">Blank means maximum: full model input/context and maximum output. Input and output share the model's context window. Original precision is preserved; no automatic history pruning. If an OpenAI-compatible server does not advertise an output maximum, Condenser omits the limit so the server's own maximum applies. Anthropic requires a value; enter its documented limit if it is not reported.</p>
         <div class="field-grid">
           <div class="field"><label for="temperature">Temperature</label><input id="temperature" type="number" min="0" step="0.1" placeholder="provider default"></div>
-          <div class="field"><label for="max-tokens">Max tokens</label><input id="max-tokens" type="number" min="1" step="1" placeholder="provider default"></div>
+          <div class="field"><label for="max-tokens">Output tokens per response</label><input id="max-tokens" type="number" min="1" max="4294967295" step="1" placeholder="Maximum supported"></div>
+          <div class="field"><label for="context-window">Context / input window (Ollama)</label><input id="context-window" type="number" min="1" max="2147483647" step="1" placeholder="Full model context"></div>
+          <div class="field"><label for="provider-timeout">Request timeout (seconds)</label><input id="provider-timeout" type="number" min="1" step="1" placeholder="No limit"></div>
         </div>
+          <p class="caption muted">For other providers, context is configured on the server. Condenser sends all input; backend limits still apply. Lower limits only when you choose to. Temperature controls randomness, not model precision.</p>
+          <ul class="caption muted">
+            <li><strong>Output tokens:</strong> a lower value caps generation length and can truncate multi-step reasoning or long code and answers mid-response.</li>
+            <li><strong>Context / input window:</strong> a lower value reduces KV memory and prefill time, but shrinks total input + output capacity and degrades long-range recall.</li>
+            <li><strong>Request timeout:</strong> a short timeout bounds waiting, but can abort deep reasoning or large-context prefill before the turn completes.</li>
+          </ul>
+          <p class="caption muted">Run budgets can also leave work incomplete. Memory retrieval adds evidence without shrinking the conversation.</p>
+        <button id="quality-maximum" class="text-btn" type="button">Reset to maximum</button>
+        <p id="quality-error" class="caption error" role="alert"></p>
       </details>
       <details id="dsv41-mcl4-settings" class="sampling-settings">
         <summary>DeepSeek-V4.1 &amp; MCL4-COE controls</summary>
+        <label class="caption"><input id="compact-history" type="checkbox"> Allow history compaction and old tool-result pruning</label>
+        <p class="caption muted">Tradeoff: uses fewer tokens per turn, but strips earlier reasoning traces and truncates older tool outputs that later turns may rely on.</p>
         <div class="field-grid">
           <div class="field">
             <label for="mcl4-mode">COE Mode</label>
@@ -364,9 +392,9 @@
           <div class="field">
             <label for="mcl4-effort">Reasoning effort</label>
             <select id="mcl4-effort">
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
+              <option value="high">High (Maximum reasoning depth)</option>
+              <option value="medium">Medium (Faster, reduced reasoning depth)</option>
+              <option value="low">Low (Fastest, minimal reasoning depth)</option>
             </select>
           </div>
           <div class="field">

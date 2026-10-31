@@ -21,7 +21,7 @@ cargo test --workspace --locked
 On Linux with the native-WebView dependencies installed, also run:
 
 ```bash
-cargo clippy -p kadmium-desktop -p kadmium-condenser --features linux-native --all-targets --locked -- -D warnings
+cargo clippy -p kadmium-desktop -p kadmium-condenser-app --features linux-native --all-targets --locked -- -D warnings
 ```
 
 `cargo test --workspace --locked` covers host Rust unit, integration, and documentation tests. It does not cover the excluded CUDA device harness, Node workflows, browser tests, installer fixtures, or Python business-model checks.
@@ -48,11 +48,21 @@ See `crates/kadmium-gateway/tests/ui/README.md` for browser-test configuration a
 After that Playwright setup, run Condenser's local checkpoint and distributed compute workflow from the repository root:
 
 ```bash
-cargo build -p kadmium-condenser --locked
+cargo build -p kadmium-condenser-app --locked
 node --test crates/kadmium-condenser/tests/local_compute.test.cjs
+node --test crates/kadmium-condenser/tests/agent_workflow.test.cjs
 ```
 
 The test starts a disposable Condenser library, imports a tiny checkpoint, and checks explicit routing, backend failures and desktop/mobile layout. Screenshots go to `target/checkpoint-smoke`.
+
+For the embedded model setup workflow from both Kadmium interfaces:
+
+```sh
+cargo build -p kadmium-gateway --example control_room_fixture --locked
+node --test crates/kadmium-gateway/tests/model_setup.test.cjs
+```
+
+This uses the same Playwright installation and a disposable model library. Rust integration tests also check maximum provider limits, context overrides, and local-only access to the mounted workspace.
 
 The separate Control Room navigation and request-recovery regressions use a router fixture. From the repository root:
 

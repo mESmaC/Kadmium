@@ -308,6 +308,9 @@ impl Mcl4CoeProvider {
                 "role": role_str,
                 "content": m.content,
             });
+            if let Some(thought) = m.reasoning.as_deref().filter(|s| !s.trim().is_empty()) {
+                item["reasoning_content"] = json!(thought);
+            }
             if let Some(tc_id) = &m.tool_call_id {
                 item["tool_call_id"] = json!(tc_id);
             }
@@ -644,6 +647,9 @@ fn build_mcl4_prompt(messages: &[Message], tools: &[crate::types::ToolDefinition
                 }
             }
             Role::Assistant => {
+                if let Some(thought) = msg.reasoning.as_deref().filter(|s| !s.trim().is_empty()) {
+                    parts.push(format!("#T$# {}", thought.trim()));
+                }
                 if !msg.content.trim().is_empty() {
                     parts.push(format!("#A$# {}", msg.content.trim()));
                 }
@@ -703,7 +709,7 @@ impl InferenceProvider for Mcl4CoeProvider {
             }
         }
 
-        // Check live MCL4-COE `/api/checkpoints` if running
+        // Check live MCL4-COE `/api/checkpoints` if running; use advertised context length when present
         let url = endpoint(self.config.base_url(), "api/checkpoints");
         if let Ok(resp) = self.authorize(self.client.get(url)).send().await
             && resp.status().is_success()
@@ -717,7 +723,7 @@ impl InferenceProvider for Mcl4CoeProvider {
                     models.push(ModelInfo {
                         id: cid.to_string(),
                         display_name: Some(format!("MCL4-COE Checkpoint: {cid}")),
-                        context_length: Some(32_768),
+                        context_length: super::advertised_context_length(item),
                     });
                 }
             }
@@ -738,6 +744,8 @@ impl InferenceProvider for Mcl4CoeProvider {
         self.config.validate()?;
         request.sampling.validate()?;
 
+        super::reject_context_override(request, self.config.kind.label())?;
+
         let include_knobs = request.sampling.mcl4_coe.is_some();
         let knobs = request
             .sampling
@@ -745,12 +753,25 @@ impl InferenceProvider for Mcl4CoeProvider {
             .clone()
             .unwrap_or_else(|| default_knobs_for_model(&request.model));
 
-        // Apply `dsh-compaction-basic` + DeepSeek-V4.1 multi-turn thought stripping and old tool pruning
-        let (compacted_messages, _) = compact_messages_with_tool_pruning(
-            &request.messages,
-            knobs.strip_prior_thoughts_in_multiturn,
-            knobs.prune_old_tool_results_chars,
-        );
+        // Preserve full multi-turn thoughts and full tool outputs unless `sampling.compact_history`
+        // or explicit `mcl4_coe` compaction knobs are requested.
+        let (strip_thoughts, prune_chars) = if request.sampling.compact_history {
+            (
+                true,
+                if knobs.prune_old_tool_results_chars == usize::MAX {
+                    4096
+                } else {
+                    knobs.prune_old_tool_results_chars
+                },
+            )
+        } else {
+            (
+                knobs.strip_prior_thoughts_in_multiturn,
+                knobs.prune_old_tool_results_chars,
+            )
+        };
+        let (compacted_messages, _) =
+            compact_messages_with_tool_pruning(&request.messages, strip_thoughts, prune_chars);
 
         let unsupported_native = unsupported_native_sampling_option(request);
         if is_native_mcl4_v7_model(&request.model)
@@ -778,8 +799,34 @@ impl InferenceProvider for Mcl4CoeProvider {
             return Ok(resp);
         }
 
-        self.try_openai_compatible_generate(request, &knobs, &compacted_messages)
-            .await
+        // The native daemon has no `/v1/models`; only the OpenAI-compatible fallback
+        // looks up an advertised output limit, and omission keeps the server maximum.
+        let advertised = match request.sampling.max_tokens {
+            Some(_) => None,
+            None => {
+                super::fetch_output_limit(
+                    self.config.kind,
+                    self.authorize(
+                        self.client
+                            .get(super::versioned_endpoint(self.config.base_url(), "models")),
+                    ),
+                    &request.model,
+                )
+                .await
+            }
+        };
+        match advertised {
+            Some(limit) => {
+                let mut resolved = request.clone();
+                resolved.sampling.max_tokens = Some(limit);
+                self.try_openai_compatible_generate(&resolved, &knobs, &compacted_messages)
+                    .await
+            }
+            None => {
+                self.try_openai_compatible_generate(request, &knobs, &compacted_messages)
+                    .await
+            }
+        }
     }
 }
 
@@ -833,6 +880,8 @@ mod tests {
     fn openai_body_forwards_all_supported_sampling_controls() {
         let mut request = request("deepseek-v4.1-flash");
         request.sampling = SamplingParams {
+            context_window: None,
+            compact_history: false,
             temperature: Some(0.25),
             top_p: Some(0.8),
             top_k: Some(40),

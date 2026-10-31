@@ -1,4 +1,4 @@
-// Build: cargo build -p kadmium-condenser --locked
+// Build: cargo build -p kadmium-condenser-app --locked
 // Setup: npm ci --prefix crates/kadmium-gateway/tests/ui
 // Run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs
 const { test } = require('node:test');
@@ -67,12 +67,46 @@ test('local checkpoint setup, explicit task routing, recovery and distributed jo
       await page.waitForFunction(()=>document.querySelector('#context-compute').getBoundingClientRect().width<=innerWidth);
       const bounds=await page.locator('#context-compute').boundingBox();await page.screenshot({path:path.resolve('target/checkpoint-smoke/compute-'+width+'.png')});assert.ok(bounds.width<=width, JSON.stringify({width,bounds}));
     }
+    await page.setViewportSize({width:390,height:844});
+    await page.evaluate(()=>document.body.classList.add('context-closed'));
+    assert.equal(await page.locator('#session-rail').getAttribute('aria-hidden'),'true');
+    assert.equal(await page.locator('#session-rail').evaluate(el=>el.inert),true);
+    assert.equal(await page.locator('#toggle-sessions').getAttribute('aria-expanded'),'false');
+    await page.locator('#toggle-sessions').focus();
+    const closedTabTrail=[];
+    for(let i=0;i<6;i++){
+      await page.keyboard.press('Tab');
+      closedTabTrail.push(await page.evaluate(()=>({id:document.activeElement.id,inRail:Boolean(document.activeElement.closest('#session-rail'))})));
+    }
+    assert.equal(closedTabTrail.some(item=>item.inRail),false);
+    await page.locator('#toggle-sessions').click();
+    await page.waitForFunction(()=>document.querySelector('#session-rail').contains(document.activeElement));
+    assert.equal(await page.locator('#session-rail').getAttribute('aria-hidden'),'false');
+    assert.equal(await page.locator('#session-rail').evaluate(el=>el.inert),false);
+    assert.equal(await page.locator('#toggle-sessions').getAttribute('aria-expanded'),'true');
+    for(let i=0;i<10;i++){
+      await page.keyboard.press('Tab');
+      assert.equal(await page.evaluate(()=>Boolean(document.activeElement.closest('#session-rail'))),true);
+    }
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>document.activeElement.id==='toggle-sessions');
+    assert.equal(await page.locator('#session-rail').evaluate(el=>el.inert),true);
+    await page.locator('#toggle-sessions').click();
+    await page.locator('#session-backdrop').click({position:{x:340,y:400}});
+    await page.waitForFunction(()=>document.activeElement.id==='toggle-sessions');
+    assert.equal(await page.locator('#session-rail').evaluate(el=>el.inert),true);
+    await page.locator('#toggle-sessions').click();
+    await page.locator('#session-rail [data-session]').first().click();
+    await page.waitForFunction(()=>document.querySelector('#session-rail').inert);
+    assert.equal(await page.evaluate(()=>Boolean(document.activeElement.closest('#session-rail'))),false);
     await page.setViewportSize({width:1440,height:1000});
+    await page.waitForFunction(()=>!document.querySelector('#session-rail').inert);
+    assert.equal(await page.locator('#session-rail').getAttribute('aria-hidden'),'false');
     await page.screenshot({path:path.resolve('target/checkpoint-smoke/condenser-compute.png')});
     assert.deepEqual(errors,[]);
   } finally {
     if(browser) await browser.close();
     server.kill(); await new Promise(resolve=>server.exitCode===null?server.once('exit',resolve):resolve());
-    fs.rmSync(cwd,{recursive:true,force:true});
+    fs.rmSync(cwd,{recursive:true,force:true,maxRetries:5,retryDelay:100});
   }
 });

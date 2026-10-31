@@ -20,8 +20,41 @@ use tokio_util::sync::CancellationToken;
 
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    fn start_run(&self) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>> {
+        Ok(None)
+    }
     fn registered_tools(&self) -> Result<(Vec<RegisteredTool>, Vec<PluginDiagnostic>)>;
     async fn execute(&self, tool: &RegisteredTool, arguments: Value) -> Result<ToolResult>;
+    /// System context added for the selected tools. Merged into the caller's leading
+    /// system message and recorded in the report, never hidden from the transcript.
+    fn instructions(&self, _tools: &[RegisteredTool]) -> Option<String> {
+        None
+    }
+    /// Tools that must be named in `allowed_tools`; an omitted list never includes them.
+    fn requires_explicit_selection(&self, _tool: &RegisteredTool) -> bool {
+        false
+    }
+    fn validate_tools(&self, _tools: &[RegisteredTool]) -> Result<()> {
+        Ok(())
+    }
+    fn completion_error(&self) -> Option<String> {
+        None
+    }
+    async fn finish_report(&self, _report: &HarnessReport) -> Result<()> {
+        Ok(())
+    }
+    fn take_child_usage(&self) -> (Usage, usize) {
+        (Usage::default(), 0)
+    }
+    async fn execute_controlled(
+        &self,
+        tool: &RegisteredTool,
+        arguments: Value,
+        _control: RunControl,
+        _allowed: &[String],
+    ) -> Result<ToolResult> {
+        self.execute(tool, arguments).await
+    }
 }
 
 #[async_trait]
@@ -34,6 +67,9 @@ impl ToolExecutor for PluginManager {
         self.invoke_registered(tool, arguments).await
     }
 }
+
+pub const MAX_HARNESS_STEPS: usize = 256;
+pub const MAX_CALLS_PER_STEP: usize = 16;
 
 #[derive(Debug, Clone)]
 pub struct HarnessOptions {
@@ -51,7 +87,7 @@ impl Default for HarnessOptions {
             enable_tools: false,
             allowed_tools: None,
             max_steps: 8,
-            max_calls_per_step: 16,
+            max_calls_per_step: MAX_CALLS_PER_STEP,
             sampling: SamplingParams::default(),
         }
     }
@@ -149,6 +185,9 @@ pub struct HarnessReport {
     pub status: RunStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Operating rules Condenser sent as system context for this run, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 #[derive(Default)]
@@ -223,7 +262,14 @@ pub struct Harness {
 impl Harness {
     pub fn new(config: ProviderConfig, plugins: PluginManager) -> Result<Self> {
         let provider = ProviderFactory::build(config.clone())?;
-        Self::from_components(config, provider, Arc::new(plugins))
+        Self::from_components(
+            config,
+            provider,
+            Arc::new(crate::agent::AgentTools::local(
+                plugins,
+                crate::agent::AgentConfig::default(),
+            )?),
+        )
     }
 
     pub fn new_with_client(
@@ -232,7 +278,14 @@ impl Harness {
         client: reqwest::Client,
     ) -> Result<Self> {
         let provider = ProviderFactory::build_with_client(config.clone(), client)?;
-        Self::from_components(config, provider, Arc::new(plugins))
+        Self::from_components(
+            config,
+            provider,
+            Arc::new(crate::agent::AgentTools::local(
+                plugins,
+                crate::agent::AgentConfig::default(),
+            )?),
+        )
     }
 
     pub fn from_components(
@@ -265,7 +318,7 @@ impl Harness {
         &self,
         mut messages: Vec<Message>,
         options: HarnessOptions,
-        control: RunControl,
+        mut control: RunControl,
         events: Option<mpsc::Sender<HarnessEvent>>,
     ) -> Result<HarnessReport> {
         if messages.is_empty() {
@@ -273,23 +326,41 @@ impl Harness {
                 "a harness turn needs at least one message".into(),
             ));
         }
-        if !(1..=32).contains(&options.max_steps) {
-            return Err(CondenserError::Config(
-                "max_steps must be between 1 and 32".into(),
-            ));
+        if !(1..=MAX_HARNESS_STEPS).contains(&options.max_steps) {
+            return Err(CondenserError::Config(format!(
+                "max_steps must be between 1 and {MAX_HARNESS_STEPS}"
+            )));
         }
-        if options.max_calls_per_step == 0 {
-            return Err(CondenserError::Config(
-                "max_calls_per_step must be at least 1".into(),
-            ));
+        if !(1..=MAX_CALLS_PER_STEP).contains(&options.max_calls_per_step) {
+            return Err(CondenserError::Config(format!(
+                "max_calls_per_step must be between 1 and {MAX_CALLS_PER_STEP}"
+            )));
         }
         options.sampling.validate()?;
+        let _executor_run = self.executor.start_run()?;
+
+        if options.max_steps > 32 {
+            control.max_tool_calls.get_or_insert(64);
+            control.deadline.get_or_insert_with(|| {
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1800)
+            });
+        }
 
         let (mut tools, diagnostics) = if options.enable_tools {
             self.executor.registered_tools()?
         } else {
             (Vec::new(), Vec::new())
         };
+        let mut withheld = Vec::new();
+        if options.enable_tools && options.allowed_tools.is_none() {
+            tools.retain(|tool| {
+                let explicit = self.executor.requires_explicit_selection(tool);
+                if explicit {
+                    withheld.push(tool.qualified_name.clone());
+                }
+                !explicit
+            });
+        }
         if options.enable_tools
             && let Some(allowed) = &options.allowed_tools
         {
@@ -302,6 +373,7 @@ impl Harness {
             }
             tools.retain(|tool| allowed.contains(&tool.qualified_name));
         }
+        self.executor.validate_tools(&tools)?;
         let registry = ToolRegistry::new(&tools);
         let mut definitions = tools
             .iter()
@@ -319,6 +391,13 @@ impl Harness {
             .into_iter()
             .map(|diagnostic| format!("{}: {}", diagnostic.path.display(), diagnostic.message))
             .collect::<Vec<_>>();
+        if !withheld.is_empty() {
+            diagnostics.push(format!(
+                "Not enabled without an explicit allowed_tools entry (side effects): {}",
+                withheld.join(", ")
+            ));
+        }
+        let instructions = self.executor.instructions(&tools);
         let mut steps = Vec::new();
         let mut usage = Usage::default();
         let mut model = self.config.model.clone();
@@ -328,36 +407,52 @@ impl Harness {
 
         for index in 0..options.max_steps {
             if let Some((status, error)) = stopped(&control) {
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    status,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        status,
+                        Some(error),
+                        &events,
+                        &instructions,
+                    )
+                    .await;
             }
             if let Some(error) = output_budget_error(&control, usage.output_tokens) {
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    RunStatus::BudgetExceeded,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        RunStatus::BudgetExceeded,
+                        Some(error),
+                        &events,
+                        &instructions,
+                    )
+                    .await;
             }
 
             emit(&events, HarnessEvent::ModelStarted { step: index + 1 });
+            let mut request_messages = messages.clone();
+            if let Some(instructions) = &instructions {
+                // One leading system message keeps single-system chat templates valid.
+                match request_messages.first_mut() {
+                    Some(first) if first.role == crate::types::Role::System => {
+                        first.content = format!("{instructions}\n\n{}", first.content);
+                    }
+                    _ => request_messages.insert(0, Message::system(instructions.clone())),
+                }
+            }
             let request = ChatRequest {
                 model: self.config.model.clone(),
-                messages: messages.clone(),
+                messages: request_messages,
                 sampling: options.sampling.clone(),
                 tools: definitions.clone(),
             };
@@ -380,8 +475,8 @@ impl Harness {
             } else {
                 (None, None)
             };
-            let provider_wait = tokio::time::timeout(
-                std::time::Duration::from_secs(self.config.timeout_secs),
+            let provider_wait = crate::provider::with_timeout(
+                self.config.timeout_secs,
                 self.provider.complete_stream(&request, token_tx),
             );
             let wait_res = controlled_wait(&control, provider_wait).await;
@@ -391,17 +486,20 @@ impl Harness {
             let mut response = match wait_res {
                 WaitOutcome::Completed(Ok(Ok(response))) => response,
                 WaitOutcome::Completed(Ok(Err(error))) => {
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        RunStatus::Failed,
-                        Some(error.to_string()),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            RunStatus::Failed,
+                            Some(error.to_string()),
+                            &events,
+                            &instructions,
+                        )
+                        .await;
                 }
                 WaitOutcome::Completed(Err(_)) => {
                     let error = CondenserError::provider(
@@ -411,30 +509,36 @@ impl Harness {
                             self.config.timeout_secs
                         ),
                     );
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        RunStatus::Failed,
-                        Some(error.to_string()),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            RunStatus::Failed,
+                            Some(error.to_string()),
+                            &events,
+                            &instructions,
+                        )
+                        .await;
                 }
                 WaitOutcome::Stopped(status, error) => {
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        status,
-                        Some(error),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            status,
+                            Some(error),
+                            &events,
+                            &instructions,
+                        )
+                        .await;
                 }
             };
             let structured_call_count = response.message.tool_calls.len();
@@ -487,17 +591,20 @@ impl Harness {
                     &events,
                 );
                 steps.push(step);
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    RunStatus::BudgetExceeded,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        RunStatus::BudgetExceeded,
+                        Some(error),
+                        &events,
+                        &instructions,
+                    )
+                    .await;
             }
             if let Some((status, error)) = stopped(&control) {
                 record_blocked_calls(
@@ -510,31 +617,43 @@ impl Harness {
                     &events,
                 );
                 steps.push(step);
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    status,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        status,
+                        Some(error),
+                        &events,
+                        &instructions,
+                    )
+                    .await;
             }
             if calls.is_empty() {
+                let error = self.executor.completion_error();
+                let status = if error.is_some() {
+                    RunStatus::Failed
+                } else {
+                    RunStatus::Completed
+                };
                 steps.push(step);
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    RunStatus::Completed,
-                    None,
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        status,
+                        error,
+                        &events,
+                        &instructions,
+                    )
+                    .await;
             }
             if calls.len() > options.max_calls_per_step {
                 let error = format!(
@@ -552,17 +671,20 @@ impl Harness {
                     &events,
                 );
                 steps.push(step);
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    RunStatus::BudgetExceeded,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        RunStatus::BudgetExceeded,
+                        Some(error),
+                        &events,
+                        &instructions,
+                    )
+                    .await;
             }
 
             let doom_warning = detect_tool_doom_loop(&prior_tool_signatures, &calls, 3);
@@ -588,23 +710,30 @@ impl Harness {
                         &events,
                     );
                     steps.push(step);
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        status,
-                        Some(error),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            status,
+                            Some(error),
+                            &events,
+                            &instructions,
+                        )
+                        .await;
                 }
                 if control
-                    .max_tool_calls
-                    .is_some_and(|limit| tool_call_count >= limit)
+                    .max_output_tokens
+                    .is_some_and(|limit| usage.output_tokens >= limit)
+                    || control
+                        .max_tool_calls
+                        .is_some_and(|limit| tool_call_count >= limit)
                 {
-                    let error = format!("aggregate tool-call budget {} exhausted", tool_call_count);
+                    let error =
+                        "aggregate tool/output budget exhausted (including subagents)".to_string();
                     record_blocked_calls(
                         &calls[call_index..],
                         "tool-call-budget",
@@ -615,17 +744,20 @@ impl Harness {
                         &events,
                     );
                     steps.push(step);
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        RunStatus::BudgetExceeded,
-                        Some(error),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            RunStatus::BudgetExceeded,
+                            Some(error),
+                            &events,
+                            &instructions,
+                        )
+                        .await;
                 }
 
                 let started = Instant::now();
@@ -707,8 +839,25 @@ impl Harness {
                     },
                 );
                 tool_call_count += 1;
-                let result = match controlled_wait(&control, self.executor.execute(tool, arguments))
-                    .await
+                let child_control = RunControl {
+                    max_output_tokens: control
+                        .max_output_tokens
+                        .map(|limit| limit.saturating_sub(usage.output_tokens)),
+                    max_tool_calls: control
+                        .max_tool_calls
+                        .map(|limit| limit.saturating_sub(tool_call_count)),
+                    ..control.clone()
+                };
+                let allowed = tools
+                    .iter()
+                    .map(|tool| tool.qualified_name.clone())
+                    .collect::<Vec<_>>();
+                let result = match controlled_wait(
+                    &control,
+                    self.executor
+                        .execute_controlled(tool, arguments, child_control, &allowed),
+                )
+                .await
                 {
                     WaitOutcome::Completed(Ok(result)) => result,
                     WaitOutcome::Completed(Err(error)) => ToolResult::failure(error.to_string()),
@@ -735,19 +884,25 @@ impl Harness {
                             &events,
                         );
                         steps.push(step);
-                        return self.finish(
-                            model,
-                            answer,
-                            messages,
-                            steps,
-                            usage,
-                            diagnostics,
-                            status,
-                            Some(error),
-                            &events,
-                        );
+                        return self
+                            .finish(
+                                model,
+                                answer,
+                                messages,
+                                steps,
+                                usage,
+                                diagnostics,
+                                status,
+                                Some(error),
+                                &events,
+                                &instructions,
+                            )
+                            .await;
                     }
                 };
+                let (child_usage, child_calls) = self.executor.take_child_usage();
+                usage.add_assign(&child_usage);
+                tool_call_count += child_calls;
                 record_tool_result(
                     &tool.plugin_id,
                     call,
@@ -761,17 +916,20 @@ impl Harness {
             }
             steps.push(step);
             if index + 1 == options.max_steps {
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    RunStatus::StepLimit,
-                    None,
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        RunStatus::StepLimit,
+                        None,
+                        &events,
+                        &instructions,
+                    )
+                    .await;
             }
         }
 
@@ -779,7 +937,7 @@ impl Harness {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn finish(
+    async fn finish(
         &self,
         model: String,
         answer: Message,
@@ -790,8 +948,9 @@ impl Harness {
         status: RunStatus,
         error: Option<String>,
         events: &Option<mpsc::Sender<HarnessEvent>>,
+        instructions: &Option<String>,
     ) -> Result<HarnessReport> {
-        let report = HarnessReport {
+        let mut report = HarnessReport {
             provider: self.config.kind,
             model,
             answer,
@@ -801,7 +960,13 @@ impl Harness {
             diagnostics,
             status,
             error,
+            instructions: instructions.clone(),
         };
+        if let Err(error) = self.executor.finish_report(&report).await {
+            report
+                .diagnostics
+                .push(format!("Local memory was not saved: {error}"));
+        }
         emit(
             events,
             HarnessEvent::Finished {
@@ -1751,5 +1916,139 @@ mod tests {
         assert_eq!(report.status, RunStatus::Failed);
         assert_eq!(report.messages[0].content, "preserve this prompt");
         assert!(report.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn long_horizon_step_and_call_bounds_are_enforced() {
+        let provider = Arc::new(MockProvider {
+            responses: Mutex::new(VecDeque::from([response(Message::assistant("done"))])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let harness = Harness::from_components(
+            ProviderConfig::new(ProviderKind::Kadmium),
+            provider,
+            Arc::new(MockExecutor { tools: Vec::new() }),
+        )
+        .unwrap();
+
+        let ok_report = harness
+            .run(
+                vec![Message::user("long horizon")],
+                HarnessOptions {
+                    max_steps: MAX_HARNESS_STEPS,
+                    max_calls_per_step: MAX_CALLS_PER_STEP,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok_report.status, RunStatus::Completed);
+
+        let over_steps = harness
+            .run(
+                vec![Message::user("too many steps")],
+                HarnessOptions {
+                    max_steps: MAX_HARNESS_STEPS + 1,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(over_steps.to_string().contains("256"));
+
+        let over_calls = harness
+            .run(
+                vec![Message::user("too many calls")],
+                HarnessOptions {
+                    max_calls_per_step: MAX_CALLS_PER_STEP + 1,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(over_calls.to_string().contains("16"));
+
+        // Verify that max_steps > 32 (e.g., 33) installs the default 64-tool-call aggregate cap
+        // on RunControl::default(), whereas max_steps == 32 does not.
+        let make_16_distinct_calls = |step_idx: usize| -> ChatResponse {
+            let mut msg = Message::assistant("batch");
+            msg.tool_calls = (0..16)
+                .map(|call_idx| ToolCall {
+                    id: format!("s{step_idx}-c{call_idx}"),
+                    name: "example__echo".into(),
+                    arguments_json: format!("{{\"text\":\"{step_idx}-{call_idx}\"}}"),
+                })
+                .collect();
+            response(msg)
+        };
+
+        // At max_steps == 33, 5 steps * 16 calls = 80 calls > 64 default cap -> stops with BudgetExceeded at 64 calls.
+        let responses_33: VecDeque<ChatResponse> = (0..5).map(make_16_distinct_calls).collect();
+        let provider_33 = Arc::new(MockProvider {
+            responses: Mutex::new(responses_33),
+            requests: Mutex::new(Vec::new()),
+        });
+        let executor_33 = Arc::new(CountingExecutor {
+            tool: registered_tool(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let harness_33 = Harness::from_components(
+            ProviderConfig::new(ProviderKind::Kadmium),
+            provider_33,
+            executor_33.clone(),
+        )
+        .unwrap();
+        let report_33 = harness_33
+            .run(
+                vec![Message::user("run 33")],
+                HarnessOptions {
+                    enable_tools: true,
+                    max_steps: 33,
+                    max_calls_per_step: 16,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(report_33.status, RunStatus::BudgetExceeded);
+        assert_eq!(
+            executor_33.calls.load(std::sync::atomic::Ordering::SeqCst),
+            64
+        );
+
+        // At max_steps == 32, 5 steps * 16 calls = 80 calls + final answer succeeds without hitting a 64-call cap.
+        let mut responses_32: VecDeque<ChatResponse> = (0..5).map(make_16_distinct_calls).collect();
+        responses_32.push_back(response(Message::assistant("completed 80 calls")));
+        let provider_32 = Arc::new(MockProvider {
+            responses: Mutex::new(responses_32),
+            requests: Mutex::new(Vec::new()),
+        });
+        let executor_32 = Arc::new(CountingExecutor {
+            tool: registered_tool(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let harness_32 = Harness::from_components(
+            ProviderConfig::new(ProviderKind::Kadmium),
+            provider_32,
+            executor_32.clone(),
+        )
+        .unwrap();
+        let report_32 = harness_32
+            .run(
+                vec![Message::user("run 32")],
+                HarnessOptions {
+                    enable_tools: true,
+                    max_steps: 32,
+                    max_calls_per_step: 16,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(report_32.status, RunStatus::Completed);
+        assert_eq!(
+            executor_32.calls.load(std::sync::atomic::Ordering::SeqCst),
+            80
+        );
     }
 }

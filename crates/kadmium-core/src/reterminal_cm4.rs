@@ -47,6 +47,9 @@ fn send_cm4_json_rpc(
     addr: &str,
     request_json: &serde_json::Value,
 ) -> Option<(serde_json::Value, f64)> {
+    if !crate::external_hardware_probes_allowed(Some(addr)) {
+        return None;
+    }
     let pool = CM4_TCP_POOL.get_or_init(|| Mutex::new(None));
     let mut guard = pool.lock().ok()?;
     let payload_line = format!("{}\n", serde_json::to_string(request_json).ok()?);
@@ -393,7 +396,10 @@ impl ReTerminalCm4LanBridge {
 
     /// Probes local sysfs / device-tree telemetry when Kadmium is running directly on a Linux ARM64 SBC.
     pub fn probe_local_arm64_sbc_telemetry() -> Option<(String, ReTerminalCm4Telemetry)> {
-        if !cfg!(target_os = "linux") || !cfg!(target_arch = "aarch64") {
+        if !crate::external_hardware_probes_allowed(None)
+            || !cfg!(target_os = "linux")
+            || !cfg!(target_arch = "aarch64")
+        {
             return None;
         }
         let board_model = std::fs::read_to_string("/proc/device-tree/model")

@@ -40,6 +40,9 @@ pub struct ServerOptions {
     pub plugin_roots: Vec<PathBuf>,
     /// Bounds resident agent turns so local backends are not overwhelmed.
     pub max_concurrent_turns: usize,
+    /// Root for workspace files, the terminal and agent tools. `None` uses the current
+    /// directory (the standalone CLI); embedders should pass an explicit owner-chosen root.
+    pub workspace_root: Option<PathBuf>,
 }
 
 impl Default for ServerOptions {
@@ -51,6 +54,7 @@ impl Default for ServerOptions {
             port: DEFAULT_HTTP_PORT,
             plugin_roots: default_plugin_roots(),
             max_concurrent_turns: 2,
+            workspace_root: None,
         }
     }
 }
@@ -83,6 +87,20 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
 pub async fn bind(
     options: ServerOptions,
 ) -> Result<(SocketAddr, impl std::future::Future<Output = Result<()>>)> {
+    let port = options.port;
+    let app = build_router(options)?;
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+    let address = listener.local_addr()?;
+    Ok((address, async move {
+        axum::serve(listener, app)
+            .await
+            .map_err(CondenserError::from)
+    }))
+}
+
+/// The same workspace can be mounted by Kadmium without launching a second process.
+/// Local filesystem and inference APIs retain their loopback Host/Origin guard.
+pub fn build_router(options: ServerOptions) -> Result<Router> {
     if options.max_concurrent_turns == 0 {
         return Err(CondenserError::Config(
             "max_concurrent_turns must be at least 1".into(),
@@ -90,6 +108,7 @@ pub async fn bind(
     }
     let client = reqwest::Client::builder()
         .user_agent(concat!("Condenser/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(30))
         .tcp_nodelay(true)
         .pool_max_idle_per_host(32)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
@@ -103,16 +122,12 @@ pub async fn bind(
         client,
         turn_permits: Arc::new(tokio::sync::Semaphore::new(options.max_concurrent_turns)),
         active_runs: crate::runs::ActiveRuns::default(),
-        workspace: crate::workspace::WorkspaceState::from_current_dir()?,
+        workspace: match options.workspace_root {
+            Some(root) => crate::workspace::WorkspaceState::new(root)?,
+            None => crate::workspace::WorkspaceState::from_current_dir()?,
+        },
     };
-    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, options.port)).await?;
-    let address = listener.local_addr()?;
-    let app = router(state);
-    Ok((address, async move {
-        axum::serve(listener, app)
-            .await
-            .map_err(CondenserError::from)
-    }))
+    Ok(router(state))
 }
 
 fn router(state: ServerState) -> Router {
@@ -123,14 +138,24 @@ fn router(state: ServerState) -> Router {
         .route("/api/v1/models", post(models))
         .route("/api/v1/plugins", get(plugins))
         .route("/api/v1/plugins/invoke", post(invoke_plugin))
-        .route("/api/v1/chat", post(chat))
-        .route("/api/v1/chat/stream", post(chat_stream))
+        .route(
+            "/api/v1/chat",
+            post(chat).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/v1/chat/stream",
+            post(chat_stream).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/api/v1/dsv41/profile", get(dsv41_profile))
         .route("/api/v1/mcl4/probe-decision", post(mcl4_probe_decision))
         .route("/api/v1/workspace", get(crate::workspace::workspace))
         .route("/api/v1/compute/inspect", post(crate::compute::inspect))
         .route("/api/v1/compute/jobs", post(crate::compute::run_job))
         .route("/api/v1/checkpoints", get(crate::local_models::list))
+        .route(
+            "/api/v1/checkpoints/browse",
+            post(crate::local_models::browse),
+        )
         .route(
             "/api/v1/checkpoints/import",
             post(crate::local_models::import),
@@ -392,7 +417,12 @@ async fn models(
     Json(request): Json<ModelsRequest>,
 ) -> Result<Json<Vec<ModelInfo>>, ApiError> {
     let provider_cfg = request.provider;
-    let timeout = provider_cfg.timeout_secs;
+    // Catalog browsing remains bounded; this is separate from generation limits.
+    let timeout = if provider_cfg.timeout_secs == 0 {
+        30
+    } else {
+        provider_cfg.timeout_secs
+    };
     let kind = provider_cfg.kind;
     let provider = ProviderFactory::build_with_client(provider_cfg, state.client)?;
     let models = tokio::time::timeout(
@@ -411,11 +441,13 @@ async fn models(
 
 async fn plugins(State(state): State<ServerState>) -> Result<Json<PluginInventory>, ApiError> {
     let manager = PluginManager::new(state.plugin_roots.as_ref().clone());
-    Ok(Json(manager.discover()?))
+    Ok(Json(crate::agent::inventory(&manager)?))
 }
 
 #[derive(Debug, Deserialize)]
 struct PluginInvokeRequest {
+    #[serde(default)]
+    agent: crate::agent::AgentConfig,
     plugin_id: String,
     tool: String,
     #[serde(default)]
@@ -427,6 +459,18 @@ async fn invoke_plugin(
     Json(request): Json<PluginInvokeRequest>,
 ) -> Result<Json<crate::ToolResult>, ApiError> {
     let manager = PluginManager::new(state.plugin_roots.as_ref().clone());
+    if request.plugin_id == "condenser" {
+        let executor = crate::agent::AgentTools::in_workspace(
+            manager,
+            state.workspace.root.as_ref().clone(),
+            request.agent,
+        )?;
+        return Ok(Json(
+            executor
+                .invoke_named(&format!("condenser__{}", request.tool), request.arguments)
+                .await?,
+        ));
+    }
     Ok(Json(
         manager
             .invoke(&request.plugin_id, &request.tool, request.arguments)
@@ -436,6 +480,8 @@ async fn invoke_plugin(
 
 #[derive(Debug, Deserialize)]
 struct ChatApiRequest {
+    #[serde(default)]
+    agent: crate::agent::AgentConfig,
     #[serde(default)]
     run_id: Option<String>,
     provider: ProviderConfig,
@@ -514,7 +560,13 @@ async fn chat(
     };
     let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
     let provider_cfg = request.provider;
-    let harness = Harness::new_with_client(provider_cfg, plugins, state.client)?;
+    let provider = ProviderFactory::build_with_client(provider_cfg.clone(), state.client)?;
+    let executor = crate::agent::AgentTools::in_workspace(
+        plugins,
+        state.workspace.root.as_ref().clone(),
+        request.agent,
+    )?;
+    let harness = Harness::from_components(provider_cfg, provider, Arc::new(executor))?;
     let report = harness
         .run_with_control(
             request.messages,
@@ -570,11 +622,19 @@ async fn chat_stream(
             CondenserError::Config("a harness turn needs at least one message".into()).into(),
         );
     }
-    if !(1..=32).contains(&request.max_steps) {
-        return Err(CondenserError::Config("max_steps must be between 1 and 32".into()).into());
+    if !(1..=crate::harness::MAX_HARNESS_STEPS).contains(&request.max_steps) {
+        return Err(CondenserError::Config(format!(
+            "max_steps must be between 1 and {}",
+            crate::harness::MAX_HARNESS_STEPS
+        ))
+        .into());
     }
-    if request.max_calls_per_step == 0 {
-        return Err(CondenserError::Config("max_calls_per_step must be at least 1".into()).into());
+    if !(1..=crate::harness::MAX_CALLS_PER_STEP).contains(&request.max_calls_per_step) {
+        return Err(CondenserError::Config(format!(
+            "max_calls_per_step must be between 1 and {}",
+            crate::harness::MAX_CALLS_PER_STEP
+        ))
+        .into());
     }
     request.sampling.validate()?;
 
@@ -590,7 +650,13 @@ async fn chat_stream(
     };
     let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
     let provider_cfg = request.provider;
-    let harness = Harness::new_with_client(provider_cfg, plugins, state.client)?;
+    let provider = ProviderFactory::build_with_client(provider_cfg.clone(), state.client)?;
+    let executor = crate::agent::AgentTools::in_workspace(
+        plugins,
+        state.workspace.root.as_ref().clone(),
+        request.agent,
+    )?;
+    let harness = Harness::from_components(provider_cfg, provider, Arc::new(executor))?;
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::harness::HarnessEvent>(1024);
     let options = HarnessOptions {
         enable_tools: request.enable_tools,
@@ -651,7 +717,7 @@ async fn chat_stream(
         .into_response())
 }
 
-pub(crate) struct ApiError(CondenserError);
+pub(crate) struct ApiError(pub(crate) CondenserError);
 
 impl<E> From<E> for ApiError
 where
@@ -755,7 +821,8 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(plugins["plugins"].as_array().unwrap().len(), 0);
+        assert_eq!(plugins["plugins"].as_array().unwrap().len(), 1);
+        assert_eq!(plugins["plugins"][0]["manifest"]["id"], "condenser");
         let dsv41: Value = client
             .get(format!("http://{address}/api/v1/dsv41/profile"))
             .send()

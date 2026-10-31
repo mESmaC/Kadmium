@@ -38,7 +38,7 @@ for (const [name, path] of [['Control Room', '/'], ['Companion', '/companion']])
     await expect(page.getByText('No matching features')).toBeVisible();
     await page.getByRole('button', { name: 'Clear search' }).click();
     await expect(search).toBeFocused();
-    await expect(page.locator('.kw-result')).toHaveCount(14);
+    await expect(page.locator('.kw-result')).toHaveCount(16);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(trigger).toBeFocused();

@@ -78,7 +78,7 @@ kadmium checkpoint list --library /models/kadmium
 kadmium checkpoint verify CHECKPOINT_ID --library /models/kadmium
 ```
 
-All three commands print JSON. `--library <DIR>` defaults to `KADMIUM_MODEL_LIBRARY`, then `target/kadmium-model-library`. Normalization preserves originals and writes 64 KiB-aligned KTB banks with SHA-256 identities; it does not load or execute the model. See [local checkpoints](guides/local-checkpoints.md) for supported formats, shard completeness, storage requirements and backend limits.
+All three commands print JSON. `--library <DIR>` defaults to `KADMIUM_MODEL_LIBRARY`, then the shared per-user model directory (for example `%LOCALAPPDATA%\Kadmium\models` on Windows). Normalization preserves originals and writes 64 KiB-aligned KTB banks with SHA-256 identities; it does not load or execute the model. See [local checkpoints](guides/local-checkpoints.md) for supported formats, library migration, shard completeness, storage requirements and backend limits.
 
 ### `kadmium-condenser load-checkpoint`
 
@@ -89,7 +89,7 @@ kadmium-condenser load-checkpoint CHECKPOINT_ID --library /models/kadmium
 kadmium-condenser chat "Explain this algorithm" --provider ollama --model kadmium-CHECKPOINT_ID:latest
 ```
 
-`--library` uses the same default as above. `--base-url` defaults to `http://127.0.0.1:11434` and must be loopback HTTP. The command prints the provider configuration only after source verification, backend tensor checks and preload at the declared context length. It does not quantize, pull a replacement model or select a smaller context. Tensor conversion or unsupported backend behavior fails explicitly. Run from source with `cargo run -p kadmium-condenser --locked -- load-checkpoint CHECKPOINT_ID`.
+`--library` uses the same default as above. `--base-url` defaults to `http://127.0.0.1:11434` and must be loopback HTTP. The command prints the provider configuration only after source verification, backend tensor checks and preload at the declared context length. It does not quantize, pull a replacement model or select a smaller context. Tensor conversion or unsupported backend behavior fails explicitly. Run from source with `cargo run -p kadmium-condenser-app --locked -- load-checkpoint CHECKPOINT_ID`.
 
 ### `kadmium probe`
 
@@ -264,27 +264,36 @@ Set `KADMIUM_USBC_BRIDGE_BIND` (for example `0.0.0.0:7871`) on a joining worker 
 
 ### `kadmium pull`
 
-Prints an `hf://` selective-pull plan or a simulated `gh://` slice evaluation. It performs no download, repository mount, dataset stream, checkpoint push, webhook, or GitHub Check Run.
+Plans an `hf://` model or dataset pull against the local host or stages a verified local `gh://` checkout. For `gh://` URIs, pass `--local-path <DIR>` to verify a local `.git` checkout's `HEAD`, remote URL, and subpath, or pass `--plan` (`--dry-run`) to inspect a plan-only summary without a local checkout. For `hf://` model URIs, pass `--index <PATH>` (`--index-manifest <PATH>`) to map layer ranges onto actual `.safetensors` files from a `model.safetensors.index.json` manifest.
 
 ```bash
-kadmium pull hf://deepseek-ai/DeepSeek-V3@main
-kadmium pull gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt
+kadmium pull hf://deepseek-ai/DeepSeek-V3@main --index /path/to/model.safetensors.index.json
+kadmium pull gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt --local-path ./Dream-RSI
+kadmium pull gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt --plan
 ```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--plan`, `--dry-run` | off | Allow `gh://` evaluation without a mounted local checkout (`execution_mode: "plan_only_unmounted"`). |
+| `--local-path <DIR>` | none | Verify and stage a local `.git` repository checkout matching the `gh://` owner, repo, ref, and subpath. |
+| `--index <PATH>`, `--index-manifest <PATH>` | none | Supply a local `model.safetensors.index.json` manifest for `hf://` model pulls. |
 
 The optional URI defaults to `hf://deepseek-ai/DeepSeek-V3@main`. See the [integration guide](guides/integrations-hf-github.md).
 
 ### `kadmium mcp`
 
-Starts an isolated stdio MCP server with a fresh in-process gateway state, or prints its seven-tool manifest. It does not attach to a running coordinator or read `KADMIUM_COORDINATOR_URL`; use `POST /mcp` for shared coordinator state.
+Starts an isolated stdio MCP server with a fresh in-process gateway state (`live_unconnected` by default with 0 nodes unless `--demo` is passed), or prints its seven-tool manifest. It does not attach to a running coordinator or read `KADMIUM_COORDINATOR_URL`; use `POST /mcp` for shared coordinator state.
 
 ```bash
 kadmium mcp --inspect
 kadmium mcp
+kadmium mcp --demo
 ```
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `-i`, `--inspect` | off | Print the manifest and client snippet, then exit. |
+| `--demo`, `--sample-cluster` | off | Populate the in-process MCP server with the 4-node synthetic demo fixture instead of starting in `live_unconnected` mode. |
 
 ## Tensor banks and quantization
 

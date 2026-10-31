@@ -1533,7 +1533,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "clap",
  "futures-util",
  "jsonschema",
  "kadmium-core",
@@ -1541,10 +1540,24 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "tao",
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "kadmium-condenser-app"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "kadmium-condenser",
+ "kadmium-core",
+ "kadmium-data",
+ "reqwest",
+ "serde_json",
+ "tao",
+ "tokio",
  "wry",
 ]
 
@@ -1589,6 +1602,8 @@ name = "kadmium-gateway"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "getrandom 0.3.4",
+ "kadmium-condenser",
  "kadmium-core",
  "kadmium-data",
  "kadmium-grid",

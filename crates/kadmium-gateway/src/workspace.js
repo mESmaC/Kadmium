@@ -3,6 +3,8 @@
   'use strict';
   const h = React.createElement;
   const features = [
+    { title: 'Prepare a local model', description: 'Choose GGUF or SafeTensors, normalize shards, and load for inference.', href: '/condenser/#models', group: 'Build', keywords: 'import weights checkpoint library' },
+    { title: 'Launch Condenser', description: 'Chat, code, and run tools with your chosen model.', href: '/condenser/', group: 'Build', keywords: 'agent inference model context tokens' },
     { title: 'Cluster overview', description: 'Machines, workloads, and recent activity.', path: 'overview', local: 'home', group: 'Monitor', keywords: 'home dashboard status' },
     { title: 'Machines', description: 'Join a computer, inspect hardware, or pause sharing.', path: 'nodes', local: 'cluster', group: 'Monitor', keywords: 'add pair node worker lan' },
     { title: 'Boards & devices', description: 'Attach Macs, Raspberry Pi, USB boards, and phone farms.', path: 'platforms', group: 'Monitor', keywords: 'm4 cm4 k230 tegra hardware' },
@@ -19,7 +21,7 @@
     { title: 'Documentation', description: 'Setup guides, architecture, and the API reference.', href: '/docs', group: 'Learn', keywords: 'help getting started cli condenser agent workspace' }
   ];
   function destination(feature, companion) {
-    if (feature.href) return { href: feature.href, label: 'Documentation', external: true };
+    if (feature.href) return { href: feature.href, label: feature.href.startsWith('/condenser') ? 'Condenser' : 'Documentation', external: !feature.href.startsWith('/condenser') };
     if (companion && (feature.local || feature.companion)) return { href: '#' + (feature.local || feature.companion), label: 'Companion' };
     if (feature.companion) return { href: '/companion#' + feature.companion, label: 'Companion', external: true };
     return { href: '/#/' + feature.path, label: 'Control Room', external: companion };
@@ -87,5 +89,15 @@
         }) : h('div', { className: 'kw-no-results' }, h('strong', null, 'No matching features'), h('p', null, 'Try a task like “model”, “storage”, or “training”.'), h('button', { type: 'button', className: 'kw-close', onClick: () => { setQuery(''); input.current.focus(); } }, 'Clear search'))),
         h('footer', { className: 'kw-dialog-foot' }, '↑ ↓ to navigate · Enter to open · Esc to close')), document.body) : null);
   }
-  window.KadmiumWorkspace = { Launcher };
+  function ModelSetup() {
+    const local = ['127.0.0.1', 'localhost'].includes(location.hostname);
+    return h('section', { className: 'kw-model-setup', 'aria-label': 'Prepare and run a model' },
+      h('div', null, h('span', { className: 'kw-eyebrow' }, 'Your model → normalized shards → inference'),
+        h('h2', null, 'Prepare and run your model'),
+        h('p', null, 'Choose a GGUF file or complete SafeTensors folder. Preserve source precision, normalize into KTB shards, then load and use the model in Condenser.'),
+        h('p', null, 'Maximum model context and output by default. Adjust limits per task in Provider settings.'),
+        local ? null : h('p', { role: 'status' }, 'Model files belong to the coordinator computer. Open Kadmium on that computer at http://127.0.0.1:' + location.port + '/ to prepare models and launch Condenser.')),
+      local ? h('div', { className: 'kw-model-actions' }, h('a', { href: '/condenser/#models' }, 'Prepare a local model'), h('a', { href: '/condenser/' }, 'Launch Condenser')) : null);
+  }
+  window.KadmiumWorkspace = { Launcher, ModelSetup };
 })();

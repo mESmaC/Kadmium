@@ -39,7 +39,7 @@ pub struct Pool4DDecomposition {
     pub pipeline_parallel_stages: usize,
     /// Tier-0 Expert-Parallel + `RAID-5` Parity width per pipeline stage ($D_{\text{EP/RAID}} \in [1, 8]$).
     pub expert_and_raid5_width: usize,
-    /// Tier-0 Zig-Zag Ring Context-Parallel degree ($D_{\text{CP}} \in [1, 8]$).
+    /// Tier-0 Zig-Zag Ring Context-Parallel degree ($D_{\text{CP}} \in [1, 2]$).
     pub zigzag_context_parallel_degree: usize,
     /// Total nodes inside a single self-contained Model Cell ($C = D_{\text{PP}} \times D_{\text{EP/RAID}} \times D_{\text{CP}}$).
     pub nodes_per_model_cell: usize,
@@ -147,11 +147,17 @@ impl HierarchicalPoolPlanner {
 
         // 3. Determine Zig-Zag Ring Context Parallelism degree (D_CP):
         let rem_after_ep = n / (d_pp * d_ep_raid).max(1);
-        let d_cp = if workload == WorkloadKind::DistributedTraining && rem_after_ep >= 2 && n >= 32
-        {
-            2
-        } else {
-            1
+        let d_cp = match workload {
+            WorkloadKind::DistributedTraining => {
+                if rem_after_ep >= 2 && n >= 32 {
+                    2
+                } else {
+                    1
+                }
+            }
+            WorkloadKind::Inference | WorkloadKind::BatchPipeline => {
+                if rem_after_ep >= 2 && n >= 64 { 2 } else { 1 }
+            }
         };
 
         let cell_size = (d_pp * d_ep_raid * d_cp).max(1);

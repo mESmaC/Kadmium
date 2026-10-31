@@ -34,6 +34,7 @@ Documents distinguish **implemented reference behavior**, **modelled/simulated o
 | [Ecosystem integration planners](guides/integrations-hf-github.md) | HF pull planning, simulated GitHub evaluation, and unimplemented remote connectors. |
 | [Model Context Protocol](guides/mcp-server.md) | Seven tools over isolated stdio or shared HTTP coordinator state. |
 | [USB-C delta bridges](guides/usbc-delta-bridge.md) | Multi-lane ordered transport, authenticated resume, unplug behavior, measurements, and security limits. |
+| [Interdevice communication protocol](guides/interdevice-protocol.md) | Per-system RAM/VRAM/storage routes, bounded transfer execution, completion fences, and the portable file/RAM backend. |
 | [Intel NPU kernels](../crates/kadmium-npu/README.md) | Level Zero MatMul setup, approximate-FP16 contract, hardware validation, and resource-lifetime limits. |
 | [Release runbook](guides/release.md) | Version/tag checks, release artifacts, CI requirements, and installer verification. |
 | [Contributing](../CONTRIBUTING.md) | Formatting, linting, Rust/Node/UI/Python/installer checks, and documentation conventions. |
@@ -50,6 +51,7 @@ The commercial plan is a proposal for review. It does not establish managed comp
 | [Operating plan](OPERATING_PLAN.md) | Ownership, delivery, release claims, treasury, and stop rules. |
 | [Reproducible economics](business/ECONOMICS.md) | Cohorts, redemption stress, and cash/liability calculations. |
 | [Historical engineering numbers](NUMBERS_2026-10.md) | Dated model inputs, not live prices or measured supply. |
+| [Strategy audit — 2026-10-30](STRATEGY_AUDIT_2026-10-30.md) | Steelman, structural findings and eighteen candidate angles, written against the pre-#28 plan (`2e2040b5`) with a status table against version 3. |
 
 ---
 

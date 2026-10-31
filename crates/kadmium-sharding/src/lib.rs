@@ -388,24 +388,32 @@ impl ShardPlanner {
 
         let (estimated_throughput, throughput_unit) = match workload {
             WorkloadKind::Inference => {
-                // MoE active params vs dense params scaling
-                let active_ratio = if model.is_moe { 0.14 } else { 1.0 };
-                let active_params_b = model.total_params_billions * active_ratio;
-                let tok_per_sec =
-                    ((effective_cluster_tflops * 1.45) / active_params_b.max(1.0)).max(4.5);
-                (
-                    (tok_per_sec * 10.0).round() / 10.0,
-                    "tokens/sec".to_string(),
-                )
+                if effective_cluster_tflops <= f64::EPSILON {
+                    (0.0, "tokens/sec".to_string())
+                } else {
+                    // MoE active params vs dense params scaling
+                    let active_ratio = if model.is_moe { 0.14 } else { 1.0 };
+                    let active_params_b = model.total_params_billions * active_ratio;
+                    let tok_per_sec =
+                        ((effective_cluster_tflops * 1.45) / active_params_b.max(1.0)).max(4.5);
+                    (
+                        (tok_per_sec * 10.0).round() / 10.0,
+                        "tokens/sec".to_string(),
+                    )
+                }
             }
             WorkloadKind::DistributedTraining => {
-                let samples_per_sec = ((effective_cluster_tflops * 0.42)
-                    / model.total_params_billions.max(1.0))
-                .max(0.8);
-                (
-                    (samples_per_sec * 100.0).round() / 100.0,
-                    "sequences/sec (1F1B + QLoRA)".to_string(),
-                )
+                if effective_cluster_tflops <= f64::EPSILON {
+                    (0.0, "sequences/sec (1F1B + QLoRA)".to_string())
+                } else {
+                    let samples_per_sec = ((effective_cluster_tflops * 0.42)
+                        / model.total_params_billions.max(1.0))
+                    .max(0.8);
+                    (
+                        (samples_per_sec * 100.0).round() / 100.0,
+                        "sequences/sec (1F1B + QLoRA)".to_string(),
+                    )
+                }
             }
             WorkloadKind::BatchPipeline => {
                 let items_per_sec = effective_cluster_tflops * 3.8;
@@ -710,6 +718,23 @@ mod tests {
         for kv in &kv_allocs {
             assert_eq!(kv.page_size_tokens, 16);
             assert!(kv.max_context_tokens_supported >= 2048);
+            assert!(kv.max_context_tokens_supported <= model.native_max_context_tokens());
+            assert!(
+                kv.max_tiered_context_tokens_supported >= kv.max_context_tokens_supported
+                    && kv.max_tiered_context_tokens_supported <= model.native_max_context_tokens()
+            );
         }
+
+        let ctx_report =
+            DistributedPagedKvPlanner::plan_cluster_context_capacity(&plan, &model, &cluster);
+        assert_eq!(
+            ctx_report.model_native_context_tokens,
+            model.try_native_max_context_tokens()
+        );
+        assert!(ctx_report.cluster_in_memory_context_tokens <= model.native_max_context_tokens());
+        assert!(
+            ctx_report.cluster_max_full_attention_context_tokens
+                <= model.native_max_context_tokens()
+        );
     }
 }

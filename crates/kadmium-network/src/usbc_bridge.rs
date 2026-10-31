@@ -1562,7 +1562,10 @@ async fn run_lane_supervisor(core: Arc<Core>, idx: usize, lane: BridgeLane) {
             weight_mbps: (lane.weight_gbps * 1000.0).clamp(1.0, u32::MAX as f64) as u32,
             nonce,
         };
-        let dialed = dial_lane(&lane.addr, hello, secret.as_ref(), dial.connect_timeout).await;
+        let dialed = tokio::select! {
+            _ = closed.changed() => return,
+            dialed = dial_lane(&lane.addr, hello, secret.as_ref(), dial.connect_timeout) => dialed,
+        };
         let dialed = match dialed {
             // A create that succeeds after another lane already created the session reached a
             // listener that lost it (it restarted) and started an empty one: never join that.
@@ -1694,6 +1697,15 @@ impl UsbCBridge {
     /// Dials every lane in `config` and returns once the first one has joined the session; the
     /// others join as they connect. Fails if no lane connects within `config.connect_timeout`.
     pub async fn connect(config: BridgeConfig) -> Result<BridgeSession, String> {
+        struct CloseCoreOnDrop(Option<Arc<Core>>);
+        impl Drop for CloseCoreOnDrop {
+            fn drop(&mut self) {
+                if let Some(core) = self.0.take() {
+                    core.close("connect cancelled".into());
+                }
+            }
+        }
+
         let config = config.validated()?;
         let session_id = new_session_id()?;
         // Create on the heaviest lane (the first of equals): normally the cable, which keeps the
@@ -1718,6 +1730,7 @@ impl UsbCBridge {
                 create_fallback: AtomicBool::new(false),
             }),
         });
+        let mut connect_guard = CloseCoreOnDrop(Some(Arc::clone(&core)));
         {
             let mut lanes = lock(&core.lanes);
             for lane in &config.lanes {
@@ -1750,6 +1763,7 @@ impl UsbCBridge {
                 .iter()
                 .position(|s| s.link.is_some());
             if let Some(idx) = first_live {
+                connect_guard.0 = None;
                 return Ok(BridgeSession {
                     peer: config.lanes[idx].addr.clone(),
                     bridge,
@@ -2689,5 +2703,104 @@ mod tests {
         // Closing the channel closes the bridge under it rather than leaving it heartbeating.
         channel.close();
         assert!(!bridge.is_open());
+    }
+
+    #[tokio::test]
+    async fn cancelling_bridge_connect_stops_background_redials() {
+        // 1. Aborted task path during a stalled hello.
+        let raw_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut cfg = BridgeConfig::new(vec![BridgeLane::new(
+            raw_listener.local_addr().unwrap().to_string(),
+            1.0,
+            "audit-loopback",
+        )]);
+        cfg.connect_timeout = Duration::from_secs(2);
+        cfg.resume_grace = Duration::from_secs(3);
+        let connection = tokio::spawn(UsbCBridge::connect(cfg.clone()));
+        let (mut first_socket, _) =
+            tokio::time::timeout(Duration::from_secs(1), raw_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut hello = [0u8; HELLO_LEN];
+        first_socket.read_exact(&mut hello).await.unwrap();
+        connection.abort();
+        assert!(connection.await.unwrap_err().is_cancelled());
+        // The dialer's in-progress socket closes promptly without waiting for resume_grace.
+        let mut eof_buf = [0u8; 1];
+        let eof = tokio::time::timeout(Duration::from_millis(300), first_socket.read(&mut eof_buf))
+            .await
+            .expect("accepted socket must close promptly after connect cancellation")
+            .unwrap();
+        assert_eq!(eof, 0);
+        drop(first_socket);
+        let redial = tokio::time::timeout(Duration::from_millis(400), raw_listener.accept()).await;
+        assert!(
+            redial.is_err(),
+            "cancelled connect opened another TCP connection"
+        );
+
+        // 2. Outer tokio::time::timeout path during a stalled hello.
+        let timed_out = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_millis(80), UsbCBridge::connect(cfg)).await
+        });
+        let (mut second_socket, _) =
+            tokio::time::timeout(Duration::from_secs(1), raw_listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        assert!(timed_out.await.unwrap().is_err());
+        let mut rest = Vec::new();
+        tokio::time::timeout(
+            Duration::from_millis(300),
+            second_socket.read_to_end(&mut rest),
+        )
+        .await
+        .expect("accepted socket must close promptly after outer timeout")
+        .unwrap();
+        assert!(rest.len() <= HELLO_LEN);
+        drop(second_socket);
+        let redial = tokio::time::timeout(Duration::from_millis(400), raw_listener.accept()).await;
+        assert!(
+            redial.is_err(),
+            "timed-out connect opened another TCP connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_bridge_delta_negotiation_closes_session_and_stops_redials() {
+        let mut bridge_listener = listener().await;
+        let addr = bridge_listener.local_addr();
+        let connect_addr = format!("kdbr://{addr}@1.0");
+        let connecting = tokio::spawn(async move {
+            PeerChannel::connect_with(
+                &connect_addr,
+                Duration::from_secs(3),
+                &DeltaLinkConfig::default(),
+            )
+            .await
+        });
+        // Accept the bridge session on the listener, read the DeltaHello, and stall without replying.
+        let server = tokio::time::timeout(Duration::from_secs(1), bridge_listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut server_reader = FrameReader::new(BufReader::new(server.reader));
+        let hello = server_reader.read_frame().await.unwrap();
+        assert_eq!(hello.kind, WireFrameKind::DeltaHello);
+
+        // Cancel the PeerChannel::connect_with during the stalled DeltaHello.
+        connecting.abort();
+        assert!(connecting.await.unwrap_err().is_cancelled());
+        // Dropping the server session after client cancellation must not trigger client redials.
+        server.bridge.close();
+        drop(server_reader);
+        drop(server.writer);
+        let redial =
+            tokio::time::timeout(Duration::from_millis(400), bridge_listener.accept()).await;
+        assert!(
+            redial.is_err(),
+            "cancelled delta negotiation over bridge triggered a redial"
+        );
     }
 }

@@ -7,12 +7,14 @@ use kadmium_condenser::plugin::{PluginManager, default_plugin_roots, scaffold_pl
 use kadmium_condenser::provider::ProviderFactory;
 use kadmium_condenser::server::{self, ServerOptions};
 use kadmium_condenser::types::{Message, ProviderConfig, ProviderKind, SamplingParams};
-use kadmium_condenser::ui::{self, UiOptions};
 use kadmium_condenser::{CondenserError, DEFAULT_HTTP_PORT, Harness, HarnessOptions, Result};
 use kadmium_core::LiveHardwareProfiler;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::str::FromStr;
+use ui::UiOptions;
+
+mod ui;
 
 #[derive(Parser)]
 #[command(
@@ -101,8 +103,8 @@ struct ProviderArgs {
     /// Environment variable containing the API key.
     #[arg(long, value_name = "NAME")]
     api_key_env: Option<String>,
-    /// End-to-end provider request timeout in seconds.
-    #[arg(long, default_value_t = 300)]
+    /// End-to-end provider request timeout in seconds; 0 means no limit.
+    #[arg(long, default_value_t = 0)]
     timeout_secs: u64,
 }
 
@@ -132,6 +134,12 @@ impl ProviderArgs {
 
 #[derive(Debug, Clone, Args)]
 struct ChatArgs {
+    /// Save complete runs and working notes for recall under this workspace/session.
+    #[arg(long)]
+    memory_session: Option<String>,
+    /// Refuse completion until a built-in file/web source has been read successfully.
+    #[arg(long)]
+    research_required: bool,
     /// User message to send.
     message: String,
     #[command(flatten)]
@@ -139,9 +147,17 @@ struct ChatArgs {
     /// Optional system prompt prepended to this turn.
     #[arg(long)]
     system: Option<String>,
-    /// Allow the model to call tools from discovered plugins.
+    /// Allow the model to call discovered plugin tools and read-only built-ins. Side-effecting
+    /// built-ins (command, file_edit, web_fetch, delegate) also need --allow-tool.
     #[arg(long)]
     tools: bool,
+    /// Confirm that condenser__command may run shell commands with your account's full
+    /// authority in the current directory. It is not a sandbox.
+    #[arg(long, requires = "tools")]
+    allow_host_commands: bool,
+    /// Deadline for each condenser__command call, in seconds (default 600).
+    #[arg(long, value_name = "SECONDS")]
+    command_timeout_secs: Option<u64>,
     /// Restrict --tools to exact plugin__tool names. Repeat for multiple tools.
     #[arg(long = "allow-tool", requires = "tools")]
     allowed_tools: Vec<String>,
@@ -156,6 +172,12 @@ struct ChatArgs {
     top_k: Option<u32>,
     #[arg(long)]
     max_tokens: Option<u32>,
+    /// Optional active context window override in tokens (`num_ctx` for Ollama).
+    #[arg(long)]
+    context_window: Option<u32>,
+    /// Explicitly compact prior reasoning/tool history (disabled by default to preserve full attention).
+    #[arg(long)]
+    compact_history: bool,
     #[arg(long)]
     seed: Option<u64>,
     /// MCL4-COE / DeepSeek-V4.1 cognitive mode: uta, coe, dream_rl, or ncm.
@@ -495,7 +517,18 @@ async fn run_chat(args: ChatArgs, roots: Vec<PathBuf>) -> Result<()> {
         None
     };
 
-    let harness = Harness::new(config, PluginManager::new(roots))?;
+    let provider = kadmium_condenser::ProviderFactory::build(config.clone())?;
+    let executor = kadmium_condenser::agent::AgentTools::local(
+        PluginManager::new(roots),
+        kadmium_condenser::agent::AgentConfig {
+            session_id: args.memory_session,
+            research_required: args.research_required,
+            allow_host_commands: args.allow_host_commands,
+            command_timeout_secs: args.command_timeout_secs,
+            ..Default::default()
+        },
+    )?;
+    let harness = Harness::from_components(config, provider, std::sync::Arc::new(executor))?;
     let report = harness
         .run(
             messages,
@@ -509,6 +542,8 @@ async fn run_chat(args: ChatArgs, roots: Vec<PathBuf>) -> Result<()> {
                     top_p: args.top_p,
                     top_k: args.top_k,
                     max_tokens: args.max_tokens,
+                    context_window: args.context_window,
+                    compact_history: args.compact_history,
                     seed: args.seed,
                     stop: Vec::new(),
                     mcl4_coe,
@@ -561,7 +596,7 @@ async fn run_plugin(command: PluginCommand, roots: Vec<PathBuf>) -> Result<()> {
     let manager = PluginManager::new(roots);
     match command {
         PluginCommand::List { json } => {
-            let inventory = manager.discover()?;
+            let inventory = kadmium_condenser::agent::inventory(&manager)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&inventory)?);
             } else {
@@ -597,7 +632,13 @@ async fn run_plugin(command: PluginCommand, roots: Vec<PathBuf>) -> Result<()> {
             let arguments: Value = serde_json::from_str(&arguments).map_err(|error| {
                 CondenserError::Config(format!("--arguments must be valid JSON: {error}"))
             })?;
-            let result = manager.invoke(&plugin_id, &tool, arguments).await?;
+            let result = if plugin_id == "condenser" {
+                kadmium_condenser::agent::AgentTools::local(manager, Default::default())?
+                    .invoke_named(&format!("condenser__{tool}"), arguments)
+                    .await?
+            } else {
+                manager.invoke(&plugin_id, &tool, arguments).await?
+            };
             println!("{}", result.content);
             if result.is_error {
                 return Err(CondenserError::Plugin(format!(

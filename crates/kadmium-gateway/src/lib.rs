@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod checkpoints;
+pub mod condenser_mount;
 pub mod coordinator;
 pub mod diloco_api;
 pub mod docs;
@@ -43,6 +44,9 @@ pub mod mcp;
 pub mod routes;
 
 pub use checkpoints::{TrainingCheckpoint, TrainingCheckpointList, TrainingResumeReport};
+pub use condenser_mount::{
+    condenser_access_path, condenser_access_token, condenser_access_url, publish_condenser_access,
+};
 pub use coordinator::{CoordinatorOptions, run_coordinator};
 pub(crate) use docs::DOC_OVERVIEW_MD;
 pub use docs::{DocumentationPage, build_documentation_catalog};
@@ -333,6 +337,35 @@ impl GatewayState {
                 kadmium_sharding::PromptMemoryKind::Truncatable,
             ),
         }
+    }
+
+    /// Initializes a live-only `GatewayState` with zero fabricated demo nodes for standalone
+    /// inspection (e.g., `kadmium mcp` when no `--demo` flag is passed and no live coordinator is attached).
+    pub fn new_live_unconnected() -> Self {
+        let mut state = Self::new();
+        state.live_only_mode = true;
+        state.active_model_loaded = false;
+        state.nodes.clear();
+        state.live_workers.clear();
+        state.fts3_transfers.clear();
+        state.training_step_counter = 0;
+        state.last_training_loss = 0.0;
+        state.training_loss_history.clear();
+        state.last_checkpoint_step = 0;
+        state.coordinator_quorum = CoordinatorFailoverQuorum::from_cluster(&state.nodes);
+        state.inference_plan = ShardPlanner::compute_plan(
+            state.epoch,
+            &state.inference_model,
+            WorkloadKind::Inference,
+            &state.nodes,
+        );
+        state.training_plan = ShardPlanner::compute_plan(
+            state.epoch,
+            &state.training_model,
+            WorkloadKind::DistributedTraining,
+            &state.nodes,
+        );
+        state
     }
 
     pub fn grid_calibrations_path() -> std::path::PathBuf {
@@ -1652,7 +1685,8 @@ mod tests {
 
         let comp_html = http_get("/companion");
         assert!(comp_html.contains("Boards and bridges"));
-        assert!(comp_html.contains("Import local weights"));
+        assert!(comp_html.contains("Advanced: reference bank import"));
+        assert!(comp_html.contains("KadmiumWorkspace.ModelSetup"));
         assert!(comp_html.contains("/api/v1/platforms/attach"));
         assert!(comp_html.contains("__KADMIUM_DESKTOP__"));
 

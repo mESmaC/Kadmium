@@ -166,6 +166,10 @@ Inspired by **FreeToken (`FTW`)** and **Colibri**:
 In naive distributed systems, the coordinator downloads and forwards weights to workers, becoming a severe bottleneck.
 The current `Fts3TransferScheduler` constructs transfer plans and `Fts3ChunkSlicer` computes chunk manifests/missing-chunk diffs. In the live reference path, the coordinator sends synthesized bank pages to workers over TCP and verifies them.
 
+The TCP sender uses an InferSSD-style completion-driven window of at most eight page requests across the swarm (`io/pool-ring.cpp` and `io/submit-window.h` in InferSSD). It refills a slot as soon as one request finishes rather than waiting one network round trip per page or draining an entire batch. Each page's proof and JSON frame are prepared once and shared across destinations on persistent, request-correlated peer channels. The window bounds retained transfer buffers independently of bank size and worker count; it does not reserve a global budget across separate staging calls. Only matching, verified receipts count toward goodput. Local demonstration receipts are used only when there are no online workers, never to mask failed remote transfers. This optimizes the existing reference transfer, not production NAS-to-worker object storage; no WAN throughput claim is implied.
+
+Reproduce the controlled loopback latency experiment with `cargo test --release --locked -p kadmium-runtime fts3_latency_benchmark -- --ignored --nocapture`. It compares stop-and-wait with the eight-request window over 32 pages and an injected 20 ms reply delay. Both runs reuse the same channel; set `KADMIUM_DELTA_LINK=0` to exclude delta-store warming. This is a latency-isolation experiment, not a disk, WAN, erasure-coded bucket, or production throughput benchmark.
+
 The following remains **target architecture**: a coordinator orders a source peer to open direct multi-stream QUIC transfers to a destination, and both peers report production progress/retry/checksum state. No current FTS3/Davix network service or direct NAS-to-worker stream is established by the planner.
 
 ---
@@ -195,6 +199,7 @@ The self-hosted repository provides planners, local interfaces, reference execut
 
 - **Self-hosted:** local coordinator, hardware profiles, reference workloads, and simulations need no cloud account.
 - **Cloud-managed mode:** `POST /api/v1/companion/mode` only stores local mode fields. There is no `kadmium login` command, managed coordinator connection, automatic WAN relay, enforced tenant RBAC, or encrypted remote mirroring in this path.
+- **Embedded Condenser:** `kadmium-gateway` depends on the GUI-free `kadmium-condenser` library and mounts its router at `/condenser/`. The `kadmium-condenser` command and its native window (`wry`/`tao`, plus `clap`) live in the separate `kadmium-condenser-app` package, so the headless coordinator and `kadmium` CLI link no webview stack. The mount requires a loopback peer, same-origin requests and a per-launch access secret. Its workspace root is an explicit per-user directory, never the coordinator's working directory.
 
 ### 8.2 Spot-arbitrage simulation
 
@@ -463,4 +468,11 @@ Windows Intel AI Boost hardware validation covers rectangular and non-tile-align
 | Host memory envelope: a finite limit less a 512 MiB reserve, a system term against `MemAvailable` less a floor, tickets for every allocation, a reclaim chain the caches answer, a margin that only grows to untracked memory | `HostMemoryLedger` (`kadmium-core::host_ledger`) with the platform probe (`/proc/meminfo`, `GlobalMemoryStatusEx`, `vm_stat`); every worker builds one at start, books the bytes the expert loader holds (refreshed at heartbeats), takes its routed-expert cache budget under it and registers that cache as the reclaimer, books a delta link's two chunk stores before accepting the link (the cache yields if the ledger is short; a link the ledger cannot book is declined), grows the cache back toward its configured budget at heartbeats when room returns, and reports the ledger's room as `free_system_ram_gb` in its registration and heartbeats (recorded by the coordinator; the planners do not consume it yet) |
 
 Settings: `KADMIUM_EXPERT_CACHE_MB` sizes a worker's expert cache (default a quarter of the ledger's room, at most 256 MiB; `0` turns it off), `KADMIUM_EXPERT_PREFETCH_DEPTH` turns the chain-stage prefetch on (default `0`, off), `KADMIUM_HOST_BUDGET_MB` fixes the envelope where the platform probe should not be trusted.
+
+### 9.20 KIP/1 Interdevice Transfer Protocol (`kadmium-data::interdevice`)
+
+`kadmium-data::interdevice` defines KIP/1, a node-local transfer protocol between `Endpoint { Ram, Vram, Storage }` with directional placement costs, bounded submission windows (`Limits`), and a safe `HostBackend`.
+
+**Current status:** Implemented protocol and host backend; not wired into any execution path; GPU adapters are target only. See the [interdevice protocol guide](guides/interdevice-protocol.md).
+
 
