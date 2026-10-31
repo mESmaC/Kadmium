@@ -49,6 +49,7 @@ The commercial plan is a proposal for review. It does not establish managed comp
 | [Operating plan](OPERATING_PLAN.md) | Ownership, delivery, release claims, treasury, and stop rules. |
 | [Reproducible economics](business/ECONOMICS.md) | Cohorts, redemption stress, and cash/liability calculations. |
 | [Historical engineering numbers](NUMBERS_2026-10.md) | Dated model inputs, not live prices or measured supply. |
+| [Strategy audit — 2026-10-30](STRATEGY_AUDIT_2026-10-30.md) | Steelman, structural findings and eighteen candidate angles, written against the pre-#28 plan (`2e2040b5`) with a status table against version 3. |
 
 ---
 
