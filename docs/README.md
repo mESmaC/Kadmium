@@ -52,6 +52,7 @@ The commercial plan is a proposal for review. It does not establish managed comp
 | [Reproducible economics](business/ECONOMICS.md) | Cohorts, redemption stress, and cash/liability calculations. |
 | [Historical engineering numbers](NUMBERS_2026-10.md) | Dated model inputs, not live prices or measured supply. |
 | [Strategy audit — 2026-10-30](STRATEGY_AUDIT_2026-10-30.md) | Steelman, structural findings and eighteen candidate angles, written against the pre-#28 plan (`2e2040b5`) with a status table against version 3. |
+| [Plan stress test — 2026-10-31](PLAN_STRESS_TEST_2026-10-31.md) | Stress test of the version 3 plans against the project's direction: service economics and capacity ceiling, gate order, competitor status, demand evidence and channel arithmetic, with reproducible sensitivities. |
 
 ---
 
