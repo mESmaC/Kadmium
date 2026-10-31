@@ -42,6 +42,17 @@ test('IPC failures clear the pending request for retry', async () => {
   await assert.rejects(picker.pick({ kind: 'model_file' }), /IPC unavailable/);
 });
 
+test('a native validation rejection releases the chooser for a corrected request', async () => {
+  const { picker, messages } = bridge();
+  const invalid = picker.pick({ kind: 'workspace_file' });
+  picker.complete({ id: messages[0].id, error: 'The workspace is not ready. Refresh and try again.' });
+  await assert.rejects(invalid, /workspace is not ready/);
+  const retry = picker.pick({ kind: 'workspace_file', root: 'workspace' });
+  assert.equal(messages.length, 2);
+  picker.complete({ id: messages[1].id, path: 'hello.txt' });
+  assert.equal(await retry, 'hello.txt');
+});
+
 test('oversized UTF-8 paths fail visibly without leaving a pending dialog', async () => {
   const { picker, messages } = bridge();
   await assert.rejects(picker.pick({ kind: 'model_file', path: '界'.repeat(12000) }), /too long/);
