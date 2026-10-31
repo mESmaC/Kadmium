@@ -470,6 +470,7 @@ pub mod batch_read;
 pub mod expert;
 pub mod importer;
 pub mod integrations;
+pub mod interdevice;
 pub mod merkle;
 pub mod moe_expert_pack;
 pub mod range_pull;
