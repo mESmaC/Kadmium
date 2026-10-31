@@ -808,7 +808,8 @@ pub async fn run_join(
             .spawn_usbc_bridge_listener(bind.trim(), true)
             .await
         {
-            Ok(addr) => println!(
+            // The listener runs for as long as the worker does.
+            Ok((addr, _listener)) => println!(
                 "  🔌 USB-C bridge listener on {addr} (dial kdbr://<usb4-ip>:{port}@<gbps>,<lan-ip>:{port}@<gbps>)",
                 port = addr.port()
             ),

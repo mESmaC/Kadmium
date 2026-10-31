@@ -55,6 +55,10 @@ struct ChannelShared {
     pending: Mutex<HashMap<u64, ReplySender>>,
     healthy: AtomicBool,
     close_reason: Mutex<Option<String>>,
+    /// The bridge carrying this channel, when it was dialed with a bridge address. It is closed
+    /// with the channel: a bridge whose stream broke mid-frame must not linger, heartbeating, while
+    /// the peer waits for the rest of the frame.
+    bridge: Option<UsbCBridge>,
 }
 
 impl ChannelShared {
@@ -84,6 +88,9 @@ impl ChannelShared {
             }
         }
         let reason = self.close_reason();
+        if let Some(bridge) = &self.bridge {
+            bridge.close();
+        }
         let drained: Vec<(u64, ReplySender)> = self.pending().drain().collect();
         for (request_id, tx) in drained {
             let _ = tx.send(Err(format!(
@@ -152,8 +159,6 @@ pub struct PeerChannel {
     reader_task: JoinHandle<()>,
     /// Outbound and inbound byte counts, when a delta link was negotiated.
     delta: Option<(Arc<DeltaLinkStats>, Arc<DeltaLinkStats>)>,
-    /// The bridge carrying this channel, when it was dialed with a bridge address.
-    bridge: Option<UsbCBridge>,
 }
 
 /// Fails the channel if a delta-encoded frame is dropped before it is fully written: the encoder
@@ -280,6 +285,7 @@ impl PeerChannel {
             pending: Mutex::new(HashMap::new()),
             healthy: AtomicBool::new(true),
             close_reason: Mutex::new(None),
+            bridge,
         });
         let reader_task = tokio::spawn(run_reader(reader, Arc::clone(&shared)));
         Arc::new(Self {
@@ -288,13 +294,12 @@ impl PeerChannel {
             next_request_id: AtomicU64::new(1),
             reader_task,
             delta,
-            bridge,
         })
     }
 
     /// The bridge carrying this channel, when it was dialed with a bridge address.
     pub fn bridge(&self) -> Option<&UsbCBridge> {
-        self.bridge.as_ref()
+        self.shared.bridge.as_ref()
     }
 
     /// `true` when this channel negotiated a delta link.
@@ -325,7 +330,8 @@ impl PeerChannel {
         self.shared.pending().len()
     }
 
-    /// Closes the channel: fails in-flight calls, stops the reader, and lets the socket drop.
+    /// Closes the channel: fails in-flight calls, stops the reader, closes the bridge it runs on,
+    /// if any, and lets the socket drop.
     pub fn close(&self) {
         self.shared.fail_all("closed locally".to_string());
         self.reader_task.abort();

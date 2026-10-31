@@ -34,28 +34,53 @@
 //! ## Lane wire format
 //!
 //! ```text
-//! hello (dialer -> listener, 30 bytes)
-//!   "KDLN" | u16 version | u16 flags (bit 0: create the session if absent)
-//!   | u64 session id | u16 lane index | u32 segment bytes | u32 window bytes | u32 weight (Mbit/s)
-//! reply (listener -> dialer, 15 bytes)
-//!   "KDLN" | u16 version | u8 status (0 ok, 1 unknown session, 2 bad parameters, 3 bad version)
-//!   | u32 segment bytes | u32 window bytes
+//! hello (dialer -> listener, 54 bytes)
+//!   "KDLN" | u16 version | u16 flags (bit 0: create a new session)
+//!   | 16 B session id | u16 lane index | u32 segment bytes | u32 window bytes | u32 weight (Mbit/s)
+//!   | 16 B dialer nonce
+//! reply (listener -> dialer, 47 bytes)
+//!   "KDLN" | u16 version | u8 status | u32 segment bytes | u32 window bytes | 32 B body
+//!   status 0 ok: body is the session's resume secret when the hello created it, else zeros
+//!          1 unknown session, 2 bad parameters, 3 bad version, 4 session exists,
+//!          5 challenge: body is 16 B listener nonce | 16 B listener proof
+//!          6 proof rejected
+//! resume (a hello without the create flag) after a challenge:
+//!   dialer -> listener: 16 B dialer proof; listener -> dialer: a final reply, 0 ok or 6
 //! then, in both directions, a sequence of
 //!   u8 0 (data) | u64 seq | u32 len | len bytes      (len 0 marks the end of the stream)
 //!   u8 1 (ack)  | u64 next seq the receiver lacks    (also sent as a heartbeat)
 //! ```
 //!
-//! All integers are little endian. A dialer only sets the create flag until the session exists, so
-//! a listener that restarted mid-session answers a resume with "unknown session" instead of
-//! silently starting an empty stream that the peer's delta stores would no longer match.
+//! All integers are little endian. A proof is the first 16 bytes of
+//! `HMAC-SHA256(resume secret, role | hello | listener nonce)`, with role `"KDLN listener"` or
+//! `"KDLN dialer"`, so each side shows the other that it holds the secret without sending it.
+//!
+//! ## Session security
+//!
+//! The session id is 128 random bits from the OS, but it crosses every lane in plaintext, so it is
+//! only a name. Joining a session takes the resume secret: 32 random bytes the listener returns
+//! on the one lane that creates the session. The dialer creates on its heaviest lane (normally the
+//! cable) and falls back to another lane only if that one cannot connect. Every other lane, and
+//! every redial, proves it holds the secret by challenge-response, so the secret never crosses
+//! those paths. Someone who sniffs a hello on the Wi-Fi lane therefore cannot inject segments,
+//! draw replies, or bump a real lane off its index, and a hello that tries to create a session
+//! under an existing id is refused.
+//!
+//! The lanes themselves are not encrypted: an attacker on the path can still read or tamper with
+//! segments, as with plain TCP. Run bridges between nodes on trusted links.
+//!
+//! A dialer only sends the create flag until it holds the secret, and it drops a lane whose create
+//! succeeds after that. A listener that restarted mid-session therefore answers a resume with
+//! "unknown session" instead of silently starting an empty stream that the peer's delta stores
+//! would no longer match.
 
-use crate::delta_link::xxh64;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tokio::io::{
@@ -100,6 +125,9 @@ pub const DEFAULT_LANE_CONNECT_TIMEOUT: Duration = Duration::from_millis(2500);
 pub const MAX_BRIDGE_LANES: usize = 256;
 
 const LANE_HEARTBEAT: Duration = Duration::from_millis(100);
+/// Shortest lane idle timeout either side accepts: three heartbeats, so one late heartbeat does
+/// not make a healthy lane flap.
+pub const MIN_LANE_IDLE_TIMEOUT: Duration = Duration::from_millis(300);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const REDIAL_BACKOFF_MIN: Duration = Duration::from_millis(25);
 const REDIAL_BACKOFF_MAX: Duration = Duration::from_secs(1);
@@ -109,13 +137,21 @@ const FINISH_LINGER: Duration = Duration::from_millis(250);
 const ACK_EVERY_SEGMENTS: u64 = 8;
 
 const LANE_MAGIC: [u8; 4] = *b"KDLN";
-const HELLO_LEN: usize = 30;
-const REPLY_LEN: usize = 15;
+const NONCE_LEN: usize = 16;
+const SECRET_LEN: usize = 32;
+const PROOF_LEN: usize = 16;
+const HELLO_LEN: usize = 38 + NONCE_LEN;
+const REPLY_LEN: usize = 15 + SECRET_LEN;
 const FLAG_CREATE: u16 = 1;
 const STATUS_OK: u8 = 0;
 const STATUS_UNKNOWN_SESSION: u8 = 1;
 const STATUS_BAD_PARAMS: u8 = 2;
 const STATUS_BAD_VERSION: u8 = 3;
+const STATUS_SESSION_EXISTS: u8 = 4;
+const STATUS_CHALLENGE: u8 = 5;
+const STATUS_PROOF_REJECTED: u8 = 6;
+const LISTENER_ROLE: &[u8] = b"KDLN listener";
+const DIALER_ROLE: &[u8] = b"KDLN dialer";
 const TAG_DATA: u8 = 0;
 const TAG_ACK: u8 = 1;
 const DATA_HEADER_LEN: usize = 1 + 8 + 4;
@@ -190,8 +226,8 @@ impl BridgeConfig {
             if part.is_empty() {
                 return Some(Err(format!("bridge address {addr} has an empty lane")));
             }
-            // A weight suffix is the text after the last '@' when it parses as a number; an IPv6
-            // zone or a host name never does.
+            // Host names, IPv4 and bracketed IPv6 addresses (zones use '%') never contain '@', so
+            // any '@' starts the weight, which must be a positive number.
             let (host, weight) = match part.rsplit_once('@') {
                 Some((host, w)) => match w.parse::<f64>() {
                     Ok(w) if w.is_finite() && w > 0.0 => (host, w),
@@ -199,7 +235,10 @@ impl BridgeConfig {
                 },
                 None => (part, 1.0),
             };
-            if !host.contains(':') {
+            let valid = host
+                .rsplit_once(':')
+                .is_some_and(|(h, port)| !h.is_empty() && port.parse::<u16>().is_ok());
+            if !valid {
                 return Some(Err(format!("bridge lane {part} needs host:port")));
             }
             lanes.push(BridgeLane::new(host, weight, format!("lane{i}")));
@@ -224,6 +263,7 @@ impl BridgeConfig {
         if self.lanes.len() > MAX_BRIDGE_LANES {
             return Err(format!("a bridge has at most {MAX_BRIDGE_LANES} lanes"));
         }
+        check_idle_timeout(self.lane_idle_timeout)?;
         self.segment_bytes = self
             .segment_bytes
             .clamp(MIN_BRIDGE_SEGMENT_BYTES, MAX_BRIDGE_SEGMENT_BYTES);
@@ -254,6 +294,16 @@ impl Default for BridgeListenerConfig {
     }
 }
 
+fn check_idle_timeout(timeout: Duration) -> Result<(), String> {
+    if timeout < MIN_LANE_IDLE_TIMEOUT {
+        return Err(format!(
+            "lane idle timeout {timeout:?} is below {MIN_LANE_IDLE_TIMEOUT:?}: lanes heartbeat \
+             every {LANE_HEARTBEAT:?} and would flap"
+        ));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------------------------
 // Handshake
 // ---------------------------------------------------------------------------------------------
@@ -262,11 +312,12 @@ impl Default for BridgeListenerConfig {
 struct LaneHello {
     version: u16,
     flags: u16,
-    session_id: u64,
+    session_id: u128,
     lane: u16,
     segment_bytes: u32,
     window_bytes: u32,
     weight_mbps: u32,
+    nonce: [u8; NONCE_LEN],
 }
 
 impl LaneHello {
@@ -275,11 +326,12 @@ impl LaneHello {
         out[..4].copy_from_slice(&LANE_MAGIC);
         out[4..6].copy_from_slice(&self.version.to_le_bytes());
         out[6..8].copy_from_slice(&self.flags.to_le_bytes());
-        out[8..16].copy_from_slice(&self.session_id.to_le_bytes());
-        out[16..18].copy_from_slice(&self.lane.to_le_bytes());
-        out[18..22].copy_from_slice(&self.segment_bytes.to_le_bytes());
-        out[22..26].copy_from_slice(&self.window_bytes.to_le_bytes());
-        out[26..30].copy_from_slice(&self.weight_mbps.to_le_bytes());
+        out[8..24].copy_from_slice(&self.session_id.to_le_bytes());
+        out[24..26].copy_from_slice(&self.lane.to_le_bytes());
+        out[26..30].copy_from_slice(&self.segment_bytes.to_le_bytes());
+        out[30..34].copy_from_slice(&self.window_bytes.to_le_bytes());
+        out[34..38].copy_from_slice(&self.weight_mbps.to_le_bytes());
+        out[38..].copy_from_slice(&self.nonce);
         out
     }
 
@@ -292,77 +344,191 @@ impl LaneHello {
         Ok(Self {
             version: u16_at(4),
             flags: u16_at(6),
-            session_id: u64::from_le_bytes(b[8..16].try_into().expect("8 bytes")),
-            lane: u16_at(16),
-            segment_bytes: u32_at(18),
-            window_bytes: u32_at(22),
-            weight_mbps: u32_at(26),
+            session_id: u128::from_le_bytes(b[8..24].try_into().expect("16 bytes")),
+            lane: u16_at(24),
+            segment_bytes: u32_at(26),
+            window_bytes: u32_at(30),
+            weight_mbps: u32_at(34),
+            nonce: b[38..].try_into().expect("nonce bytes"),
         })
     }
 }
 
-fn reply_bytes(status: u8, segment_bytes: u32, window_bytes: u32) -> [u8; REPLY_LEN] {
+fn reply_bytes(
+    status: u8,
+    segment_bytes: u32,
+    window_bytes: u32,
+    body: &[u8; SECRET_LEN],
+) -> [u8; REPLY_LEN] {
     let mut out = [0u8; REPLY_LEN];
     out[..4].copy_from_slice(&LANE_MAGIC);
     out[4..6].copy_from_slice(&BRIDGE_VERSION.to_le_bytes());
     out[6] = status;
     out[7..11].copy_from_slice(&segment_bytes.to_le_bytes());
     out[11..15].copy_from_slice(&window_bytes.to_le_bytes());
+    out[15..].copy_from_slice(body);
     out
+}
+
+/// `N` bytes from the operating system's random number generator.
+fn random_bytes<const N: usize>() -> Result<[u8; N], String> {
+    let mut out = [0u8; N];
+    getrandom::fill(&mut out).map_err(|e| format!("OS random number generator: {e}"))?;
+    Ok(out)
+}
+
+/// HMAC-SHA256 (RFC 2104) of the concatenated `parts`, for keys up to one block long.
+fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    assert!(
+        key.len() <= 64,
+        "HMAC keys longer than a block are not used here"
+    );
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for (i, b) in key.iter().enumerate() {
+        ipad[i] ^= b;
+        opad[i] ^= b;
+    }
+    let mut inner = Sha256::new();
+    inner.update(ipad);
+    for part in parts {
+        inner.update(part);
+    }
+    let mut outer = Sha256::new();
+    outer.update(opad);
+    outer.update(inner.finalize());
+    outer.finalize().into()
+}
+
+/// What `role` sends to show it holds `secret`, bound to this lane's hello and the listener's
+/// nonce so it cannot be replayed on another lane or connection.
+fn lane_proof(
+    secret: &[u8; SECRET_LEN],
+    role: &[u8],
+    hello: &[u8; HELLO_LEN],
+    listener_nonce: &[u8; NONCE_LEN],
+) -> [u8; PROOF_LEN] {
+    let mac = hmac_sha256(secret, &[role, hello, listener_nonce]);
+    mac[..PROOF_LEN].try_into().expect("proof bytes")
+}
+
+/// Compares two proofs in time that does not depend on where they differ.
+fn proofs_match(a: &[u8; PROOF_LEN], b: &[u8; PROOF_LEN]) -> bool {
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 #[derive(Debug)]
 enum DialError {
     /// The listener no longer has the session: resuming is impossible.
     UnknownSession,
+    /// Another lane created the session first; this lane has to resume it instead.
+    SessionExists,
     Other(String),
 }
 
+fn parse_reply(addr: &str, reply: &[u8; REPLY_LEN], hello: &LaneHello) -> Result<u8, DialError> {
+    if reply[..4] != LANE_MAGIC {
+        return Err(DialError::Other(format!("{addr} is not a bridge listener")));
+    }
+    match reply[6] {
+        status @ (STATUS_OK | STATUS_CHALLENGE) => {
+            let segment = u32::from_le_bytes(reply[7..11].try_into().expect("4 bytes"));
+            let window = u32::from_le_bytes(reply[11..15].try_into().expect("4 bytes"));
+            if segment != hello.segment_bytes || window != hello.window_bytes {
+                return Err(DialError::Other(format!(
+                    "{addr} changed the bridge parameters"
+                )));
+            }
+            Ok(status)
+        }
+        STATUS_UNKNOWN_SESSION => Err(DialError::UnknownSession),
+        STATUS_SESSION_EXISTS => Err(DialError::SessionExists),
+        STATUS_BAD_PARAMS => Err(DialError::Other(format!(
+            "{addr} rejected segment {} / window {} bytes",
+            hello.segment_bytes, hello.window_bytes
+        ))),
+        STATUS_BAD_VERSION => Err(DialError::Other(format!(
+            "{addr} speaks another bridge version"
+        ))),
+        STATUS_PROOF_REJECTED => Err(DialError::Other(format!(
+            "{addr} rejected this side's proof of the resume secret"
+        ))),
+        other => Err(DialError::Other(format!(
+            "{addr} answered with status {other}"
+        ))),
+    }
+}
+
+async fn read_reply(stream: &mut TcpStream, addr: &str) -> Result<[u8; REPLY_LEN], DialError> {
+    let mut reply = [0u8; REPLY_LEN];
+    stream
+        .read_exact(&mut reply)
+        .await
+        .map_err(|e| DialError::Other(format!("reply from {addr}: {e}")))?;
+    Ok(reply)
+}
+
+/// Dials one lane. A hello with the create flag returns the new session's resume secret; any
+/// other hello resumes the session by proving `secret`, and checks the listener's proof too.
 async fn dial_lane(
     addr: &str,
     hello: LaneHello,
+    secret: Option<&[u8; SECRET_LEN]>,
     timeout: Duration,
-) -> Result<TcpStream, DialError> {
+) -> Result<(TcpStream, Option<[u8; SECRET_LEN]>), DialError> {
+    let creating = hello.flags & FLAG_CREATE != 0;
+    if !creating && secret.is_none() {
+        return Err(DialError::Other(
+            "a lane cannot resume without the resume secret".into(),
+        ));
+    }
+    let hello_bytes = hello.to_bytes();
     let attempt = async {
         let mut stream = TcpStream::connect(addr)
             .await
             .map_err(|e| DialError::Other(format!("connect to {addr}: {e}")))?;
         let _ = stream.set_nodelay(true);
         stream
-            .write_all(&hello.to_bytes())
+            .write_all(&hello_bytes)
             .await
             .map_err(|e| DialError::Other(format!("hello to {addr}: {e}")))?;
-        // Read the reply straight off the socket: the listener's first lane messages may follow
-        // it immediately and belong to the lane reader.
-        let mut reply = [0u8; REPLY_LEN];
-        stream
-            .read_exact(&mut reply)
-            .await
-            .map_err(|e| DialError::Other(format!("reply from {addr}: {e}")))?;
-        if reply[..4] != LANE_MAGIC {
-            return Err(DialError::Other(format!("{addr} is not a bridge listener")));
-        }
-        match reply[6] {
-            STATUS_OK => {
-                let segment = u32::from_le_bytes(reply[7..11].try_into().expect("4 bytes"));
-                let window = u32::from_le_bytes(reply[11..15].try_into().expect("4 bytes"));
-                if segment != hello.segment_bytes || window != hello.window_bytes {
-                    return Err(DialError::Other(format!(
-                        "{addr} changed the bridge parameters"
-                    )));
-                }
-                Ok(stream)
+        // Read replies straight off the socket: the listener's first lane messages may follow
+        // the last one immediately and belong to the lane reader.
+        let mut reply = read_reply(&mut stream, addr).await?;
+        let status = parse_reply(addr, &reply, &hello)?;
+        if creating {
+            if status != STATUS_OK {
+                return Err(DialError::Other(format!(
+                    "{addr} answered a create with status {status}"
+                )));
             }
-            STATUS_UNKNOWN_SESSION => Err(DialError::UnknownSession),
-            STATUS_BAD_PARAMS => Err(DialError::Other(format!(
-                "{addr} rejected segment {} / window {} bytes",
-                hello.segment_bytes, hello.window_bytes
-            ))),
-            STATUS_BAD_VERSION => Err(DialError::Other(format!(
-                "{addr} speaks another bridge version"
-            ))),
-            other => Err(DialError::Other(format!(
-                "{addr} answered with status {other}"
+            let created: [u8; SECRET_LEN] = reply[15..].try_into().expect("secret bytes");
+            return Ok((stream, Some(created)));
+        }
+        let secret = secret.expect("checked above");
+        if status != STATUS_CHALLENGE {
+            return Err(DialError::Other(format!(
+                "{addr} let a lane resume without a challenge"
+            )));
+        }
+        let listener_nonce: [u8; NONCE_LEN] = reply[15..31].try_into().expect("nonce bytes");
+        let listener_proof: [u8; PROOF_LEN] = reply[31..].try_into().expect("proof bytes");
+        let expected = lane_proof(secret, LISTENER_ROLE, &hello_bytes, &listener_nonce);
+        if !proofs_match(&listener_proof, &expected) {
+            return Err(DialError::Other(format!(
+                "{addr} could not prove it holds the session's resume secret"
+            )));
+        }
+        let proof = lane_proof(secret, DIALER_ROLE, &hello_bytes, &listener_nonce);
+        stream
+            .write_all(&proof)
+            .await
+            .map_err(|e| DialError::Other(format!("proof to {addr}: {e}")))?;
+        reply = read_reply(&mut stream, addr).await?;
+        match parse_reply(addr, &reply, &hello)? {
+            STATUS_OK => Ok((stream, None)),
+            status => Err(DialError::Other(format!(
+                "{addr} answered a resume proof with status {status}"
             ))),
         }
     };
@@ -374,18 +540,9 @@ async fn dial_lane(
     }
 }
 
-fn new_session_id(seed: &str) -> u64 {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let material = format!(
-        "{nanos}|{}|{}|{seed}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    );
-    xxh64(material.as_bytes(), 0x4B44_4C4E).max(1)
+/// A random 128-bit session id. It names the session; joining it takes the resume secret.
+fn new_session_id() -> Result<u128, String> {
+    Ok(u128::from_le_bytes(random_bytes()?).max(1))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -425,7 +582,7 @@ pub struct BridgeLaneSnapshot {
 /// Point-in-time state of a bridge. Byte counts are segment payload bytes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BridgeSnapshot {
-    pub session_id: u64,
+    pub session_id: u128,
     pub open: bool,
     pub close_reason: Option<String>,
     pub segment_bytes: usize,
@@ -524,12 +681,19 @@ struct Segment {
 /// What the dialing side needs to (re)dial lanes.
 struct DialInfo {
     connect_timeout: Duration,
-    /// Set once any lane has joined: from then on lanes only resume, never create.
-    established: AtomicBool,
+    /// The lane that creates the session and so carries the resume secret: the heaviest lane,
+    /// normally the cable.
+    create_lane: usize,
+    /// Set once the create lane failed to connect: any lane may then create the session.
+    create_fallback: AtomicBool,
 }
 
 struct Core {
-    session_id: u64,
+    session_id: u128,
+    /// The secret a lane must prove it holds to join. The listener sets it when it creates the
+    /// session; the dialer learns it from the reply on the lane that created it. Once it is set,
+    /// lanes only resume.
+    resume_secret: OnceLock<[u8; SECRET_LEN]>,
     segment_bytes: usize,
     window_bytes: usize,
     inflight_limit: u64,
@@ -554,7 +718,8 @@ struct Core {
 }
 
 struct CoreParams {
-    session_id: u64,
+    session_id: u128,
+    resume_secret: Option<[u8; SECRET_LEN]>,
     segment_bytes: usize,
     window_bytes: usize,
     resume_grace: Duration,
@@ -566,8 +731,13 @@ impl Core {
     /// Creates a session and starts its sender, delivery and watchdog tasks.
     fn start(params: CoreParams) -> (Arc<Self>, BridgeReader, BridgeWriter) {
         let (deliver_tx, deliver_rx) = mpsc::unbounded_channel();
+        let resume_secret = OnceLock::new();
+        if let Some(secret) = params.resume_secret {
+            let _ = resume_secret.set(secret);
+        }
         let core = Arc::new(Self {
             session_id: params.session_id,
+            resume_secret,
             segment_bytes: params.segment_bytes,
             window_bytes: params.window_bytes,
             inflight_limit: inflight_limit(params.window_bytes),
@@ -869,13 +1039,17 @@ impl Core {
     }
 
     /// Starts serving `stream` as lane `idx`, replacing any earlier connection of that lane. The
-    /// returned receiver fires with the reason once this connection fails.
+    /// returned receiver fires with the reason once this connection fails. Returns `None`, and
+    /// drops `stream`, if the session has already closed.
+    ///
+    /// `weight_gbps` is the weight the peer announced for the lane. It applies only the first time
+    /// lane `idx` attaches; a resumed lane keeps the weight it had.
     fn attach_lane(
         self: &Arc<Self>,
         idx: usize,
-        weight_gbps: Option<f64>,
+        weight_gbps: f64,
         stream: TcpStream,
-    ) -> oneshot::Receiver<String> {
+    ) -> Option<oneshot::Receiver<String>> {
         let _ = stream.set_nodelay(true);
         let (read_half, write_half) = stream.into_split();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -883,10 +1057,16 @@ impl Core {
         let (down_tx, down_rx) = oneshot::channel();
         let (generation, replaced, bytes_sent) = {
             let mut lanes = lock(&self.lanes);
-            Self::ensure_slot(&mut lanes, idx, weight_gbps.unwrap_or(1.0));
+            // `close` marks the session closed before it takes the lanes lock to retire every
+            // link, so checking here, under the lock, means a link added below is either retired
+            // by `close` or never added.
+            if self.is_closed() {
+                return None;
+            }
+            Self::ensure_slot(&mut lanes, idx, weight_gbps);
             let slot = &mut lanes[idx];
-            if let Some(w) = weight_gbps {
-                slot.weight_gbps = w;
+            if slot.attaches == 0 {
+                slot.weight_gbps = weight_gbps;
             }
             let replaced = slot.link.take().map(|link| (slot.generation, link));
             slot.generation += 1;
@@ -908,9 +1088,6 @@ impl Core {
             );
         }
         self.counters.lane_attaches.fetch_add(1, Ordering::Relaxed);
-        if let Some(dial) = &self.dial {
-            dial.established.store(true, Ordering::SeqCst);
-        }
         *lock(&self.last_alive) = Instant::now();
 
         let writer = tokio::spawn(run_lane_writer(
@@ -939,7 +1116,7 @@ impl Core {
         drop(lanes);
         self.wake_sender.notify_one();
         self.lanes_changed.notify_waiters();
-        down_rx
+        Some(down_rx)
     }
 
     /// Marks connection `generation` of lane `idx` failed and requeues what it had not delivered.
@@ -1357,24 +1534,56 @@ async fn run_lane_supervisor(core: Arc<Core>, idx: usize, lane: BridgeLane) {
             }
             continue;
         }
-        let established = dial.established.load(Ordering::SeqCst);
+        let secret = core.resume_secret.get().copied();
+        let may_create = idx == dial.create_lane || dial.create_fallback.load(Ordering::SeqCst);
+        if secret.is_none() && !may_create {
+            // Wait for the create lane, so the resume secret crosses the cable rather than Wi-Fi.
+            tokio::select! {
+                _ = closed.changed() => return,
+                _ = changed => {}
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+            continue;
+        }
+        let nonce = match random_bytes() {
+            Ok(nonce) => nonce,
+            Err(e) => {
+                core.close(e);
+                return;
+            }
+        };
         let hello = LaneHello {
             version: BRIDGE_VERSION,
-            flags: if established { 0 } else { FLAG_CREATE },
+            flags: if secret.is_some() { 0 } else { FLAG_CREATE },
             session_id: core.session_id,
             lane: idx as u16,
             segment_bytes: core.segment_bytes as u32,
             window_bytes: core.window_bytes as u32,
             weight_mbps: (lane.weight_gbps * 1000.0).clamp(1.0, u32::MAX as f64) as u32,
+            nonce,
         };
-        match dial_lane(&lane.addr, hello, dial.connect_timeout).await {
-            Ok(stream) => {
+        let dialed = dial_lane(&lane.addr, hello, secret.as_ref(), dial.connect_timeout).await;
+        let dialed = match dialed {
+            // A create that succeeds after another lane already created the session reached a
+            // listener that lost it (it restarted) and started an empty one: never join that.
+            Ok((_, Some(created))) if core.resume_secret.set(created).is_err() => {
+                Err(DialError::Other(format!(
+                    "{} created a new session instead of resuming this one",
+                    lane.addr
+                )))
+            }
+            other => other,
+        };
+        match dialed {
+            Ok((stream, _)) => {
                 // Disabled while dialing: drop the connection instead of serving it.
-                if !lock(&core.lanes).get(idx).is_some_and(|s| s.enabled) || core.is_closed() {
+                if !lock(&core.lanes).get(idx).is_some_and(|s| s.enabled) {
                     continue;
                 }
                 backoff = REDIAL_BACKOFF_MIN;
-                let down = core.attach_lane(idx, None, stream);
+                let Some(down) = core.attach_lane(idx, lane.weight_gbps, stream) else {
+                    return; // the session closed while this lane dialed
+                };
                 tokio::select! {
                     _ = closed.changed() => return,
                     _ = down => {}
@@ -1382,12 +1591,19 @@ async fn run_lane_supervisor(core: Arc<Core>, idx: usize, lane: BridgeLane) {
             }
             Err(DialError::UnknownSession) => {
                 core.close(format!(
-                    "{} no longer holds session {:016x}; it cannot be resumed",
+                    "{} no longer holds session {:032x}; it cannot be resumed",
                     lane.addr, core.session_id
                 ));
                 return;
             }
+            Err(DialError::SessionExists) => {
+                // Another lane won the race to create the session; resume it on the next try.
+                backoff = REDIAL_BACKOFF_MIN;
+            }
             Err(DialError::Other(e)) => {
+                if secret.is_none() && idx == dial.create_lane {
+                    dial.create_fallback.store(true, Ordering::SeqCst);
+                }
                 if let Some(slot) = lock(&core.lanes).get_mut(idx) {
                     slot.last_error = Some(e);
                 }
@@ -1458,7 +1674,7 @@ pub struct UsbCBridge {
 impl std::fmt::Debug for UsbCBridge {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UsbCBridge")
-            .field("session_id", &format_args!("{:016x}", self.core.session_id))
+            .field("session_id", &format_args!("{:032x}", self.core.session_id))
             .field("open", &!self.core.is_closed())
             .finish()
     }
@@ -1479,16 +1695,27 @@ impl UsbCBridge {
     /// others join as they connect. Fails if no lane connects within `config.connect_timeout`.
     pub async fn connect(config: BridgeConfig) -> Result<BridgeSession, String> {
         let config = config.validated()?;
-        let session_id = new_session_id(&config.to_addr());
+        let session_id = new_session_id()?;
+        // Create on the heaviest lane (the first of equals): normally the cable, which keeps the
+        // resume secret off Wi-Fi.
+        let create_lane = config.lanes.iter().enumerate().fold(0, |best, (i, lane)| {
+            if lane.weight_gbps > config.lanes[best].weight_gbps {
+                i
+            } else {
+                best
+            }
+        });
         let (core, reader, writer) = Core::start(CoreParams {
             session_id,
+            resume_secret: None,
             segment_bytes: config.segment_bytes,
             window_bytes: config.window_bytes,
             resume_grace: config.resume_grace,
             lane_idle_timeout: config.lane_idle_timeout,
             dial: Some(DialInfo {
                 connect_timeout: config.connect_timeout,
-                established: AtomicBool::new(false),
+                create_lane,
+                create_fallback: AtomicBool::new(false),
             }),
         });
         {
@@ -1504,8 +1731,21 @@ impl UsbCBridge {
             core: Arc::clone(&core),
         };
         let deadline = tokio::time::Instant::now() + config.connect_timeout;
+        // If the create lane has not connected by then (an unplugged cable often hangs rather
+        // than refusing), let every lane try to create the session.
+        let fallback_at = tokio::time::Instant::now() + config.connect_timeout / 4;
+        let dial = core.dial.as_ref().expect("a dialing bridge");
         loop {
             let changed = core.lanes_changed.notified();
+            let mut wake_at = deadline;
+            if !dial.create_fallback.load(Ordering::SeqCst) {
+                if tokio::time::Instant::now() >= fallback_at {
+                    dial.create_fallback.store(true, Ordering::SeqCst);
+                    core.lanes_changed.notify_waiters();
+                } else {
+                    wake_at = fallback_at.min(deadline);
+                }
+            }
             let first_live = lock(&bridge.core.lanes)
                 .iter()
                 .position(|s| s.link.is_some());
@@ -1530,11 +1770,11 @@ impl UsbCBridge {
                     reason.unwrap_or_else(|| errors.join("; "))
                 ));
             }
-            let _ = tokio::time::timeout_at(deadline, changed).await;
+            let _ = tokio::time::timeout_at(wake_at, changed).await;
         }
     }
 
-    pub fn session_id(&self) -> u64 {
+    pub fn session_id(&self) -> u128 {
         self.core.session_id
     }
 
@@ -1616,7 +1856,7 @@ impl UsbCBridge {
 // Listener
 // ---------------------------------------------------------------------------------------------
 
-type SessionRegistry = Arc<Mutex<HashMap<u64, Weak<Core>>>>;
+type SessionRegistry = Arc<Mutex<HashMap<u128, Weak<Core>>>>;
 
 /// Accepts bridge lanes on one TCP port and groups them into sessions. Bind it on all
 /// interfaces so lanes arriving over the USB-C link-local address and over Wi-Fi meet.
@@ -1642,6 +1882,7 @@ impl Drop for UsbCBridgeListener {
 
 impl UsbCBridgeListener {
     pub async fn bind(addr: &str, config: BridgeListenerConfig) -> Result<Self, String> {
+        check_idle_timeout(config.lane_idle_timeout)?;
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| format!("bind bridge listener on {addr}: {e}"))?;
@@ -1690,17 +1931,20 @@ async fn accept_lane(
     config: Arc<BridgeListenerConfig>,
     sessions: mpsc::Sender<BridgeSession>,
 ) {
-    let mut hello = [0u8; HELLO_LEN];
-    match tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut hello)).await {
+    let mut hello_bytes = [0u8; HELLO_LEN];
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut hello_bytes)).await {
         Ok(Ok(_)) => {}
         _ => return,
     }
-    let Ok(hello) = LaneHello::from_bytes(&hello) else {
+    let Ok(hello) = LaneHello::from_bytes(&hello_bytes) else {
         return;
     };
-    let reply = |status| reply_bytes(status, hello.segment_bytes, hello.window_bytes);
+    let reply = |status, body: &[u8; SECRET_LEN]| {
+        reply_bytes(status, hello.segment_bytes, hello.window_bytes, body)
+    };
+    let refuse = |status| reply(status, &[0u8; SECRET_LEN]);
     if hello.version != BRIDGE_VERSION {
-        let _ = stream.write_all(&reply(STATUS_BAD_VERSION)).await;
+        let _ = stream.write_all(&refuse(STATUS_BAD_VERSION)).await;
         return;
     }
     let (segment, window) = (hello.segment_bytes as usize, hello.window_bytes as usize);
@@ -1708,27 +1952,44 @@ async fn accept_lane(
         || !(segment..=config.max_window_bytes).contains(&window)
         || hello.lane as usize >= MAX_BRIDGE_LANES
     {
-        let _ = stream.write_all(&reply(STATUS_BAD_PARAMS)).await;
+        let _ = stream.write_all(&refuse(STATUS_BAD_PARAMS)).await;
         return;
     }
 
     enum Lookup {
-        Existing(Arc<Core>),
-        Created(Arc<Core>, BridgeReader, BridgeWriter),
-        Mismatch,
-        Unknown,
+        Existing(Arc<Core>, [u8; SECRET_LEN]),
+        Created(Arc<Core>, [u8; SECRET_LEN], BridgeReader, BridgeWriter),
+        Refused(u8),
     }
+    let creating = hello.flags & FLAG_CREATE != 0;
+    let new_secret = if creating {
+        match random_bytes::<SECRET_LEN>() {
+            Ok(secret) => Some(secret),
+            Err(_) => return,
+        }
+    } else {
+        None
+    };
     let lookup = {
         let mut map = lock(&registry);
         map.retain(|_, weak| weak.upgrade().is_some_and(|c| !c.is_closed()));
-        match map.get(&hello.session_id).and_then(Weak::upgrade) {
-            Some(core) if core.segment_bytes == segment && core.window_bytes == window => {
-                Lookup::Existing(core)
+        match (
+            map.get(&hello.session_id).and_then(Weak::upgrade),
+            new_secret,
+        ) {
+            // Creating never joins: whoever sniffed the id of a live session cannot take it over.
+            (Some(_), Some(_)) => Lookup::Refused(STATUS_SESSION_EXISTS),
+            (Some(core), None) if core.segment_bytes != segment || core.window_bytes != window => {
+                Lookup::Refused(STATUS_BAD_PARAMS)
             }
-            Some(_) => Lookup::Mismatch,
-            None if hello.flags & FLAG_CREATE != 0 => {
+            (Some(core), None) => match core.resume_secret.get().copied() {
+                Some(secret) => Lookup::Existing(core, secret),
+                None => Lookup::Refused(STATUS_UNKNOWN_SESSION),
+            },
+            (None, Some(secret)) => {
                 let (core, reader, writer) = Core::start(CoreParams {
                     session_id: hello.session_id,
+                    resume_secret: Some(secret),
                     segment_bytes: segment,
                     window_bytes: window,
                     resume_grace: config.resume_grace,
@@ -1736,30 +1997,39 @@ async fn accept_lane(
                     dial: None,
                 });
                 map.insert(hello.session_id, Arc::downgrade(&core));
-                Lookup::Created(core, reader, writer)
+                Lookup::Created(core, secret, reader, writer)
             }
-            None => Lookup::Unknown,
+            (None, None) => Lookup::Refused(STATUS_UNKNOWN_SESSION),
         }
     };
     let (core, created) = match lookup {
-        Lookup::Existing(core) => (core, None),
-        Lookup::Created(core, reader, writer) => (core, Some((reader, writer))),
-        Lookup::Mismatch => {
-            let _ = stream.write_all(&reply(STATUS_BAD_PARAMS)).await;
-            return;
+        Lookup::Created(core, secret, reader, writer) => {
+            if stream.write_all(&reply(STATUS_OK, &secret)).await.is_err() {
+                // A session created for this lane gets no lane; its resume grace ends it.
+                return;
+            }
+            (core, Some((reader, writer)))
         }
-        Lookup::Unknown => {
-            let _ = stream.write_all(&reply(STATUS_UNKNOWN_SESSION)).await;
+        Lookup::Existing(core, secret) => {
+            if !prove_resume(&mut stream, &hello_bytes, &secret, &reply).await {
+                return;
+            }
+            (core, None)
+        }
+        Lookup::Refused(status) => {
+            let _ = stream.write_all(&refuse(status)).await;
             return;
         }
     };
-    if stream.write_all(&reply(STATUS_OK)).await.is_err() {
-        // A session created for this lane gets no lane; its resume grace ends it.
+    let weight = hello.weight_mbps.max(1) as f64 / 1000.0;
+    // The listener side never redials, so it has no use for the lane-down signal. A session that
+    // closed during the handshake refuses the lane, which drops the connection.
+    if core
+        .attach_lane(hello.lane as usize, weight, stream)
+        .is_none()
+    {
         return;
     }
-    let weight = hello.weight_mbps.max(1) as f64 / 1000.0;
-    // The listener side never redials, so it has no use for the lane-down signal.
-    drop(core.attach_lane(hello.lane as usize, Some(weight), stream));
     if let Some((reader, writer)) = created {
         let session = BridgeSession {
             bridge: UsbCBridge { core },
@@ -1772,10 +2042,49 @@ async fn accept_lane(
     }
 }
 
+/// Challenge-response for a resuming lane: the listener proves it holds `secret`, then checks
+/// that the dialer does. Returns whether the lane may join, after telling the dialer.
+async fn prove_resume(
+    stream: &mut TcpStream,
+    hello_bytes: &[u8; HELLO_LEN],
+    secret: &[u8; SECRET_LEN],
+    reply: &impl Fn(u8, &[u8; SECRET_LEN]) -> [u8; REPLY_LEN],
+) -> bool {
+    let Ok(nonce) = random_bytes::<NONCE_LEN>() else {
+        return false;
+    };
+    let mut challenge = [0u8; SECRET_LEN];
+    challenge[..NONCE_LEN].copy_from_slice(&nonce);
+    challenge[NONCE_LEN..].copy_from_slice(&lane_proof(secret, LISTENER_ROLE, hello_bytes, &nonce));
+    if stream
+        .write_all(&reply(STATUS_CHALLENGE, &challenge))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let mut proof = [0u8; PROOF_LEN];
+    match tokio::time::timeout(HANDSHAKE_TIMEOUT, stream.read_exact(&mut proof)).await {
+        Ok(Ok(_)) => {}
+        _ => return false,
+    }
+    let expected = lane_proof(secret, DIALER_ROLE, hello_bytes, &nonce);
+    let status = if proofs_match(&proof, &expected) {
+        STATUS_OK
+    } else {
+        STATUS_PROOF_REJECTED
+    };
+    let sent = stream
+        .write_all(&reply(status, &[0u8; SECRET_LEN]))
+        .await
+        .is_ok();
+    sent && status == STATUS_OK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::delta_link::{DeltaLinkConfig, FrameReader, FrameWriter, accept_delta_hello};
+    use crate::delta_link::{DeltaLinkConfig, FrameReader, FrameWriter, accept_delta_hello, xxh64};
     use crate::{PeerChannel, WireFrame, WireFrameKind};
 
     fn noise(seed: u64, len: usize) -> Vec<u8> {
@@ -1851,6 +2160,33 @@ mod tests {
                 .unwrap()
                 .is_err()
         );
+        for bad in ["kdbr://h:", "kdbr://:7871", "kdbr://h:port", "kdbr://h:1@"] {
+            assert!(BridgeConfig::parse_addr(bad).unwrap().is_err(), "{bad}");
+        }
+        let v6 = BridgeConfig::parse_addr("kdbr://[fe80::1%en5]:7871@40")
+            .unwrap()
+            .unwrap();
+        assert_eq!(v6.lanes[0].addr, "[fe80::1%en5]:7871");
+    }
+
+    #[test]
+    fn idle_timeouts_shorter_than_three_heartbeats_are_refused() {
+        let mut cfg = BridgeConfig::new(vec![BridgeLane::new("h:1", 1.0, "lane0")]);
+        cfg.lane_idle_timeout = LANE_HEARTBEAT;
+        assert!(cfg.clone().validated().is_err());
+        cfg.lane_idle_timeout = MIN_LANE_IDLE_TIMEOUT;
+        assert!(cfg.validated().is_ok());
+    }
+
+    #[test]
+    fn hmac_matches_rfc_4231() {
+        // RFC 4231 test case 2.
+        let mac = hmac_sha256(b"Jefe", &[b"what do ya want ", b"for nothing?"]);
+        let hex: String = mac.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
     }
 
     #[test]
@@ -1858,11 +2194,12 @@ mod tests {
         let hello = LaneHello {
             version: BRIDGE_VERSION,
             flags: FLAG_CREATE,
-            session_id: 0x0123_4567_89AB_CDEF,
+            session_id: 0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210,
             lane: 3,
             segment_bytes: 65_536,
             window_bytes: 16 << 20,
             weight_mbps: 27_600,
+            nonce: [7; NONCE_LEN],
         };
         assert_eq!(LaneHello::from_bytes(&hello.to_bytes()).unwrap(), hello);
         let mut bad = hello.to_bytes();
@@ -2069,7 +2406,7 @@ mod tests {
         assert!(reason.contains("resume grace"), "{reason}");
     }
 
-    fn raw_hello(session_id: u64, flags: u16) -> LaneHello {
+    fn raw_hello(session_id: u128, flags: u16) -> LaneHello {
         LaneHello {
             version: BRIDGE_VERSION,
             flags,
@@ -2078,23 +2415,42 @@ mod tests {
             segment_bytes: 16 << 10,
             window_bytes: 1 << 20,
             weight_mbps: 1000,
+            nonce: random_bytes().unwrap(),
         }
+    }
+
+    /// Dials a raw lane that creates session `id`, returning the stream and the resume secret.
+    async fn create_raw(addr: &str, id: u128) -> (TcpStream, [u8; SECRET_LEN]) {
+        let (stream, secret) = dial_lane(
+            addr,
+            raw_hello(id, FLAG_CREATE),
+            None,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        (stream, secret.expect("a create returns the resume secret"))
     }
 
     #[tokio::test]
     async fn resuming_an_unknown_session_or_bad_parameters_is_refused() {
         let listener = listener().await;
         let addr = listener.local_addr().to_string();
-        let err = dial_lane(&addr, raw_hello(42, 0), Duration::from_secs(2))
-            .await
-            .unwrap_err();
+        let err = dial_lane(
+            &addr,
+            raw_hello(42, 0),
+            Some(&[0; SECRET_LEN]),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, DialError::UnknownSession));
 
         let bad = LaneHello {
             segment_bytes: 1,
             ..raw_hello(43, FLAG_CREATE)
         };
-        let err = dial_lane(&addr, bad, Duration::from_secs(2))
+        let err = dial_lane(&addr, bad, None, Duration::from_secs(2))
             .await
             .unwrap_err();
         assert!(matches!(err, DialError::Other(e) if e.contains("rejected")));
@@ -2104,9 +2460,7 @@ mod tests {
     async fn a_segment_beyond_the_window_closes_the_session() {
         let mut listener = listener().await;
         let addr = listener.local_addr().to_string();
-        let mut raw = dial_lane(&addr, raw_hello(7, FLAG_CREATE), Duration::from_secs(2))
-            .await
-            .unwrap();
+        let (mut raw, _) = create_raw(&addr, 7).await;
         let server = listener.accept().await.unwrap();
         let mut msg = vec![TAG_DATA];
         msg.extend_from_slice(&(1u64 << 40).to_le_bytes());
@@ -2123,9 +2477,7 @@ mod tests {
         let mut listener = listener().await;
         let addr = listener.local_addr().to_string();
         // A lane that completes the hello and then never sends a byte, like a pulled cable.
-        let _raw = dial_lane(&addr, raw_hello(8, FLAG_CREATE), Duration::from_secs(2))
-            .await
-            .unwrap();
+        let _raw = create_raw(&addr, 8).await;
         let server = listener.accept().await.unwrap();
         assert_eq!(server.bridge.snapshot().alive_lanes(), 1);
         tokio::time::sleep(Duration::from_millis(900)).await;
@@ -2134,6 +2486,127 @@ mod tests {
         let error = snap.lanes[0].last_error.clone().unwrap();
         assert!(error.contains("no data or heartbeat"), "{error}");
         assert!(snap.open, "the session waits out its resume grace");
+    }
+
+    #[tokio::test]
+    async fn a_sniffed_session_id_cannot_join_inject_or_steal() {
+        let mut listener = listener().await;
+        let addr = listener.local_addr().to_string();
+        let client = UsbCBridge::connect(config(listener.local_addr(), &[2.0, 1.0]))
+            .await
+            .unwrap();
+        let mut server = listener.accept().await.unwrap();
+        assert!(
+            client
+                .bridge
+                .wait_for_lanes(2, Duration::from_secs(5))
+                .await
+        );
+        // Everything an eavesdropper on the Wi-Fi lane sees in a hello.
+        let id = client.bridge.session_id();
+
+        // Creating under the live id is refused rather than joined.
+        let err = dial_lane(
+            &addr,
+            raw_hello(id, FLAG_CREATE),
+            None,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DialError::SessionExists), "{err:?}");
+
+        // Resuming as lane 0 with an outsized weight gets a challenge it cannot answer.
+        let hello = LaneHello {
+            weight_mbps: u32::MAX,
+            ..raw_hello(id, 0)
+        };
+        let mut raw = TcpStream::connect(&addr).await.unwrap();
+        raw.write_all(&hello.to_bytes()).await.unwrap();
+        let mut reply = [0u8; REPLY_LEN];
+        raw.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[6], STATUS_CHALLENGE);
+        raw.write_all(&[0xA5; PROOF_LEN]).await.unwrap();
+        raw.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[6], STATUS_PROOF_REJECTED);
+        // The connection never becomes a lane: no data is accepted or sent on it.
+        let mut evil = vec![TAG_DATA];
+        evil.extend_from_slice(&0u64.to_le_bytes());
+        evil.extend_from_slice(&4u32.to_le_bytes());
+        evil.extend_from_slice(b"EVIL");
+        let _ = raw.write_all(&evil).await;
+        let mut rest = Vec::new();
+        let read = tokio::time::timeout(Duration::from_secs(2), raw.read_to_end(&mut rest)).await;
+        assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "{read:?}");
+
+        // The real session is untouched: its lanes, their weights, and both directions.
+        let snap = server.bridge.snapshot();
+        assert_eq!(snap.alive_lanes(), 2);
+        assert_eq!(snap.lanes[0].attaches, 1);
+        assert_eq!(snap.lanes[0].weight_gbps, 2.0);
+        let mut writer = client.writer;
+        writer.write_all(b"real").await.unwrap();
+        let mut buf = [0u8; 4];
+        server.reader.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"real");
+        server.writer.write_all(b"SECRET-REPLY").await.unwrap();
+        let mut reader = client.reader;
+        let mut buf = [0u8; 12];
+        reader.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"SECRET-REPLY");
+        assert!(client.bridge.is_open() && server.bridge.is_open());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_lane_cannot_attach_to_a_closed_session() {
+        let mut listener = listener().await;
+        let addr = listener.local_addr().to_string();
+        let (_raw, secret) = create_raw(&addr, 9).await;
+        let server = listener.accept().await.unwrap();
+        server.bridge.close();
+
+        // A redial that lands after the close is refused by the listener...
+        let err = dial_lane(
+            &addr,
+            raw_hello(9, 0),
+            Some(&secret),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, DialError::UnknownSession), "{err:?}");
+
+        // ...and one that passed the lookup before the close is refused by the session itself.
+        let spare = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = TcpStream::connect(spare.local_addr().unwrap())
+            .await
+            .unwrap();
+        assert!(server.bridge.core.attach_lane(1, 1.0, stream).is_none());
+        assert_eq!(server.bridge.snapshot().alive_lanes(), 0);
+    }
+
+    #[tokio::test]
+    async fn another_lane_creates_the_session_when_the_create_lane_is_down() {
+        let mut listener = listener().await;
+        let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_addr = dead.local_addr().unwrap().to_string();
+        drop(dead);
+        let mut cfg = config(listener.local_addr(), &[27.6, 1.2]);
+        // The heaviest lane, which would carry the resume secret, is unplugged.
+        cfg.lanes[0].addr = dead_addr;
+        let client = UsbCBridge::connect(cfg).await.unwrap();
+        assert_eq!(client.peer, listener.local_addr().to_string());
+        let mut server = listener.accept().await.unwrap();
+        let mut writer = client.writer;
+        writer.write_all(b"over the backup").await.unwrap();
+        let mut buf = [0u8; 15];
+        server.reader.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"over the backup");
     }
 
     /// Answers every frame with the XXH64 of its payload, over a delta link.
@@ -2213,5 +2686,8 @@ mod tests {
         );
         assert!(channel.is_healthy());
         assert!(bridge.snapshot().lanes[1].bytes_sent > 0);
+        // Closing the channel closes the bridge under it rather than leaving it heartbeating.
+        channel.close();
+        assert!(!bridge.is_open());
     }
 }

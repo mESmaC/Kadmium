@@ -12,7 +12,7 @@ A USB-C bridge ([`usbc_bridge.rs`](../../crates/kadmium-network/src/usbc_bridge.
 2. The pool redials over Wi-Fi, and the new connection starts with empty stores on both sides.
 3. The next frames resend everything: a 4 MiB stage context, 16 MiB of weights, KV pages the peer already had.
 
-InferSSD's device staging solves the same problem for source trees. Each device keeps the commits it has received, and the next bundle leaves out everything that anchor already holds (PR #76's bundle shrank from about 35 MB to 48 KB). A bridge applies that idea to links. The receiver's anchor is the sequence number of the next segment it lacks. A lane that fails, or a cable replugged within the resume grace, resends only the segments after it. The delta stores never see a gap, so they stay valid.
+InferSSD's device staging solves the same problem for source trees. Since InferSSD PR #91, each device keeps the commits it has received, and the next bundle leaves out everything that anchor already holds. For PR #76, the staged sources shrank from two archives of about 35 MB each to a 48 KB bundle. A bridge applies that idea to links. The receiver's anchor is the sequence number of the next segment it lacks. A lane that fails, or a cable replugged within the resume grace, resends only the segments after it. The delta stores never see a gap, so they stay valid.
 
 ## 2. How it works
 
@@ -24,7 +24,8 @@ InferSSD's device staging solves the same problem for source trees. Each device 
 | **Unplug detection** | A lane fails on a write error, a reset, or 750 ms with no data and no heartbeat (every lane sends one each 100 ms). A pulled cable usually shows up as silence rather than a reset. |
 | **Resume** | The dialing side redials failed lanes with backoff (25 ms to 1 s) into the same session. A session ends only after no lane has been up for the resume grace (30 s by default). |
 | **Hot-plug** | `UsbCBridge::add_lane` adds a cable plugged in mid-session; `set_lane_enabled` takes one out of service. |
-| **Safety** | Redials never set the create flag. A listener that restarted therefore answers "unknown session" instead of silently starting an empty stream the peer's delta stores would no longer match. Out-of-window sequence numbers, oversized segments and unknown tags close the session. |
+| **Joining** | The session id is 128 random bits, but it crosses every lane in plaintext. Joining also takes a 32-byte resume secret. The listener returns it only on the lane that creates the session, which the dialer picks as its heaviest lane (normally the cable). Every other lane and every redial proves it holds the secret with an HMAC-SHA256 challenge-response in both directions. Someone who sniffs a hello on Wi-Fi therefore cannot inject segments, draw replies, or take over a lane index, and a hello that tries to create a session under an existing id is refused. |
+| **Safety** | A dialer sends the create flag only until it holds the secret, and drops a lane whose create succeeds after that. A listener that restarted therefore answers "unknown session" instead of silently starting an empty stream the peer's delta stores would no longer match. Lanes cannot attach to a session that has closed. Out-of-window sequence numbers, oversized segments and unknown tags close the session. A worker closes its bridge when the stream breaks, as does a `PeerChannel` that fails or is closed. |
 
 The lane wire format is documented at the top of `usbc_bridge.rs`.
 
@@ -72,7 +73,8 @@ The loss happened between calls, so nothing was in flight and nothing was retran
 
 - The figures in `UsbCDeltaBridgePlan` are model estimates from tier goodput and RTT, not measurements.
 - Lanes are TCP. A bridge does not bypass the OS network stack; USB4STREAM and RDMA lane types would.
-- Chunk and segment integrity rests on TCP checksums and XXH64 keys, which are not cryptographic. Use the bridge between nodes that trust each other, as with delta links.
+- The resume secret crosses the lane that creates the session. If the cable cannot connect at session start, that lane is Wi-Fi, and someone sniffing it then could join later.
+- Lanes are not encrypted, and segment integrity rests on TCP checksums. An attacker on the path can read or alter traffic, as with plain TCP and delta links (whose XXH64 keys are not cryptographic). Use bridges between trusted nodes on trusted links.
 - Each lane copies a segment a few more times than a raw socket. On a single lane that costs throughput on fast links, which is why the plan opens several lanes per cable.
 
 Sources: [Apple WWDC26 session 233](https://developer.apple.com/videos/play/wwdc2026/233/), [MLX JACCL RDMA guide](https://upd.dev/ml-explore/mlx/issues/3207), [USB4STREAM in Linux 7.2](https://news.lavx.hu/article/intel-s-usb4stream-protocol-set-to-revolutionize-direct-host-to-host-communication-in-linux-7-2), [thunderbolt-net ring patch](https://lkml.iu.edu/hypermail/linux/kernel/2604.3/07551.html), [Windows USB4 connection manager](https://learn.microsoft.com/en-us/windows-hardware/design/component-guidelines/usb4-intro-to-connection-manager), [cdc_ncm 64 KiB NTB change](https://lkml.rescloud.iu.edu/2208.1/04047.html).

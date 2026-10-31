@@ -2008,12 +2008,34 @@ fn unhandled_frame_reply(kind: WireFrameKind, epoch: u32) -> WireFrame {
 pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerFrameContext) {
     let _ = stream.set_nodelay(true);
     let (read_half, write_half) = stream.into_split();
-    serve_worker_stream(read_half, write_half, ctx).await;
+    // Either way the socket drops here, which ends the connection.
+    let _ = serve_worker_stream(read_half, write_half, ctx).await;
+}
+
+/// The next frame, or `None` when the peer ended the stream cleanly between frames.
+async fn next_worker_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut FrameReader<tokio::io::BufReader<R>>,
+) -> Result<Option<WireFrame>, String> {
+    use tokio::io::AsyncBufReadExt;
+    let at_end = reader
+        .get_mut()
+        .fill_buf()
+        .await
+        .map_err(|e| e.to_string())?
+        .is_empty();
+    if at_end {
+        return Ok(None);
+    }
+    reader.read_frame().await.map(Some)
 }
 
 /// [`serve_worker_connection`] over any ordered byte stream, such as the two halves of a
 /// [`kadmium_network::UsbCBridge`] session striped over USB-C and Wi-Fi lanes.
-pub async fn serve_worker_stream<R, W>(read_half: R, write_half: W, ctx: WorkerFrameContext)
+///
+/// Returns `true` when the peer ended the stream cleanly between frames, and `false` when the
+/// stream broke: a read or write failed, a frame was malformed, or a write timed out and may have
+/// been partial. A broken stream must not be reused, so a caller holding a bridge closes it.
+pub async fn serve_worker_stream<R, W>(read_half: R, write_half: W, ctx: WorkerFrameContext) -> bool
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -2024,13 +2046,14 @@ where
     let connection_failed = Arc::new(tokio::sync::Notify::new());
     loop {
         let frame = tokio::select! {
-            result = reader.read_frame() => match result {
-                Ok(frame) => frame,
-                // EOF, reset, a malformed header, or a delta frame that cannot be rebuilt.
-                Err(_) => break,
+            result = next_worker_frame(&mut reader) => match result {
+                Ok(Some(frame)) => frame,
+                Ok(None) => return true,
+                // A reset, a truncated or malformed frame, or a delta frame that cannot be rebuilt.
+                Err(_) => return false,
             },
             // A timed-out or failed write may be partial; never reuse this byte stream.
-            _ = connection_failed.notified() => break,
+            _ = connection_failed.notified() => return false,
         };
         if frame.kind == WireFrameKind::DeltaHello {
             let mut w = writer.lock().await;
@@ -2041,7 +2064,7 @@ where
                     store_bytes >> 20
                 ),
                 Ok(_) => {}
-                Err(_) => break,
+                Err(_) => return false,
             }
             continue;
         }
@@ -2224,11 +2247,15 @@ impl LiveNodeWorkerServer {
     /// `0.0.0.0:7871`), serving each exactly like a TCP connection. A coordinator then reaches
     /// this worker at `kdbr://<usb4-link-local>:7871@27.6,<wifi-addr>:7871@1.2`, and its frames
     /// keep flowing, without resetting the delta link, when the USB-C cable is pulled.
+    ///
+    /// Returns the bound address and a handle to the accept loop. Aborting the handle stops the
+    /// listener: no new sessions start, and open sessions keep their live lanes but can no longer
+    /// resume a lane that drops.
     pub async fn spawn_usbc_bridge_listener(
         &self,
         bind: &str,
         log_console: bool,
-    ) -> Result<SocketAddr, String> {
+    ) -> Result<(SocketAddr, tokio::task::AbortHandle), String> {
         let mut listener = kadmium_network::UsbCBridgeListener::bind(
             bind,
             kadmium_network::BridgeListenerConfig::default(),
@@ -2251,7 +2278,7 @@ impl LiveNodeWorkerServer {
             log_console,
         };
         let accepted = Arc::clone(&self.accepted_connections);
-        tokio::spawn(async move {
+        let accept_loop = tokio::spawn(async move {
             while let Some(session) = listener.accept().await {
                 accepted.fetch_add(1, Ordering::Relaxed);
                 let ctx = WorkerFrameContext {
@@ -2260,7 +2287,7 @@ impl LiveNodeWorkerServer {
                 };
                 if ctx.log_console {
                     println!(
-                        "  [USB-C BRIDGE] Peer {} opened bridge session {:016x}",
+                        "  [USB-C BRIDGE] Peer {} opened bridge session {:032x}",
                         session.peer,
                         session.bridge.session_id()
                     );
@@ -2272,12 +2299,16 @@ impl LiveNodeWorkerServer {
                     ..
                 } = session;
                 tokio::spawn(async move {
-                    serve_worker_stream(reader, writer, ctx).await;
-                    drop(bridge);
+                    // A clean end lets the session finish once the last replies are delivered.
+                    // Otherwise close it now: dropping the halves would end the stream normally
+                    // and leave the peer waiting on the rest of a partial frame.
+                    if !serve_worker_stream(reader, writer, ctx).await {
+                        bridge.close();
+                    }
                 });
             }
         });
-        Ok(local_addr)
+        Ok((local_addr, accept_loop.abort_handle()))
     }
 }
 
@@ -3793,7 +3824,7 @@ mod usbc_bridge_tests {
         let worker = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, node.clone(), false)
             .await
             .expect("spawn worker");
-        let bridge_addr = worker
+        let (bridge_addr, _bridge_listener) = worker
             .spawn_usbc_bridge_listener("127.0.0.1:0", false)
             .await
             .expect("spawn bridge listener");
@@ -3819,5 +3850,38 @@ mod usbc_bridge_tests {
         assert!(channel.is_healthy());
         assert!(bridge.snapshot().lanes[1].bytes_sent > 0);
         assert_eq!(worker.accepted_connections.load(Ordering::Relaxed), 1);
+    }
+
+    /// A worker whose bridged stream breaks closes the session instead of leaving it open and
+    /// heartbeating while the peer waits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_broken_bridged_stream_closes_the_session() {
+        use tokio::io::AsyncWriteExt;
+        let node = sample_personal_cluster()[0].clone();
+        let worker = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, node, false)
+            .await
+            .expect("spawn worker");
+        let (bridge_addr, listener) = worker
+            .spawn_usbc_bridge_listener("127.0.0.1:0", false)
+            .await
+            .expect("spawn bridge listener");
+        let config = kadmium_network::BridgeConfig::parse_addr(&format!("kdbr://{bridge_addr}"))
+            .unwrap()
+            .unwrap();
+        let mut session = kadmium_network::UsbCBridge::connect(config)
+            .await
+            .expect("bridge to the worker");
+        // Not a WireFrame: the worker's read fails mid-stream.
+        session.writer.write_all(b"XXXXnot-a-frame").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while session.bridge.is_open() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the worker closes the broken session");
+        let reason = session.bridge.snapshot().close_reason.unwrap();
+        assert!(reason.contains("cannot be resumed"), "{reason}");
+        listener.abort();
     }
 }

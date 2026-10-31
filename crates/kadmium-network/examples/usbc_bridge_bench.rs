@@ -136,7 +136,7 @@ async fn serve(bind: &str) -> Result<(), String> {
     });
     while let Some(session) = bridges.accept().await {
         println!(
-            "bridge session {:016x} from {}",
+            "bridge session {:032x} from {}",
             session.bridge.session_id(),
             session.peer
         );
