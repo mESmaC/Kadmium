@@ -574,7 +574,7 @@ pub fn discover_local_dsv41_shards_and_checkpoints() -> Dsv41DualNvmeShardInvent
             }
         }
     }
-    checkpoints.sort_by_key(|b| std::cmp::Reverse(b.step));
+    checkpoints.sort_by_key(|a| std::cmp::Reverse(a.step));
     let latest_checkpoint = checkpoints.first().cloned();
 
     Dsv41DualNvmeShardInventory {
@@ -909,11 +909,11 @@ pub fn sinkhorn_knopp_4x4(logits: &[[f32; 4]; 4], iters: usize) -> [[f32; 4]; 4]
         for row in &mut p {
             let row_sum = row[0] + row[1] + row[2] + row[3] + 1e-12;
             let inv = 1.0 / row_sum;
-            for val in row {
-                *val *= inv;
+            for value in row {
+                *value *= inv;
             }
         }
-        for c in 0..4 {
+        for c in [0, 1, 2, 3] {
             let col_sum = p[0][c] + p[1][c] + p[2][c] + p[3][c] + 1e-12;
             let inv = 1.0 / col_sum;
             for row in &mut p {
@@ -1031,6 +1031,7 @@ pub struct Dsv41RouteDecision {
 /// - Supports `MCL4-COE` `dense_subset_k`, `combine_dense_and_sparse`, and
 ///   `recurrent_coverage_penalty` (Tabu routing penalty)
 /// - Normalizes raw `sqrtsoftplus` weights across selected experts and multiplies by `route_scale` (`1.5`).
+// Keep the public routing API compatible; parameters mirror the router specification.
 #[allow(clippy::too_many_arguments)]
 pub fn dsv41_route_top6_noaux_tc(
     raw_logits: &[f32],
@@ -2337,8 +2338,8 @@ mod tests {
             let row_sum: f32 = row.iter().sum();
             assert!((row_sum - 1.0).abs() < 1e-5, "row {r} sum = {row_sum}");
         }
-        for c in 0..4 {
-            let col_sum: f32 = p.iter().map(|row| row[c]).sum();
+        for c in [0, 1, 2, 3] {
+            let col_sum = p[0][c] + p[1][c] + p[2][c] + p[3][c];
             assert!((col_sum - 1.0).abs() < 1e-5, "col {c} sum = {col_sum}");
         }
     }

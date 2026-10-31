@@ -30,14 +30,13 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
-#[allow(clippy::large_enum_variant)]
 enum Commands {
     /// Open the Condenser native UI (default command).
     Ui(UiArgs),
     /// Serve the same UI and JSON API on loopback without a native window.
     Serve(ServeArgs),
     /// Run one inference turn, including tool calls when explicitly enabled.
-    Chat(ChatArgs),
+    Chat(Box<ChatArgs>),
     /// List models exposed by a provider.
     Models(ProviderArgs),
     /// Describe Condenser's built-in provider adapters.
@@ -249,7 +248,7 @@ fn main() {
             }
             future.await
         }),
-        Commands::Chat(args) => block_on(run_chat(args, roots)),
+        Commands::Chat(args) => block_on(run_chat(*args, roots)),
         Commands::Models(args) => block_on(async move {
             let provider = ProviderFactory::build(args.resolve()?)?;
             let models = provider.list_models().await?;

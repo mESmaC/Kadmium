@@ -569,6 +569,7 @@ pub struct DeepGemmSwiGluExpert {
 }
 
 impl DeepGemmSwiGluExpert {
+    // Keep the public constructor aligned with the three projection matrices and their shape.
     #[allow(clippy::too_many_arguments)]
     pub fn from_fp32_weights(
         expert_id: u32,

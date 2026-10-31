@@ -51,8 +51,8 @@ impl LayerReference {
                 .find(|e| e.tensor_name == "layer.rmsnorm.gamma")
             && let Ok(raw_slice) = reader.get_verified_tensor_slice(entry)
         {
-            for &chunk in raw_slice.as_chunks::<4>().0.iter().take(dim) {
-                gamma.push(f32::from_le_bytes(chunk));
+            for chunk in raw_slice.as_chunks::<4>().0.iter().take(dim) {
+                gamma.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
         }
         if gamma.len() < dim {
@@ -388,8 +388,7 @@ impl TokenBatchF32 {
             .as_chunks::<4>()
             .0
             .iter()
-            .copied()
-            .map(f32::from_le_bytes)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         Ok(Self { rows, dim, data })
     }
@@ -477,8 +476,7 @@ impl ExpertPartialsBatch {
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .copied()
-                .map(f32::from_le_bytes)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             partials.push(ExpertPartial { row, expert, data });
         }
@@ -779,8 +777,7 @@ impl HolderDispatchBatch {
                 body.as_chunks::<4>()
                     .0
                     .iter()
-                    .copied()
-                    .map(f32::from_le_bytes)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect()
             }
             DispatchPrecision::LowLatencyFp8F32Scale => {
@@ -794,8 +791,7 @@ impl HolderDispatchBatch {
                     .as_chunks::<4>()
                     .0
                     .iter()
-                    .copied()
-                    .map(f32::from_le_bytes)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 let codes: Vec<i8> = body[scale_bytes..].iter().map(|&b| b as i8).collect();
                 PerTokenBlockQuantized {
@@ -980,8 +976,7 @@ impl LowLatencyCombineBatch {
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .copied()
-                .map(f32::from_le_bytes)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
             ScaleFormat::Ue8m0PowerOfTwo => body[..scale_bytes]
                 .iter()

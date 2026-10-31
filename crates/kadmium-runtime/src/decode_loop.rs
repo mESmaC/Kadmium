@@ -513,7 +513,7 @@ fn total_accounting(sessions: &[DecodeSessionReport]) -> Option<AcceptanceAccoun
     Some(total)
 }
 
-/// Whether the traces of two different sessions overlap in time.
+/// Whether the traces of two different sessions overlap in time or alternate in the queue.
 fn interleaved(report: &GridRunReport, sessions: &[DecodeSessionPlan]) -> bool {
     let session_of = |id: &WorkUnitId| {
         sessions
@@ -526,11 +526,17 @@ fn interleaved(report: &GridRunReport, sessions: &[DecodeSessionPlan]) -> bool {
         .filter(|t| t.ok)
         .filter_map(|t| session_of(&t.unit_id).map(|s| (s, t.dispatched_at_ms, t.returned_at_ms)))
         .collect();
-    spans.iter().any(|(sa, a0, a1)| {
+    let time_overlap = spans.iter().any(|(sa, a0, a1)| {
         spans
             .iter()
             .any(|(sb, b0, b1)| sa != sb && a0 < b1 && b0 < a1)
-    })
+    });
+    let order_interleaved = spans.iter().enumerate().any(|(i, (sa, _, _))| {
+        spans[i + 1..].iter().enumerate().any(|(j, (sb, _, _))| {
+            sa != sb && spans[i + 1 + j + 1..].iter().any(|(sc, _, _)| sc == sa)
+        })
+    });
+    time_overlap || order_interleaved
 }
 
 /// A session's step `t + 1` input: the previous step's sink output, seeded into the next runner
@@ -571,7 +577,8 @@ pub async fn run_decode_loop(
             .collect::<Vec<_>>()
             .join("+")
     );
-    let report = if !pipelined {
+
+    let report: GridRunReport = if !pipelined {
         let mut all_traces = Vec::new();
         let mut merged: Option<GridRunReport> = None;
         for (index, plan) in plans.iter().enumerate() {

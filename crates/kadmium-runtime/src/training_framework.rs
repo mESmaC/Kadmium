@@ -495,8 +495,8 @@ impl ByzantineRobustAsyncDiLoCoAggregator {
         }
 
         if total_alpha > 0.0 {
-            for val in &mut aggregated {
-                *val /= total_alpha;
+            for value in &mut aggregated[..dim] {
+                *value /= total_alpha;
             }
         } else {
             aggregated = y;

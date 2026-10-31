@@ -2779,14 +2779,15 @@ pub struct PlatformFamiliesOverviewResponse {
     pub phone_farm_catalog: Vec<PlatformCatalogSkuEntry>,
 }
 
-#[allow(clippy::type_complexity)]
-fn build_platform_catalogs() -> (
+type PlatformCatalogs = (
     Vec<PlatformCatalogSkuEntry>,
     Vec<PlatformCatalogSkuEntry>,
     Vec<PlatformCatalogSkuEntry>,
     Vec<PlatformCatalogSkuEntry>,
     Vec<PlatformCatalogSkuEntry>,
-) {
+);
+
+fn build_platform_catalogs() -> PlatformCatalogs {
     let apple_m4_catalog: Vec<PlatformCatalogSkuEntry> =
         AppleM4PlatformBridge::catalog_all_m4_products()
             .into_iter()
@@ -2968,6 +2969,7 @@ pub struct PlatformAttachResponse {
     pub workers: LiveClusterWorkersOverview,
 }
 
+// Bridge metadata is passed through to the existing registration API.
 #[allow(clippy::too_many_arguments)]
 async fn register_bridged_worker_if_needed(
     state: &Arc<Mutex<GatewayState>>,

@@ -38,8 +38,9 @@ jobs:
             platform: linux-arm64
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.0"
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
@@ -90,4 +91,3 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
             *.zip *.tar.gz SHA256SUMS ../scripts/install.sh ../scripts/install.ps1
-

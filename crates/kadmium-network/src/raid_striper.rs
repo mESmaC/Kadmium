@@ -152,6 +152,7 @@ impl SwarmRaidStriper {
     /// Automatically reconstructs the straggler's output stripe from the parity worker via:
     /// $$Y_m = Y_{\text{parity}} - \sum_{j \neq m} Y_j$$
     /// and verifies bit-accurate recovery against the exact monolithic matrix product.
+    // Preserve the public matrix/stripe API; each dimension has a distinct contract.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_raid5_coded_projection(
         input_matrix: &[f32],

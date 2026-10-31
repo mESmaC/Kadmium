@@ -432,11 +432,11 @@ impl QuantizedKvPageBlock {
             OllamaKvCacheType::F16 => {
                 let base = t * hd * 2;
                 let mut terms = Vec::with_capacity(hd);
-                for (d, &q_val) in q.iter().enumerate().take(hd) {
+                for (d, &query) in q[..hd].iter().enumerate() {
                     let lo = self.key_payload[base + d * 2];
                     let hi = self.key_payload[base + d * 2 + 1];
                     let k_val = Self::ieee_f16_to_f32(u16::from_le_bytes([lo, hi]));
-                    terms.push(q_val * k_val);
+                    terms.push(query * k_val);
                 }
                 repops::tree_sum_f32(&terms)
             }
