@@ -206,6 +206,9 @@ pub enum WireFrameKind {
     /// Any other frame, sent as only the chunks the peer does not already hold (see
     /// [`delta_link`]). Read loops rebuild it into the frame it wraps before dispatching.
     DeltaFrame = 14,
+    /// Batched, checkpoint-bound expert reads. Payload is a binary `KDEX` request/response
+    /// defined by `kadmium-data`; replies reuse this kind and the request id.
+    ExpertLoad = 15,
 }
 
 impl WireFrameKind {
@@ -225,6 +228,7 @@ impl WireFrameKind {
             12 => Some(Self::WorkRequest),
             13 => Some(Self::DeltaHello),
             14 => Some(Self::DeltaFrame),
+            15 => Some(Self::ExpertLoad),
             _ => None,
         }
     }
@@ -717,11 +721,12 @@ mod tests {
             (WireFrameKind::WorkRequest, 12u8),
             (WireFrameKind::DeltaHello, 13u8),
             (WireFrameKind::DeltaFrame, 14u8),
+            (WireFrameKind::ExpertLoad, 15u8),
         ] {
             assert_eq!(kind as u8, byte);
             assert_eq!(WireFrameKind::from_u8(byte), Some(kind));
         }
-        assert_eq!(WireFrameKind::from_u8(15), None);
+        assert_eq!(WireFrameKind::from_u8(16), None);
     }
 
     #[tokio::test]

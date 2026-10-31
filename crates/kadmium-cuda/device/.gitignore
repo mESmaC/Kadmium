@@ -1,0 +1,4 @@
+# cuda-oxide writes its LLVM IR and PTX next to the manifest.
+*.ll
+*.ptx
+*.cubin

@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Kadmium</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
-    background: #0e1013;
+    background: radial-gradient(ellipse at 50% 15%, #2a303b, #0e1013 72%);
     color: #eceff3;
     font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, "SF Pro Text", Ubuntu, sans-serif;
     display: grid;
@@ -17,12 +18,12 @@
     -webkit-user-select: none;
     cursor: default;
   }
-  .card { width: min(440px, 88vw); text-align: center; }
+  .card { width: min(480px, 88vw); text-align: center; padding: 40px 32px; border: 1px solid #ffffff20; border-radius: 24px; background: #16191ee8; box-shadow: 0 24px 80px #0006, inset 0 1px 0 #ffffff0a; backdrop-filter: blur(24px); }
   .mark { width: 72px; height: 72px; margin: 0 auto 20px; display: block; }
   h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 6px; }
   .kind {
     font: 500 11px/1 ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
-    letter-spacing: 0.14em; text-transform: uppercase; color: #8b93a1; margin-bottom: 28px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: #a4adba; margin-bottom: 28px;
   }
   .status { font-size: 14px; line-height: 1.55; color: #b9c0cb; min-height: 44px; }
   .track { height: 3px; margin: 22px auto 0; width: 220px; background: #1f242b; border-radius: 3px; overflow: hidden; }
@@ -38,9 +39,10 @@
   code { font: 12px ui-monospace, "Cascadia Mono", Consolas, monospace; color: #f3c020; }
   .foot {
     position: fixed; bottom: 18px; left: 0; right: 0; text-align: center;
-    font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: #5d6674; letter-spacing: 0.06em;
+    font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: #9aa3ae; letter-spacing: 0.06em;
   }
   @media (prefers-reduced-motion: reduce) { .bar { animation: none; width: 100%; } }
+  @media (max-height: 520px) { .card { padding: 20px; margin: 24px 0 48px; } .mark { width: 48px; height: 48px; } .foot { position: static; padding: 12px; } body { height: auto; min-height: 100%; } }
 </style>
 </head>
 <body class="{{STATE}}">

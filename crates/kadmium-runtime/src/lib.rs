@@ -474,6 +474,9 @@ pub mod pipeline;
 pub mod quant_lora;
 pub mod scheduler;
 
+#[cfg(test)]
+mod cuda_parity;
+
 pub use pipeline::*;
 pub use quant_lora::*;
 pub use scheduler::*;
@@ -2376,6 +2379,97 @@ mod tests {
         assert_eq!(pong_again.node.id, cluster[1].id);
         assert!(channel.is_healthy());
         assert_eq!(channel.in_flight(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_live_worker_loads_expert_packets_over_one_pooled_channel() {
+        use kadmium_data::{
+            ExpertKey, ExpertLoadRequest, ExpertPacket, ExpertSource, ExpertTensor,
+        };
+        use std::sync::Arc;
+
+        struct MemoryExperts;
+
+        impl ExpertSource for MemoryExperts {
+            fn model_id(&self) -> &str {
+                "memory-moe"
+            }
+
+            fn source_fingerprint(&self) -> u64 {
+                0x1234_5678
+            }
+
+            fn expert_payload_bytes(&self, _layer: u32, _expert: u32) -> Result<u64, String> {
+                Ok(4)
+            }
+
+            fn load_expert(&self, layer: u32, expert: u32) -> Result<ExpertPacket, String> {
+                let bytes = vec![layer as u8, expert as u8, 0, 255];
+                ExpertPacket::new(
+                    layer,
+                    expert,
+                    vec![ExpertTensor {
+                        name: format!("blk.{layer}.ffn_up_exps.weight"),
+                        dtype: "Q4_K".into(),
+                        shape: vec![4],
+                        bytes: Arc::from(bytes),
+                    }],
+                )
+            }
+        }
+
+        let cluster = sample_personal_cluster();
+        let worker =
+            LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, cluster[0].clone(), false)
+                .await
+                .expect("spawn worker");
+        worker
+            .expert_loader
+            .register_source(Arc::new(MemoryExperts))
+            .expect("register experts");
+        let request = ExpertLoadRequest::new(
+            "memory-moe",
+            0x1234_5678,
+            vec![ExpertKey::new(3, 7), ExpertKey::new(4, 2)],
+        );
+        let addr = worker.local_addr.to_string();
+        let first = DistributedLanExecutor::load_experts_tcp(&addr, 9, &request)
+            .await
+            .expect("remote expert load");
+        assert_eq!(first.experts.len(), 2);
+        assert_eq!(first.experts[0].tensors[0].bytes.as_ref(), &[3, 7, 0, 255]);
+        let second = DistributedLanExecutor::load_experts_tcp(&addr, 9, &request)
+            .await
+            .expect("cached remote expert load");
+        assert_eq!(first, second);
+        let stats = worker.expert_loader.stats();
+        assert_eq!(stats.cache_misses, 2);
+        assert_eq!(stats.cache_hits, 2);
+        assert_eq!(
+            worker
+                .accepted_connections
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1
+        );
+
+        let wrong_checkpoint =
+            ExpertLoadRequest::new("memory-moe", 0x1234_5679, vec![ExpertKey::new(3, 7)]);
+        let error = DistributedLanExecutor::load_experts_tcp(&addr, 9, &wrong_checkpoint)
+            .await
+            .expect_err("stale checkpoint must fail");
+        assert_eq!(error, "checkpoint fingerprint mismatch");
+
+        // Bulk expert traffic uses its own channel; heartbeats open the control channel instead.
+        let (pong, _) = DistributedLanExecutor::ping_worker_tcp(&addr, 10)
+            .await
+            .expect("heartbeat remains independent of expert traffic");
+        assert_eq!(pong.node.id, cluster[0].id);
+        assert_eq!(
+            worker
+                .accepted_connections
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2
+        );
     }
 
     #[test]
