@@ -14,9 +14,6 @@ use std::collections::BTreeMap;
 
 #[test]
 fn issue_32_external_hardware_probes_are_disabled_under_test_except_loopback() {
-    unsafe {
-        std::env::set_var("KADMIUM_DISABLE_LIVE_PROBES", "1");
-    }
     assert!(!external_hardware_probes_allowed(None));
     assert!(!external_hardware_probes_allowed(Some(
         "192.168.40.237:7860"
@@ -44,7 +41,7 @@ fn issue_33_mcp_rl_sandbox_verifier_rejects_broken_and_wrong_code() {
     );
     assert!(broken.compile_error.is_some());
     assert_eq!(broken.passed_assertions, 0);
-    assert!(broken.timed_out_or_trapped);
+    assert!(!broken.timed_out_or_trapped);
     assert_eq!(broken.verifiable_reward, 0.0);
 
     let wrong = sandbox.verify_candidate_code(
@@ -261,6 +258,39 @@ fn issue_35_hf_pull_distinguishes_datasets_and_uses_safetensors_index_when_suppl
             .all(|f| f == "model-00001-of-00002.safetensors"
                 || f == "model-00002-of-00002.safetensors")
     );
+
+    // Verify 3-shard and 17-shard manifests map to their exact shard filenames:
+    for shard_count in [3usize, 17usize] {
+        let mut custom_map = BTreeMap::new();
+        for l in 0..64usize {
+            let shard_idx = (l * shard_count / 64) + 1;
+            custom_map.insert(
+                format!("model.layers.{l}.self_attn.q_proj.weight"),
+                format!("model-{shard_idx:05}-of-{shard_count:05}.safetensors"),
+            );
+        }
+        let custom_manifest = SafetensorsIndexManifest {
+            total_size_bytes: 8_388_608,
+            weight_map: custom_map,
+        };
+        let custom_plan = HuggingFaceHubConnector::plan_selective_model_pull_with_index(
+            &format!("hf://org/custom-{shard_count}shard@main"),
+            &shard_plan,
+            Some(&custom_manifest),
+        )
+        .unwrap();
+        let all_files: std::collections::BTreeSet<String> = custom_plan
+            .node_pulls
+            .iter()
+            .flat_map(|np| np.required_safetensors_files.iter().cloned())
+            .collect();
+        assert_eq!(all_files.len(), shard_count);
+        assert!(
+            all_files
+                .iter()
+                .all(|f| f.ends_with(&format!("-of-{shard_count:05}.safetensors")))
+        );
+    }
 }
 
 #[test]
@@ -344,6 +374,30 @@ fn issue_38_and_39_mcp_server_defaults_to_live_unconnected_and_labels_cloudshiel
     assert_eq!(structured["node_count"], json!(0));
     assert_eq!(structured["total_vram_gb"], json!(0.0));
     assert_eq!(structured["estimated_throughput"], json!(0.0));
+
+    let infer_req = McpJsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: Some(json!(11)),
+        method: "tools/call".to_string(),
+        params: Some(json!({
+            "name": "kadmium_run_inference",
+            "arguments": {
+                "prompt": "test empty cluster"
+            }
+        })),
+    };
+    let infer_resp = KadmiumMcpServer::handle_request(&mut state, infer_req);
+    let infer_result = infer_resp.result.unwrap();
+    assert_eq!(infer_result["isError"], json!(true));
+    assert_eq!(infer_result["structuredContent"]["stages"], json!([]));
+    assert_eq!(
+        infer_result["structuredContent"]["effective_tokens_per_sec"],
+        json!(0.0)
+    );
+    assert_eq!(
+        infer_result["structuredContent"]["speculative_verification"]["proposed_draft_tokens"],
+        json!(0)
+    );
 
     let model = ModelSpec::deepseek_v3_671b_moe();
     let arb = HybridCloudArbitragePlanner::compute_arbitrage_plan(&model);

@@ -3,11 +3,6 @@ use std::sync::{Arc, Mutex};
 
 #[tokio::main]
 async fn main() {
-    // Ensure the UI test fixture never dials external LAN/USB/ADB hardware probes.
-    unsafe {
-        std::env::set_var("KADMIUM_DISABLE_LIVE_PROBES", "1");
-    }
-
     let mut port: u16 = 0;
     let args: Vec<String> = std::env::args().collect();
     let mut i = 1;

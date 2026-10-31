@@ -601,7 +601,7 @@ mod tests {
             &cases,
         );
         assert_eq!(panic_code.passed_assertions, 0);
-        assert!(panic_code.timed_out_or_trapped);
+        assert!(!panic_code.timed_out_or_trapped);
         assert_eq!(panic_code.verifiable_reward, 0.0);
         assert!(panic_code.compile_error.is_some());
 
@@ -613,7 +613,7 @@ mod tests {
         );
         assert_eq!(invalid.passed_assertions, 0);
         assert_eq!(invalid.fuel_consumed, 0);
-        assert!(invalid.timed_out_or_trapped);
+        assert!(!invalid.timed_out_or_trapped);
         assert_eq!(invalid.verifiable_reward, 0.0);
         assert!(invalid.compile_error.is_some());
     }

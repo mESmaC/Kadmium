@@ -1149,7 +1149,49 @@ pub fn run_pull(
 
         let local_node = LiveHardwareProfiler::probe_local_host();
         let cluster = vec![local_node];
-        let model = ModelSpec::recommended_for_cluster(&cluster);
+        let repo_lower = hf_ref.repo_id.to_ascii_lowercase();
+        let mut model = if repo_lower.contains("671b") || repo_lower.contains("deepseek-v3") {
+            ModelSpec::deepseek_v3_671b_moe()
+        } else if repo_lower.contains("235b") {
+            ModelSpec::qwen3_235b_moe()
+        } else if repo_lower.contains("70b") {
+            ModelSpec::llama_3_70b_lora()
+        } else if repo_lower.contains("32b") {
+            ModelSpec::qwen2_5_coder_32b()
+        } else if repo_lower.contains("14b") {
+            ModelSpec::qwen2_5_coder_14b()
+        } else if repo_lower.contains("7b") || repo_lower.contains("8b") {
+            ModelSpec::qwen2_5_coder_7b()
+        } else if repo_lower.contains("3b")
+            || repo_lower.contains("1.5b")
+            || repo_lower.contains("0.5b")
+        {
+            ModelSpec::llama_3_2_3b_instruct()
+        } else {
+            ModelSpec::recommended_for_cluster(&cluster)
+        };
+        model.id = hf_ref.repo_id.clone();
+        if let Some(ref idx) = parsed_index {
+            if let Some(max_l) = idx
+                .weight_map
+                .keys()
+                .map(|t| kadmium_data::SafetensorsToKtbTranscoder::parse_layer_and_expert(t).0)
+                .max()
+                && max_l > 0
+            {
+                model.num_layers = max_l + 1;
+            }
+            if idx.total_size_bytes > 0 && model.num_layers > 0 {
+                let total_gb = (idx.total_size_bytes as f64) / 1_073_741_824.0;
+                if model.is_moe && model.experts_per_layer > 0 {
+                    model.dense_layer_size_gb = (total_gb * 0.15) / (model.num_layers as f64);
+                    model.single_expert_size_gb =
+                        (total_gb * 0.85) / ((model.num_layers * model.experts_per_layer) as f64);
+                } else {
+                    model.dense_layer_size_gb = total_gb / (model.num_layers as f64);
+                }
+            }
+        }
         let plan = ShardPlanner::compute_plan(1, &model, WorkloadKind::Inference, &cluster);
         let hf_plan = HuggingFaceHubConnector::plan_selective_model_pull_with_index(
             uri,

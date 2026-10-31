@@ -382,9 +382,15 @@ impl KadmiumMcpServer {
                     .nodes
                     .iter()
                     .map(|n| n.memory.vram_gb + n.memory.unified_mem_gb)
-                    .sum();
-                let total_ram: f64 = snap.nodes.iter().map(|n| n.memory.system_ram_gb).sum();
-                let total_tflops: f64 = snap.nodes.iter().map(|n| n.fp16_tflops).sum();
+                    .sum::<f64>()
+                    + 0.0;
+                let total_ram: f64 = snap
+                    .nodes
+                    .iter()
+                    .map(|n| n.memory.system_ram_gb)
+                    .sum::<f64>()
+                    + 0.0;
+                let total_tflops: f64 = snap.nodes.iter().map(|n| n.fp16_tflops).sum::<f64>() + 0.0;
                 let fleet_mode = if state.live_only_mode {
                     if snap.nodes.is_empty() {
                         "live_unconnected"
@@ -404,7 +410,7 @@ impl KadmiumMcpServer {
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let summary = format!(
-                    "Kadmium (Cd-48) Epoch {} [{}] | {} active nodes ({} live workers) | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Modelled KV context: {}–{} tokens (theoretical estimate, native {}) | Leader: {} (Term {}) | Throughput: {:.1} {}",
+                    "Kadmium (Cd-48) Epoch {} [{}] | {} active nodes ({} live workers) | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Modelled KV context: {}\u{2013}{} tokens (theoretical estimate, native {}) | Leader: {} (Term {}) | Throughput: {:.1} {}",
                     snap.inference_plan.epoch,
                     fleet_mode,
                     snap.nodes.len(),
@@ -568,11 +574,12 @@ impl KadmiumMcpServer {
                     &state.inference_plan,
                     prompt,
                 );
+                let is_err = report.stages.is_empty();
                 let text = serde_json::to_string_pretty(&report).unwrap_or_default();
                 Ok(json!({
                     "content": [{ "type": "text", "text": text }],
                     "structuredContent": report,
-                    "isError": false
+                    "isError": is_err
                 }))
             }
             "kadmium_verify_rl_sandbox" => {

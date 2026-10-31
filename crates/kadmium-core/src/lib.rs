@@ -1139,12 +1139,12 @@ pub fn external_hardware_probes_allowed(custom_endpoint: Option<&str>) -> bool {
     }
     if let Ok(exe) = std::env::current_exe() {
         let exe_lossy = exe.to_string_lossy();
-        let in_deps_dir = exe
+        let in_test_or_example_dir = exe
             .parent()
             .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.eq_ignore_ascii_case("deps"));
-        if in_deps_dir || exe_lossy.contains("rustdoctest") {
+            .is_some_and(|n| n.eq_ignore_ascii_case("deps") || n.eq_ignore_ascii_case("examples"));
+        if in_test_or_example_dir || exe_lossy.contains("rustdoctest") {
             return false;
         }
     }

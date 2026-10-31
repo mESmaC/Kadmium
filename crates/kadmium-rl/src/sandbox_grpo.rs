@@ -471,7 +471,7 @@ impl WasiMicroSandbox {
     }
 
     /// Compiles and verifies a candidate code string against `test_cases`.
-    /// Malformed or non-compilable code returns 0 passed assertions, `timed_out_or_trapped = true`,
+    /// Malformed or non-compilable code returns 0 passed assertions, `timed_out_or_trapped = false`,
     /// `verifiable_reward = 0.0`, and populates `compile_error`.
     pub fn verify_candidate_code(
         &self,
@@ -492,7 +492,7 @@ impl WasiMicroSandbox {
                 passed_assertions: 0,
                 total_assertions: test_cases.len().max(1),
                 fuel_consumed: 0,
-                timed_out_or_trapped: true,
+                timed_out_or_trapped: false,
                 verifiable_reward: 0.0,
                 compile_error: Some(err),
             },

@@ -778,6 +778,7 @@
       const side = sideRef.current, main = document.querySelector('.cr-main');
       const toggle = document.querySelector('.cr-menu[aria-controls="cr-side"]');
       if (main) main.inert = true;
+      if (side) void side.offsetWidth;
       const focusable = () => Array.from(side.querySelectorAll('a[href],button:not([disabled])'));
       const items = focusable(); if (items[0]) items[0].focus();
       const key = e => {

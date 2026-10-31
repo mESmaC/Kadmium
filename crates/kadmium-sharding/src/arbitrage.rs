@@ -124,7 +124,7 @@ impl HybridCloudArbitragePlanner {
             total_combined_vram_gb: (total_vram * 10.0).round() / 10.0,
             kadmium_blended_hourly_usd: (blended_usd * 100.0).round() / 100.0,
             monolithic_hyperscaler_hourly_usd: (hyper_usd * 100.0).round() / 100.0,
-            cost_reduction_pct: (savings_pct * 10.0).round() / 100.0 * 10.0,
+            cost_reduction_pct: (savings_pct * 10.0).round() / 10.0,
         }
     }
 

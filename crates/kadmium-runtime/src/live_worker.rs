@@ -1572,6 +1572,9 @@ pub fn execute_dream_rsi_replay_local(
 /// Maximum number of concurrent incomplete FTS3 transfers staged in memory on a worker.
 const MAX_STAGED_FTS3_TRANSFERS: usize = 8;
 
+/// Idle time-to-live before an incomplete staged FTS3 transfer is swept and its ledger booking released.
+const STAGED_FTS3_TRANSFER_TTL: Duration = Duration::from_secs(30);
+
 /// Per-transfer staging buffer on a worker node, committed atomically to `resident_ktb_bank`
 /// only when all pages of the transfer have been verified and the recomputed full-bank Merkle
 /// root matches `expected_merkle_root`.
@@ -1585,6 +1588,7 @@ pub struct StagedFts3Transfer {
     pub buffer: Vec<u8>,
     pub received_pages: BTreeSet<usize>,
     pub booked_ledger_bytes: u64,
+    pub last_updated: Instant,
 }
 
 /// Shared worker state handed to every frame handler on every connection.
@@ -1811,11 +1815,23 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                         .staged_fts3_transfers
                         .lock()
                         .expect("staged fts3 transfers lock");
+                    let mut expired_booked = 0u64;
+                    transfers.retain(|_, t| {
+                        let keep = t0.saturating_duration_since(t.last_updated)
+                            <= STAGED_FTS3_TRANSFER_TTL;
+                        if !keep {
+                            expired_booked += t.booked_ledger_bytes;
+                        }
+                        keep
+                    });
+                    if expired_booked > 0 {
+                        lock_host_ledger(&ctx.host_ledger).release(expired_booked);
+                    }
                     if !transfers.contains_key(&req.transfer_id) {
                         while transfers.len() >= MAX_STAGED_FTS3_TRANSFERS {
                             let oldest_key = transfers
                                 .iter()
-                                .min_by_key(|(_, t)| t.epoch)
+                                .min_by_key(|(_, t)| (t.last_updated, t.epoch))
                                 .map(|(k, _)| k.clone())
                                 .expect("non-empty transfers");
                             if let Some(evicted) = transfers.remove(&oldest_key)
@@ -1854,6 +1870,7 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                                 buffer: vec![0u8; min_len],
                                 received_pages: BTreeSet::new(),
                                 booked_ledger_bytes: booked,
+                                last_updated: t0,
                             },
                         );
                     }
@@ -1894,6 +1911,7 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                         &req.inclusion_proof,
                         req.expected_merkle_root,
                     )?;
+                    staged.last_updated = t0;
                     staged.received_pages.insert(req.page_index);
                     let count = staged.received_pages.len();
                     let completed_bank = if count == staged.total_pages {
@@ -1921,12 +1939,15 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                             if recomputed_root == req.expected_merkle_root {
                                 patch_ok = true;
                                 bank_complete = true;
-                                *ctx.resident_ktb_bank.lock().expect("ktb bank lock") = full_bank;
-                                ctx.ktb_merkle_root_fnv64
-                                    .store(recomputed_root, Ordering::Relaxed);
-                                let prev_booked = ctx
-                                    .resident_ktb_booked_bytes
-                                    .swap(booked_bytes, Ordering::AcqRel);
+                                let prev_booked = {
+                                    let mut bank_guard =
+                                        ctx.resident_ktb_bank.lock().expect("ktb bank lock");
+                                    *bank_guard = full_bank;
+                                    ctx.ktb_merkle_root_fnv64
+                                        .store(recomputed_root, Ordering::Release);
+                                    ctx.resident_ktb_booked_bytes
+                                        .swap(booked_bytes, Ordering::AcqRel)
+                                };
                                 if prev_booked > 0 {
                                     lock_host_ledger(&ctx.host_ledger).release(prev_booked);
                                 }

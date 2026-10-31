@@ -440,6 +440,8 @@
   function openMobileSessions(focusTarget) {
     document.body.classList.add('sessions-open');
     syncSessionRailAccessibility();
+    const rail = $('session-rail');
+    if (rail) void rail.offsetWidth;
     const target = focusTarget || $('new-task') || railFocusableElements()[0];
     if (target) target.focus();
   }

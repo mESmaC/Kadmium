@@ -406,6 +406,12 @@ impl PeerChannel {
                 frame.kind
             ));
         };
+        if !self.is_healthy() {
+            return Err(format!(
+                "peer channel to {addr} is {}",
+                self.shared.close_reason()
+            ));
+        }
         let encoded = writer.encode(frame, request_id, plan.as_ref());
         let mut unwritten = UnwrittenFrameGuard {
             shared: &self.shared,
@@ -418,15 +424,15 @@ impl PeerChannel {
         match written {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                drop(writer);
                 self.shared.fail_all(format!("write error: {e}"));
+                drop(writer);
                 return Err(format!("write of {:?} to {addr} failed: {e}", frame.kind));
             }
             Err(_) => {
-                drop(writer);
                 self.shared.fail_all(format!(
                     "write of request {request_id} timed out after {timeout:?}"
                 ));
+                drop(writer);
                 return Err(format!(
                     "write of {:?} to {addr} timed out after {timeout:?}",
                     frame.kind
@@ -1170,8 +1176,10 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_in_progress_write_fails_whole_channel() {
+        use tokio::io::AsyncReadExt;
+
         let (client_read, _server_write) = tokio::io::duplex(64);
-        let (client_write, _server_read) = tokio::io::duplex(64);
+        let (client_write, mut server_read) = tokio::io::duplex(64);
         let channel = PeerChannel::from_halves(
             "loopback-bounded",
             FrameReader::new(BufReader::new(Box::new(client_read) as ChannelRead)),
@@ -1180,7 +1188,7 @@ mod tests {
         );
 
         // A 1 KiB payload cannot finish writing into a 64-byte duplex buffer when the peer
-        // never reads, so the call deterministically suspends inside `write_encoded`.
+        // never reads, so call A deterministically suspends inside `write_encoded`.
         let caller_channel = Arc::clone(&channel);
         let caller = tokio::spawn(async move {
             caller_channel
@@ -1200,9 +1208,48 @@ mod tests {
         .await
         .unwrap();
         tokio::task::yield_now().await;
+
+        // Queue call B on the writer lock while call A is stalled mid-write:
+        let queued_channel = Arc::clone(&channel);
+        let queued_caller = tokio::spawn(async move {
+            queued_channel
+                .call(
+                    WireFrameKind::WorkRequest,
+                    2,
+                    vec![0xCD; 8],
+                    Duration::from_secs(5),
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while channel.in_flight() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+
+        // Abort call A mid-write; call B must see `!is_healthy()` upon taking the writer lock
+        // and must NOT splice its frame onto the 64 partial bytes written by call A.
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
+        let queued_err = queued_caller
+            .await
+            .unwrap()
+            .expect_err("queued writer waiter must fail after partial-write cancellation");
+        assert!(
+            queued_err.contains("cancelled"),
+            "unexpected error: {queued_err}"
+        );
         assert!(!channel.is_healthy());
         assert_eq!(channel.in_flight(), 0);
+
+        let mut buf = vec![0u8; 256];
+        let n = server_read.read(&mut buf).await.unwrap();
+        assert_eq!(
+            n, 64,
+            "queued call must not write any bytes after mid-write abort"
+        );
     }
 }
