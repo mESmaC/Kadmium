@@ -1,6 +1,6 @@
 # Open source and Kadmium Cloud
 
-Kadmium is open-core in the Supabase / Tailscale shape: the whole fabric is free to self-host forever, and Kadmium Cloud is a paid managed plane that wraps the hardware a person already runs. The identity makes that split visible on every screen without ever making the free product look like a trial.
+Kadmium follows a proposed open-core shape: local planners, interfaces, and reference workloads are self-hostable, while Kadmium Cloud is a **planned** paid managed plane around a person's hardware. The identity makes that distinction visible without presenting simulated cloud features as live services or making the self-hosted product look like a trial.
 
 ## The colour code
 
@@ -20,8 +20,8 @@ The code is strict in both directions. A local node is never blue, even when it 
 ## Writing the two products
 
 - The free product is simply **Kadmium**. Describe it by what it is: "One Rust binary. Free to self-host, forever. MIT or Apache-2.0." Never "community edition", "free tier", "lite" or "basic".
-- **Kadmium Cloud** is described by what it *adds* to a cluster the person already has: burst GPUs attached in minutes, multi-provider spot arbitrage at a 60–85 % discount to a monolithic cluster, a pre-warmed `.ktb` vault that absorbs shards within milliseconds when the lab loses power and fails back to local hardware at $0 / hour when it recovers.
-- Pricing is a number with a unit and a qualifier: "$0.89 / GPU-hour, from", "usage billing, no minimum". The self-hosted plan card says "$0 forever", set in `metric` like any other price — it is not styled as a discount.
+- **Kadmium Cloud** copy describes target behavior in future tense: attaching burst GPUs, arbitraging approved provider offers, and failing over through a pre-warmed vault. Do not publish attachment times, discount ranges, RTOs, or automatic failback as current guarantees. Fixed CLI/API scenarios are labelled simulations.
+- Pricing is published only after approval, with a number, unit, and qualifier. Do not reuse sample prices as live offers. The self-hosted plan card says "$0 forever", set in `metric` like any other price — it is not styled as a discount.
 - Upgrade moments are offered where the cloud is useful (a node went offline; a training run would finish sooner with one more GPU) in `body` copy with a `cloud` button, never as a banner, modal or lock icon on a feature.
 
 ## Plan cards
@@ -30,8 +30,8 @@ Use `PlanCard` for both, side by side, same size, free first. Each has a mono ey
 
 ## Mixed clusters and zero additional datacenters
 
-The common case is both at once: a local mesh plus a burst GPU or a failover vault. In the topology view and the `ShardRail`, cloud nodes sit last in flow order and are the only cherenkov elements on the canvas; in a `NodeCard`, `placement="cloud"` sets the badge, the icon tint and the meter colour together. During a handoff the moving shard keeps the colour of its *destination* once the boundary transfer completes — a shard that fails over to the vault turns blue when it lands there, and yellow again when it fails back.
+The target mixed-cluster case is a local mesh plus a burst GPU or failover vault. In topology mockups and the `ShardRail`, cloud nodes sit last in flow order and are the only cherenkov elements on the canvas; in a `NodeCard`, `placement="cloud"` sets the badge, icon tint, and meter colour together. During a simulated handoff, the moving shard takes its *destination* colour only after the scenario's boundary transfer completes. Label the state as simulated unless a live provider/session is actually attached.
 
 This visual split also encodes Kadmium's grid positioning — **"We don't need any additional datacenters"**:
-1. **Local silicon first (`--cadmium`):** Millions of consumer GPUs, Apple Silicon Macs, gaming laptops, and SBCs already sit plugged into wall outlets at under 10 % utilization, cooled by ambient room air (`0 L / hr` additional evaporative cooling water, `0 kg` new concrete or embodied silicon). Through the **Kadmium Supply Grid**, operators can also lease their idle local machines overnight for direct USD or `1.25×` Kadmium Cloud credits while retaining `< 200 ms` Polite Auto-Yield when they sit down to game or work.
-2. **Existing datacenter spot surplus (`--cherenkov`):** Kadmium does not replace existing datacenters—when a workload overflows local capacity, it rents fragmented spot slots already sitting idle inside existing datacenters via 1,000× DeMo DCT compression, eliminating the need to pour concrete for another 500 MW facility.
+1. **Local silicon first (`--cadmium`):** prioritize existing consumer and lab hardware. Current `kadmium lease` prints an illustrative quote; it does not pay USD or issue redeemable credits. Polite-yield latency is a policy target/estimate, not a measured guarantee.
+2. **Existing datacenter spot surplus (`--cherenkov`):** the target is to use existing spot capacity when local resources are insufficient. DeMo's ratio depends on tensor size and `top_k`; no fixed compression factor or datacenter-avoidance outcome is established. Environmental claims require a separate lifecycle analysis.

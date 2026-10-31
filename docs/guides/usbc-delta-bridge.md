@@ -45,13 +45,13 @@ On the coordinator, address the worker with a `kdbr://` address anywhere a worke
 kdbr://169.254.78.11:7871@4.6,169.254.78.11:7871@4.6,169.254.78.11:7871@4.6,192.168.1.20:7871@1.2
 ```
 
-List the USB4 address several times. Each lane is its own TCP connection, and one connection does not fill a USB4 link. On Windows loopback, one lane moved 2 to 6 Gbit/s while four lanes moved 18 to 24 Gbit/s, against 8 to 27 Gbit/s for a raw TCP socket on the same machine. `UsbCDirectInterconnectScanner::plan_delta_bridge` (reported as `delta_bridge_plan` by `GET /api/v1/network/usbc`) opens one lane per DMA stream and sizes the window. It sizes the window to cover the USB-C lanes while a segment crosses the slowest backup lane.
+List the USB4 address several times. Each lane is its own TCP connection, and one connection does not fill a USB4 link. Reported Windows loopback rates were 2 to 6 Gbit/s on one lane and 18 to 24 Gbit/s on four lanes, against 8 to 27 Gbit/s for a raw TCP socket on the same machine. Exact run configuration and raw samples are not recorded; these are loopback TCP results, not USB4 cable measurements. `UsbCDirectInterconnectScanner::plan_delta_bridge` (reported as `delta_bridge_plan` by `GET /api/v1/network/usbc`) opens one lane per DMA stream and sizes the window. It sizes the window to cover the USB-C lanes while a segment crosses the slowest backup lane.
 
 ## 4. Measured results
 
 `cargo run --release -p kadmium-network --example usbc_bridge_bench -- serve 0.0.0.0:7880` on the worker and `-- run <host>:7880 kdbr://...:7881,...:7881` on the coordinator. Each scenario runs 12 steps. Before step 4 the first path is lost: the plain channel is closed and redialed, and lane 0 of the bridge is disabled. Every reply carries the XXH64 of the rebuilt payload, and every one matched.
 
-Over Wi-Fi to an M4 Mac mini on 2026-10-30, three runs. Both bridge lanes used the same Wi-Fi path; no USB-C cable connected the two machines, so this measures the unplug cost, not USB4 throughput.
+Over Wi-Fi to an M4 Mac mini on 2026-10-30, three runs. Both bridge lanes used the same Wi-Fi path; no USB-C cable connected the two machines, so this measures the unplug cost, not USB4 throughput. Byte/time values are reported measurements, ratios are derived, and exact checkout/raw logs are not recorded; see the [benchmark ledger](../BENCHMARKS_2026-10.md).
 
 | Scenario | Bytes sent after the loss (plain → bridge) | Time after the loss (plain → bridge) |
 | :--- | :--- | :--- |

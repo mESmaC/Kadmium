@@ -104,7 +104,7 @@ Prompt 2 time to first token (Derived from row 00): `12,986.71 ms`, which is `37
 | Best 32-token decode window | `2.73 tok/s` (`366.89 ms/tok`) | Stage 0 `268.59 ms`, hop `51.68 ms`, stage 1 `46.63 ms` |
 | Fastest single decode step (warm page cache, low hop jitter) | `4.10 tok/s` (`244.11 ms/tok`) | Stage 0 `180.18 ms`, hop `19.17 ms`, stage 1 `44.76 ms` at `36.2 GB/s` |
 | Rust path steady state, p50 (20 AVX2 threads on the PC, 10 NEON cores on the M4) | `3.25 tok/s` (`308.1 ms/tok`) | Stage 0 `222.64 ms`, hop `44.51 ms`, stage 1 `48.36 ms` |
-| Single-PC reference, cold NVMe paging, no Mac | `0.82 tok/s` | The two-stage Rust path is `3.98x` this figure |
+| Single-PC reference, cold NVMe paging, no Mac | `0.82 tok/s` | The two-stage Rust path is **3.98×** this figure (**Derived**: 3.25 / 0.82) |
 | M4 stage memory stream rate | `34.8 to 37.2 GB/s` | Across all 10 cores, about a third of the `120 GB/s` spec |
 
 ### 1.6 Where the time goes (Derived)
@@ -216,6 +216,69 @@ Full configuration of both curves: `toy-moe` (4 layers, 8 experts per layer, 2 a
 
 ---
 
+## Run 4 — Delta-link transport (reported 2026-10-30)
+
+### 4.1 Configuration and provenance
+
+- **Harness:** `cargo run --release -p kadmium-network --example delta_link_bench -- serve` on the worker and `cargo run --release -p kadmium-network --example delta_link_bench -- run <host>:7870` on the coordinator.
+- **Configuration reported in `docs/ARCHITECTURE.md` §9.3:** Wi-Fi to an M4 Mac mini, 12 steps per scenario.
+- **Provenance limitation:** the peer hardware, exact checkout, and raw timing output are not recorded in the repository. Treat this as a reported harness result, not an independently reproducible ledger run.
+
+### 4.2 Reported results
+
+| Scenario | Result | Label |
+| :--- | ---: | :--- |
+| Re-sent stage weights | 8.0× | **Derived as reported** from scenario timings; raw values absent |
+| Decode steps with unchanged context | 9.1× | **Derived as reported** |
+| KV appends | 6.9× | **Derived as reported** |
+| Sparse parameter updates | 5.8× | **Derived as reported** |
+| Fresh random payloads | 0.9× | **Derived as reported**; reported worst case |
+
+These ratios describe the delta-link example on one Wi-Fi setup. They are not KDM2-wide, internet, model-inference, or guaranteed bandwidth improvements.
+
+## Run 5 — Native CUDA kernel parity and timings (entry recorded 2026-10-30)
+
+### 5.1 Configuration and provenance
+
+- **Harness:** `cargo oxide run` for parity and `cargo oxide run -- --bench` for timings from `crates/kadmium-cuda/device`.
+- **Hardware/software:** RTX 5070 (`sm_120`), CUDA 13.3, driver 616.92, WSL2 Ubuntu; 4096 × 4096 mat-vecs.
+- **Parity:** every reported case matched the host reference bits, including partial/zero blocks, NaN/infinite inputs, E8M0 exponents, tied router logits, and long reduction rows. NaNs compare as values, not as identical payloads.
+- **Provenance limitation:** the underlying run date, exact checkout, repetition count, and raw logs are not recorded in `crates/kadmium-cuda/README.md`. Results below are **Measured as reported** and **Derived as reported**, not an independently reproduced run.
+
+### 5.2 Reported results
+
+| Kernel | Per-launch range (Measured as reported) | Weight bandwidth (Derived as reported) |
+| :--- | ---: | ---: |
+| `q4k_q8k_matvec` | 33–38 µs | 330–380 GB/s |
+| `mxfp4_matvec` | 100–110 µs | 81–88 GB/s |
+
+The `mxfp4_matvec` reduction shape, not memory alone, bounds the current kernel. These results cover two specific CUDA kernels on one GPU and do not establish general model-backend performance or parity on other backends.
+
+---
+
+## Run 6 — USB-C delta-bridge unplug behavior (reported 2026-10-30)
+
+### 6.1 Configuration and provenance
+
+- **Harness:** `cargo run --release -p kadmium-network --example usbc_bridge_bench -- serve 0.0.0.0:7880` on the worker and `cargo run --release -p kadmium-network --example usbc_bridge_bench -- run <host>:7880 kdbr://...:7881,...:7881` on the coordinator.
+- **Configuration:** Wi-Fi to an M4 Mac mini, 12 steps per scenario, three runs. Both bridge lanes used the same Wi-Fi path; **no USB-C cable connected the machines**. Before step 4 the plain channel was closed/redialed and bridge lane 0 disabled. Payload XXH64 values matched.
+- **Provenance limitation:** peer hardware details, exact checkout, and raw logs are not recorded in the guide. Byte/time values are **Measured as reported**; ratios are **Derived as reported**.
+
+### 6.2 Reported unplug results
+
+| Scenario | Bytes after loss, plain → bridge | Time after loss, plain → bridge | Derived comparison |
+| :--- | :--- | :--- | :--- |
+| Decode step with fresh 28 KiB activations and unchanged 4 MiB context | 4.33 MiB → 0.35 MiB | 317–337 ms → 151–159 ms | 12.5× fewer bytes; 2.0–2.2× faster |
+| Re-sent 16 MiB weights with changing header | 16.33 MiB → 0.37 MiB | 845–920 ms → 283–348 ms | 44× fewer bytes; 2.7–3.0× faster |
+
+The loss occurred between calls, so this scenario did not retransmit in-flight data. Unit tests separately cover mid-transfer unplug and delta-store preservation. These are path-loss results on Wi-Fi, not USB4 throughput results.
+
+### 6.3 Separate loopback throughput report
+
+The guide also reports Windows loopback rates of 2–6 Gbit/s on one lane and 18–24 Gbit/s on four lanes, versus 8–27 Gbit/s for a raw TCP socket. These are **Measured as reported** with no recorded date, exact checkout, raw samples, or detailed host configuration. They are loopback TCP results and must not be presented as USB4 cable throughput.
+
+---
+
 ## How to add a run
 
 Copy the Run 1 structure and fill every field; leave nothing implied.
@@ -226,3 +289,5 @@ Copy the Run 1 structure and fill every field; leave nothing implied.
 4. **Per-step telemetry:** one row per generated token with stage times, hop time, and any node-reported stream rate; mark aggregates as mean or p50.
 5. **Headline figures:** time to first token, mean decode time per output token, best window, and the single-node reference the run is compared against.
 6. **Labels:** Measured for anything logged by the harness, Derived for arithmetic on logged values, Modelled for projections.
+
+> **Sweep harness limitation:** `crates/kadmium-runtime/src/decode_loop.rs` currently writes a hard-coded historical repository string into newly generated sweep output. Do not treat that generated provenance as the current checkout; record the actual commit and working-tree state separately until the harness is fixed.

@@ -13,20 +13,19 @@
 //!   High-Speed USB 2.0 CDC-ACM / Bulk links (`480 Mbps`) for ultra-low-power RISC-V / MCU sidecars.
 //!
 //! ## Key Capabilities
-//! 1. **Zero-Config Link-Local (`169.254.0.0/16` & `fe80::`) Auto-Peering**:
-//!    Automatically discovers and pairs peers over point-to-point USB-C cables without requiring a DHCP
-//!    server or external router (`UDP 7848` `"KDMD"` beacons over link-local interfaces).
-//! 2. **Multi-Stream DMA Socket Striping (`4x–8x` Parallel Lanes + `64 KiB` Jumbo Frames)**:
-//!    Bypasses single-core OS TCP/NCM interrupt bottlenecks so a `30 Gbps` rated USB-C link achieves
-//!    `~26.5–28.5 Gbps` (`3.3–3.56 GB/s`) sustained tensor transfer goodput—**11.4x faster than 2.5GbE**
-//!    and **28.5x faster than a 1GbE patch cable**.
-//! 3. **Tensor Parallelism (TP) & MoE All-to-All Unlock**:
-//!    Links with `effective_goodput_gbps >= 18.0` and `rtt_latency_ms <= 0.25` are promoted from
-//!    pipeline-only links to **Tensor-Parallel / Expert-Parallel eligible interconnects**.
-//! 4. **Switchless Multi-Port USB-C Daisy-Chain / Ring Routing & `<200ms` Unplug Failover**:
-//!    Routes micro-batches across 2-port USB-C devices (`Desktop ⇄ Handheld ⇄ Mac Mini ⇄ SBC`) and bonds
-//!    USB-C with Wi-Fi 6E / Ethernet via [`MultiPathInterfaceStriper`](crate::MultiPathInterfaceStriper)
-//!    for zero-downtime failover if a cable is unplugged.
+//! 1. **Link-Local Peering Models (`169.254.0.0/16` & `fe80::`)**:
+//!    Describes peering candidates over configured point-to-point interfaces. The scanner does not
+//!    configure DHCP, addresses, or a cable's network interface.
+//! 2. **Multi-Stream Socket Striping Models (`4x–8x` Parallel Lanes + `64 KiB` Frames)**:
+//!    Derives goodput figures from rated bandwidth and scenario inputs. Values such as
+//!    `~26.5–28.5 Gbps` are estimates, not measured tensor throughput or DMA benchmarks.
+//! 3. **Tensor-Parallel / Expert-Parallel Eligibility Planning**:
+//!    Links with `effective_goodput_gbps >= 18.0` and `rtt_latency_ms <= 0.25` are marked eligible by
+//!    the planner; this does not establish native model execution on the link.
+//! 4. **Topology Scheduling & Delta-Bridge Failover**:
+//!    [`MultiPathInterfaceStriper`](crate::MultiPathInterfaceStriper) computes schedules across USB-C,
+//!    Wi-Fi, and Ethernet. Actual ordered-stream failover is provided by [`crate::UsbCBridge`], whose
+//!    default idle detection and resume grace are 750 ms and 30 s, not a sub-200 ms zero-downtime SLA.
 //! 5. **Delta Bridge Plan** ([`UsbCDeltaBridgePlan`]): sizes a [`crate::UsbCBridge`] that stripes one
 //!    ordered stream over the USB-C cable and its backup paths. Delta links layered on it keep their
 //!    chunk stores through an unplug, so failing over resends at most the bridge window instead of
@@ -64,7 +63,7 @@ use std::process::Command;
 pub enum UsbCInterconnectTier {
     /// USB4 v2 / Thunderbolt 5 Host-to-Host PCIe DMA Tunnel (`80–120 Gbps` rated, `~64.0 Gbps` goodput, `0.08 ms` RTT).
     Thunderbolt5Usb4V2_80Gbps,
-    /// USB4 v1 / Thunderbolt 3 & 4 Host-to-Host PCIe DMA Tunnel (`30–40 Gbps` rated, `~26.5–28.5 Gbps` goodput, `0.12 ms` RTT).
+    /// USB4 v1 / Thunderbolt 3 & 4 profile (`30–40 Gbps` rated; goodput/RTT fields are modelled estimates).
     Usb4Thunderbolt4_30To40Gbps,
     /// USB 3.2 Gen 2x2 (`20 Gbps`) Dual-Role-Data (`DRD`) `USB-NCM` / `FunctionFS` Bulk (`~15.2 Gbps` goodput, `0.18 ms` RTT).
     Usb32Gen2x2_20GbpsDrd,

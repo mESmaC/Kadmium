@@ -3,12 +3,12 @@
 > **"In a nuclear reactor, cadmium control rods regulate, balance, and direct high-energy reactions. In AI/ML, Kadmium ([kadmium.ai](https://kadmium.ai)) aggregates, shards, and orchestrates frontier training, reinforcement learning, and inference across all the compute you already own."**
 
 [![Website: kadmium.ai](https://img.shields.io/badge/Website-kadmium.ai-0284c7.svg)](https://kadmium.ai)
-[![Phase: v0.4 Platform-Generalized Fabric & Control Room](https://img.shields.io/badge/Phase-v0.4_Active_Development-f59e0b.svg)](#current-development-phase--roadmap)
+[![Phase: v0.4 Platform-Generalized Fabric & Control Room](https://img.shields.io/badge/Phase-v0.4_Active_Development-f59e0b.svg)](#-current-development-phase--roadmap)
 [![Language: 100% Pure Rust](https://img.shields.io/badge/Language-100%25_Rust-orange.svg)](https://www.rust-lang.org/)
-[![License: MIT/Apache-2.0](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-blue.svg)](#license)
-[![Workloads: Inference | Training | RL | Dream-RSI](https://img.shields.io/badge/Workloads-Inference%20%7C%20Training%20%7C%20RL%20%7C%20Dream--RSI-success.svg)](#core-capabilities)
+[![License: MIT/Apache-2.0](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-blue.svg)](#-license)
+[![Workloads: Inference | Training | RL | Dream-RSI](https://img.shields.io/badge/Workloads-Inference%20%7C%20Training%20%7C%20RL%20%7C%20Dream--RSI-success.svg)](#-core-capabilities)
 
-> **Commercial status — 30 October 2026:** The [marketing and business review](docs/MARKETING_BUSINESS_REVIEW_2026-10-30.md) proposes a focused design-partner pilot with product and financial gates. Managed burst, host payouts, regulated-office packages and hardware are not established as live offerings by this repository. Some capability and marketing-page claims still need the [publication-remediation pass](docs/OPERATING_PLAN.md#4-release-and-claim-management); consult the current API/Condenser guides for execution boundaries.
+> **Commercial status — 30 October 2026:** The [marketing and business review](docs/MARKETING_BUSINESS_REVIEW_2026-10-30.md) proposes a focused design-partner pilot with product and financial gates. Managed burst, host payouts, regulated-office packages and hardware are not established as live offerings by this repository. Consult the current API and guides for execution boundaries.
 
 ---
 
@@ -33,49 +33,41 @@ Distributed scientific computing solved heterogeneous resource aggregation decad
 
 ## 📍 Current Development Phase & Roadmap
 
-Kadmium is currently in **Phase 4 (`v0.4` — Platform-Generalized Compute Fabric, Direct USB-C/USB4 Interconnect & Workspace Control Room)**. The core Rust control plane, live `KDMF` binary TCP wire protocol, multi-tier `.ktb` tensor bank format, 10-page Workspace Control Room UI, and native Desktop Companion (`wry` + `tao`) are implemented, tested (`81+` workspace test suites), and running against real multi-device hardware.
+Kadmium is currently in **Phase 4 (`v0.4` — platform profiles, interconnect planning & Workspace Control Room)**. The repository implements the Rust control plane, **KDM2** binary TCP framing (with legacy KDMF decode), 64 KiB `.ktb` banks, Control Room, Companion, Condenser, and reference workloads. Six CUDA kernels also have a separate native parity harness.
 
-The phase labels describe the project's roadmap, not release or model-serving readiness. In particular, completed gateway scaffolding does not establish full OpenAI/Anthropic SDK compatibility or real LLM output. See the [current API contract](docs/api-reference.md) and the [reference-execution qualifications](docs/MARKET_RESEARCH_REVIEW_2026-10.md#2-what-kadmium-is-from-the-code).
+Phase labels describe code milestones, not release or model-serving readiness. Gateway scaffolding does not establish full OpenAI/Anthropic SDK compatibility, real LLM output, production distributed training, or managed services. See the [current API contract](docs/api-reference.md) and [technical specsheet](docs/SPECSHEET_AND_ROADMAP.md).
 
-| Phase | Milestone | Status | Key Deliverables |
+| Phase | Milestone | Status | Scope |
 | :--- | :--- | :--- | :--- |
-| **Phase 1 (`v0.1`)** | **Core Sharding, $q^*$ Policy & `.ktb` Tensor Banks** | ✅ **Complete** | Capability vector modeling, FreeToken $q^*$ bandwidth-adaptive split, `64 KiB` page-aligned `.ktb` weight banks with Merkle proofs, FTS3 third-party staging, GGUF v3 / SafeTensors transcoders, EXL3/QTIP trellis quantization. |
-| **Phase 2 (`v0.2`)** | **Live WireFrame (`KDMF`) TCP Mesh & Verified Training** | ✅ **Complete** | Binary `KDMF` TCP wire framing, live multi-node inference & 1F1B training execution, Nous DeMo/DisTrO DCT gradient compression, Sharded-Island DiLoCo, Gensyn Verde `RepOps` + $O(\log L)$ layer-bisection auditing, RAID-5 algebraic straggler recovery. |
-| **Phase 3 (`v0.3`)** | **Workspace Control Room, Native Desktop Companion & Ecosystem** | ✅ **Complete** | 10-page Control Room workspace UI (`dashboard.html`), native Desktop Companion window (`kadmium-desktop`), zero-click LAN pairing (6-digit SAS), Hugging Face byte-range slicer, MCP server (`stdio` + HTTP), reference diagnostics at `/v1/chat/completions` and `/v1/messages`. |
-| **Phase 4 (`v0.4`)** | **Platform-Level Generality & USB-C / USB4 Direct Interconnects** | 🟢 **Current Phase** | **Platform Abstraction Layer** (*Same Silicon $\to$ Supported; Same OS $\to$ Supported* across 26 silicon families & 8 OS families), **USB-C / USB4 / Thunderbolt (`30–80 Gbps`) & Dual-Role `USB-NCM` Direct Interconnect Engine**, switchless USB-C daisy-chain ring routing, live hardware verification across Windows, macOS (Apple M4), Linux ARM64, and RISC-V. |
-| **Phase 5 (`v0.5`)** | **Zero-Copy Hardware Backend Bindings & RDMA / Thunderbolt DMA** | 🔜 **Next Up** | Direct native GPU kernel FFI dispatch (`Metal 4` command buffers, `CUDA` / `HIP` PTX driver API, `Vulkan` compute pipelines) replacing reference host buffers on large layer shards, plus OS-bypass Thunderbolt PCIe DMA ring buffers. |
-| **Phase 6 (`v1.0 GA`)** | **Managed CloudShield, Supply Grid Clearinghouse & Public Registry** | 🗓️ **Planned** | Production multi-cloud spot arbitrage broker, `<400ms` bidirectional Local $\leftrightarrow$ Cloud failover shield, double-entry Supply Grid clearinghouse (`Grid-Zero`), and public Dream-RSI World Registry. |
+| **Phases 1–2** | **Core planners, `.ktb`, TCP workers & reference runtimes** | ✅ **Reference mechanisms landed** | $q^*$ and shard planning, FNV-1a Merkle/checksum verification, constrained local transcoders, synthetic inference/training, small stateful DiLoCo sessions, DeMo, RepOps/Verde, and grid work graphs. |
+| **Phases 3–4** | **Control Room, Companion & platform/interconnect work** | 🟢 **Current development** | Web/native interfaces, MCP, LAN discovery/pairing references, hardware classification, USB topology models, multi-lane delta bridges, and platform probes. Remote connectors and cloud outputs are plans or simulations. |
+| **Phase 5** | **Native backends & real model integration** | 🔜 **Next** | General native GPU/NPU dispatch beyond the specific CUDA kernels and Intel MatMul, actual mmap/io_uring file paths, persistent model/optimizer state, and measured native OS/interconnect behavior. |
+| **Phase 6** | **Managed CloudShield, Supply Grid & Public Registry** | 🗓️ **Planned** | Authenticated multi-tenancy, real provider procurement, production failover, financial settlement, managed WAN traversal, and public registry services. |
 
 ---
 
-## 🧩 Platform-Level Generality Philosophy
+## 🧩 Platform Profiles and Execution Support
 
-Kadmium never locks support to a single bespoke machine or SKU. Hardware and operating system support is engineered strictly at the **Platform Abstraction Layer** (`kadmium-core::platform`):
+The Platform Abstraction Layer (`kadmium-core::platform`) classifies 26 silicon families and 8 OS families for discovery and planning. **Classification is not automatic execution support.** A profile does not prove a native backend, precision path, NPU integration, mmap loader, or OS hook exists for that device.
 
-1. **Same Silicon $\to$ Supported by Kadmium:**
-   Any two machines sharing a silicon architecture family automatically inherit the same [`HardwareKernelDispatcher`](crates/kadmium-runtime/src/kernels.rs) backend, precision matrix (`FP16`, `BF16`, `FP8`, `Q8_0`, `Q4_K`, `IQ2_XXS`), NPU co-processor path, and $q^*$ memory-bandwidth scheduler—regardless of whether that chip sits inside a desktop tower, a laptop, a mini-PC, a handheld gaming device, a tablet, or an industrial carrier board.
-   - **Supported Silicon Families (26 Architectures):** Apple M-Series (`M1–M4 Ultra`) & A-Series, NVIDIA Blackwell / Hopper / Ada / Ampere / Turing / Tegra (`X1`, `Orin`, `Thor`), AMD RDNA 2/3/3.5/4 (`Strix Halo` UMA, `Ryzen Z1 Extreme / AI HX` Handheld APUs) & CDNA (`MI200/MI300`), Intel Arc (`Xe-HPG / Xe2`) & Core Ultra (`Lunar Lake / Arrow Lake`), Qualcomm Snapdragon (`8-Series` & `X Elite`), Broadcom VideoCore (`BCM2711 / BCM2712`), Rockchip (`RK3588`), Canaan Kendryte (`K230` RISC-V RVV 1.0 + KPU), Google TPU / Coral Edge, and generic `x86_64` / `ARM64` / `RISC-V` CPUs.
-2. **Same Operating System $\to$ Supported by Kadmium:**
-   Every device running the same OS family shares unified hardware discovery, Polite-Mode swapchain/thermal hysteresis hooks ([`OsHookBackend`](crates/kadmium-core/src/os_hooks.rs)), zero-copy `.ktb` memory-mapped weight loading, and network interface probing across **Windows**, **macOS**, **Linux**, **Android (Termux / Native NDK / ADB)**, **iOS / iPadOS**, **FreeBSD / TrueNAS**, and **Embedded RTOS (`rt-smart` / `FreeRTOS` / `Zephyr`)**.
+Current execution falls into four categories:
+
+1. **Host reference math:** synthetic tensors and deterministic reference kernels used by the planner, gateway, and tests.
+2. **Native CUDA:** six specific kernels with a separate device parity harness; see [`kadmium-cuda`](crates/kadmium-cuda/README.md) for exact kernels and measured hardware caveats.
+3. **Native Intel NPU:** one Level Zero MatMul kernel with FP32 I/O and explicitly approximate FP16 arithmetic, outside RepOps verification and automatic scheduling; see [`kadmium-npu`](crates/kadmium-npu/README.md).
+4. **Planned native backends:** general ROCm, Metal, Vulkan, additional NPU operators/vendors, and large-model GPU execution remain future integration work.
+
+The host CI matrix covers Windows, macOS, and Linux. Other OS/platform profiles and bridge commands must not be read as equally validated support. Actual `.ktb` import currently reads a whole local file; zero-copy slices into loaded buffers are implemented, while mmap/io_uring/IoRing file loading is planned.
 
 ---
 
-## ⚡ Direct USB-C / USB4 / Thunderbolt Interconnect (`kadmium-network`)
+## ⚡ USB-C / USB4 / Thunderbolt Interconnects (`kadmium-network`)
 
-Local clusters no longer need expensive 10GbE/40GbE switches. Kadmium includes a first-class **USB-C / USB4 / Thunderbolt & Dual-Role (`USB-NCM`) Direct Interconnect Engine** ([`usbc_interconnect.rs`](crates/kadmium-network/src/usbc_interconnect.rs)) that lets you daisy-chain desktops, laptops, handheld gaming PCs, Mac Minis, and SBCs directly with USB-C cables:
+[`usbc_interconnect.rs`](crates/kadmium-network/src/usbc_interconnect.rs) models host-to-host USB4/Thunderbolt, dual-role USB-NCM gadget, and low-speed sidecar topologies. [`MultiPathInterfaceStriper`](crates/kadmium-network/src/raid_striper.rs) computes chunk schedules across configured interfaces.
 
-- **Tier 1 — Symmetric Host-to-Host USB4 / Thunderbolt 3, 4 & 5 (`30 Gbps` to `80–120 Gbps`, `80–120 µs` RTT):**
-  Connects two hosts (e.g., Main PC $\leftrightarrow$ **30 Gbps USB4 Handheld Gaming PC** $\leftrightarrow$ M4 Mac Mini) over PCIe-tunneled DMA point-to-point links.
-- **Tier 2 — Asymmetric Dual-Role-Data (`DRD` / OTG) USB 3.2 Gen 2 / Gen 2x2 (`5–20 Gbps`, `180–300 µs` RTT):**
-  Connects a host PC/Mac to USB-C `USB-NCM` (`cdc_ncm`) / `FunctionFS` gadget nodes such as Linux ARM64 SBCs (`RK3588`, `RPi 5`, `CM4`) or Android devices.
-- **Tier 3 — USB 2.0 High-Speed CDC-ACM / Bulk (`480 Mbps`):**
-  Drives ultra-low-power RISC-V / MCU sidecars (e.g., Kendryte K230 6-TOPS KPU) for draft verification and Verde referee auditing.
-- **Multi-Stream DMA Striping (`6x–8x` Lanes + `64 KiB` Jumbo Frames):**
-  Standard single-stream `1500 B` MTU TCP over USB4 bottlenecks around `~10 Gbps` due to per-packet OS interrupt overhead. Kadmium stripes `64 KiB` frames across `6–8` parallel socket lanes over zero-config link-local (`169.254.78.x/30` & `fe80::`) interfaces, saturating **`27.6 Gbps` (`3.45 GB/s`)** on a 30 Gbps handheld cable (**`29.4x` faster than 1GbE** and **`11.7x` faster than 2.5GbE**).
-- **Delta Bridges That Survive an Unplug ([`UsbCBridge`](crates/kadmium-network/src/usbc_bridge.rs)):**
-  A bridge stripes one ordered stream over several lanes: TCP connections over the USB-C cable plus Wi-Fi or Ethernet. Each segment goes to the lane that would finish it first. Pulling the cable moves only its unacknowledged segments to the other lanes, and a replugged cable resumes the same session. Delta links layered on the bridge keep their chunk stores, so after the loss only changed bytes cross the backup path. Over Wi-Fi to an M4 Mac mini, that meant 12.5× fewer bytes and 2× faster decode steps than redialing a plain channel. Address a worker as `kdbr://<usb4-ip>:7871@4.6,...,<lan-ip>:7871@1.2` ([guide](docs/guides/usbc-delta-bridge.md)).
-- **Tensor Parallelism Unlock & `<150 ms` Handheld Unplug / Gaming Drain:**
-  Because a `64 KiB` FP16 activation crosses a 30 Gbps USB4 cable in **`~79 µs`**, Kadmium promotes USB4/Thunderbolt links from pipeline-only links to **intra-layer Tensor Parallelism (`TP`) and MoE Expert All-to-All interconnects**. Bonding USB-C with Wi-Fi 6E / Ethernet via [`MultiPathInterfaceStriper`](crates/kadmium-network/src/raid_striper.rs) ensures that unplugging a handheld cable or launching a game drains a `512 MB` active KV window in **`<150 ms`** and fails over to Wi-Fi with zero dropped tokens.
+Displayed scanner figures such as 27.6 Gbps goodput, ~79 µs transfer time, and sub-150 ms drain are **derived from rated link bandwidth and scenario inputs**. Those planning functions do not perform corresponding DMA I/O, cable auto-configuration, or model-state migration. Workers still require reachable, configured network interfaces.
+
+[`UsbCBridge`](crates/kadmium-network/src/usbc_bridge.rs) is a separate implemented transport: it carries one ordered stream over multiple TCP lanes, retransmits unacknowledged segments when a lane fails, and resumes authenticated sessions while preserving delta-link stores. Reported Wi-Fi-only unplug tests measured 12.5× fewer post-loss bytes and 2.0–2.2× faster decode-step completion than redialing; no USB cable connected the test machines, so these are not USB4 throughput results. See the [bridge guide and limits](docs/guides/usbc-delta-bridge.md) and [benchmark ledger](docs/BENCHMARKS_2026-10.md).
 
 ---
 
@@ -85,41 +77,39 @@ Kadmium synthesizes proven breakthroughs from local edge AI engines and battle-t
 
 | Inspiration | Key Concept Adopted in Kadmium |
 | :--- | :--- |
-| **[FlashML-org/FreeToken](https://github.com/FlashML-org/FreeToken)** | **Bandwidth-Adaptive Execution ($q^*$ Policy) & Pre-Merged Weight Banks:** Dynamically splits token/tensor computation across CPU, RAM, PCIe, NPU, and GPU VRAM based on real-time interconnect throughput, backed by zero-copy memory-mapped tensor banks (`.ktb`). |
-| **[JustVugg/colibri](https://github.com/JustVugg/colibri) & [lumabri](https://github.com/JustVugg/lumabri)** | **NVMe MoE Expert Streaming, P2P Swarm Execution & Measured Allocation:** Pins dense attention layers in fast memory while streaming sparse Mixture-of-Experts (MoE) weights on demand from local NVMe or across a peer-to-peer swarm. The grid's allocation borrows their mechanisms too: measured compute cost in routing with residency first, owner-approved resource offers with a RAM reserve, usage-learned expert pins with a hysteresis-gated live re-pin, and calibration records bound to the exact placement they measured. |
+| **[FlashML-org/FreeToken](https://github.com/FlashML-org/FreeToken)** | **Adaptive Placement ($q^*$) & Tensor Banks:** Inspires Kadmium's compute/memory placement heuristic and 64 KiB `.ktb` format. Current $q^*$ is a profile heuristic; actual mmap file loading is planned. |
+| **[JustVugg/colibri](https://github.com/JustVugg/colibri) & [lumabri](https://github.com/JustVugg/lumabri)** | **Expert-Tiering & Allocation Design:** The planner models hot/warm/cold expert placement, owner offers, measured calibration records, and hysteresis-gated re-pinning. Current measurements are from synthetic reference kernels, not production model serving. |
 | **[niko1221/strata](https://github.com/niko1221/strata/tree/7ddc17a38fe7f31637e895ecfba58c2cd43d65ec)** | **Consumer Setup Inspiration:** Hardware-aware setup informs the additive `launch --plan` and configuration-creation workflow. Kadmium's existing API-shaped diagnostics are not Strata's inference engine or a full OpenAI/Anthropic integration. |
-| **[BOINC/boinc](https://github.com/BOINC/boinc)** | **Polite Host Resource Harvesting & Workunit Verification:** Non-intrusive background execution that respects user activity (`<200 ms` Gaming Mode yield, 15s swapchain cooldown, battery/thermal envelopes) and spot-verifies untrusted peers. |
-| **[cern-fts/fts3](https://github.com/cern-fts/fts3) & [davix](https://github.com/cern-fts/davix)** | **Third-Party Peer-to-Peer Data Staging:** The coordinator never bottlenecks weight or dataset transfers. Nodes stream shards, datasets, and checkpoints directly peer-to-peer with bandwidth-aware retry state machines. |
-| **[NousResearch/DisTrO](https://github.com/NousResearch/DisTrO) & Psyche** | **DeMo (Decoupled Momentum) DCT Compression:** Compresses inter-node gradient synchronization by $10\times$–$85\times$ using Discrete Cosine Transform (DCT-II) fast-momentum extraction with local error-feedback accumulation. |
-| **[PrimeIntellect-ai/OpenDiLoCo](https://github.com/PrimeIntellect-ai/OpenDiloco)** | **Sharded-Island DiLoCo & Async RL Post-Training:** Combines fast inner-loop local optimization on sharded LAN/USB4 islands with periodic outer-loop Nesterov pseudo-gradient sync across WAN peers. |
+| **[BOINC/boinc](https://github.com/BOINC/boinc)** | **Polite Host Governance & Workunit Verification:** Resource-offer policies, activity state machines, and canary references. Sub-200 ms yield is a target/estimate, not a measured cross-platform SLA. |
+| **[cern-fts/fts3](https://github.com/cern-fts/fts3) & [davix](https://github.com/cern-fts/davix)** | **Third-Party Staging Design:** Chunk manifests, delta planning, and transfer schedules are present. Current live reference pages flow from coordinator to worker over TCP; direct NAS-to-worker FTS3/QUIC staging is target work. |
+| **[NousResearch/DisTrO](https://github.com/NousResearch/DisTrO) & Psyche** | **DeMo DCT Compression:** DCT-II top-k momentum extraction with residual error feedback. Ratio depends on tensor size and `top_k`; no universal compression or convergence guarantee is claimed. |
+| **[PrimeIntellect-ai/OpenDiLoCo](https://github.com/PrimeIntellect-ai/OpenDiloco)** | **Stateful Outer Synchronization:** Small complete-replica sessions and a deterministic CPU regression example use persistent Nesterov outer state. Pipeline-sharded islands and WAN membership recovery are target designs. |
 | **[learning-at-home/hivemind](https://github.com/learning-at-home/hivemind) & [petals](https://github.com/bigscience-workshop/petals)** | **SWARM Parallelism & 8-Bit Blockwise Quantization:** Latency-weighted micro-batch routing around slow/churning peers and compressed boundary activations. |
-| **[gensyn-ai/rl-swarm](https://github.com/gensyn-ai/rl-swarm) & [ree](https://github.com/gensyn-ai/ree)** | **Reproducible Cross-Silicon Execution (`RepOps`) & Verde Verification:** Solves floating-point drift across mixed CUDA, Metal, Vulkan, and CPU nodes using deterministic reductions and $O(\log L)$ refereed layer-bisection audits. |
-| **[Dream-RSI](https://www.dream-rsi.com/) ([zhengkid/Dream-RSI](https://github.com/zhengkid/Dream-RSI))** | **Recursive Self-Improvement through Evolving Worlds:** Converts agent discovery trajectories into an offline **Replay Simulator ("Dreaming")** run on low-power SBCs/CPUs/NAS to evolve superior exploration policies at zero live GPU cost. |
+| **[gensyn-ai/rl-swarm](https://github.com/gensyn-ai/rl-swarm) & [ree](https://github.com/gensyn-ai/ree)** | **Reproducible Reference Execution (`RepOps`) & Verde:** Deterministic reductions and digest/bisection references check defined computations. They do not establish native parity across every labelled backend or cryptographic settlement. |
+| **[Dream-RSI](https://www.dream-rsi.com/) ([zhengkid/Dream-RSI](https://github.com/zhengkid/Dream-RSI))** | **Offline Replay Design:** Current code traverses an in-memory sample discovery tree without new GPU evaluations. Persistent trajectory recording, distributed replay, and policy injection into online training are target work. |
 
 ---
 
 ## ⚡ Core Capabilities
 
 ### 1. Custom Asymmetric Model Sharding (`kadmium-sharding`)
-- **Proportional Pipeline & Tensor Sharding:** Slices transformer blocks proportionally to each node's real-time compute-to-memory envelope and interconnect tier (promoting `30–80 Gbps` USB4/Thunderbolt links to Tensor Parallelism while using Pipeline Parallelism across Ethernet/Wi-Fi).
-- **MoE Affinity Tiering:** Pins dense attention trunks and "hot" experts in GPU VRAM / Unified Memory, places "warm" experts in System RAM, and streams "cold" experts from NVMe/NAS via `.ktb` tensor banks.
-- **Utility & Draft Offloading:** Routes tokenization, speculative decoding draft trees, embedding lookups, and Verde referee audits to low-power ARM/RISC-V SBCs and NPUs.
+- **Proportional Pipeline & Tensor Sharding:** Plans transformer-block assignments from each node's profiled compute/memory envelope and interconnect tier. USB4/Thunderbolt tensor-parallel choices are planner outputs until native execution and link benchmarks validate them.
+- **MoE Affinity Tiering:** Plans dense/hot expert placement in fast memory, warm experts in System RAM, and cold-expert streaming from NVMe/NAS `.ktb` banks. Actual execution remains on reference paths unless a native backend is named.
+- **Utility & Draft Placement:** Plans tokenization, modelled draft, embedding, and Verde audit roles for low-power ARM/RISC-V SBCs and NPUs.
 
-### 2. Dynamic Compute Responsibility Shifting (Live Rebalancing)
-When you launch a game on your desktop or handheld, unplug a laptop, or attach a cloud burst GPU:
-1. **Shadow Prefetch:** Relief nodes prefetch static base weights from the NAS or peer cache via FTS3 third-party transfers.
-2. **Boundary Handoff:** At the next token step or micro-batch boundary, only the compact mutable state (KV-cache slice or LoRA/optimizer delta) transfers directly between peers (`<150 ms` over 30 Gbps USB4).
-3. **Zero-Downtime Reroute:** The cluster routing table atomically switches to the new shard map without dropping active requests or aborting training runs.
+### 2. Dynamic Compute Responsibility Planning
+`ShardPlanner::plan_responsibility_shift` computes a new placement for gaming, node-change, and cloud-burst scenarios. Transfer volumes, handoff times, and zero-downtime fields in sample reports are modelled. They do not establish live weight prefetch, uninterrupted KV/optimizer migration, or production failover.
 
-### 3. Distributed & Decentralized Training Engine (`kadmium-runtime`)
-- **Asymmetric 1F1B & Zero-Bubble (`ZBH1`) Pipeline Training:** Schedules forward, backward-input, and backward-weight passes across heterogeneous nodes with FWHT INT8 activation checkpointing.
-- **GaLore + Muon Newton-Schulz & Hadamard FP8 Training:** Orthogonalized low-rank gradient projection and block-Hadamard outlier suppression for memory-efficient fine-tuning on consumer GPUs/APUs.
-- **Sharded-Island DiLoCo + DeMo DCT Compression:** Shards large models across local consumer devices as a single logical island and syncs outer-loop updates over WAN with $10\times$–$85\times$ DCT gradient compression.
-- **Decentralized RL Post-Training (`kadmium-rl`):** Runs GRPO/PPO policy rollouts on GPU/Metal/APU nodes while Linux SBCs and CPUs execute parallel WASI / code-verification reward sandboxes.
+### 3. Training and RL Reference Mechanisms (`kadmium-runtime` & `kadmium-rl`)
+- **Pipeline and optimization references:** 1F1B/zero-bubble schedulers, GaLore/Muon, FWHT/FP8, and related kernels operate on defined reference inputs; their sample performance figures are not measured model-training results.
+- **Stateless stage previews:** legacy training endpoints start from synthetic per-stage baselines on every request and do not persist learner weights.
+- **Stateful small-replica DiLoCo:** the session API and `kadmium diloco` maintain outer state for complete caller-supplied replicas. They do not provide integrated pipeline-sharded large-model training.
+- **Synthetic GRPO and custom sandbox:** current GRPO verifies fixed polynomial programs in a fuel-metered stack machine. It is not PPO/online policy training or a general WASI/code compiler.
+- **Dream-RSI replay:** the CLI traverses an in-memory sample tree; it does not persist discovery trees or inject policies into online training.
 
 ### 4. Control Room Workspace App, Native Desktop Companion & Reference API (`kadmium-gateway` & `kadmium-desktop`)
-- **10-Page Workspace Control Room (`/dashboard`):** Built-in single-binary web workspace organized into **Fabric** (*Overview, Nodes, Models & Shards, Data & Transfers*), **Work** (*Training, RL & Dream-RSI, Gateway & API, Slices*), and **Account** (*Kadmium Cloud, Settings*) with live 5-second cluster polling, node hardware/mesh inspection drawers, and an interactive chat/MCP playground.
-- **Native Desktop Companion (`kadmium-desktop`):** Runs the local coordinator and tray/window Companion in a native OS WebView (`WebView2` on Windows, `WKWebView` on macOS, `WebKitGTK` on Linux).
+- **11-Page Workspace Control Room (`/dashboard`):** Built-in single-binary web workspace organized into **Cluster** (*Overview, Machines, Boards & devices, Models, Storage*), **Work** (*Training, Reinforcement learning, API & playground, Slices*), and **Account** (*Kadmium Cloud, Settings*) with live 5-second cluster polling, node hardware/mesh inspection drawers, and an interactive chat/MCP playground.
+- **Native Desktop Companion (`kadmium-desktop`):** Runs the local coordinator and Companion in WebView2 on Windows and WKWebView on macOS. Linux defaults to the browser; native WebKitGTK requires the `linux-native` feature and GTK/WebKit development packages.
 - **Reference HTTP API & MCP:** `/v1/chat/completions` and `/v1/messages` return fixed diagnostic messages; `/v1/embeddings` returns reference vectors and `/v1/models` lists planning presets. These are not drop-in chat/agent SDK endpoints. MCP tools use the separate `/mcp` endpoint or `kadmium mcp`.
 
 ---
@@ -130,7 +120,7 @@ When you launch a game on your desktop or handheld, unplug a laptop, or attach a
 flowchart TB
     subgraph Clients["Clients, IDEs & Interfaces"]
         API["Reference API Requests / MCP Tools\nDiagnostic Output, Not LLM Generation"]
-        ControlRoom["10-Page Control Room Workspace\n(http://localhost:7848/dashboard)"]
+        ControlRoom["11-Page Control Room Workspace\n(http://localhost:7848/dashboard)"]
         Companion["Native Desktop Companion\n(kadmium-desktop · wry + tao)"]
     end
 
@@ -141,10 +131,10 @@ flowchart TB
         FTS["FTS3 P2P Transfer Scheduler &\n64KiB .ktb Tensor Banks (kadmium-data)"]
     end
 
-    subgraph Mesh["Heterogeneous Compute & Storage Mesh (KDMF Binary TCP / QUIC / USB4 DMA)"]
-        MainPC["🖥️ Desktop / Workstation\nNVIDIA / AMD / Intel GPU + NVMe\n(<200ms Gaming Mode Yield)"]
-        Handheld["🎮 Handheld Gaming PC / APU\nRyzen Z1 / Strix Halo · 24-32GB UMA\n(30Gbps USB4 Direct DMA Tunnel)"]
-        MacMini["🍎 Apple Silicon Mac (M1-M4)\nUnified Memory Metal 4 + AMX\n(Dense Layers + KV Cache)"]
+    subgraph Mesh["Heterogeneous Reference Mesh (KDM2 over TCP; legacy KDMF decode)"]
+        MainPC["🖥️ Desktop / Workstation\nGPU + NVMe hardware profile\n(Polite-yield policy target)"]
+        Handheld["🎮 Handheld Gaming PC / APU\nUnified-memory profile\n(Modelled USB4 topology)"]
+        MacMini["🍎 Apple Silicon Mac profile\nUnified Memory\n(Reference placement + KV planning)"]
         SBCs["🍓 ARM64 / RISC-V SBCs & Phone Farm\nRPi CM4/5 · RK3588 · Tegra · K230\n(Speculative Drafts, Verde Referee & RL)"]
         NAS["🗄️ Home / Lab NAS\nErasure-Coded .ktb Weight Seed,\nDataset & Checkpoint Vault"]
     end
@@ -155,10 +145,10 @@ flowchart TB
     Gateway --> FTS
 
     ShardPlanner -. "Shard Map & Live Shift" .-> Mesh
-    MainPC <== "30-80 Gbps USB4 / Thunderbolt P2P DMA\n(Tensor & Pipeline Parallel)" ==> Handheld
-    Handheld <== "Switchless USB-C Daisy-Chain Ring\nor Bonded Wi-Fi 6E / LAN" ==> MacMini
-    NAS == "Direct FTS3 P2P .ktb Streaming" ==> MainPC
-    NAS == "Direct FTS3 P2P .ktb Streaming" ==> MacMini
+    MainPC <== "Modelled USB4 / Thunderbolt topology\nover configured network interfaces" ==> Handheld
+    Handheld <== "Configured LAN / USB-NCM / Wi-Fi\nTCP worker channels" ==> MacMini
+    NAS == "Reference .ktb pages over TCP" ==> MainPC
+    NAS == "Reference .ktb pages over TCP" ==> MacMini
     MacMini <== "Token Streams, Drafts & Audits" ==> SBCs
 ```
 
@@ -166,7 +156,7 @@ flowchart TB
 
 ## 📦 Workspace Structure
 
-Kadmium is organized as a modular **11-crate Pure Rust** Cargo workspace. The `kadmium-grid` crate is the generic distributed-compute substrate underneath the AI workloads: work units with a BOINC-style lifecycle, work graphs, a replica catalog with placement rules, a locality-aware scheduler with quorum validation, and a credit ledger. Inference steps, training steps, Dream-RSI replay batches and Verde audits are work graphs scheduled on it; a pipeline is a chain graph and expert parallelism is a fan-out graph, and the two produce identical bytes.
+Kadmium is organized as a modular **13-crate Pure Rust** Cargo workspace. The CUDA device harness under `crates/kadmium-cuda/device` is separately excluded. The `kadmium-grid` crate is the generic distributed-compute substrate underneath the AI workloads: work units with a BOINC-style lifecycle, work graphs, a replica catalog with placement rules, a locality-aware scheduler with quorum validation, and a credit ledger. Inference steps, training steps, Dream-RSI replay batches and Verde audits are work graphs scheduled on it; a pipeline is a chain graph and expert parallelism is a fan-out graph, and the two produce identical bytes.
 
 ```text
 kadmium/
@@ -177,16 +167,17 @@ kadmium/
 └── crates/
     ├── kadmium-core/           # Platform abstraction (26 silicon / 8 OS families), q* policy, OS hooks
     ├── kadmium-sharding/       # Asymmetric sharding, TPU/CIM dataflow modes, live responsibility shifting, CloudShield
-    ├── kadmium-data/           # 64 KiB page-aligned .ktb tensor banks, FTS3 staging, GGUF/SafeTensors/HF importers
+    ├── kadmium-data/           # 64 KiB .ktb banks, transfer/range planners, constrained local GGUF/SafeTensors import
     ├── kadmium-grid/           # Compute substrate: work units & graphs, replica catalog, locality scheduler, quorum validation, credit ledger
-    ├── kadmium-runtime/        # Multi-silicon kernel dispatcher, work executors & grid dispatcher, live TCP pipeline, 1F1B/DiLoCo/GaLore training, EXL3, Verde
-    ├── kadmium-rl/             # Disaggregated RL fabric, WASI reward sandboxes, GRPO/PPO & Dream-RSI MCTS simulator
-    ├── kadmium-network/        # USB-C/USB4/TB 30-80Gbps direct DMA engine, KDMF wire framing, RAID-5 striper, NAT hole-punching
+    ├── kadmium-runtime/        # Host/CUDA references, grid executor, TCP pipeline, training previews, small DiLoCo sessions, EXL3, Verde
+    ├── kadmium-rl/             # RL topology, synthetic GRPO, custom stack-machine sandbox & Dream-RSI replay
+    ├── kadmium-network/        # KDM2/KDMF framing, TCP mesh, interconnect models, RAID scheduling, NAT route planning
     ├── kadmium-gateway/        # Axum server, Control Room, Docs Portal, reference API diagnostics and MCP
     ├── kadmium-cli/            # Single-binary `kadmium` CLI (serve, join, desktop, probe, plan, bench, import, exl3)
     ├── kadmium-desktop/        # Native Desktop Companion window (WebView2 / WKWebView / WebKitGTK)
     ├── kadmium-condenser/      # Kadmium Power Plant inference harness: native UI + CLI, provider adapters, bounded tool turns, process plugins
-    └── kadmium-cuda/           # Pure-Rust CUDA kernels (NVIDIA cuda-oxide), bit-identical to the RepOps reference; GPU harness in device/
+    ├── kadmium-cuda/           # Pure-Rust CUDA kernels (NVIDIA cuda-oxide), bit-identical to the RepOps reference; GPU harness in device/
+    └── kadmium-npu/            # Vendor-neutral NPU traits and Intel Level Zero approximate-FP16 MatMul
 ```
 
 ---
@@ -194,7 +185,7 @@ kadmium/
 ## 🚀 Quickstart
 
 ### Prerequisites
-- **Current stable Rust** (`cargo` and `rustc`)
+- **`rustup`**; the repository selects its pinned **Rust 1.99.0** toolchain automatically.
 
 ### 1. Inspect and launch the Control Room
 Inspect a plan, then start the existing coordinator (add `--demo` for the simulated fleet or `--spawn-fleet` for local worker testing):
@@ -206,31 +197,34 @@ Then open **`http://localhost:7848`** for the **Control Room**. `launch` creates
 
 **Dependency decision: keep the existing dependencies.** This setup change adds no direct or transitive Rust dependencies and changes no Cargo manifests or lockfile. An external inference relay is deferred, with no optional relay code included; it requires a future owner decision and a downstream access/authentication design. The existing diagnostic `/v1` behavior remains in place.
 
-### 2. Open the Native Desktop Companion App
+### 2. Open the Desktop Companion App
 ```bash
 cargo build -p kadmium-desktop
 cargo run --bin kadmium -- desktop
 ```
-Opens the Kadmium Companion in its own native OS window with an embedded coordinator.
+Opens the Companion with an embedded or existing local coordinator. Windows/macOS use native WebViews. Linux opens the browser by default; for a native window, install WebKitGTK 4.1/GTK 3 development packages and build `kadmium-desktop` with `--features linux-native`.
 
-### 3. Join Additional Machines (Over LAN, Wi-Fi, WAN, or Direct USB-C / USB4 Cable)
-Plug two systems together with a USB4 / Thunderbolt cable (auto-configured via `169.254.x.x` link-local) or connect over LAN, and run on the worker machine:
+### 3. Join Additional Machines
+On the worker, use the coordinator's reachable LAN/VPN address:
 ```bash
-cargo run --bin kadmium -- join
+cargo run --bin kadmium -- join --coordinator http://192.168.1.10:7848
 ```
+Replace the example address. The coordinator HTTP port and worker TCP listener must be reachable; remote networks need a VPN or explicit port forwarding and external access controls. USB network interfaces must already be configured. Join tickets are FNV-checksummed endpoint metadata, not authentication, and the current path does not provide managed NAT traversal.
 
 ### 4. Probe Hardware, Benchmark Kernels & Inspect Shard Plans
 ```bash
-# Probe local CPU/GPU/NPU/UMA topology, platform family, and 64 KiB .ktb packing speed
+# Probe local hardware profiles and reference page/packing behavior
 cargo run --bin kadmium -- probe
 
-# Benchmark fused Transformer/MoE kernels, EXL3 trellis quantization, and NAT/USB-C links
+# Run synthetic kernel/quantization and NAT/interconnect model reports
 cargo run --bin kadmium -- bench
 cargo run --bin kadmium -- exl3 --model deepseek-v3-671b-exl3-2.5bpw --bpw 2.55
 
-# Compute custom asymmetric shard plans for Inference, Training, RL, and Dream-RSI
+# Compute shard and RL topology plans over sample node profiles
 cargo run --bin kadmium -- plan --model deepseek-v3-671b-moe --workload inference
 cargo run --bin kadmium -- plan --model llama-3-70b-lora --workload training
+cargo run --bin kadmium -- plan --workload batch
+cargo run --bin kadmium -- plan --workload rl
 cargo run --bin kadmium -- dream
 ```
 
@@ -240,9 +234,10 @@ The repository and CI pin Rust **1.99.0** in `rust-toolchain.toml` and `.github/
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
 ```
+This covers host Rust tests only. CI separately runs formatting, Clippy (including Linux native WebView), Condenser Node tests, Playwright workflows, installer fixtures, and Python business-model checks. The CUDA device harness is excluded from the host workspace. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Control Room browser regressions run on Ubuntu CI. To run locally (Chromium on Linux/macOS, installed Edge on Windows):
 
@@ -259,7 +254,9 @@ The fixture uses an ephemeral loopback port and a disposable working directory, 
 
 ## 📖 Documentation
 
-- [**`docs/ARCHITECTURE.md`**](docs/ARCHITECTURE.md) — Deep-dive mathematical and systems specification covering capability vectors, $q^*$ bandwidth-adaptive routing, live responsibility shifting, asymmetric 1F1B & Sharded-Island DiLoCo training, `.ktb` tensor banks, and Verde reproducible verification.
+- [**User and developer documentation**](docs/README.md) — Sitemap for setup, complete CLI/API references, operator guides, release process, and evidence ledgers.
+- [**`docs/ARCHITECTURE.md`**](docs/ARCHITECTURE.md) — Deep-dive into current mechanisms and explicitly labelled target designs.
+- [**Contributing**](CONTRIBUTING.md) and [**release runbook**](docs/guides/release.md) — Required checks, documentation conventions, artifacts, and release gates.
 - [**Historical engineering numbers**](docs/NUMBERS_2026-10.md) — Dated model inputs paired with [`canonical_numbers.rs`](crates/kadmium-core/src/canonical_numbers.rs); not live prices, measured available supply or approved financial policy.
 - [**Marketing and business evidence review**](docs/MARKETING_BUSINESS_REVIEW_2026-10-30.md) — Repository findings, primary-source research, strongest case and objections.
 - [**Business plan and stance**](docs/BUSINESS_PLAN_AND_STANCE.md) — Proposed pilot strategy, economic gates and stewardship commitments.

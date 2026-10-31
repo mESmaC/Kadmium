@@ -127,3 +127,92 @@ test('Control Room setup guidance follows live workers and model state', async (
   await page.locator('.kw-quick-actions summary').click();
   await expect(page.getByRole('link', { name: /Train a model/ })).toBeVisible();
 });
+
+test('Docs portal resolves catalog and repository-relative links', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/docs');
+  const body = page.locator('#docBody');
+
+  await body.getByRole('link', { name: 'Quickstart and installation', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('docs/getting-started.md');
+  await body.getByRole('link', { name: 'launch guide', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('docs/guides/cli.md');
+
+  await page.goto('/docs');
+  await body.getByRole('link', { name: 'Measured benchmark ledger', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('docs/BENCHMARKS_2026-10.md');
+
+  await page.goto('/docs');
+  await body.getByRole('link', { name: 'USB-C delta bridges', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('docs/guides/usbc-delta-bridge.md');
+
+  await page.goto('/docs');
+  await body.getByRole('link', { name: 'Intel NPU kernels', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('crates/kadmium-npu/README.md');
+
+  await page.goto('/docs');
+  await body.getByRole('link', { name: 'Contributing', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('CONTRIBUTING.md');
+
+  await page.evaluate(() => selectDoc('hardware-and-sharding'));
+  await expect(body.getByRole('link', { name: 'Fts3ChunkSlicer', exact: true })).toHaveAttribute(
+    'href',
+    'https://github.com/mESmaC/Kadmium/blob/main/crates/kadmium-data/src/lib.rs'
+  );
+  expect(errors).toEqual([]);
+});
+
+test('Docs portal section links scroll, focus, reload, and navigate back', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  const filler = '\n\nParagraph before the target.\n'.repeat(70);
+  await page.route('**/api/v1/docs', route => route.fulfill({ json: [
+    {
+      slug: 'overview', file_path: 'docs/README.md', title: 'Overview', category: 'Docs', summary: '',
+      markdown: '# Overview\n[Local target](#-local-section)\n' + filler +
+        '## 🧪 **Local** `section`\n[Contributor target](../CONTRIBUTING.md#caf%C3%A9-checks)'
+    },
+    {
+      slug: 'contributing', file_path: 'CONTRIBUTING.md', title: 'Contributing', category: 'Docs', summary: '',
+      markdown: '# Contributing\n' + filler + '## Café checks\n\nReady.'
+    }
+  ] }));
+  await page.goto('/docs');
+  await page.locator('#docBody').getByRole('link', { name: 'Local target' }).click();
+  const local = page.getByRole('heading', { name: '🧪 Local section', exact: true });
+  await expect(page).toHaveURL(/#overview\/-local-section$/);
+  await expect(local).toHaveAttribute('id', '-local-section');
+  await expect(local).toBeFocused();
+  await expect(local).toBeInViewport();
+  expect((await local.boundingBox()).y).toBeGreaterThanOrEqual(60);
+
+  await page.locator('#docBody').getByRole('link', { name: 'Contributor target' }).click();
+  await expect(page).toHaveURL(/#contributing\/caf%C3%A9-checks$/);
+  await expect(page.locator('#currentPath')).toHaveText('CONTRIBUTING.md');
+  await expect(page.getByRole('heading', { name: 'Café checks' })).toBeFocused();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Café checks' })).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Café checks' })).toBeInViewport();
+  await page.goBack();
+  await expect(local).toBeFocused();
+  await expect(local).toBeInViewport();
+  expect(errors).toEqual([]);
+});
+
+test('Docs portal gives duplicate headings unique IDs and tolerates malformed fragments', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await page.route('**/api/v1/docs', route => route.fulfill({ json: [{
+    slug: 'overview', file_path: 'docs/README.md', title: 'Overview', category: 'Docs', summary: '',
+    markdown: '# Overview\n[Second heading](#repeat-1)\n## Repeat\n## Repeat\n' +
+      '##### Repeat-1\n###### [Linked](https://example.com) heading ###'
+  }] }));
+  await page.goto('/docs#overview/%invalid');
+  await expect(page.locator('#docBody h1')).toHaveText('Overview');
+  expect(await page.locator('#docBody :is(h1,h2,h5,h6)').evaluateAll(nodes => nodes.map(n => n.id)))
+    .toEqual(['overview', 'repeat', 'repeat-1', 'repeat-1-1', 'linked-heading']);
+  await page.locator('#docBody').getByRole('link', { name: 'Second heading' }).click();
+  await expect(page.locator('#repeat-1')).toBeFocused();
+  expect(errors).toEqual([]);
+});

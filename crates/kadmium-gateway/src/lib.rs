@@ -1491,8 +1491,14 @@ mod tests {
 
         // Verify embedded public documentation catalog from `docs/`
         let docs = build_documentation_catalog();
-        assert_eq!(docs.len(), 13);
+        assert_eq!(docs.len(), 19);
         assert!(docs.iter().any(|page| page.slug == "condenser-workspace"));
+        assert!(docs.iter().any(|page| page.slug == "usbc-delta-bridge"));
+        assert!(docs.iter().any(|page| page.slug == "npu-kernels"));
+        assert!(docs.iter().any(|page| page.slug == "launch-guide"));
+        assert!(docs.iter().any(|page| page.slug == "release-runbook"));
+        assert!(docs.iter().any(|page| page.slug == "benchmarks"));
+        assert!(docs.iter().any(|page| page.slug == "contributing"));
         assert!(docs.iter().all(|d| !d.markdown.is_empty()));
 
         // Verify Kadmium MCP Server (JSON-RPC 2.0 initialize, tools/list, tools/call, resources/read)
