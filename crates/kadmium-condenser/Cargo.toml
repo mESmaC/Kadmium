@@ -7,10 +7,13 @@ description = "Condenser: the modular Kadmium Power Plant inference harness"
 default-run = "kadmium-condenser"
 
 [features]
-default = []
+default = ["native-window"]
+# Native Condenser window on Windows and macOS. The Kadmium gateway embeds Condenser
+# with default features off, so headless coordinators link no webview stack.
+native-window = ["dep:wry", "dep:tao"]
 # Linux uses the browser shell by default. Enable the same native window used on
 # Windows and macOS when WebKitGTK 4.1 and GTK 3 development files are available.
-linux-native = ["dep:wry", "dep:tao"]
+linux-native = ["dep:linux-wry", "dep:linux-tao"]
 
 [dependencies]
 kadmium-core.workspace = true
@@ -29,9 +32,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 jsonschema = "0.29"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
-wry = "0.57"
-tao = "0.37"
-
-[target.'cfg(target_os = "linux")'.dependencies]
 wry = { version = "0.57", optional = true }
 tao = { version = "0.37", optional = true }
+
+# Renamed so `native-window` (on by default) never pulls WebKitGTK into Linux builds.
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-wry = { package = "wry", version = "0.57", optional = true }
+linux-tao = { package = "tao", version = "0.37", optional = true }

@@ -5,9 +5,15 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
-#[cfg(any(not(target_os = "linux"), feature = "linux-native"))]
+#[cfg(any(
+    all(not(target_os = "linux"), feature = "native-window"),
+    all(target_os = "linux", feature = "linux-native")
+))]
 mod icon;
-#[cfg(any(not(target_os = "linux"), feature = "linux-native"))]
+#[cfg(any(
+    all(not(target_os = "linux"), feature = "native-window"),
+    all(target_os = "linux", feature = "linux-native")
+))]
 mod native;
 
 #[derive(Debug, Clone)]
@@ -35,7 +41,10 @@ struct EmbeddedServer {
 
 pub fn run(options: UiOptions) -> Result<()> {
     let server = start_embedded(&options)?;
-    #[cfg(any(not(target_os = "linux"), feature = "linux-native"))]
+    #[cfg(any(
+        all(not(target_os = "linux"), feature = "native-window"),
+        all(target_os = "linux", feature = "linux-native")
+    ))]
     {
         if !options.browser {
             native::run(options, server);
@@ -105,6 +114,10 @@ fn run_in_browser(server: EmbeddedServer) -> Result<()> {
         eprintln!(
             "This Condenser build uses the browser shell. Enable `linux-native` with WebKitGTK 4.1 and GTK 3 for a native window."
         );
+    } else if !cfg!(target_os = "linux") && !cfg!(feature = "native-window") {
+        eprintln!(
+            "This Condenser build has no native window (built without `native-window`); using the browser shell."
+        );
     }
     println!("Condenser is ready at {}", server.url);
     open_in_browser(&server.url);
@@ -147,7 +160,10 @@ fn spawn_browser(url: &str) {
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
-#[cfg(any(not(target_os = "linux"), feature = "linux-native"))]
+#[cfg(any(
+    all(not(target_os = "linux"), feature = "native-window"),
+    all(target_os = "linux", feature = "linux-native")
+))]
 fn webview_data_dir() -> Option<PathBuf> {
     Some(crate::plugin::condenser_home().join("webview"))
 }

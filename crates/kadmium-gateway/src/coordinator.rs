@@ -466,13 +466,6 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         port,
         crate::condenser_access_path("/condenser/")
     );
-    match crate::publish_condenser_access(port) {
-        Ok(path) => println!(
-            "      (this launch's link is also saved for your account in {})",
-            path.display()
-        ),
-        Err(error) => eprintln!("      (could not save the Condenser access link: {error})"),
-    }
     println!(
         "    - Application Docs:       http://127.0.0.1:{}/docs",
         port
@@ -535,6 +528,15 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("could not bind the coordinator on {addr}: {e}"))?;
+    // Publish only once this process owns the port, so a second launch that fails to
+    // bind cannot overwrite the running coordinator's access link.
+    match crate::publish_condenser_access(port) {
+        Ok(path) => println!(
+            "    - Condenser access link also saved for your account in {}",
+            path.display()
+        ),
+        Err(error) => eprintln!("    - Could not save the Condenser access link: {error}"),
+    }
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),

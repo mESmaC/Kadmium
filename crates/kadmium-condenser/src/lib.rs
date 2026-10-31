@@ -5,6 +5,12 @@
 //! Both the CLI and the native UI use this library rather than maintaining
 //! separate inference implementations.
 
+// Linux renames the optional webview crates so default builds never link WebKitGTK.
+#[cfg(all(target_os = "linux", feature = "linux-native"))]
+extern crate linux_tao as tao;
+#[cfg(all(target_os = "linux", feature = "linux-native"))]
+extern crate linux_wry as wry;
+
 pub mod agent;
 mod compute;
 pub mod dsv41_mcl4;
