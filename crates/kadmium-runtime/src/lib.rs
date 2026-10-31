@@ -473,6 +473,9 @@ pub mod pipeline;
 pub mod quant_lora;
 pub mod scheduler;
 
+#[cfg(test)]
+mod cuda_parity;
+
 pub use pipeline::*;
 pub use quant_lora::*;
 pub use scheduler::*;

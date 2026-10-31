@@ -11,6 +11,7 @@ kadmium-sharding.workspace = true
 kadmium-data.workspace = true
 kadmium-network.workspace = true
 kadmium-grid.workspace = true
+kadmium-cuda.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
