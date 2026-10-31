@@ -21,6 +21,8 @@ struct Ollama {
     blobs: Arc<Mutex<BTreeMap<String, usize>>>,
     model: Arc<Mutex<String>>,
     context: Arc<Mutex<u64>>,
+    /// The last body the proxy forwarded to `/api/chat`.
+    chat: Arc<Mutex<Value>>,
 }
 
 async fn serve(app: Router) -> String {
@@ -88,7 +90,9 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
                     if body["model"] != *o.model.lock().unwrap() {
                         return (StatusCode::NOT_FOUND, Json(json!({"error":"model not found"})));
                     }
+                    let context = *o.context.lock().unwrap();
                     (StatusCode::OK, Json(json!({
+                        "parameters": format!("num_ctx                        {context}"),
                         "model_info":{"general.architecture":"llama","llama.context_length":131072},
                         "tensors":[{"name":"model.layers.0.mlp.experts.0.up_proj.weight","shape":[2],"type":"BF16"}]
                     })))
@@ -96,15 +100,13 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
             )
             .route(
                 "/api/chat",
-                post(|Json(body): Json<Value>| async move {
-                    // Received models keep local quality guarantees on every request.
-                    // The model was created at its full context; a request may only restate it.
-                    assert!(
-                        body["options"]["num_ctx"].is_null() || body["options"]["num_ctx"] == 131072
-                    );
+                post(|State(o): State<Ollama>, Json(body): Json<Value>| async move {
+                    // The proxy makes every request full quality, whoever sent it.
+                    assert_eq!(body["options"]["num_ctx"], *o.context.lock().unwrap());
                     assert_eq!(body["options"]["num_predict"], -1);
                     assert_eq!(body["truncate"], false);
                     assert_eq!(body["shift"], false);
+                    *o.chat.lock().unwrap() = body.clone();
                     Json(json!({"model":body["model"],"message":{"role":"assistant","content":"native answer from the transported model"},"done":true,"eval_count":2,"prompt_eval_count":3}))
                 }),
             )
@@ -129,7 +131,7 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     let transport = TransportState::new(
         receiver_library.clone(),
         backend.clone(),
-        Some("cloud-key".into()),
+        Some("cloud-access-token-01".into()),
     );
     let coordinator = |transport: TransportState| {
         router(transport.clone())
@@ -213,7 +215,10 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
         "{failed}"
     );
 
-    assert_eq!(publish("cloud-key").await.unwrap().status(), 200);
+    assert_eq!(
+        publish("cloud-access-token-01").await.unwrap().status(),
+        200
+    );
     let ready = wait().await;
     assert_eq!(ready["state"], "ready", "{ready}");
     assert_eq!(ready["result"]["context_length"], 131072);
@@ -243,7 +248,10 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     assert_eq!(ollama.blobs.lock().unwrap().len(), 3);
 
     // Sending again skips everything the receiver already verified.
-    assert_eq!(publish("cloud-key").await.unwrap().status(), 200);
+    assert_eq!(
+        publish("cloud-access-token-01").await.unwrap().status(),
+        200
+    );
     let again = wait().await;
     assert_eq!(again["state"], "ready");
     assert_eq!(again["sent_bytes"], 0);
@@ -259,7 +267,9 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     };
     // Ollama's OpenAI-compatible endpoint cannot turn off truncation, so a received model is
     // refused there with a pointer to the native route, never answered with reduced quality.
-    let refused = chat(Some("cloud-key"), model.clone()).await.unwrap();
+    let refused = chat(Some("cloud-access-token-01"), model.clone())
+        .await
+        .unwrap();
     assert_eq!(refused.status(), 400);
     assert!(
         refused
@@ -280,7 +290,7 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     // A Condenser task routed to the received model runs through the native Ollama proxy with
     // full context, unlimited output and no truncation, exactly like a local model.
     let mut provider = ready["result"]["provider"].clone();
-    provider["api_key"] = json!("cloud-key");
+    provider["api_key"] = json!("cloud-access-token-01");
     let task: Value = client
         .post(format!("{condenser}/api/v1/chat"))
         .json(&json!({"provider": provider, "messages":[{"role":"user","content":"hi"}], "enable_tools": false}))
@@ -301,32 +311,84 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     let restarted = serve(coordinator(TransportState::new(
         receiver_library.clone(),
         backend.clone(),
-        Some("cloud-key".into()),
+        Some("cloud-access-token-01".into()),
     )))
     .await;
     let native = |base: String, key: Option<&'static str>, model: String| {
         let request = client
             .post(format!("{base}{OLLAMA_PROXY_PATH}/api/chat"))
-            .json(
-                &json!({"model": model, "messages":[{"role":"user","content":"hi"}],
-                "options":{"num_ctx":131072,"num_predict":-1}, "truncate":false, "shift":false}),
-            );
+            // A bare request, as any Ollama client sends it: no truncate, shift or num_ctx.
+            .json(&json!({"model": model, "messages":[{"role":"user","content":"hi"}]}));
         match key {
             Some(key) => request.bearer_auth(key),
             None => request,
         }
         .send()
     };
-    let restarted_chat: Value = native(restarted.clone(), Some("cloud-key"), model.clone())
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let restarted_chat: Value = native(
+        restarted.clone(),
+        Some("cloud-access-token-01"),
+        model.clone(),
+    )
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
     assert_eq!(
         restarted_chat["message"]["content"],
         "native answer from the transported model"
     );
+    // The fake asserted the forwarded flags; the context came from the created model.
+    let context = *ollama.context.lock().unwrap();
+    assert_eq!(ollama.chat.lock().unwrap()["options"]["num_ctx"], context);
+    for (body, refused) in [
+        (json!({"truncate": true}), "truncate"),
+        (json!({"shift": true}), "shift"),
+        (json!({"options": {"num_ctx": 2048}}), "num_ctx 2048"),
+    ] {
+        let mut request = json!({"model": model, "messages":[{"role":"user","content":"hi"}]});
+        for (key, value) in body.as_object().unwrap() {
+            request[key] = value.clone();
+        }
+        let response = client
+            .post(format!("{restarted}{OLLAMA_PROXY_PATH}/api/chat"))
+            .bearer_auth("cloud-access-token-01")
+            .json(&request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400, "{request}");
+        assert!(response.text().await.unwrap().contains(refused));
+    }
+    // Before authentication the /v1 interceptor buffers no more than the handlers accept.
+    // The server answers 413 and may close the connection before the client finishes sending;
+    // either way it stops reading at the limit. Later requests show it is still serving.
+    let oversized = client
+        .post(format!("{restarted}/v1/chat/completions"))
+        .header("content-type", "application/json")
+        .body(vec![b' '; 3 * 1024 * 1024])
+        .send()
+        .await;
+    match oversized {
+        Ok(response) => assert_eq!(response.status(), 413),
+        Err(error) => assert!(error.is_request(), "{error}"),
+    }
+    // A short token disables transport with a reason instead of accepting a guessable secret.
+    let weak = serve(coordinator(TransportState::new(
+        receiver_library.clone(),
+        backend.clone(),
+        Some("short".into()),
+    )))
+    .await;
+    let weak_listing = client
+        .get(format!("{weak}/api/v1/model-transport"))
+        .bearer_auth("short")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(weak_listing.status(), 503);
+    assert!(weak_listing.text().await.unwrap().contains("at least 16"));
     assert_eq!(
         native(restarted.clone(), None, model.clone())
             .await
@@ -338,7 +400,7 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     let tagged = model.replace(":latest", ":other");
     let other_tag = client
         .post(format!("{restarted}/v1/chat/completions"))
-        .bearer_auth("cloud-key")
+        .bearer_auth("cloud-access-token-01")
         .json(&json!({"model": tagged, "messages":[{"role":"user","content":"hi"}]}))
         .send()
         .await
@@ -347,7 +409,7 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     let unknown = format!("kadmium-{}:latest", "c".repeat(64));
     let missing = client
         .post(format!("{restarted}/v1/chat/completions"))
-        .bearer_auth("cloud-key")
+        .bearer_auth("cloud-access-token-01")
         .json(&json!({"model": unknown, "messages":[{"role":"user","content":"hi"}]}))
         .send()
         .await
@@ -356,7 +418,7 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     assert!(missing.text().await.unwrap().contains("not loaded"));
     let messages = client
         .post(format!("{restarted}/v1/messages"))
-        .bearer_auth("cloud-key")
+        .bearer_auth("cloud-access-token-01")
         .json(&json!({"model": model, "messages":[{"role":"user","content":"hi"}]}))
         .send()
         .await

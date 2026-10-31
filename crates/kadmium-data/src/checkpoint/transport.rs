@@ -28,6 +28,8 @@ const _: () = assert!(PAGE.is_multiple_of(TRANSPORT_ALIGNMENT_BYTES));
 const _: () = assert!(TRANSPORT_CHUNK_BYTES.is_multiple_of(PAGE));
 const TRANSPORT_FILE: &str = "transport.json";
 const RECEIVING: &str = ".receiving";
+/// Packages `receive_finish` has taken out of staging to verify and publish.
+const VERIFYING: &str = ".verifying";
 const MAX_FILES: usize = 100_000;
 /// Abandoned transfers older than this are removed when a new transfer starts.
 const STALE_STAGING: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
@@ -289,45 +291,84 @@ impl CheckpointLibrary {
     }
 
     /// Verifies the complete staged package and publishes it atomically into the library.
+    ///
+    /// The staged directory is first renamed into a private `.verifying/<claim>/<id>` directory,
+    /// so a concurrent `receive_begin` (which may wipe and recreate staging) can never change
+    /// what is verified or published: the bytes that pass verification are the bytes renamed
+    /// into the library. An incomplete claim goes back to staging for resume; a package that
+    /// fails verification is discarded so the next transfer starts clean.
     pub fn receive_finish(&self, id: &str) -> Result<CheckpointManifest> {
+        self.finish_claimed(id, &mut || {})
+    }
+
+    fn finish_claimed(
+        &self,
+        id: &str,
+        after_claim: &mut dyn FnMut(),
+    ) -> Result<CheckpointManifest> {
         if let Ok(manifest) = self.read(id) {
             return Ok(manifest);
         }
         let staging = self.receiving_dir(id)?;
-        let transport: TransportManifest = read_json(&staging.join(TRANSPORT_FILE))
-            .map_err(|_| "No transfer is staged for this checkpoint".to_string())?;
-        let status = receive_status(&staging, &transport)?;
-        if !status.complete {
-            return Err(format!(
-                "{} chunks are still missing; resume the transfer",
-                status.missing.len()
-            ));
+        if !staging.join(TRANSPORT_FILE).exists() {
+            return Err("No transfer is staged for this checkpoint".into());
         }
-        for file in transport.files.iter().filter(|f| f.bytes == 0) {
-            File::create(staging.join(&file.path)).map_err(io_error)?;
+        static CLAIMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let claim = self.root().join(VERIFYING).join(format!(
+            "{}-{}",
+            std::process::id(),
+            CLAIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&claim).map_err(io_error)?;
+        let private = claim.join(id);
+        if fs::rename(&staging, &private).is_err() {
+            let _ = fs::remove_dir_all(&claim);
+            return Err("No transfer is staged for this checkpoint".into());
         }
-        let manifest_bytes = fs::read(staging.join("manifest.json")).map_err(io_error)?;
-        if hash_bytes(&manifest_bytes) != transport.files[0].sha256 {
-            return Err("manifest.json failed verification; resend the transfer".into());
-        }
-        // Full package verification: identity, every byte, metadata and bank layout.
-        let manifest = CheckpointLibrary::new(self.root().join(RECEIVING)).verify(id)?;
-        if manifest.banks.len() + manifest.source_files.len() + 1 != transport.files.len() {
-            return Err("Transport lists files that the checkpoint manifest does not".into());
-        }
-        fs::remove_dir_all(staging.join(".chunks")).map_err(io_error)?;
-        let target = self.package_dir(id)?;
-        if let Err(error) = fs::rename(&staging, &target) {
-            if target.exists() {
-                let _ = fs::remove_dir_all(&staging);
-                return self.read(id);
+        after_claim();
+        let outcome = verify_claimed(&claim, &private, id);
+        match outcome {
+            Ok(manifest) => {
+                let target = self.package_dir(id)?;
+                let published = match fs::rename(&private, &target) {
+                    Ok(()) => Ok(manifest),
+                    Err(_) if target.exists() => self.read(id),
+                    Err(error) => Err(io_error(error)),
+                };
+                let _ = fs::remove_dir_all(&claim);
+                published
             }
-            return Err(io_error(error));
+            Err(Unfinished::Incomplete(message)) => {
+                // Return the partial transfer for resume, unless a new one has started.
+                if fs::rename(&private, &staging).is_err() {
+                    let _ = fs::remove_dir_all(&claim);
+                } else {
+                    let _ = fs::remove_dir(&claim);
+                }
+                Err(message)
+            }
+            Err(Unfinished::Invalid(message)) => {
+                let _ = fs::remove_dir_all(&claim);
+                Err(format!(
+                    "{message}. The received copy was discarded; send the model again"
+                ))
+            }
         }
-        Ok(manifest)
     }
 
     fn remove_stale_transfers(&self, keep: &str) {
+        // A claim outlives `receive_finish` only if the process stopped mid-verification.
+        if let Ok(claims) = fs::read_dir(self.root().join(VERIFYING)) {
+            for claim in claims.flatten() {
+                let stale = claim
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > STALE_STAGING));
+                if stale {
+                    let _ = fs::remove_dir_all(claim.path());
+                }
+            }
+        }
         let Ok(entries) = fs::read_dir(self.root().join(RECEIVING)) else {
             return;
         };
@@ -351,6 +392,50 @@ impl CheckpointLibrary {
         self.package_dir(id)?;
         Ok(self.root().join(RECEIVING).join(id))
     }
+}
+
+enum Unfinished {
+    /// Chunks are missing: keep what arrived so the sender can resume.
+    Incomplete(String),
+    /// Every chunk arrived but the package does not verify: nothing can be kept.
+    Invalid(String),
+}
+
+/// Checks a package that `receive_finish` has claimed. Only this call reads `private`.
+fn verify_claimed(
+    claim: &Path,
+    private: &Path,
+    id: &str,
+) -> std::result::Result<CheckpointManifest, Unfinished> {
+    let transport: TransportManifest = read_json(&private.join(TRANSPORT_FILE))
+        .map_err(|_| Unfinished::Invalid("The staged transfer has no manifest".into()))?;
+    let status = receive_status(private, &transport).map_err(Unfinished::Invalid)?;
+    if !status.complete {
+        return Err(Unfinished::Incomplete(format!(
+            "{} chunks are still missing; resume the transfer",
+            status.missing.len()
+        )));
+    }
+    let invalid = Unfinished::Invalid;
+    for file in transport.files.iter().filter(|f| f.bytes == 0) {
+        File::create(private.join(&file.path)).map_err(|e| invalid(io_error(e)))?;
+    }
+    let manifest_bytes =
+        fs::read(private.join("manifest.json")).map_err(|e| invalid(io_error(e)))?;
+    if hash_bytes(&manifest_bytes) != transport.files[0].sha256 {
+        return Err(invalid("manifest.json failed verification".into()));
+    }
+    // Full package verification: identity, every byte, metadata and bank layout.
+    let manifest = CheckpointLibrary::new(claim.to_path_buf())
+        .verify(id)
+        .map_err(invalid)?;
+    if manifest.banks.len() + manifest.source_files.len() + 1 != transport.files.len() {
+        return Err(invalid(
+            "Transport lists files that the checkpoint manifest does not".into(),
+        ));
+    }
+    fs::remove_dir_all(private.join(".chunks")).map_err(|e| invalid(io_error(e)))?;
+    Ok(manifest)
 }
 
 fn receive_status(staging: &Path, transport: &TransportManifest) -> Result<ReceiveStatus> {
@@ -582,5 +667,71 @@ fn hex_digest(value: &str) -> Result<()> {
         Ok(())
     } else {
         Err("Transport digests must be lowercase SHA-256".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SafetensorsToKtbTranscoder;
+
+    /// The interleaving from the review of PR #62, as `Kadmium.Transport.Publish` models it:
+    /// a `receive_begin` with a different manifest for the same checkpoint lands after
+    /// `receive_finish` has claimed the staged package and before it verifies and publishes.
+    #[test]
+    fn begin_during_finish_cannot_publish_a_package_without_its_manifest() {
+        let root = std::env::temp_dir().join(format!("transport-race-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("config.json"), br#"{"model_type":"llama"}"#).unwrap();
+        fs::write(source.join("tokenizer.json"), b"{}").unwrap();
+        let payload = [0u8, 0, 128, 63, 1, 0, 128, 63];
+        fs::write(
+            source.join("model.safetensors"),
+            SafetensorsToKtbTranscoder::build_safetensors_bytes(&[(
+                "model.layers.0.self_attn.q_proj.weight",
+                "F32",
+                vec![1, 2],
+                payload.as_slice(),
+            )]),
+        )
+        .unwrap();
+        let sender = CheckpointLibrary::new(root.join("sender"));
+        let id = sender.import(&source).unwrap().id;
+        let transport = sender.transport(&id).unwrap();
+        let receiver = CheckpointLibrary::new(root.join("receiver"));
+        receiver.receive_begin(&transport).unwrap();
+        for (f, file) in transport.files.iter().enumerate() {
+            let bytes = fs::read(sender.package_dir(&id).unwrap().join(&file.path)).unwrap();
+            for (c, chunk) in file.chunks.iter().enumerate() {
+                let range = chunk.offset as usize..(chunk.offset + chunk.bytes) as usize;
+                receiver
+                    .receive_chunk(&id, f as u32, c as u32, &bytes[range])
+                    .unwrap();
+            }
+        }
+        let mut other = transport.clone();
+        other.name = format!("{} (another build)", other.name);
+        assert_ne!(other, transport);
+
+        let manifest = receiver
+            .finish_claimed(&id, &mut || {
+                // Wipes and recreates staging; the claimed package is out of its reach.
+                receiver.receive_begin(&other).unwrap();
+            })
+            .unwrap();
+        assert_eq!(manifest.id, id);
+        let published = receiver.package_dir(&id).unwrap();
+        assert!(published.join("manifest.json").is_file());
+        assert_eq!(receiver.verify(&id).unwrap().id, id);
+        assert_eq!(receiver.list().unwrap().len(), 1);
+        assert!(
+            fs::read_dir(root.join("receiver").join(VERIFYING))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

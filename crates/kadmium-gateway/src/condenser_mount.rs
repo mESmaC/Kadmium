@@ -177,6 +177,18 @@ pub(crate) fn local_browser_request(request: &Request) -> bool {
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .is_some_and(|peer| peer.0.ip().is_loopback());
+    // A rebound DNS name reaches a loopback listener with its own Host; accept loopback names
+    // only.
+    let loopback_host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(|host| {
+            host.rsplit_once(':')
+                .filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit()))
+                .map_or(host, |(name, _)| name)
+        })
+        .is_some_and(|name| matches!(name, "127.0.0.1" | "localhost" | "[::1]"));
     let same_origin = request.headers().get(header::ORIGIN).is_none_or(|origin| {
         let expected = request
             .headers()
@@ -189,7 +201,7 @@ pub(crate) fn local_browser_request(request: &Request) -> bool {
             .zip(expected.as_deref())
             .is_some_and(|(origin, expected)| origin == expected)
     });
-    local && same_origin
+    local && loopback_host && same_origin
 }
 
 async fn guard(request: Request, next: Next) -> Response {

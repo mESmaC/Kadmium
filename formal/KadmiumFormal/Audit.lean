@@ -3,6 +3,7 @@ import KadmiumFormal.Pow2
 import KadmiumFormal.RepOps.TreeSum
 import KadmiumFormal.RepOps.TreeReducer
 import KadmiumFormal.Transport.ChunkMap
+import KadmiumFormal.Transport.Publish
 
 /-!
 # Axiom audit
@@ -41,3 +42,5 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Transport.chunkPlan_tiles
 #assert_standard_axioms Kadmium.Transport.chunkPlan_aligned
 #assert_standard_axioms Kadmium.Transport.layout_divides
+#assert_standard_axioms Kadmium.Transport.Publish.publish_safe
+#assert_standard_axioms Kadmium.Transport.Publish.legacy_unsafe

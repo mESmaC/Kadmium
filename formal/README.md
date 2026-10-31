@@ -39,6 +39,15 @@ All results are **Proved (model)**. The RepOps differential fixture is `crates/k
 | `Transport.chunkPlan_aligned` | If an alignment divides the chunk size, every chunk offset is aligned to it. | `chunk_plan` |
 | `Transport.layout_divides` | 4 KiB divides the 64 KiB KTB page, which divides the 16 MiB chunk. | `TRANSPORT_ALIGNMENT_BYTES`, `TRANSPORT_CHUNK_BYTES` |
 
+### Publishing a received package
+
+**Proved (model)**, about a model only: there is no differential fixture. Renames are assumed atomic, a directory is abstracted to whether it holds every file of its own manifest intact, and verification succeeds exactly for such a directory. The unit test `checkpoint::transport::tests::begin_during_finish_cannot_publish_a_package_without_its_manifest` runs the legacy counterexample's interleaving against the Rust code. Modelling choices are listed in `KadmiumFormal/Transport/Publish.lean`.
+
+| Theorem | Statement | Rust item |
+| :--- | :--- | :--- |
+| `Transport.Publish.publish_safe` | Claiming staging into a private directory before verifying it means every published package verified as complete, under every interleaving of begins, chunk arrivals and concurrent finishes. | `CheckpointLibrary::{receive_begin, receive_finish}`, `finish_claimed` |
+| `Transport.Publish.legacy_unsafe` | The previous verify-in-place-then-rename order publishes an incomplete package when a begin lands between the two. | `receive_finish` before PR #62's fix |
+
 Every RepOps theorem holds for an arbitrary addition `add : α → α → α` with no associativity, commutativity or identity assumed. IEEE `f32` and `f64` addition has none of those laws, so the statements hold bit for bit for floats without a floating-point model: two reductions that evaluate the same tree perform the same additions on the same operands.
 
 Modelling assumptions shared by these results:

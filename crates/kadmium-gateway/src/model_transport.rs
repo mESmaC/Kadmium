@@ -24,6 +24,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 const MAX_CHAT_BODY: usize = 64 * 1024 * 1024;
+/// Axum's default request limit, which the `/v1` handlers use. `serve_loaded_models` runs
+/// before authentication, so it never buffers more than those handlers would accept.
+const V1_BODY_LIMIT: usize = 2 * 1024 * 1024;
+const MIN_TOKEN_CHARS: usize = 16;
 const MAX_MANIFEST_BODY: usize = 64 * 1024 * 1024;
 /// Native Ollama API for received models; Condenser's Ollama provider uses it so every request
 /// carries explicit full context, no truncation and no context shifting.
@@ -36,14 +40,23 @@ enum Step {
     Failed(String),
 }
 
+/// Where a received model is served, and the context it was created with.
+#[derive(Clone)]
+struct Served {
+    base: Arc<str>,
+    context: u64,
+}
+
 #[derive(Clone)]
 pub struct TransportState {
     library: CheckpointLibrary,
     ollama: Arc<str>,
     token: Option<Arc<str>>,
     max_bytes: Option<u64>,
-    /// Loaded model name -> the Ollama base URL serving it.
-    served: Arc<Mutex<BTreeMap<String, Arc<str>>>>,
+    /// A setting that could not be applied; every transport route reports it.
+    misconfigured: Option<Arc<str>>,
+    /// Loaded model name -> where it is served.
+    served: Arc<Mutex<BTreeMap<String, Served>>>,
     finishing: Arc<Mutex<HashMap<String, Step>>>,
     loading: Arc<Mutex<HashMap<String, Step>>>,
 }
@@ -57,18 +70,37 @@ impl TransportState {
                 .ok()
                 .filter(|t| !t.trim().is_empty()),
         );
-        state.max_bytes = std::env::var("KADMIUM_TRANSPORT_MAX_BYTES")
-            .ok()
-            .and_then(|v| v.trim().parse().ok());
+        if let Ok(value) = std::env::var("KADMIUM_TRANSPORT_MAX_BYTES") {
+            match value.trim().parse::<u64>() {
+                Ok(limit) if limit > 0 => state.max_bytes = Some(limit),
+                _ => {
+                    state.misconfigured = Some(
+                        format!(
+                            "KADMIUM_TRANSPORT_MAX_BYTES must be a whole number of bytes, such as 53687091200; got {value:?}"
+                        )
+                        .into(),
+                    )
+                }
+            }
+        }
         state
     }
 
     pub fn new(library: CheckpointLibrary, ollama: String, token: Option<String>) -> Self {
+        let token = token.map(|t| t.trim().to_string());
+        let misconfigured = token
+            .as_ref()
+            .filter(|t| t.chars().count() < MIN_TOKEN_CHARS)
+            .map(|_| {
+                format!("KADMIUM_TRANSPORT_TOKEN must be at least {MIN_TOKEN_CHARS} characters")
+                    .into()
+            });
         Self {
             library,
             ollama: ollama.into(),
-            token: token.map(|t| t.trim().into()),
+            token: token.filter(|_| misconfigured.is_none()).map(Into::into),
             max_bytes: None,
+            misconfigured,
             served: Default::default(),
             finishing: Default::default(),
             loading: Default::default(),
@@ -116,8 +148,9 @@ fn authorized(state: &TransportState, request: &Request) -> bool {
             .headers()
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .is_some_and(|given| constant_time_eq(given.trim().as_bytes(), token.as_bytes()))
+            .and_then(|v| v.split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+            .is_some_and(|(_, given)| constant_time_eq(given.trim().as_bytes(), token.as_bytes()))
     })
 }
 
@@ -140,6 +173,9 @@ fn denied(state: &TransportState) -> Response {
 }
 
 async fn guard(State(state): State<TransportState>, request: Request, next: Next) -> Response {
+    if let Some(problem) = &state.misconfigured {
+        return failed(StatusCode::SERVICE_UNAVAILABLE, problem);
+    }
     let listing =
         request.method() == Method::GET && request.uri().path() == "/api/v1/model-transport";
     if authorized(&state, &request)
@@ -175,7 +211,12 @@ async fn library(State(state): State<TransportState>) -> Response {
                 .keys()
                 .cloned()
                 .collect();
-            Json(json!({ "checkpoints": checkpoints, "served": served })).into_response()
+            Json(json!({
+                "checkpoints": checkpoints,
+                "served": served,
+                "max_bytes_per_model": state.max_bytes,
+            }))
+            .into_response()
         }
         Err(response) => *response,
     }
@@ -280,6 +321,14 @@ async fn load(
     Path(id): Path<String>,
     request: Option<Json<LoadRequest>>,
 ) -> Response {
+    let library = state.library.clone();
+    let wanted = id.clone();
+    if blocking(move || library.read(&wanted)).await.is_err() {
+        return failed(
+            StatusCode::NOT_FOUND,
+            "This coordinator has not received that checkpoint; send it first",
+        );
+    }
     let context = request.map(|Json(r)| r).unwrap_or_default().context_length;
     let key = format!(
         "{id}@{}",
@@ -317,10 +366,13 @@ async fn load(
                     .clone()
                     .unwrap_or_else(|| task.ollama.to_string())
                     .into();
-                task.served
-                    .lock()
-                    .expect("served")
-                    .insert(loaded.provider.model.clone(), base);
+                task.served.lock().expect("served").insert(
+                    loaded.provider.model.clone(),
+                    Served {
+                        base,
+                        context: u64::from(loaded.context_length),
+                    },
+                );
                 Step::Done(json!({
                     "model": loaded.provider.model,
                     "context_length": loaded.context_length,
@@ -350,9 +402,9 @@ fn transported_id(model: &str) -> Option<&str> {
 /// Finds the backend for a received model. After a restart the in-memory table is empty, so a
 /// published checkpoint whose model still exists in Ollama is registered again. Anything else is
 /// an explicit "not loaded" error, never a diagnostic reply.
-async fn backend_for(state: &TransportState, model: &str) -> Result<Arc<str>, Box<Response>> {
-    if let Some(base) = state.served.lock().expect("served").get(model).cloned() {
-        return Ok(base);
+async fn backend_for(state: &TransportState, model: &str) -> Result<Served, Box<Response>> {
+    if let Some(served) = state.served.lock().expect("served").get(model).cloned() {
+        return Ok(served);
     }
     let not_loaded = || {
         Box::new(failed(
@@ -369,18 +421,25 @@ async fn backend_for(state: &TransportState, model: &str) -> Result<Arc<str>, Bo
         return Err(not_loaded());
     }
     let library = state.library.clone();
-    if blocking(move || library.read(&id)).await.is_err() {
+    let Ok(manifest) = blocking(move || library.read(&id)).await else {
         return Err(not_loaded());
-    }
-    if !kadmium_condenser::model_transport::ollama_has_model(&state.ollama, &name).await {
+    };
+    let Some(shown) = kadmium_condenser::model_transport::ollama_show(&state.ollama, &name).await
+    else {
         return Err(not_loaded());
-    }
+    };
+    // The context the model was created with; the declared maximum if Ollama does not say.
+    let context = created_context(&shown).unwrap_or(manifest.context_length);
+    let entry = Served {
+        base: state.ollama.clone(),
+        context,
+    };
     let mut served = state.served.lock().expect("served");
-    served.insert(name.clone(), state.ollama.clone());
+    served.insert(name.clone(), entry.clone());
     if name != model {
-        served.insert(model.to_string(), state.ollama.clone());
+        served.insert(model.to_string(), entry.clone());
     }
-    Ok(state.ollama.clone())
+    Ok(entry)
 }
 
 fn requested_model(bytes: &Bytes) -> Option<String> {
@@ -389,15 +448,77 @@ fn requested_model(bytes: &Bytes) -> Option<String> {
         .and_then(|v| v["model"].as_str().map(str::to_owned))
 }
 
-/// Native Ollama endpoints, restricted to received models.
+/// `num_ctx` from the `parameters` text of `/api/show`.
+fn created_context(shown: &Value) -> Option<u64> {
+    shown["parameters"]
+        .as_str()?
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("num_ctx")?.trim().parse().ok())
+}
+
+/// Makes a native chat request full quality before it reaches Ollama, whoever sent it: no
+/// truncation, no context shifting, the context the model was loaded with, and unlimited output
+/// unless the caller set a limit. A request that asks for truncation, shifting or another
+/// context is refused, naming the numbers, never adjusted silently.
+fn full_quality_chat(body: &Bytes, context: u64) -> Result<Bytes, String> {
+    let mut request: Value =
+        serde_json::from_slice(body).map_err(|e| format!("Invalid JSON request: {e}"))?;
+    let object = request
+        .as_object_mut()
+        .ok_or("The request must be a JSON object")?;
+    for key in ["truncate", "shift"] {
+        match object.get(key) {
+            None | Some(Value::Bool(false)) => {
+                object.insert(key.into(), Value::Bool(false));
+            }
+            Some(_) => {
+                return Err(format!(
+                    "Received models are served without prompt truncation or context shifting; remove \"{key}\" or set it to false"
+                ));
+            }
+        }
+    }
+    let options = object
+        .entry("options")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or("\"options\" must be an object")?;
+    match options.get("num_ctx") {
+        None => {
+            options.insert("num_ctx".into(), json!(context));
+        }
+        Some(value) if value.as_u64() == Some(context) => {}
+        Some(value) => {
+            return Err(format!(
+                "num_ctx {value} differs from the {context} tokens this model was loaded with. Requests cannot change it; load the model again with the context window you want"
+            ));
+        }
+    }
+    options.entry("num_predict").or_insert(json!(-1));
+    serde_json::to_vec(&request)
+        .map(Bytes::from)
+        .map_err(|e| e.to_string())
+}
+
+/// Native Ollama endpoints, restricted to received models. Chat requests are made full quality
+/// here (`full_quality_chat`), so the guarantee does not depend on the client.
 async fn native(State(state): State<TransportState>, path: &'static str, body: Bytes) -> Response {
     let Some(model) = requested_model(&body) else {
         return failed(StatusCode::BAD_REQUEST, "Request must name a model");
     };
-    match backend_for(&state, &model).await {
-        Ok(base) => kadmium_condenser::model_transport::forward_json(&base, path, body).await,
-        Err(response) => *response,
-    }
+    let served = match backend_for(&state, &model).await {
+        Ok(served) => served,
+        Err(response) => return *response,
+    };
+    let body = if path == "api/chat" {
+        match full_quality_chat(&body, served.context) {
+            Ok(body) => body,
+            Err(error) => return failed(StatusCode::BAD_REQUEST, error),
+        }
+    } else {
+        body
+    };
+    kadmium_condenser::model_transport::forward_json(&served.base, path, body).await
 }
 
 /// Lists only received models, in Ollama's `/api/tags` shape.
@@ -429,7 +550,8 @@ pub async fn serve_loaded_models(
         return next.run(request).await;
     }
     let (parts, body) = request.into_parts();
-    let bytes = match axum::body::to_bytes(body, MAX_CHAT_BODY).await {
+    // Buffer no more than the `/v1` handlers accept: this runs before authentication.
+    let bytes = match axum::body::to_bytes(body, V1_BODY_LIMIT).await {
         Ok(bytes) => bytes,
         Err(error) => return failed(StatusCode::PAYLOAD_TOO_LARGE, error),
     };
@@ -463,7 +585,50 @@ fn path_of(request: &Request) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::transported_id;
+    use super::{created_context, full_quality_chat, transported_id};
+    use axum::body::Bytes;
+    use serde_json::{Value, json};
+
+    fn chat(body: Value) -> Result<Value, String> {
+        full_quality_chat(&Bytes::from(body.to_string()), 8192)
+            .map(|b| serde_json::from_slice(&b).unwrap())
+    }
+
+    #[test]
+    fn native_chat_is_made_full_quality_and_never_lowered() {
+        let plain = chat(json!({"model":"m","messages":[]})).unwrap();
+        assert_eq!(plain["truncate"], false);
+        assert_eq!(plain["shift"], false);
+        assert_eq!(plain["options"]["num_ctx"], 8192);
+        assert_eq!(plain["options"]["num_predict"], -1);
+        let chosen =
+            chat(json!({"model":"m","options":{"num_ctx":8192,"num_predict":512}})).unwrap();
+        assert_eq!(chosen["options"]["num_predict"], 512);
+        assert!(
+            chat(json!({"model":"m","truncate":true}))
+                .unwrap_err()
+                .contains("truncate")
+        );
+        assert!(
+            chat(json!({"model":"m","shift":true}))
+                .unwrap_err()
+                .contains("shift")
+        );
+        let lowered = chat(json!({"model":"m","options":{"num_ctx":2048}})).unwrap_err();
+        assert!(
+            lowered.contains("2048") && lowered.contains("8192"),
+            "{lowered}"
+        );
+        assert!(chat(json!({"model":"m","options":{"num_ctx":16384}})).is_err());
+        assert!(chat(json!(["not", "an", "object"])).is_err());
+    }
+
+    #[test]
+    fn created_context_reads_ollama_parameters() {
+        let shown = json!({"parameters":"stop \"<eos>\"\nnum_ctx                        131072\n"});
+        assert_eq!(created_context(&shown), Some(131072));
+        assert_eq!(created_context(&json!({})), None);
+    }
 
     #[test]
     fn only_content_addressed_names_are_received_models() {

@@ -294,17 +294,19 @@ fn backend_client() -> &'static reqwest::Client {
     })
 }
 
-/// Whether a model was created in the Ollama at `ollama_base` (used to re-register received
-/// models after a coordinator restart).
-pub async fn ollama_has_model(ollama_base: &str, model: &str) -> bool {
+/// `/api/show` for a model created in the Ollama at `ollama_base`, or `None` if it does not
+/// exist there (used to re-register received models after a coordinator restart).
+pub async fn ollama_show(ollama_base: &str, model: &str) -> Option<Value> {
     let url = format!("{}/api/show", ollama_base.trim_end_matches('/'));
-    backend_client()
+    let response = backend_client()
         .post(url)
         .timeout(Duration::from_secs(30))
         .json(&json!({ "model": model }))
         .send()
         .await
-        .is_ok_and(|response| response.status().is_success())
+        .ok()
+        .filter(|response| response.status().is_success())?;
+    response.json().await.ok()
 }
 
 /// Forwards a JSON request to a model the receiver loaded into its local Ollama, streaming the
