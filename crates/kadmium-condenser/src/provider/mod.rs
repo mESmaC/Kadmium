@@ -97,6 +97,7 @@ impl ProviderFactory {
     pub fn build(config: ProviderConfig) -> Result<Arc<dyn InferenceProvider>> {
         config.validate_connection()?;
         let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(config.timeout_secs))
             .tcp_nodelay(true)
             .pool_max_idle_per_host(32)
@@ -127,6 +128,109 @@ impl ProviderFactory {
             }
         }
     }
+}
+
+pub(crate) fn parse_positive_u64(value: &serde_json::Value) -> Option<u64> {
+    let parsed = value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|v| u64::try_from(v).ok()))
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse::<u64>().ok()))?;
+    (1..=16_777_216).contains(&parsed).then_some(parsed)
+}
+
+/// Extracts a model's advertised total context window from provider model-list metadata when present.
+/// Prefers architecture-qualified keys (`{arch}.context_length`), then total-context keys, and
+/// only falls back to `advertised_input_token_limit` for providers (such as Anthropic `/v1/models`)
+/// that report the context window under `max_input_tokens`.
+pub(crate) fn advertised_context_length(model: &serde_json::Value) -> Option<u64> {
+    if let Some(arch) = model
+        .pointer("/model_info/general.architecture")
+        .or_else(|| model.get("general.architecture"))
+        .and_then(|v| v.as_str())
+    {
+        let ptr = format!("/model_info/{arch}.context_length");
+        let key = format!("{arch}.context_length");
+        if let Some(val) = model
+            .pointer(&ptr)
+            .or_else(|| model.get(&key))
+            .and_then(parse_positive_u64)
+        {
+            return Some(val);
+        }
+    }
+    for key in [
+        "context_length",
+        "context_window",
+        "max_context_length",
+        "max_model_len",
+        "max_sequence_length",
+        "max_position_embeddings",
+        "n_ctx",
+    ] {
+        if let Some(val) = model.get(key).and_then(parse_positive_u64) {
+            return Some(val);
+        }
+    }
+    for ptr in [
+        "/model_info/general.context_length",
+        "/model_info/context_length",
+        "/top_provider/context_length",
+        "/limits/context_window",
+        "/capabilities/max_context_length",
+    ] {
+        if let Some(val) = model.pointer(ptr).and_then(parse_positive_u64) {
+            return Some(val);
+        }
+    }
+    advertised_input_token_limit(model)
+}
+
+/// Extracts an advertised input-only token limit (`max_input_tokens`, `input_token_limit`) when
+/// a provider reports input budget separately from total context.
+pub(crate) fn advertised_input_token_limit(model: &serde_json::Value) -> Option<u64> {
+    for key in ["max_input_tokens", "input_token_limit"] {
+        if let Some(val) = model.get(key).and_then(parse_positive_u64) {
+            return Some(val);
+        }
+    }
+    model
+        .pointer("/limits/max_input_tokens")
+        .and_then(parse_positive_u64)
+}
+
+/// Extracts an unambiguous maximum output token limit from provider model metadata.
+/// Excludes `max_new_tokens` (often a server default generation length) and generic `max_tokens`
+/// on OpenAI/LiteLLM payloads (which some routers populate with the full context window).
+pub(crate) fn maximum_output(model: &serde_json::Value) -> Option<u32> {
+    for key in [
+        "max_output_tokens",
+        "max_completion_tokens",
+        "output_token_limit",
+    ] {
+        if let Some(val) = model
+            .get(key)
+            .and_then(parse_positive_u64)
+            .and_then(|v| u32::try_from(v).ok())
+        {
+            return Some(val);
+        }
+    }
+    for ptr in [
+        "/top_provider/max_completion_tokens",
+        "/limits/max_output_tokens",
+        "/limits/max_completion_tokens",
+        "/limits/output_tokens",
+        "/capabilities/max_output_tokens",
+    ] {
+        if let Some(val) = model
+            .pointer(ptr)
+            .and_then(parse_positive_u64)
+            .and_then(|v| u32::try_from(v).ok())
+        {
+            return Some(val);
+        }
+    }
+    None
 }
 
 pub(crate) fn endpoint(base: &str, path: &str) -> String {

@@ -31,8 +31,8 @@ pub use dsv41_mcl4::{
 };
 pub use error::{CondenserError, Result};
 pub use harness::{
-    Harness, HarnessEvent, HarnessOptions, HarnessReport, HarnessStep, RunControl, RunStatus,
-    ToolExecution,
+    Harness, HarnessEvent, HarnessOptions, HarnessReport, HarnessStep, MAX_CALLS_PER_STEP,
+    MAX_HARNESS_STEPS, RunControl, RunStatus, ToolExecution,
 };
 pub use plugin::{PluginInventory, PluginManager, RegisteredTool};
 pub use provider::{ProviderDescriptor, ProviderFactory};

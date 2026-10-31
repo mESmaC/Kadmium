@@ -35,6 +35,9 @@ impl ToolExecutor for PluginManager {
     }
 }
 
+pub const MAX_HARNESS_STEPS: usize = 256;
+pub const MAX_CALLS_PER_STEP: usize = 16;
+
 #[derive(Debug, Clone)]
 pub struct HarnessOptions {
     pub enable_tools: bool,
@@ -51,7 +54,7 @@ impl Default for HarnessOptions {
             enable_tools: false,
             allowed_tools: None,
             max_steps: 8,
-            max_calls_per_step: 16,
+            max_calls_per_step: MAX_CALLS_PER_STEP,
             sampling: SamplingParams::default(),
         }
     }
@@ -265,7 +268,7 @@ impl Harness {
         &self,
         mut messages: Vec<Message>,
         options: HarnessOptions,
-        control: RunControl,
+        mut control: RunControl,
         events: Option<mpsc::Sender<HarnessEvent>>,
     ) -> Result<HarnessReport> {
         if messages.is_empty() {
@@ -273,17 +276,24 @@ impl Harness {
                 "a harness turn needs at least one message".into(),
             ));
         }
-        if !(1..=32).contains(&options.max_steps) {
-            return Err(CondenserError::Config(
-                "max_steps must be between 1 and 32".into(),
-            ));
+        if !(1..=MAX_HARNESS_STEPS).contains(&options.max_steps) {
+            return Err(CondenserError::Config(format!(
+                "max_steps must be between 1 and {MAX_HARNESS_STEPS}"
+            )));
         }
-        if options.max_calls_per_step == 0 {
-            return Err(CondenserError::Config(
-                "max_calls_per_step must be at least 1".into(),
-            ));
+        if !(1..=MAX_CALLS_PER_STEP).contains(&options.max_calls_per_step) {
+            return Err(CondenserError::Config(format!(
+                "max_calls_per_step must be between 1 and {MAX_CALLS_PER_STEP}"
+            )));
         }
         options.sampling.validate()?;
+
+        if options.max_steps > 32 {
+            control.max_tool_calls.get_or_insert(64);
+            control.deadline.get_or_insert_with(|| {
+                tokio::time::Instant::now() + std::time::Duration::from_secs(1800)
+            });
+        }
 
         let (mut tools, diagnostics) = if options.enable_tools {
             self.executor.registered_tools()?
@@ -1751,5 +1761,139 @@ mod tests {
         assert_eq!(report.status, RunStatus::Failed);
         assert_eq!(report.messages[0].content, "preserve this prompt");
         assert!(report.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn long_horizon_step_and_call_bounds_are_enforced() {
+        let provider = Arc::new(MockProvider {
+            responses: Mutex::new(VecDeque::from([response(Message::assistant("done"))])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let harness = Harness::from_components(
+            ProviderConfig::new(ProviderKind::Kadmium),
+            provider,
+            Arc::new(MockExecutor { tools: Vec::new() }),
+        )
+        .unwrap();
+
+        let ok_report = harness
+            .run(
+                vec![Message::user("long horizon")],
+                HarnessOptions {
+                    max_steps: MAX_HARNESS_STEPS,
+                    max_calls_per_step: MAX_CALLS_PER_STEP,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok_report.status, RunStatus::Completed);
+
+        let over_steps = harness
+            .run(
+                vec![Message::user("too many steps")],
+                HarnessOptions {
+                    max_steps: MAX_HARNESS_STEPS + 1,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(over_steps.to_string().contains("256"));
+
+        let over_calls = harness
+            .run(
+                vec![Message::user("too many calls")],
+                HarnessOptions {
+                    max_calls_per_step: MAX_CALLS_PER_STEP + 1,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(over_calls.to_string().contains("16"));
+
+        // Verify that max_steps > 32 (e.g., 33) installs the default 64-tool-call aggregate cap
+        // on RunControl::default(), whereas max_steps == 32 does not.
+        let make_16_distinct_calls = |step_idx: usize| -> ChatResponse {
+            let mut msg = Message::assistant("batch");
+            msg.tool_calls = (0..16)
+                .map(|call_idx| ToolCall {
+                    id: format!("s{step_idx}-c{call_idx}"),
+                    name: "example__echo".into(),
+                    arguments_json: format!("{{\"text\":\"{step_idx}-{call_idx}\"}}"),
+                })
+                .collect();
+            response(msg)
+        };
+
+        // At max_steps == 33, 5 steps * 16 calls = 80 calls > 64 default cap -> stops with BudgetExceeded at 64 calls.
+        let responses_33: VecDeque<ChatResponse> = (0..5).map(make_16_distinct_calls).collect();
+        let provider_33 = Arc::new(MockProvider {
+            responses: Mutex::new(responses_33),
+            requests: Mutex::new(Vec::new()),
+        });
+        let executor_33 = Arc::new(CountingExecutor {
+            tool: registered_tool(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let harness_33 = Harness::from_components(
+            ProviderConfig::new(ProviderKind::Kadmium),
+            provider_33,
+            executor_33.clone(),
+        )
+        .unwrap();
+        let report_33 = harness_33
+            .run(
+                vec![Message::user("run 33")],
+                HarnessOptions {
+                    enable_tools: true,
+                    max_steps: 33,
+                    max_calls_per_step: 16,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(report_33.status, RunStatus::BudgetExceeded);
+        assert_eq!(
+            executor_33.calls.load(std::sync::atomic::Ordering::SeqCst),
+            64
+        );
+
+        // At max_steps == 32, 5 steps * 16 calls = 80 calls + final answer succeeds without hitting a 64-call cap.
+        let mut responses_32: VecDeque<ChatResponse> = (0..5).map(make_16_distinct_calls).collect();
+        responses_32.push_back(response(Message::assistant("completed 80 calls")));
+        let provider_32 = Arc::new(MockProvider {
+            responses: Mutex::new(responses_32),
+            requests: Mutex::new(Vec::new()),
+        });
+        let executor_32 = Arc::new(CountingExecutor {
+            tool: registered_tool(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let harness_32 = Harness::from_components(
+            ProviderConfig::new(ProviderKind::Kadmium),
+            provider_32,
+            executor_32.clone(),
+        )
+        .unwrap();
+        let report_32 = harness_32
+            .run(
+                vec![Message::user("run 32")],
+                HarnessOptions {
+                    enable_tools: true,
+                    max_steps: 32,
+                    max_calls_per_step: 16,
+                    ..HarnessOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(report_32.status, RunStatus::Completed);
+        assert_eq!(
+            executor_32.calls.load(std::sync::atomic::Ordering::SeqCst),
+            80
+        );
     }
 }

@@ -308,6 +308,9 @@ impl Mcl4CoeProvider {
                 "role": role_str,
                 "content": m.content,
             });
+            if let Some(thought) = m.reasoning.as_deref().filter(|s| !s.trim().is_empty()) {
+                item["reasoning_content"] = json!(thought);
+            }
             if let Some(tc_id) = &m.tool_call_id {
                 item["tool_call_id"] = json!(tc_id);
             }
@@ -644,6 +647,9 @@ fn build_mcl4_prompt(messages: &[Message], tools: &[crate::types::ToolDefinition
                 }
             }
             Role::Assistant => {
+                if let Some(thought) = msg.reasoning.as_deref().filter(|s| !s.trim().is_empty()) {
+                    parts.push(format!("#T$# {}", thought.trim()));
+                }
                 if !msg.content.trim().is_empty() {
                     parts.push(format!("#A$# {}", msg.content.trim()));
                 }
@@ -703,7 +709,7 @@ impl InferenceProvider for Mcl4CoeProvider {
             }
         }
 
-        // Check live MCL4-COE `/api/checkpoints` if running
+        // Check live MCL4-COE `/api/checkpoints` if running; use advertised context length when present
         let url = endpoint(self.config.base_url(), "api/checkpoints");
         if let Ok(resp) = self.authorize(self.client.get(url)).send().await
             && resp.status().is_success()
@@ -717,7 +723,7 @@ impl InferenceProvider for Mcl4CoeProvider {
                     models.push(ModelInfo {
                         id: cid.to_string(),
                         display_name: Some(format!("MCL4-COE Checkpoint: {cid}")),
-                        context_length: Some(32_768),
+                        context_length: super::advertised_context_length(item),
                     });
                 }
             }
@@ -745,12 +751,25 @@ impl InferenceProvider for Mcl4CoeProvider {
             .clone()
             .unwrap_or_else(|| default_knobs_for_model(&request.model));
 
-        // Apply `dsh-compaction-basic` + DeepSeek-V4.1 multi-turn thought stripping and old tool pruning
-        let (compacted_messages, _) = compact_messages_with_tool_pruning(
-            &request.messages,
-            knobs.strip_prior_thoughts_in_multiturn,
-            knobs.prune_old_tool_results_chars,
-        );
+        // Preserve full multi-turn thoughts and full tool outputs unless `sampling.compact_history`
+        // or explicit `mcl4_coe` compaction knobs are requested.
+        let (strip_thoughts, prune_chars) = if request.sampling.compact_history {
+            (
+                true,
+                if knobs.prune_old_tool_results_chars == usize::MAX {
+                    4096
+                } else {
+                    knobs.prune_old_tool_results_chars
+                },
+            )
+        } else {
+            (
+                knobs.strip_prior_thoughts_in_multiturn,
+                knobs.prune_old_tool_results_chars,
+            )
+        };
+        let (compacted_messages, _) =
+            compact_messages_with_tool_pruning(&request.messages, strip_thoughts, prune_chars);
 
         let unsupported_native = unsupported_native_sampling_option(request);
         if is_native_mcl4_v7_model(&request.model)
@@ -837,6 +856,8 @@ mod tests {
             top_p: Some(0.8),
             top_k: Some(40),
             max_tokens: Some(128),
+            context_window: None,
+            compact_history: false,
             seed: Some(42),
             stop: vec!["DONE".into()],
             mcl4_coe: None,

@@ -112,8 +112,8 @@
                 <input id="interview-mode" type="checkbox">
                 <span>Q/A</span>
               </label>
-              <label class="budget-control" title="Maximum model and tool steps for one turn">
-                <span>Steps</span><input id="step-budget" type="number" min="1" max="32" value="8" aria-label="Step budget">
+              <label class="budget-control" title="Maximum model and tool steps for one turn (steps > 32 enable a 64-call / 30m default safety cap)">
+                <span>Steps</span><input id="step-budget" type="number" min="1" max="256" value="8" aria-label="Step budget">
               </label>
             </div>
             <div class="composer-submit">
