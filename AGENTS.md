@@ -80,10 +80,22 @@ Kadmium's docs separate three kinds of statements, and agents must keep them sep
 Rules:
 
 - Label every performance figure **Measured**, **Derived** or **Modelled**, and record measured runs in `docs/BENCHMARKS_2026-10.md` with date, hardware, configuration and provenance. Never upgrade a label in a doc, README, UI badge or commit message.
+- Label a statement backed by a Lean theorem in `formal/` **Proved (model)** or **Proved (Aeneas)**, according to how the theorem is tied to the Rust code (see `formal/README.md`). Do not write "proved", "verified" or "optimal" for anything without such a theorem listed in `formal/KadmiumFormal/Audit.lean`. An optimality proof holds under its stated cost model; it is not a performance figure and never stands in for a **Measured** benchmark.
 - Gateway `/v1/chat/completions`, `/v1/messages` and `/v1/embeddings` return diagnostic text and reference vectors. Do not describe them as OpenAI or Anthropic compatible endpoints, and do not write tests that pretend they generate.
 - Platform classification is not execution support. A silicon or OS profile in `kadmium-core::platform` does not mean a native backend exists for it. Current native execution is six CUDA kernels and one Intel NPU MatMul, each with documented caveats.
 - Managed services, payouts, procurement, settlement, WAN relays and public registries are planned or simulated. Do not add UI, MCP tool descriptions, or docs that present them as live.
 - Do not change a number in `docs/NUMBERS_2026-10.md`, `docs/business/assumptions.json` or the economics model without updating the generated outputs and running `python scripts/business_model.py --check`.
+
+### 2.1 Every claim is stated and checked in Lean
+
+Every technical claim an agent makes must be checkable, not trusted. This applies to issues, issue comments, pull request descriptions, review comments, comments on architectural decisions, and changes to `docs/ARCHITECTURE.md` or other design documents. It covers claims about correctness, invariants, bounds, equivalence, determinism, optimality, data movement, storage formats and protocol behaviour, and claims that code violates one of these.
+
+1. **Cite or prove.** A claim presented as established cites a theorem in `formal/` by its full name and the commit at which `lake build --wfail` checks it, for example `Kadmium.RepOps.reducer_eq_treeSum` at `<commit>`. If no such theorem exists, the author writes one. In a pull request, the theorem lands in `formal/`, with its `Audit.lean` entry, in the same pull request. In an issue or comment, the author either links a pull request to `formal/` that adds it, or includes a complete Lean block, with no `sorry`, together with the `formal/` commit and the command that checked it with no errors or warnings (`lake env lean Claim.lean` from `formal/`). The theorem moves into `formal/` in the pull request that acts on the claim.
+2. **A bug is a counterexample.** A claim that code is wrong states, in Lean, the property the code should have, and gives the failing input as a checked Lean counterexample against the model. It also includes a Rust reproduction, such as a failing test or a command, which ties the model to the code.
+3. **Unproved means conjecture.** A claim that cannot be proved yet may be raised only as a conjecture. Give its exact Lean statement, label it **Conjecture**, and do not word it as established. An issue that rests on a conjecture is closed by a proof or a refutation in `formal/`.
+4. **Name the link to the code.** A theorem about a model names the Rust items it models and how it is tied to them: **Proved (model)** with a differential fixture, or **Proved (Aeneas)** (see `formal/README.md`). Without that link, the claim is about the model only and must say so.
+5. **Observations are not theorems.** Wall-clock speed, hardware behaviour, provider responses and other observations of the world cannot be proved in Lean. They stay **Measured**, with provenance in `docs/BENCHMARKS_2026-10.md` or a reproduction command. When a claim combines an observation with reasoning, such as "this placement is faster because link A is slower than link B", label the observation and prove the reasoning in Lean with the observation as a hypothesis.
+6. **Lean never ships.** Lean source, the Lean runtime, Lake build output and Lean-generated C never enter any binary built from the Cargo workspace. No crate depends on `formal/`, no build script invokes `lake` or `lean`, and no FFI links Lean. Rust tests may read data that a Lean program generates, such as `crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt`; shipped code never reads it. The `formal` CI job fails if a Cargo manifest, build script or crate source references `formal/` or the Lean toolchain.
 
 ---
 
@@ -115,6 +127,7 @@ What `kadmium-grid` owns: placement, staging and resource spending go through `R
 Key documents:
 
 - `docs/ARCHITECTURE.md` is the design reference. Section 9 covers the grid substrate, RepOps, EPLB, DSpark, KV tiers, DeepGEMM, DeepEP, Ollama kernels, CUDA, NPU and InferSSD.
+- `formal/README.md` lists the Lean theorems, the Rust items each one covers and how each proof is tied to the code. Lean is the design-verification tool for algorithms, data movement and storage formats: a new or changed algorithm, transfer protocol or file format must state the property it relies on (bit-identity, bounds, rejection of malformed input, or optimality under a named cost model) and prove it there, as section 2.1 requires.
 - `docs/api-reference.md` and `docs/cli-reference.md` are maintained by hand from the route handlers and clap definitions respectively. Nothing generates them. Update them in the same PR as the code.
 - `docs/guides/condenser-workspace.md` and `docs/guides/local-checkpoints.md` describe the maximum-quality contract from the operator's side.
 - `design-system/1-voice.md` is the copy standard for UI, docs and README prose.
@@ -147,6 +160,7 @@ CI runs on Ubuntu, Windows and macOS. Run the matrix-specific extras when your c
 | Model setup from either interface | same fixture build, then `node --test crates/kadmium-gateway/tests/model_setup.test.cjs` (arrives with PR #54) |
 | CLI subcommands or Condenser engines | the CI smoke commands: `cargo run --locked --bin kadmium -- probe`, `simulate`, `dream`, `slice --pool-size 100 --slices 5`, `dataflow --model deepseek-v3-671b-moe --batch-tokens 512`, `cloud-shield`; `cargo run --locked --bin kadmium-condenser -- dsv41-profile --json` |
 | Installers | `sh scripts/test_install.sh` or `./scripts/test_installers.ps1 -Executable target/debug/kadmium.exe` |
+| `formal/`, or a Rust item a theorem in `formal/README.md` covers | `cd formal && lake build --wfail`, then regenerate the fixture with `lake exe repops_vectors ../crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt` and run `cargo test --locked -p kadmium-runtime --test repops_lean_vectors`. A Rust change that alters a covered item's behaviour updates the model and its proof in the same PR. |
 | Business or economics inputs | `python scripts/test_business_model.py` and `python scripts/business_model.py --check` (Python 3.12) |
 | `crates/kadmium-cuda/device` | The device harness builds with `cargo oxide` on Linux or WSL2 with CUDA 13 and its own pinned toolchain. See `crates/kadmium-cuda/README.md`. It is not covered by workspace tests. |
 | `kadmium-npu` hardware path | `cargo test --locked -p kadmium-npu --test intel_hardware -- --ignored` on a machine with a supported Intel NPU |
@@ -159,7 +173,7 @@ Formatting discipline: `rustfmt` on a `lib.rs` or `main.rs` follows `mod` declar
 
 ## 5. Code conventions
 
-- **Pure Rust.** No Python, Node or shell at runtime for the shipped binaries. Node and Python appear only in tests and planning scripts. Adding a dependency needs a reason in the PR body; prefer the workspace-pinned versions in the root `Cargo.toml`.
+- **Pure Rust.** No Python, Node or shell at runtime for the shipped binaries. Node and Python appear only in tests and planning scripts. Lean appears only in `formal/` and never enters any binary built from the workspace (section 2.1, rule 6). Adding a dependency needs a reason in the PR body; prefer the workspace-pinned versions in the root `Cargo.toml`.
 - **Errors, not panics, on every path a user or worker can reach.** Use `thiserror` enums and the crate's `Result`. `unwrap`, `expect` and indexing on external data belong in tests only. Fallible readers must reject overflowing offsets and oversized declared lengths before allocating or reading. The provider response-size guard in `provider/mod.rs` is the pattern to copy; issue #52 is the failure to avoid.
 - **Bounds and cancellation.** Every loop over network input, every catalog fetch, every grid run and every browser-driven workflow has a bound and a cancel path. Background tasks spawned for a connection must stop when the connection is cancelled; issue #49 is the counterexample.
 - **Loopback and authentication.** Embedded Condenser APIs require a loopback transport peer and same-origin requests. Workers authenticate sessions. Do not widen a listener or relax an origin check to make a test easier.
@@ -184,7 +198,7 @@ This is required for every task that changes the repository, not only large ones
 5. **Push to `origin`** and **open a pull request against `main`** with `gh pr create` or the equivalent. The PR body must contain:
    - **Summary.** What changed and why, in the voice of section 5.
    - **Model quality impact.** State explicitly that no default was lowered, no truncation, compaction, quantization or fallback was added, and no advertised maximum exceeds what the backend serves. If any limit was changed, quote the new operator-facing tradeoff text.
-   - **Claims.** Any number or capability statement added to docs or UI, with its Measured, Derived or Modelled label.
+   - **Claims.** Any number or capability statement added to docs or UI, with its Measured, Derived or Modelled label, and every claim that section 2.1 covers, with the Lean theorem and commit that prove it or its **Conjecture** label.
    - **Validation.** The commands you ran and their outcomes, including skipped platform-specific checks and why.
    - Related issues, using `Closes #N` only when the issue is fully resolved.
 6. **Monitor the PR until it is merged.** The PR will be reviewed and either merged or returned with requested changes. Your task is not finished when the PR opens. Keep watching it:
@@ -206,8 +220,11 @@ Agents operating in a harness that provides PR linking or watching tools should 
 - Present modelled, simulated or fixture output as measured, or a roadmap item as shipped.
 - Commit to `main`, force-push over reviewed commits, merge your own PR, or open a PR against `main` that carries another open PR's commits.
 - Weaken, skip or delete a test to get green, especially `quality_defaults.rs`, checkpoint integrity tests, digest comparisons and bridge resume tests.
+- Weaken a Lean theorem, drop it from `Audit.lean`, or reach for `sorry`, `native_decide` or a new `axiom` to get a proof through.
 - Reformat files you did not otherwise change.
 - Add `unwrap` or unchecked indexing on network, file or provider data.
 - Widen a listener, relax same-origin or loopback checks, or log secrets.
 - Add emoji, exclamation marks, marketing adjectives, or the reactor metaphor beyond the one tagline.
 - Describe `/v1` gateway routes as real LLM generation, or Kadmium Cloud, payouts, procurement or settlement as live.
+- Open an issue, post a review or architecture comment, or write a pull request description whose claims are not backed by Lean as section 2.1 requires.
+- Build, link, embed or invoke Lean from anything compiled from the Cargo workspace.
