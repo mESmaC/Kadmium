@@ -217,10 +217,35 @@ pub async fn load_ollama(
         .map_err(backend_error)?;
     let shown: Value = decode_json(ProviderKind::Ollama, response).await?;
     verify_backend_tensors(&manifest, &shown)?;
+    let has_backend_rope_scaling = shown
+        .get("model_info")
+        .and_then(Value::as_object)
+        .is_some_and(|info| info.keys().any(|k| k.contains(".rope.scaling.")));
+    let backend_ctx = crate::provider::advertised_context_length(&shown);
+    if let Some(ctx) = backend_ctx
+        && ctx < manifest.context_length
+    {
+        return Err(backend_error(
+            "backend reported a context length smaller than the checkpoint native context length",
+        ));
+    }
+    let active_context = match manifest.scaled_context_length {
+        Some(scaled)
+            if has_backend_rope_scaling && backend_ctx.is_some_and(|ctx| ctx >= scaled) =>
+        {
+            scaled
+        }
+        _ => manifest.context_length,
+    };
     // Empty generate preloads the actual model. A create success alone does not prove it fits.
-    let response = client.post(endpoint(&base, "generate")).json(&json!({
-        "model":model,"stream":false,"keep_alive":"5m","options":{"num_ctx":manifest.context_length}
-    })).send().await.map_err(backend_error)?;
+    let response = client
+        .post(endpoint(&base, "generate"))
+        .json(&json!({
+            "model":model,"stream":false,"keep_alive":"5m","options":{"num_ctx":active_context}
+        }))
+        .send()
+        .await
+        .map_err(backend_error)?;
     let loaded: Value = decode_json(ProviderKind::Ollama, response).await?;
     if loaded["done"] != true || loaded.get("error").is_some() {
         return Err(backend_error("backend did not confirm model loading"));
@@ -236,7 +261,7 @@ pub async fn load_ollama(
             (entry["name"] == model || entry["model"] == model)
                 && entry["context_length"]
                     .as_u64()
-                    .is_some_and(|length| length >= manifest.context_length)
+                    .is_some_and(|length| length >= active_context)
         })
     });
     if !full_context {

@@ -394,8 +394,17 @@ impl KadmiumMcpServer {
                 } else {
                     "demo_fixture"
                 };
+                let ctx_cap = DistributedPagedKvPlanner::plan_cluster_context_capacity(
+                    &snap.inference_plan,
+                    &state.inference_model,
+                    &snap.nodes,
+                );
+                let native_label = ctx_cap
+                    .model_native_context_tokens
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
                 let summary = format!(
-                    "Kadmium (Cd-48) Epoch {} [{}] | {} active nodes ({} live workers) | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Leader: {} (Term {}) | Throughput: {:.1} {}",
+                    "Kadmium (Cd-48) Epoch {} [{}] | {} active nodes ({} live workers) | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Modelled KV context: {}–{} tokens (theoretical estimate, native {}) | Leader: {} (Term {}) | Throughput: {:.1} {}",
                     snap.inference_plan.epoch,
                     fleet_mode,
                     snap.nodes.len(),
@@ -403,6 +412,9 @@ impl KadmiumMcpServer {
                     total_vram,
                     total_ram,
                     total_tflops,
+                    ctx_cap.cluster_in_memory_context_tokens,
+                    ctx_cap.cluster_max_full_attention_context_tokens,
+                    native_label,
                     snap.coordinator_quorum.active_leader,
                     snap.coordinator_quorum.term,
                     snap.inference_plan.estimated_throughput,
@@ -421,7 +433,8 @@ impl KadmiumMcpServer {
                         "total_ram_gb": total_ram,
                         "total_tflops": total_tflops,
                         "estimated_throughput": snap.inference_plan.estimated_throughput,
-                        "throughput_unit": snap.inference_plan.throughput_unit
+                        "throughput_unit": snap.inference_plan.throughput_unit,
+                        "context_capacity": ctx_cap
                     },
                     "isError": false
                 }))
@@ -444,10 +457,16 @@ impl KadmiumMcpServer {
                     MinMaxStageLatencyOptimizer::optimize_stage_boundaries(&plan, &state.nodes);
                 let paged_kv =
                     DistributedPagedKvPlanner::plan_kv_cache_pages(&plan, &model, &state.nodes);
+                let context_capacity = DistributedPagedKvPlanner::plan_cluster_context_capacity(
+                    &plan,
+                    &model,
+                    &state.nodes,
+                );
                 let payload = json!({
                     "shard_plan": plan,
                     "latency_optimization": latency_opt,
-                    "paged_kv_allocations": paged_kv
+                    "paged_kv_allocations": paged_kv,
+                    "context_capacity": context_capacity
                 });
                 let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
                 Ok(json!({
