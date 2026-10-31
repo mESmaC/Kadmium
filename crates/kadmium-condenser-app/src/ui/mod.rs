@@ -14,6 +14,11 @@ mod native;
 pub struct UiOptions {
     /// An available port is selected when absent; zero has the same behavior.
     pub port: Option<u16>,
+    /// Only read where a native window exists; browser-only Linux builds always use the browser.
+    #[cfg_attr(
+        all(target_os = "linux", not(feature = "linux-native")),
+        allow(dead_code)
+    )]
     pub browser: bool,
     pub plugin_roots: Vec<PathBuf>,
 }
