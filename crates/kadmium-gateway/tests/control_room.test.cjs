@@ -116,8 +116,57 @@ test('Control Room mobile navigation, recovery, and honest diagnostic status', {
       await panel.waitForFunction(() => !document.body.innerText.includes('Some panels could not load'));
       await context.close();
     }
+    // Polled panels recover after outages longer than the initial 3/6/12-second budget.
+    for (const failure of ['network', '503', '404']) {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      const panel = await context.newPage();
+      panel.on('pageerror', e => errors.push(e.message));
+      await panel.clock.install();
+      const endpoints = ['/api/v1/cluster/overview', '/api/v1/cluster/workers'];
+      const attempts = Object.fromEntries(endpoints.map(endpoint => [endpoint, 0]));
+      let recovered = false;
+      for (const endpoint of endpoints) {
+        await panel.route('**' + endpoint, async route => {
+          attempts[endpoint]++;
+          if (recovered) {
+            const response = await route.fetch();
+            const body = await response.json();
+            if (endpoint.endsWith('/workers')) body.live_worker_count = 7;
+            else body.coordinator_quorum.active_leader = 'recovered-after-outage';
+            return route.fulfill({ response, json: body });
+          }
+          if (failure === 'network') return route.abort('failed');
+          return route.fulfill({ status: Number(failure), contentType: 'application/json', body: '{"error":"unavailable"}' });
+        });
+      }
+      await panel.goto(base + '/dashboard');
+      await panel.getByRole('button', { name: 'Retry failed panels' }).waitFor();
+      const tick = async delay => {
+        const done = endpoints.map(endpoint => failure === 'network'
+          ? panel.waitForEvent('requestfailed', request => request.url().endsWith(endpoint))
+          : panel.waitForResponse(response => response.url().endsWith(endpoint)));
+        await panel.clock.fastForward(delay);
+        await Promise.all(done);
+        await panel.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+      };
+      if (failure !== '404') {
+        for (const delay of [3000, 6000, 12000]) await tick(delay);
+        for (let i = 0; i < 12; i++) await tick(5000);
+        for (const endpoint of endpoints) assert.ok(attempts[endpoint] > 4, endpoint + ' stopped polling');
+      } else {
+        await panel.clock.fastForward(120000);
+        for (const endpoint of endpoints) assert.equal(attempts[endpoint], 1, endpoint + ' retried permanent error');
+      }
+      recovered = true;
+      if (failure === '404') await panel.getByRole('button', { name: 'Retry failed panels' }).click();
+      else await panel.clock.fastForward(5000);
+      await panel.getByText('7 live workers', { exact: true }).waitFor();
+      await panel.locator('.cr-top [title*="recovered-after-outage"]').waitFor();
+      await panel.waitForFunction(() => !document.body.innerText.includes('Some panels could not load'));
+      await context.close();
+    }
     // Force an actual journal replacement failure in the isolated fixture process.
-    const journal = path.join(cwd, 'target/kadmium-state/cluster_state.json');
+    const journal = path.join(cwd, 'target/kadmium-state/cluster_state.demo.json');
     const savedJournal = fs.readFileSync(journal);
     const journalFiles = fs.readdirSync(path.dirname(journal));
     fs.renameSync(journal, journal + '.backup');

@@ -124,6 +124,8 @@ pub struct CompanionAppStatus {
 
 /// Shared mutable state for the gateway coordinator.
 pub struct GatewayState {
+    /// Journal storage for this coordinator. Embedded callers may choose their own workspace.
+    pub persistent_state_dir: std::path::PathBuf,
     pub epoch: u64,
     pub companion_mode: CompanionConnectionMode,
     pub supply_policy: SupplyLeasePolicy,
@@ -203,7 +205,7 @@ pub struct GatewayState {
     pub resumed_from_checkpoint: Option<String>,
 }
 
-/// On-disk persistent journal written to `target/kadmium-state/cluster_state.json`
+/// On-disk persistent journal, stored separately for live and demo sessions,
 /// so active models, training progress, checkpoints, and OTA versions survive restarts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistentClusterStateJournal {
@@ -259,6 +261,7 @@ impl GatewayState {
         let lan_ip = LiveHardwareProfiler::probe_local_lan_ip();
 
         Self {
+            persistent_state_dir: std::path::PathBuf::from("target/kadmium-state"),
             epoch: 1,
             companion_mode: CompanionConnectionMode::SelfHostedOpenSource {
                 local_coordinator_url: format!("http://{lan_ip}:7848"),
@@ -452,19 +455,20 @@ impl GatewayState {
         self.grid_telemetry.save(&Self::grid_telemetry_path())
     }
 
-    /// Writes a crash-safe JSON state journal to `target/kadmium-state/cluster_state.json`.
+    pub fn persistent_state_path(&self) -> std::path::PathBuf {
+        self.persistent_state_dir.join(if self.live_only_mode {
+            "cluster_state.json"
+        } else {
+            "cluster_state.demo.json"
+        })
+    }
+
+    /// Writes the current mode's journal without overwriting the other mode's progress.
     pub fn save_persistent_state(&self) -> Result<String, String> {
-        self.save_persistent_state_to(std::path::Path::new(
-            "target/kadmium-state/cluster_state.json",
-        ))
+        self.save_persistent_state_to(&self.persistent_state_path())
     }
 
     pub fn save_persistent_state_to(&self, path: &std::path::Path) -> Result<String, String> {
-        let dir = path
-            .parent()
-            .ok_or("State journal needs a parent directory")?;
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("Failed to create state directory: {e}"))?;
         let journal = PersistentClusterStateJournal {
             schema_version: journal_version(),
             user_selected_model: self.user_selected_model,
@@ -484,6 +488,18 @@ impl GatewayState {
         };
         let bytes = serde_json::to_vec_pretty(&journal)
             .map_err(|e| format!("Failed to serialize state journal: {e}"))?;
+        Self::write_persistent_state_bytes(path, &bytes)
+    }
+
+    fn write_persistent_state_bytes(
+        path: &std::path::Path,
+        bytes: &[u8],
+    ) -> Result<String, String> {
+        let dir = path
+            .parent()
+            .ok_or("State journal needs a parent directory")?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Failed to create state directory: {e}"))?;
         static TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let (temp, mut file) = loop {
             let sequence = TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -500,7 +516,7 @@ impl GatewayState {
         };
         let result = (|| -> Result<(), String> {
             use std::io::Write;
-            file.write_all(&bytes)
+            file.write_all(bytes)
                 .and_then(|()| file.sync_all())
                 .map_err(|e| e.to_string())?;
             drop(file);
@@ -532,9 +548,46 @@ impl GatewayState {
 
     /// Missing journals mean a fresh workspace. Corrupt or incompatible ones abort startup.
     pub fn load_persistent_state(&mut self) -> Result<bool, String> {
-        self.load_persistent_state_from(std::path::Path::new(
-            "target/kadmium-state/cluster_state.json",
-        ))
+        if self.load_persistent_state_from(&self.persistent_state_path())? {
+            return Ok(true);
+        }
+        // Before demo journals were separated, both modes used this file. Read it for
+        // migration, but every subsequent demo save goes to the demo file.
+        if !self.live_only_mode {
+            return self
+                .load_persistent_state_from(&self.persistent_state_dir.join("cluster_state.json"));
+        }
+        Ok(false)
+    }
+
+    /// Copy legacy journals unchanged before restoring, retaining both modes and the originals.
+    pub fn load_persistent_state_with_legacy(
+        &mut self,
+        legacy_dir: &std::path::Path,
+    ) -> Result<bool, String> {
+        if self.load_persistent_state()? {
+            return Ok(true);
+        }
+        for name in ["cluster_state.json", "cluster_state.demo.json"] {
+            let destination = self.persistent_state_dir.join(name);
+            if destination.try_exists().map_err(|e| e.to_string())? {
+                continue;
+            }
+            let source = legacy_dir.join(name);
+            match std::fs::read(&source) {
+                Ok(bytes) => {
+                    Self::write_persistent_state_bytes(&destination, &bytes)?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!(
+                        "Cannot migrate cluster journal {}: {e}",
+                        source.display()
+                    ));
+                }
+            }
+        }
+        self.load_persistent_state()
     }
 
     pub fn load_persistent_state_from(&mut self, path: &std::path::Path) -> Result<bool, String> {
@@ -561,15 +614,19 @@ impl GatewayState {
                 journal.schema_version
             ));
         }
-        for manifest in &mut journal.imported_models {
-            manifest.derived_model_spec =
-                ModelSpec::try_from_id(&manifest.model_id).ok_or_else(|| {
-                    format!(
-                        "Unsupported saved import {:?}; original journal preserved",
-                        manifest.model_id
-                    )
-                })?;
-        }
+        // Older versions accepted arbitrary IDs using a renamed default architecture.
+        // Keep the rest of that journal usable without reviving the fabricated model.
+        let mut skipped_imports = Vec::new();
+        journal.imported_models.retain_mut(|manifest| {
+            if let Some(spec) = ModelSpec::try_from_id(&manifest.model_id) {
+                manifest.derived_model_spec = spec;
+                true
+            } else {
+                tracing::warn!(model_id = %manifest.model_id, "Skipping unsupported legacy import; model files are unchanged");
+                skipped_imports.push(manifest.model_id.clone());
+                false
+            }
+        });
         let resolve = |id: &str| {
             journal
                 .imported_models
@@ -581,8 +638,18 @@ impl GatewayState {
                     format!("Unsupported saved model {id:?}; original journal preserved")
                 })
         };
-        let inference = resolve(&journal.inference_model_id)?;
-        let training = resolve(&journal.training_model_id)?;
+        let skipped_inference = skipped_imports.contains(&journal.inference_model_id);
+        let skipped_training = skipped_imports.contains(&journal.training_model_id);
+        let inference = if skipped_inference {
+            self.inference_model.clone()
+        } else {
+            resolve(&journal.inference_model_id)?
+        };
+        let training = if skipped_training {
+            self.training_model.clone()
+        } else {
+            resolve(&journal.training_model_id)?
+        };
         for object in &journal.bucket_objects {
             kadmium_data::DecentralizedStoragePoolEngine::create_bucket_object(
                 &object.object_uri,
@@ -598,17 +665,20 @@ impl GatewayState {
         self.epoch = journal.epoch;
         self.inference_model = inference;
         self.training_model = training;
-        self.user_selected_model = journal.user_selected_model;
+        self.user_selected_model = journal.user_selected_model && !skipped_inference;
         // Restoring a plan/import is not loading resident weights or reconnecting workers.
         self.active_model_loaded = false;
-        if self.live_only_mode == journal.live_only_mode {
+        if self.live_only_mode == journal.live_only_mode && !skipped_training && !skipped_inference
+        {
             self.training_step_counter = journal.training_step_counter;
             self.last_training_loss = journal.last_training_loss;
             self.training_loss_history = journal.training_loss_history;
             self.last_checkpoint_step = journal.last_checkpoint_step;
         }
         self.active_cluster_version = journal.active_cluster_version;
-        self.active_ktb_merkle_root_fnv64 = journal.active_ktb_merkle_root_fnv64;
+        if !skipped_inference && !skipped_training {
+            self.active_ktb_merkle_root_fnv64 = journal.active_ktb_merkle_root_fnv64;
+        }
         self.imported_models = journal.imported_models;
         self.bucket_objects = journal.bucket_objects;
         self.bucket_anchors = journal.bucket_anchors;

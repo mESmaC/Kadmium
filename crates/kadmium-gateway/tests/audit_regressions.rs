@@ -321,6 +321,54 @@ fn journal_reconstruction_preserves_objects_imports_anchors_and_progress() {
         serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap(),
         saved
     );
+    // Legacy custom imports must not strand supported models or unrelated saved state.
+    for (custom_inference, custom_training) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let mut legacy = saved.clone();
+        let mut custom = legacy["imported_models"][0].clone();
+        custom["model_id"] = json!("my-custom-model");
+        custom["derived_model_spec"]["id"] = json!("my-custom-model");
+        legacy["imported_models"]
+            .as_array_mut()
+            .unwrap()
+            .push(custom);
+        if custom_inference {
+            legacy["inference_model_id"] = json!("my-custom-model");
+        }
+        if custom_training {
+            legacy["training_model_id"] = json!("my-custom-model");
+        }
+        let original = serde_json::to_vec(&legacy).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        let mut restored = GatewayState::new();
+        restored.set_live_only_mode(true);
+        assert!(restored.load_persistent_state_from(&path).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(restored.imported_models.len(), 1);
+        assert!(restored.resolve_model("my-custom-model").is_none());
+        assert_eq!(restored.bucket_objects.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&restored.bucket_anchors).unwrap(),
+            saved["bucket_anchors"]
+        );
+        assert_eq!(restored.user_selected_model, !custom_inference);
+        assert_eq!(
+            restored.training_step_counter,
+            if custom_training || custom_inference {
+                0
+            } else {
+                42
+            }
+        );
+        assert_ne!(restored.inference_plan.model_id, "my-custom-model");
+        assert_ne!(restored.training_plan.model_id, "my-custom-model");
+        restored.save_persistent_state_to(&path).unwrap();
+        let mut next = GatewayState::new();
+        next.set_live_only_mode(true);
+        assert!(next.load_persistent_state_from(&path).unwrap());
+        assert_eq!(next.imported_models.len(), 1);
+    }
     for bad in [b"{corrupt".to_vec(), {
         let mut future = saved.clone();
         future["schema_version"] = json!(999);
@@ -394,6 +442,51 @@ fn journals_preserve_selection_and_separate_live_from_demo_progress() {
             assert!(live.training_loss_history.is_empty());
         }
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn demo_saves_never_overwrite_live_training_progress() {
+    let dir = temp_dir("mode-journals");
+    let mut live = GatewayState::new();
+    live.persistent_state_dir = dir.clone();
+    live.set_live_only_mode(true);
+    live.training_step_counter = 500;
+    live.last_training_loss = 0.25;
+    live.training_loss_history = vec![(500, 0.25)];
+    live.last_checkpoint_step = 400;
+    live.save_persistent_state().unwrap();
+    let live_bytes = std::fs::read(live.persistent_state_path()).unwrap();
+
+    let migrated_dir = dir.join("migrated");
+    let mut demo = GatewayState::new();
+    demo.persistent_state_dir = migrated_dir.clone();
+    // Upgrading in demo mode must also migrate the live journal unchanged.
+    assert!(demo.load_persistent_state_with_legacy(&dir).unwrap());
+    assert_eq!(
+        std::fs::read(migrated_dir.join("cluster_state.json")).unwrap(),
+        live_bytes
+    );
+    assert_ne!(demo.training_step_counter, 500);
+    demo.training_step_counter = 2000;
+    demo.save_persistent_state().unwrap();
+    assert_ne!(demo.persistent_state_path(), live.persistent_state_path());
+    assert_eq!(
+        std::fs::read(live.persistent_state_path()).unwrap(),
+        live_bytes
+    );
+
+    let mut restarted = GatewayState::new();
+    restarted.persistent_state_dir = migrated_dir;
+    restarted.set_live_only_mode(true);
+    assert!(restarted.load_persistent_state().unwrap());
+    assert_eq!(restarted.training_step_counter, 500);
+    assert_eq!(restarted.last_training_loss, 0.25);
+    assert_eq!(restarted.training_loss_history, vec![(500, 0.25)]);
+    assert_eq!(restarted.last_checkpoint_step, 400);
+    restarted.set_live_only_mode(false);
+    assert!(restarted.load_persistent_state().unwrap());
+    assert_eq!(restarted.training_step_counter, 2000);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

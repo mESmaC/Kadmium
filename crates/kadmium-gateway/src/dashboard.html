@@ -436,6 +436,7 @@
     if (manual) delete retryState[path];
     const retry = retryState[path] || (retryState[path] = { attempts: 0, permanent: false });
     clearTimeout(retryTimers[path]);
+    delete retryTimers[path];
     let reachedServer = false;
     inflight[path] = fetch(path).then(r => {
       reachedServer = true; markConn(true);
@@ -464,8 +465,12 @@
       setData(cache[path] || null);
       if (!cache[path] || apiErrors[path]) load(path, true);
       publishErrors();
-      const t = pollMs ? setInterval(() => { if (!document.hidden && !apiErrors[path]) load(path); }, pollMs) : null;
-      return () => { listeners[path] = (listeners[path] || []).filter(f => f !== fn); if (t) clearInterval(t); if (!listeners[path].length) { clearTimeout(retryTimers[path]); delete apiErrors[path]; delete retryState[path]; publishErrors(); } };
+      // Honor the initial backoff, then keep polled panels recovering after long outages.
+      // Permanent HTTP errors still require an explicit retry.
+      const t = pollMs ? setInterval(() => {
+        if (!document.hidden && !retryState[path]?.permanent && !retryTimers[path]) load(path);
+      }, pollMs) : null;
+      return () => { listeners[path] = (listeners[path] || []).filter(f => f !== fn); if (t) clearInterval(t); if (!listeners[path].length) { clearTimeout(retryTimers[path]); delete retryTimers[path]; delete apiErrors[path]; delete retryState[path]; publishErrors(); } };
     }, [path, pollMs]);
     return data;
   }
@@ -475,7 +480,7 @@
     const paths = Object.keys(errors).filter(path => (listeners[path] || []).length);
     if (!paths.length) return null;
     return h('div', { className: 'cr-banner', role: 'alert' },
-      h('span', null, 'Some panels could not load. Temporary failures retry up to three times; use Retry to try again. ', paths.map(path => path + ': ' + errors[path]).join('; ')),
+      h('span', null, 'Some panels could not load. Temporary failures back off and retry; live panels keep checking for recovery. Use Retry to try again now. ', paths.map(path => path + ': ' + errors[path]).join('; ')),
       h(K.Button, { size: 'sm', onClick: () => paths.forEach(path => load(path, true)) }, 'Retry failed panels'));
   }
   function refresh(paths) { return Promise.all((paths || Object.keys(cache)).map(path => load(path, true))); }
