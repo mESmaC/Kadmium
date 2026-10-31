@@ -1,0 +1,18 @@
+[package]
+name = "kadmium-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared native file dialogs for Kadmium desktop shells"
+
+[features]
+# Wayland parent-window support needs development libraries already required by linux-native.
+# Browser-only Linux builds keep the portal backend without linking libwayland-client.
+linux-native = ["rfd/wayland"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+raw-window-handle = "0.6"
+url = "2"
