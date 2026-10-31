@@ -18,7 +18,7 @@ Kadmium exists so that people can run frontier models on hardware they own witho
 | Output tokens | The model's maximum. Where the wire protocol lets the request omit an output limit (OpenAI-compatible, MCL4), omit it when none is advertised; omission already means the server's maximum. Where the protocol requires a number (Anthropic `max_tokens`), send the advertised maximum, or fail with an error asking for the documented limit. Ollama receives `num_predict: -1` (generate until stop). | `crates/kadmium-condenser/src/provider/mod.rs` (`maximum_output`, `advertised_output_limit`, `require_output_maximum`) |
 | Prompt truncation and context shifting | Disabled. Ollama receives `truncate: false` and `shift: false` as top-level `/api/chat` request fields, not `options` keys, where Ollama would ignore them. The full conversation is sent to every provider. | `ollama.rs` request body; `reject_context_override` for providers without a context option |
 | Conversation history | Preserved in full. MCL4 history compaction and old tool-result pruning are off and require the explicit `compact_history` opt-in. | `crates/kadmium-condenser/src/types.rs` (`SamplingParams`), `provider/mcl4_coe.rs` |
-| Generation timeout | None (`provider.timeout_secs: 0`). Catalog discovery stays bounded separately. | `provider/mod.rs` (`with_timeout`) |
+| Generation timeout | No total generation timeout (`provider.timeout_secs: 0`). Connect and idle-read timeouts stay bounded so a hung provider cannot hold a run forever; those are transport safety, not quality settings. Catalog discovery stays bounded separately. | `provider/mod.rs` (`with_timeout`, client builder) |
 | Weight precision | Lossless. Checkpoint normalization copies tensors into `.ktb` banks without casting; loading into Ollama never requests quantization and fails if the backend changes a dtype, name or shape. Issue #61 tracks the remaining end-to-end gaps: writing the checkpoint's native context length into the generated Modelfile (`PARAMETER num_ctx`) and rejecting silently pre-quantized sources. | `crates/kadmium-data/src/checkpoint.rs`, `crates/kadmium-condenser/src/local_models.rs` |
 | Model and backend selection | Explicit. An allocation, precision or memory failure is an explicit error. It is never a CPU spill, a silent reload at a smaller context, a smaller model, a different backend or a different quantization chosen on the user's behalf. | `local_models.rs`, `docs/guides/local-checkpoints.md` |
 | Sampling temperature | The provider default. Higher or lower temperature is not a quality lever and must not be changed as one. | `SamplingParams` |
@@ -96,18 +96,20 @@ Workspace members and their place in the dependency graph. Dependencies point do
 | `kadmium-core` | Node roles, capability vectors, hardware and platform classification, shared types | nothing in-workspace |
 | `kadmium-cuda` | Pure-Rust CUDA kernels compiled by cuda-oxide; host side builds everywhere, `device/` is excluded from the workspace | nothing in-workspace |
 | `kadmium-npu` | Portable NPU kernels, Intel Level Zero backend | nothing in-workspace |
-| `kadmium-grid` | The single execution substrate: lifecycle, units, schedules, RepOps and Verde verification | core |
+| `kadmium-grid` | The single execution substrate: lifecycle, units, schedules, replica catalog and staging, quorum, credits and Verde dispute settlement | core |
 | `kadmium-sharding` | Asymmetric shard planner, $q^*$ placement, responsibility shifts, dataflow and pool slicing | core, grid |
 | `kadmium-network` | KDM2 framing, TCP workers, USB-C delta bridges, striping, discovery | core |
 | `kadmium-data` | `.ktb` tensor banks, checkpoint normalization, FTS3-style transfer scheduling | core, sharding |
 | `kadmium-rl` | GRPO references, Dream-RSI replay | core, sharding |
-| `kadmium-runtime` | Training and inference reference runtimes, DiLoCo, DeMo, expert cache, kernel dispatch | core, cuda, data, grid, network, npu, sharding |
+| `kadmium-runtime` | Training and inference reference runtimes, RepOps reference math (`repops`), DiLoCo, DeMo, expert cache, kernel dispatch | core, cuda, data, grid, network, npu, sharding |
 | `kadmium-condenser` | Inference workspace: providers, local checkpoints, agent harness, embedded UI | core, data |
 | `kadmium-gateway` | Axum coordinator, `/v1` diagnostics, cluster API, MCP, Control Room, Condenser mount | everything above except cuda and npu directly |
 | `kadmium-cli` | The `kadmium` binary | gateway and most libraries |
 | `kadmium-desktop` | Native Companion (WebView2, WKWebView, optional WebKitGTK) | gateway |
 
 Add a mechanism to the crate that owns it. Do not duplicate a planner, cache, budget or transport in a higher crate because it is convenient. Memory budgets, owner offers and transfer windows are meant to have one authority; see issue #60 before adding another.
+
+What `kadmium-grid` owns: placement, staging and resource spending go through `ReplicaCatalog` and `StagingJob` in `crates/kadmium-grid/src/catalog.rs`, funded by an approved `ResourceOffer` from `kadmium-core`. A new store, transfer path or scheduler that records placements or spends memory, bandwidth or credits without them is a duplicate, however it is named.
 
 Key documents:
 
@@ -174,7 +176,7 @@ Documentation changes follow the rules in CONTRIBUTING.md: distinguish implement
 
 This is required for every task that changes the repository, not only large ones.
 
-1. **Start from current `main`.** Create a branch named for the change, such as `feat/<topic>`, `fix/<topic>` or `docs/<topic>`. Never commit directly to `main`. If you are working in a worktree, run everything from that worktree.
+1. **Start from current `main`.** Fetch first; a local `main` may be stale. Create a branch named for the change, such as `feat/<topic>`, `fix/<topic>` or `docs/<topic>`. Never commit directly to `main`. If you are working in a worktree, run everything from that worktree. If your change depends on another open PR, base your branch on that PR's branch and target it, or wait for it to merge. A PR that targets `main` while carrying another open PR's commits merges that PR silently when it lands; check with `git log origin/main..HEAD` before opening.
 2. **Keep the change focused.** One concern per PR. Do not bundle formatting of untouched files, unrelated refactors or drive-by doc edits.
 3. **Run the checks** from section 4 that your diff touches, plus the full host sequence. Record the exact commands and results.
 4. **Commit** with a conventional prefix matching the log: `feat(scope):`, `fix(scope):`, `docs:`, `test:`, `ci:`. Scope is the crate or area. The subject is imperative and under 72 characters.
@@ -201,7 +203,7 @@ Agents operating in a harness that provides PR linking or watching tools should 
 
 - Lower any model quality default, add a hidden cap, or add a fallback that changes the model, precision, context or history. See section 1.
 - Present modelled, simulated or fixture output as measured, or a roadmap item as shipped.
-- Commit to `main`, force-push over reviewed commits, or merge your own PR.
+- Commit to `main`, force-push over reviewed commits, merge your own PR, or open a PR against `main` that carries another open PR's commits.
 - Weaken, skip or delete a test to get green, especially `quality_defaults.rs`, checkpoint integrity tests, digest comparisons and bridge resume tests.
 - Reformat files you did not otherwise change.
 - Add `unwrap` or unchecked indexing on network, file or provider data.
