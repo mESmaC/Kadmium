@@ -1364,7 +1364,7 @@ mod tests {
         use kadmium_sharding::ShardPlanner;
         use std::collections::BTreeMap;
 
-        let m4_probe = M4MacMiniLanBridge::probe_and_verify(None);
+        let m4_probe = M4MacMiniLanBridge::probe_and_verify(Some(DEFAULT_M4_MAC_MINI_IP));
         assert!(m4_probe.execution_proof.nvme_witness_verified);
         assert!(m4_probe.execution_proof.amx_sgemm_512_gflops > 50.0);
 
@@ -1575,7 +1575,7 @@ mod tests {
         .await;
         assert_eq!(vision.offloaded_to_node_id, m4_node.id.0);
 
-        if m4_probe.physical_board_online {
+        if m4_probe.lan_worker_online {
             // 9. Live ARMv9.2-A NEON 128-bit veorq_u32 RAID-5 XOR Parity Reconstruction on Apple M4
             let s0 = vec![0xAAu8; 256];
             let s1 = vec![0x55u8; 256];
@@ -1842,7 +1842,7 @@ mod tests {
         let m4_probe = AppleM4PlatformBridge::probe_and_verify(Some(DEFAULT_M4_MAC_MINI_IP));
         let cm4_probe = RpiCm4PlatformBridge::probe_and_verify(Some(DEFAULT_RETERMINAL_CM4_IP));
 
-        if m4_probe.physical_board_online {
+        if m4_probe.lan_worker_online && cm4_probe.physical_board_online {
             // 6a. Verify dynamic platform auto-detection on live Apple M4 silicon + CM4 carrier detection
             assert_eq!(m4_probe.telemetry.hw_model, "Mac16,10");
             assert_eq!(m4_probe.telemetry.silicon_tier, "M4");
@@ -2096,7 +2096,7 @@ mod tests {
         use kadmium_core::{AppleM4PlatformBridge, DEFAULT_M4_MAC_MINI_IP};
 
         let probe = AppleM4PlatformBridge::probe_and_verify(Some(DEFAULT_M4_MAC_MINI_IP));
-        if !probe.physical_board_online {
+        if !probe.lan_worker_online {
             return;
         }
 
