@@ -1512,7 +1512,7 @@ mod ollama_kernel_tests {
         assert!(!unreachable_report.node_profiles[1].execution_verified);
         assert_eq!(unreachable_report.node_profiles[1].repops_digest_fnv1a, 0);
 
-        // 4. Two verified device receipts from the SAME machine -> unverified_single_machine_only
+        // 4. Two verified device receipts from the SAME machine -> unverified_single_machine
         let same_machine_r1 =
             HardwareKernelDispatcher::measure_local_device_receipt(cluster[1].clone(), "machine-a");
         let single_machine_report =
@@ -1521,7 +1521,7 @@ mod ollama_kernel_tests {
         assert_eq!(single_machine_report.verified_participant_count, 2);
         assert_eq!(
             single_machine_report.verification_status,
-            "unverified_single_machine_only"
+            "unverified_single_machine"
         );
 
         // 5. Divergent device digest from a second machine -> divergent_digest_detected
