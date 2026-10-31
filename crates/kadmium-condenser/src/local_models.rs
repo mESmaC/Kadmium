@@ -217,10 +217,25 @@ pub async fn load_ollama(
         .map_err(backend_error)?;
     let shown: Value = decode_json(ProviderKind::Ollama, response).await?;
     verify_backend_tensors(&manifest, &shown)?;
+    let has_backend_rope_scaling = shown
+        .get("model_info")
+        .and_then(Value::as_object)
+        .is_some_and(|info| info.keys().any(|k| k.contains(".rope.scaling.")));
+    let active_context = match crate::provider::advertised_context_length(&shown) {
+        Some(backend_ctx) if backend_ctx < manifest.context_length && !has_backend_rope_scaling => {
+            backend_ctx
+        }
+        _ => manifest.context_length,
+    };
     // Empty generate preloads the actual model. A create success alone does not prove it fits.
-    let response = client.post(endpoint(&base, "generate")).json(&json!({
-        "model":model,"stream":false,"keep_alive":"5m","options":{"num_ctx":manifest.context_length}
-    })).send().await.map_err(backend_error)?;
+    let response = client
+        .post(endpoint(&base, "generate"))
+        .json(&json!({
+            "model":model,"stream":false,"keep_alive":"5m","options":{"num_ctx":active_context}
+        }))
+        .send()
+        .await
+        .map_err(backend_error)?;
     let loaded: Value = decode_json(ProviderKind::Ollama, response).await?;
     if loaded["done"] != true || loaded.get("error").is_some() {
         return Err(backend_error("backend did not confirm model loading"));
@@ -236,7 +251,7 @@ pub async fn load_ollama(
             (entry["name"] == model || entry["model"] == model)
                 && entry["context_length"]
                     .as_u64()
-                    .is_some_and(|length| length >= manifest.context_length)
+                    .is_some_and(|length| length >= active_context)
         })
     });
     if !full_context {

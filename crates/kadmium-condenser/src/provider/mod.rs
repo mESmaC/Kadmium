@@ -138,14 +138,32 @@ pub(crate) fn parse_positive_u64(value: &serde_json::Value) -> Option<u64> {
     (1..=16_777_216).contains(&parsed).then_some(parsed)
 }
 
-/// Extracts a model's advertised context window from provider model-list metadata when present.
+/// Extracts a model's advertised total context window from provider model-list metadata when present.
+/// Prefers architecture-qualified keys (`{arch}.context_length`), then total-context keys, and
+/// only falls back to `advertised_input_token_limit` for providers (such as Anthropic `/v1/models`)
+/// that report the context window under `max_input_tokens`.
 pub(crate) fn advertised_context_length(model: &serde_json::Value) -> Option<u64> {
+    if let Some(arch) = model
+        .pointer("/model_info/general.architecture")
+        .or_else(|| model.get("general.architecture"))
+        .and_then(|v| v.as_str())
+    {
+        let ptr = format!("/model_info/{arch}.context_length");
+        let key = format!("{arch}.context_length");
+        if let Some(val) = model
+            .pointer(&ptr)
+            .or_else(|| model.get(&key))
+            .and_then(parse_positive_u64)
+        {
+            return Some(val);
+        }
+    }
     for key in [
         "context_length",
-        "max_model_len",
-        "max_input_tokens",
-        "input_token_limit",
+        "context_window",
         "max_context_length",
+        "max_model_len",
+        "max_sequence_length",
         "max_position_embeddings",
         "n_ctx",
     ] {
@@ -154,27 +172,40 @@ pub(crate) fn advertised_context_length(model: &serde_json::Value) -> Option<u64
         }
     }
     for ptr in [
+        "/model_info/general.context_length",
+        "/model_info/context_length",
         "/top_provider/context_length",
         "/limits/context_window",
-        "/limits/max_input_tokens",
         "/capabilities/max_context_length",
     ] {
         if let Some(val) = model.pointer(ptr).and_then(parse_positive_u64) {
             return Some(val);
         }
     }
-    None
+    advertised_input_token_limit(model)
+}
+
+/// Extracts an advertised input-only token limit (`max_input_tokens`, `input_token_limit`) when
+/// a provider reports input budget separately from total context.
+pub(crate) fn advertised_input_token_limit(model: &serde_json::Value) -> Option<u64> {
+    for key in ["max_input_tokens", "input_token_limit"] {
+        if let Some(val) = model.get(key).and_then(parse_positive_u64) {
+            return Some(val);
+        }
+    }
+    model
+        .pointer("/limits/max_input_tokens")
+        .and_then(parse_positive_u64)
 }
 
 /// Extracts an unambiguous maximum output token limit from provider model metadata.
-/// Does not treat generic `max_tokens` on OpenAI/LiteLLM payloads as an output cap because some
-/// routers populate `max_tokens` with the full context window.
+/// Excludes `max_new_tokens` (often a server default generation length) and generic `max_tokens`
+/// on OpenAI/LiteLLM payloads (which some routers populate with the full context window).
 pub(crate) fn maximum_output(model: &serde_json::Value) -> Option<u32> {
     for key in [
         "max_output_tokens",
         "max_completion_tokens",
         "output_token_limit",
-        "max_new_tokens",
     ] {
         if let Some(val) = model
             .get(key)

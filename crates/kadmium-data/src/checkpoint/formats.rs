@@ -509,6 +509,26 @@ fn extract_gguf_context_length(
         .find_map(|(_, v)| parse_plausible_context_tokens(v))
 }
 
+pub(super) fn matches_legacy_v1_metadata(
+    dir: &Path,
+    source_format: &str,
+    recorded_arch: &Option<String>,
+    recorded_ctx: u64,
+) -> bool {
+    match source_format {
+        "safetensors" => {
+            let Ok(config) = read_json::<Value>(&dir.join("config.json")) else {
+                return false;
+            };
+            let legacy_arch = config["model_type"].as_str().map(String::from);
+            let legacy_ctx = config["max_position_embeddings"].as_u64().unwrap_or(0);
+            *recorded_arch == legacy_arch && recorded_ctx == legacy_ctx
+        }
+        "gguf" => recorded_ctx == 0,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

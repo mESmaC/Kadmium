@@ -145,6 +145,7 @@ pub struct NodePagedKvAllocation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterContextCapacityReport {
     pub model_id: String,
+    pub basis: String,
     pub model_native_context_tokens: u32,
     pub active_pipeline_stages: usize,
     pub zigzag_ring_cp_degree: usize,
@@ -170,7 +171,6 @@ impl DistributedPagedKvPlanner {
     ) -> Vec<NodePagedKvAllocation> {
         let page_tokens = 16u32;
         let native_cap = model.native_max_context_tokens().max(page_tokens);
-        let min_floor = 512u32.min(native_cap);
         let kv_per_tok_per_layer_gb =
             (model.fp16_kv_bytes_per_token_per_layer() as f64) / 1_073_741_824.0;
         let mut out = Vec::new();
@@ -180,40 +180,36 @@ impl DistributedPagedKvPlanner {
                 continue;
             }
             let node = nodes.iter().find(|n| n.id == assign.node_id);
+            let offer = node.map(|n| {
+                kadmium_core::ResourceOffer::default_for(n).under_polite_state(n, n.polite_state)
+            });
 
-            // Fast accelerator memory remaining after hot resident weights (never double-counting weights).
+            // Fast accelerator memory remaining after hot resident weights (matching ShardPlanner::compute_plan).
             let avail_fast_gb = node.map(|n| n.available_fast_memory_gb()).unwrap_or(8.0);
-            let free_fast_for_kv_gb = (avail_fast_gb - assign.tiered_memory.hot_vram_or_unified_gb)
-                .max(assign.tiered_memory.state_and_cache_gb)
-                .max(0.25);
+            let free_fast_for_kv_gb =
+                (avail_fast_gb - assign.tiered_memory.hot_vram_or_unified_gb).max(0.0);
 
-            // System RAM remaining in the polite resource offer after warm weight placement.
-            let offered_ram_gb = node
-                .map(|n| {
-                    kadmium_core::ResourceOffer::default_for(n)
-                        .under_polite_state(n, n.polite_state)
-                        .system_ram_gb
-                })
-                .unwrap_or(4.0);
-            let free_ram_after_weights_gb =
+            // System RAM remaining in the polite ResourceOffer after warm weight placement.
+            let offered_ram_gb = offer.as_ref().map(|o| o.system_ram_gb).unwrap_or(4.0);
+            let warm_ram_kv_gb =
                 (offered_ram_gb - assign.tiered_memory.warm_system_ram_gb).max(0.0);
-            let warm_ram_kv_gb = free_ram_after_weights_gb * 0.50;
 
-            // NVMe cache remaining after cold weight streaming banks.
-            let free_nvme_after_weights_gb = node
-                .map(|n| {
-                    (n.memory.nvme_cache_gb - assign.tiered_memory.cold_nvme_stream_gb).max(0.0)
-                })
-                .unwrap_or(0.0);
-            let nvme_kv_gb = (free_nvme_after_weights_gb * 0.25).min(64.0);
+            // NVMe cache remaining in the polite ResourceOffer after cold weight streaming banks.
+            let offered_nvme_gb = offer.as_ref().map(|o| o.nvme_gb).unwrap_or(0.0);
+            let nvme_kv_gb = (offered_nvme_gb - assign.tiered_memory.cold_nvme_stream_gb).max(0.0);
 
             let stage_kv_per_tok_gb =
                 (kv_per_tok_per_layer_gb * assign.layer_count as f64).max(1e-9);
 
-            let raw_hot_tokens = ((free_fast_for_kv_gb + warm_ram_kv_gb * 0.35)
-                / stage_kv_per_tok_gb)
-                .floor() as u32;
-            let pages = raw_hot_tokens.clamp(min_floor, native_cap) / page_tokens;
+            // Accelerator nodes place hot KV in fast VRAM/Unified memory; CPU-only nodes place
+            // their primary in-memory KV pages in remaining offered System RAM.
+            let primary_in_mem_kv_gb = if avail_fast_gb > 0.0 {
+                free_fast_for_kv_gb
+            } else {
+                warm_ram_kv_gb
+            };
+            let raw_hot_tokens = (primary_in_mem_kv_gb / stage_kv_per_tok_gb).floor() as u32;
+            let pages = raw_hot_tokens.min(native_cap) / page_tokens;
             let max_tokens = pages * page_tokens;
 
             let total_tiered_kv_gb = free_fast_for_kv_gb + warm_ram_kv_gb + nvme_kv_gb;
@@ -282,6 +278,7 @@ impl DistributedPagedKvPlanner {
 
         ClusterContextCapacityReport {
             model_id: model.id.clone(),
+            basis: "modelled".to_string(),
             model_native_context_tokens: native_cap,
             active_pipeline_stages: active_stages,
             zigzag_ring_cp_degree: cp_degree,
@@ -292,7 +289,7 @@ impl DistributedPagedKvPlanner {
             total_hot_kv_budget_gb: (total_hot * 100.0).round() / 100.0,
             total_warm_ram_kv_budget_gb: (total_warm * 100.0).round() / 100.0,
             total_nvme_kv_budget_gb: (total_nvme * 100.0).round() / 100.0,
-            planning_note: "Theoretical KV capacity planner estimate bounded by model native context window; warm RAM and NVMe KV tiers incur PCIe/host transfer latency and do not indicate live model readiness.".to_string(),
+            planning_note: "Modelled KV capacity estimate from remaining ResourceOffer budgets bounded by model native context window; warm RAM and NVMe KV tiers incur PCIe/host transfer latency and do not indicate live model readiness.".to_string(),
             node_allocations: allocs,
         }
     }

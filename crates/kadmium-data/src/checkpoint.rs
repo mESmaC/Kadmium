@@ -157,7 +157,7 @@ impl CheckpointLibrary {
 
     /// Verify the manifest identity, all originals, and every bank before a backend load.
     pub fn verify(&self, id: &str) -> Result<CheckpointManifest> {
-        let manifest = self.read(id)?;
+        let mut manifest = self.read(id)?;
         if package_id(&manifest.source_files)? != id {
             return Err("Checkpoint identity mismatch".into());
         }
@@ -188,12 +188,24 @@ impl CheckpointLibrary {
                 tensor
             })
             .collect();
-        if format != manifest.source_format
-            || architecture != manifest.architecture
-            || context != manifest.context_length
-            || tensors != recorded
-        {
+        if format != manifest.source_format || tensors != recorded {
             return Err("Checkpoint manifest does not match its source metadata".into());
+        }
+        if architecture != manifest.architecture || context != manifest.context_length {
+            if formats::matches_legacy_v1_metadata(
+                &dir.join("source"),
+                &format,
+                &manifest.architecture,
+                manifest.context_length,
+            ) {
+                manifest.architecture = architecture;
+                manifest.context_length = context;
+                if let Ok(bytes) = serde_json::to_vec_pretty(&manifest) {
+                    let _ = fs::write(dir.join("manifest.json"), bytes);
+                }
+            } else {
+                return Err("Checkpoint manifest does not match its source metadata".into());
+            }
         }
         if manifest.banks.len() != tensors.len().div_ceil(64) {
             return Err("Checkpoint manifest has an inconsistent bank count".into());
