@@ -800,6 +800,22 @@ pub async fn run_join(
     let bound_port = worker_server.local_addr.port();
     let worker_tcp_addr = format!("{local_lan_ip}:{bound_port}");
 
+    // Optionally accept striped USB-C + Wi-Fi bridge sessions, e.g. KADMIUM_USBC_BRIDGE_BIND=0.0.0.0:7871.
+    if let Ok(bind) = std::env::var("KADMIUM_USBC_BRIDGE_BIND")
+        && !bind.trim().is_empty()
+    {
+        match worker_server
+            .spawn_usbc_bridge_listener(bind.trim(), true)
+            .await
+        {
+            Ok(addr) => println!(
+                "  🔌 USB-C bridge listener on {addr} (dial kdbr://<usb4-ip>:{port}@<gbps>,<lan-ip>:{port}@<gbps>)",
+                port = addr.port()
+            ),
+            Err(e) => eprintln!("  ⚠️  USB-C bridge listener not started: {e}"),
+        }
+    }
+
     // Resolve Coordinator URL via CLI flag, JoinTicket, or UDP LAN Auto-Discovery (port 7849):
     let mut discovered_ticket = ticket_arg.clone();
     let resolved_coordinator_url = if let Some(c_url) = coordinator_arg {
