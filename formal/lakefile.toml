@@ -1,0 +1,12 @@
+name = "kadmium_formal"
+defaultTargets = ["KadmiumFormal", "repops_vectors"]
+
+[leanOptions]
+autoImplicit = false
+
+[[lean_lib]]
+name = "KadmiumFormal"
+
+[[lean_exe]]
+name = "repops_vectors"
+root = "Vectors"
