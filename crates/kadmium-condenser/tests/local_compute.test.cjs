@@ -1,4 +1,4 @@
-// Build: cargo build -p kadmium-condenser --locked
+// Build: cargo build -p kadmium-condenser-app --locked
 // Setup: npm ci --prefix crates/kadmium-gateway/tests/ui
 // Run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs
 const { test } = require('node:test');

@@ -129,6 +129,7 @@ impl InferenceProvider for AnthropicProvider {
     async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse> {
         self.config.validate()?;
         request.sampling.validate()?;
+        super::reject_context_override(request, "Anthropic")?;
         let max_tokens = match request.sampling.max_tokens {
             Some(tokens) => tokens,
             None => self.resolve_max_tokens(&request.model).await?,
@@ -136,7 +137,8 @@ impl InferenceProvider for AnthropicProvider {
         let body = request_body(request, max_tokens)?;
         let url = versioned_endpoint(self.config.base_url(), "messages");
         let mut req_builder = self.authorize(self.client.post(url).json(&body));
-        if max_tokens > 16_384 {
+        // Only lengthens an owner-set timeout; `0` (the default) stays unlimited.
+        if self.config.timeout_secs != 0 && max_tokens > 16_384 {
             req_builder = req_builder.timeout(std::time::Duration::from_secs(
                 self.config.timeout_secs.max(1800),
             ));
@@ -145,7 +147,7 @@ impl InferenceProvider for AnthropicProvider {
             .send()
             .await
             .map_err(|error| CondenserError::provider("Anthropic", error.to_string()))?;
-        let value: Value = decode_json(ProviderKind::Anthropic, response).await?;
+        let value: Value = super::decode_generation_json(ProviderKind::Anthropic, response).await?;
         parse_chat(value, &request.model)
     }
 }
@@ -358,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_requires_max_tokens_but_not_a_client_default_elsewhere() {
+    fn anthropic_requires_resolved_output_limit() {
         let request = ChatRequest {
             model: "claude-test".into(),
             messages: vec![Message::user("hello")],
@@ -385,7 +387,10 @@ mod tests {
         let request = ChatRequest {
             model: "claude-test".into(),
             messages: vec![Message::user("hello")],
-            sampling: SamplingParams::default(),
+            sampling: SamplingParams {
+                max_tokens: Some(64000),
+                ..Default::default()
+            },
             tools: vec![ToolDefinition {
                 name: "example__echo".into(),
                 description: "Echo text".into(),

@@ -1,6 +1,6 @@
-use crate::plugin::default_plugin_roots;
-use crate::server::{self, ServerOptions};
-use crate::{CondenserError, Result};
+use kadmium_condenser::plugin::default_plugin_roots;
+use kadmium_condenser::server::{self, ServerOptions};
+use kadmium_condenser::{CondenserError, Result};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
@@ -14,6 +14,11 @@ mod native;
 pub struct UiOptions {
     /// An available port is selected when absent; zero has the same behavior.
     pub port: Option<u16>,
+    /// Only read where a native window exists; browser-only Linux builds always use the browser.
+    #[cfg_attr(
+        all(target_os = "linux", not(feature = "linux-native")),
+        allow(dead_code)
+    )]
     pub browser: bool,
     pub plugin_roots: Vec<PathBuf>,
 }
@@ -149,5 +154,5 @@ fn spawn_browser(url: &str) {
 
 #[cfg(any(not(target_os = "linux"), feature = "linux-native"))]
 fn webview_data_dir() -> Option<PathBuf> {
-    Some(crate::plugin::condenser_home().join("webview"))
+    Some(kadmium_condenser::plugin::condenser_home().join("webview"))
 }

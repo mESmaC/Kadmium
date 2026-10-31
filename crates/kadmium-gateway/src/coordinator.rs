@@ -41,7 +41,7 @@ impl Default for CoordinatorOptions {
 }
 
 /// Journals must remain writable when a desktop launcher chooses `/` as its cwd.
-fn coordinator_journal_directory() -> Result<std::path::PathBuf, String> {
+pub(crate) fn coordinator_journal_directory() -> Result<std::path::PathBuf, String> {
     use std::path::PathBuf;
     if let Some(directory) = std::env::var_os("KADMIUM_STATE_DIR") {
         let path = PathBuf::from(directory);
@@ -462,6 +462,11 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
         port
     );
     println!(
+        "    - Condenser workspace:    http://127.0.0.1:{}{}",
+        port,
+        crate::condenser_access_path("/condenser/")
+    );
+    println!(
         "    - Application Docs:       http://127.0.0.1:{}/docs",
         port
     );
@@ -523,7 +528,19 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("could not bind the coordinator on {addr}: {e}"))?;
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| format!("coordinator stopped: {e}"))
+    // Publish only once this process owns the port, so a second launch that fails to
+    // bind cannot overwrite the running coordinator's access link.
+    match crate::publish_condenser_access(port) {
+        Ok(path) => println!(
+            "    - Condenser access link also saved for your account in {}",
+            path.display()
+        ),
+        Err(error) => eprintln!("    - Could not save the Condenser access link: {error}"),
+    }
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(|e| format!("coordinator stopped: {e}"))
 }

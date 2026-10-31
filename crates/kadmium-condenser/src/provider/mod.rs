@@ -13,6 +13,52 @@ mod mcl4_coe;
 mod ollama;
 mod openai;
 
+/// OpenAI-compatible servers treat an omitted `max_tokens` as their own maximum, so
+/// only an explicitly advertised output limit is sent. Fields that some catalogs use
+/// for the context window (`max_tokens`, `max_model_len`) are never read as one.
+pub(crate) fn advertised_output_limit(catalog: &serde_json::Value, model: &str) -> Option<u32> {
+    let model = catalog["data"]
+        .as_array()?
+        .iter()
+        .find(|m| m["id"] == model)?;
+    maximum_output(model)
+}
+
+/// Best-effort `/models` lookup. Missing or unreachable metadata leaves the limit unset,
+/// which these APIs already interpret as the server maximum.
+pub(crate) async fn fetch_output_limit(
+    kind: ProviderKind,
+    request: reqwest::RequestBuilder,
+    model: &str,
+) -> Option<u32> {
+    let response = request.send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let catalog: serde_json::Value = decode_json(kind, response).await.ok()?;
+    advertised_output_limit(&catalog, model)
+}
+
+pub(crate) fn reject_context_override(request: &ChatRequest, provider: &str) -> Result<()> {
+    if request.sampling.context_window.is_some() {
+        return Err(CondenserError::Config(format!(
+            "{provider} does not expose a context allocation option through this API. Clear Context / input window and configure context on the provider. Condenser sends the full input."
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) async fn with_timeout<T>(
+    seconds: u64,
+    future: impl std::future::Future<Output = T>,
+) -> std::result::Result<T, tokio::time::error::Elapsed> {
+    if seconds == 0 {
+        Ok(future.await)
+    } else {
+        tokio::time::timeout(Duration::from_secs(seconds), future).await
+    }
+}
+
 static NEXT_SYNTHETIC_TOOL_CALL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Providers are allowed to omit tool-call IDs. Condenser supplies a
@@ -96,9 +142,15 @@ impl ProviderFactory {
 
     pub fn build(config: ProviderConfig) -> Result<Arc<dyn InferenceProvider>> {
         config.validate_connection()?;
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(config.timeout_secs))
+        // A connect timeout fails unreachable servers fast without capping generation;
+        // `timeout_secs: 0` (the default) leaves the total duration unbounded.
+        let builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(30));
+        let builder = if config.timeout_secs == 0 {
+            builder
+        } else {
+            builder.timeout(Duration::from_secs(config.timeout_secs))
+        };
+        let client = builder
             .tcp_nodelay(true)
             .pool_max_idle_per_host(32)
             .pool_idle_timeout(Duration::from_secs(90))
@@ -251,6 +303,23 @@ pub(crate) fn versioned_endpoint(base: &str, path: &str) -> String {
 }
 
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Generation is governed by model/user token limits, not the metadata byte cap.
+/// Keep failed-response bodies bounded without truncating successful completions.
+pub(crate) async fn decode_generation_json<T: DeserializeOwned>(
+    kind: ProviderKind,
+    response: reqwest::Response,
+) -> Result<T> {
+    if !response.status().is_success() {
+        return decode_json(kind, response).await;
+    }
+    response.json().await.map_err(|error| {
+        CondenserError::provider(
+            kind.label(),
+            format!("could not decode provider generation: {error}"),
+        )
+    })
+}
 
 pub(crate) async fn decode_json<T: DeserializeOwned>(
     kind: ProviderKind,

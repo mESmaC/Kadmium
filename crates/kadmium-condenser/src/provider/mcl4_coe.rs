@@ -744,6 +744,8 @@ impl InferenceProvider for Mcl4CoeProvider {
         self.config.validate()?;
         request.sampling.validate()?;
 
+        super::reject_context_override(request, self.config.kind.label())?;
+
         let include_knobs = request.sampling.mcl4_coe.is_some();
         let knobs = request
             .sampling
@@ -797,8 +799,34 @@ impl InferenceProvider for Mcl4CoeProvider {
             return Ok(resp);
         }
 
-        self.try_openai_compatible_generate(request, &knobs, &compacted_messages)
-            .await
+        // The native daemon has no `/v1/models`; only the OpenAI-compatible fallback
+        // looks up an advertised output limit, and omission keeps the server maximum.
+        let advertised = match request.sampling.max_tokens {
+            Some(_) => None,
+            None => {
+                super::fetch_output_limit(
+                    self.config.kind,
+                    self.authorize(
+                        self.client
+                            .get(super::versioned_endpoint(self.config.base_url(), "models")),
+                    ),
+                    &request.model,
+                )
+                .await
+            }
+        };
+        match advertised {
+            Some(limit) => {
+                let mut resolved = request.clone();
+                resolved.sampling.max_tokens = Some(limit);
+                self.try_openai_compatible_generate(&resolved, &knobs, &compacted_messages)
+                    .await
+            }
+            None => {
+                self.try_openai_compatible_generate(request, &knobs, &compacted_messages)
+                    .await
+            }
+        }
     }
 }
 
@@ -852,12 +880,12 @@ mod tests {
     fn openai_body_forwards_all_supported_sampling_controls() {
         let mut request = request("deepseek-v4.1-flash");
         request.sampling = SamplingParams {
+            context_window: None,
+            compact_history: false,
             temperature: Some(0.25),
             top_p: Some(0.8),
             top_k: Some(40),
             max_tokens: Some(128),
-            context_window: None,
-            compact_history: false,
             seed: Some(42),
             stop: vec!["DONE".into()],
             mcl4_coe: None,

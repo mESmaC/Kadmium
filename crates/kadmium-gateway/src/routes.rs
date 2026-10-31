@@ -528,6 +528,7 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .with_state(state)
+        .merge(crate::condenser_mount::router())
 }
 
 async fn serve_dashboard() -> Html<&'static str> {

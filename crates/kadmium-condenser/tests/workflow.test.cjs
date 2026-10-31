@@ -74,10 +74,13 @@ test('branching at a user turn preserves tool pairs and drops future runs and qu
 });
 
 test('queued prompts freeze routing, permissions, instructions and attachments without credentials', () => {
-  const config = { kind: 'openai', model: 'model-a', base_url: 'http://localhost', api_key: 'secret', allowed_tools: ['files__read'], system_prompt: 'Be concise', sampling: { temperature: 0.2 }, interview: true };
+  const config = { kind: 'openai', model: 'model-a', base_url: 'http://localhost', api_key: 'secret', allowed_tools: ['files__read'], system_prompt: 'Be concise', sampling: { temperature: 0.2 }, interview: true, memory_enabled: true, research_required: true };
   const attachments = [{ name: 'context.txt', content: 'Snapshot' }];
   const item = queuedPrompt(' Follow up ', attachments, config, 'queued', 123);
   config.model = 'model-b'; config.allowed_tools.push('files__write'); attachments[0].content = 'Changed';
+  config.memory_enabled = false; config.research_required = false;
+  assert.equal(item.config.memory_enabled, true);
+  assert.equal(item.config.research_required, true);
   assert.equal(item.config.model, 'model-a');
   assert.deepEqual(item.config.allowed_tools, ['files__read']);
   assert.equal(item.config.system_prompt, 'Be concise');

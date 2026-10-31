@@ -176,7 +176,8 @@ kadmium/
     ├── kadmium-gateway/        # Axum server, Control Room, Docs Portal, reference API diagnostics and MCP
     ├── kadmium-cli/            # Single-binary `kadmium` CLI (serve, join, desktop, probe, plan, bench, import, exl3)
     ├── kadmium-desktop/        # Native Desktop Companion window (WebView2 / WKWebView / WebKitGTK)
-    ├── kadmium-condenser/      # Kadmium Power Plant inference harness: native UI + CLI, provider adapters, bounded tool turns, process plugins
+    ├── kadmium-condenser/      # Kadmium Power Plant inference harness library: provider adapters, bounded tool turns, process plugins (GUI-free)
+    ├── kadmium-condenser-app/  # `kadmium-condenser` command and native window
     ├── kadmium-cuda/           # Pure-Rust CUDA kernels (NVIDIA cuda-oxide), bit-identical to the RepOps reference; GPU harness in device/
     └── kadmium-npu/            # Vendor-neutral NPU traits and Intel Level Zero approximate-FP16 MatMul
 ```
@@ -204,6 +205,8 @@ cargo build -p kadmium-desktop
 cargo run --bin kadmium -- desktop
 ```
 Opens the Companion with an embedded or existing local coordinator. Windows/macOS use native WebViews. Linux opens the browser by default; for a native window, install WebKitGTK 4.1/GTK 3 development packages and build `kadmium-desktop` with `--features linux-native`.
+
+In either the Companion or browser Control Room, choose **Models → Prepare a local model** to browse GGUF/SafeTensors, normalize lossless KTB shards, load in local Ollama, and use the model in a task. **Launch Condenser** opens the included workspace at `/condenser/` without a separate process. Context and output default to model maximums, with user overrides in **Provider settings**. See [local checkpoints](docs/guides/local-checkpoints.md) for storage locations and backend requirements.
 
 ### 3. Join Additional Machines
 On the worker, use the coordinator's reachable LAN/VPN address:
