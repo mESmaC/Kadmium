@@ -70,6 +70,7 @@ pub struct CheckpointSummary {
     pub tensor_count: usize,
     pub source_bytes: u64,
     pub bank_bytes: u64,
+    pub bank_count: usize,
     pub dtypes: BTreeSet<String>,
     pub warnings: Vec<String>,
 }
@@ -86,6 +87,7 @@ impl CheckpointManifest {
             tensor_count: self.tensors.len(),
             source_bytes: self.source_files.iter().map(|f| f.bytes).sum(),
             bank_bytes: self.banks.iter().map(|f| f.bytes).sum(),
+            bank_count: self.banks.len(),
             dtypes: self.tensors.iter().map(|t| t.dtype.clone()).collect(),
             warnings: self.warnings.clone(),
         }
@@ -102,9 +104,28 @@ impl Default for CheckpointLibrary {
         Self::new(
             std::env::var_os("KADMIUM_MODEL_LIBRARY")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("target/kadmium-model-library")),
+                .unwrap_or_else(default_library_directory),
         )
     }
+}
+
+fn default_library_directory() -> PathBuf {
+    #[cfg(windows)]
+    let root = std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Kadmium"));
+    #[cfg(target_os = "macos")]
+    let root = std::env::var_os("HOME")
+        .map(|p| PathBuf::from(p).join("Library/Application Support/Kadmium"));
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let root = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join("kadmium"))
+        .or_else(|| {
+            std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share/kadmium"))
+        });
+    root.filter(|p| p.is_absolute())
+        .map(|p| p.join("models"))
+        .unwrap_or_else(|| PathBuf::from("target/kadmium-model-library"))
 }
 
 impl CheckpointLibrary {

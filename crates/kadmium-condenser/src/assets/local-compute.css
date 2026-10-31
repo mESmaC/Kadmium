@@ -16,3 +16,7 @@
 .compute-setup a { color: var(--cadmium-text); }
 #context-compute button:focus-visible, #context-compute summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 @media (prefers-reduced-motion: reduce) { #context-compute * { transition: none; } }
+
+#checkpoint-files { max-height:240px; overflow:auto; display:grid; gap:8px; }
+.checkpoint-file { text-align:left; overflow-wrap:anywhere; }
+#checkpoint-browser-path, #checkpoint-directory { overflow-wrap:anywhere; }

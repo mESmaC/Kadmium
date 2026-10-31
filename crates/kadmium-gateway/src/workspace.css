@@ -137,3 +137,11 @@ body { background-image: radial-gradient(ellipse at 70% 0%, var(--graphite-3), t
   :root { --workspace-surface: var(--graphite-1); --workspace-glass: var(--graphite-1); }
   .kw-dialog::backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; background: #06090de6; }
 }
+
+.kw-model-setup { display:flex; flex-wrap:wrap; gap:20px; justify-content:space-between; align-items:center; padding:24px; margin-bottom:20px; border:1px solid var(--cadmium-text); border-radius:12px; background:var(--cadmium-soft); }
+.kw-model-setup h2 { margin:8px 0; font-size:22px; }
+.kw-model-setup p { max-width:720px; margin:8px 0; color:var(--ink-muted); line-height:1.5; }
+.kw-model-actions { display:flex; flex-wrap:wrap; gap:12px; }
+.kw-model-actions a { padding:12px 16px; border-radius:6px; background:var(--graphite-2); color:var(--ink); text-decoration:none; font-weight:600; }
+.kw-model-actions a:first-child { background:var(--cadmium); color:var(--on-cadmium); }
+.kw-model-actions a:focus-visible { outline:none; box-shadow:var(--focus-ring); }

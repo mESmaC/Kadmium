@@ -20,6 +20,7 @@ pub(crate) struct ImportRequest {
 pub(crate) struct LoadRequest {
     checkpoint_id: String,
     base_url: String,
+    context_length: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -28,6 +29,56 @@ pub struct LoadedCheckpoint {
     pub provider: ProviderConfig,
     pub tensor_metadata_verified: bool,
     pub execution: &'static str,
+    pub context_length: u32,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct BrowseRequest {
+    path: Option<PathBuf>,
+}
+
+/// Host-side picker: browsers cannot expose local absolute paths through file inputs.
+pub(crate) async fn browse(
+    Json(request): Json<BrowseRequest>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    let listing = tokio::task::spawn_blocking(move || -> Result<Value> {
+        let mut path = request.path.filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
+                .map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")));
+        if path.is_file() { path.pop(); }
+        let path = user_facing_path(std::fs::canonicalize(path)?);
+        let mut entries = Vec::new();
+        let mut truncated = false;
+        // One unreadable entry must not hide the rest of the directory.
+        for entry in std::fs::read_dir(&path)?.flatten() {
+            let candidate = entry.path();
+            // `metadata` follows symlinks, so linked model folders stay browsable.
+            let Ok(metadata) = std::fs::metadata(&candidate) else { continue };
+            if metadata.is_dir() || (metadata.is_file() && candidate.extension().is_some_and(|ext| ext == "gguf" || ext == "safetensors")) {
+                if entries.len() == 500 { truncated = true; break; }
+                entries.push(json!({"name":entry.file_name().to_string_lossy(), "path":candidate, "directory":metadata.is_dir()}));
+            }
+        }
+        entries.sort_by_key(|entry| (!entry["directory"].as_bool().unwrap_or(false), entry["name"].as_str().unwrap_or("").to_lowercase()));
+        Ok(json!({"path":path,"parent":path.parent(),"entries":entries,"truncated":truncated}))
+    }).await.map_err(|e| CondenserError::Config(e.to_string()))??;
+    Ok(Json(listing))
+}
+
+/// Windows `canonicalize` returns verbatim `\\?\C:\...` paths; show and reuse the
+/// ordinary drive or UNC form, which names the same location.
+fn user_facing_path(path: PathBuf) -> PathBuf {
+    let plain = {
+        let text = path.to_string_lossy();
+        match text.strip_prefix(r"\\?\UNC\") {
+            Some(unc) => Some(format!(r"\\{unc}")),
+            None => text
+                .strip_prefix(r"\\?\")
+                .filter(|rest| rest.as_bytes().get(1) == Some(&b':'))
+                .map(str::to_owned),
+        }
+    };
+    plain.map(PathBuf::from).unwrap_or(path)
 }
 
 pub(crate) async fn list(
@@ -76,10 +127,11 @@ pub(crate) async fn load(
             CondenserError::Config("A checkpoint import or load is already running".into())
         })?;
     Ok(Json(
-        load_ollama(
+        load_ollama_with_context(
             &state.model_library,
             &request.checkpoint_id,
             &request.base_url,
+            request.context_length,
         )
         .await?,
     ))
@@ -129,6 +181,15 @@ pub async fn load_ollama(
     id: &str,
     base: &str,
 ) -> Result<LoadedCheckpoint> {
+    load_ollama_with_context(library, id, base, None).await
+}
+
+pub async fn load_ollama_with_context(
+    library: &CheckpointLibrary,
+    id: &str,
+    base: &str,
+    context_length: Option<u32>,
+) -> Result<LoadedCheckpoint> {
     let base = local_url(base)?;
     let owned = library.clone();
     let wanted = id.to_string();
@@ -138,6 +199,13 @@ pub async fn load_ollama(
         .map_err(CondenserError::Config)?;
     if manifest.context_length == 0 || manifest.context_length > i32::MAX as u64 {
         return Err(CondenserError::Config("Checkpoint lacks a supported native context length; refusing to choose a smaller context automatically".into()));
+    }
+    // An explicit owner choice wins; otherwise the native (or supported scaled) maximum.
+    let requested = context_length.map(u64::from);
+    if requested.is_some_and(|c| c == 0 || c > manifest.context_length) {
+        return Err(CondenserError::Config(
+            "Context must be between 1 and the checkpoint's declared maximum".into(),
+        ));
     }
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -195,7 +263,7 @@ pub async fn load_ollama(
         .post(endpoint(&base, "create"))
         .json(&json!({
             "model":model, "files":files, "stream":false,
-            "parameters":{"num_ctx":manifest.context_length}
+            "parameters":{"num_ctx":requested.unwrap_or(manifest.context_length)}
         }))
         .send()
         .await
@@ -229,8 +297,9 @@ pub async fn load_ollama(
             "backend reported a context length smaller than the checkpoint native context length",
         ));
     }
-    let active_context = match manifest.scaled_context_length {
-        Some(scaled)
+    let active_context = match (requested, manifest.scaled_context_length) {
+        (Some(chosen), _) => chosen,
+        (None, Some(scaled))
             if has_backend_rope_scaling && backend_ctx.is_some_and(|ctx| ctx >= scaled) =>
         {
             scaled
@@ -266,7 +335,7 @@ pub async fn load_ollama(
     });
     if !full_context {
         return Err(backend_error(
-            "backend did not confirm the loaded model at its full declared context length",
+            "backend did not confirm the loaded model at the requested context length",
         ));
     }
     let mut provider = ProviderConfig::new(ProviderKind::Ollama);
@@ -276,6 +345,7 @@ pub async fn load_ollama(
         checkpoint: manifest.summary(),
         provider,
         tensor_metadata_verified: true,
+        context_length: u32::try_from(active_context).map_err(backend_error)?,
         execution: "Local Ollama using preserved source files; KTB banks are storage artifacts. Backend arithmetic and KV precision are not RepOps-certified.",
     })
 }
@@ -340,4 +410,25 @@ fn verify_backend_tensors(manifest: &CheckpointManifest, shown: &Value) -> Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::user_facing_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn verbatim_windows_prefixes_are_removed_for_display() {
+        for (verbatim, plain) in [
+            (r"\\?\C:\Models\llama", r"C:\Models\llama"),
+            (r"\\?\UNC\nas\models", r"\\nas\models"),
+            (r"\\?\Volume{0}\models", r"\\?\Volume{0}\models"),
+            ("/home/me/models", "/home/me/models"),
+        ] {
+            assert_eq!(
+                user_facing_path(PathBuf::from(verbatim)),
+                PathBuf::from(plain)
+            );
+        }
+    }
 }

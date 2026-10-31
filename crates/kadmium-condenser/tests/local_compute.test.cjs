@@ -1,4 +1,4 @@
-// Build: cargo build -p kadmium-condenser --locked
+// Build: cargo build -p kadmium-condenser-app --locked
 // Setup: npm ci --prefix crates/kadmium-gateway/tests/ui
 // Run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs
 const { test } = require('node:test');
@@ -107,6 +107,6 @@ test('local checkpoint setup, explicit task routing, recovery and distributed jo
   } finally {
     if(browser) await browser.close();
     server.kill(); await new Promise(resolve=>server.exitCode===null?server.once('exit',resolve):resolve());
-    fs.rmSync(cwd,{recursive:true,force:true});
+    fs.rmSync(cwd,{recursive:true,force:true,maxRetries:5,retryDelay:100});
   }
 });

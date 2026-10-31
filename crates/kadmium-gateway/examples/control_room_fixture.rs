@@ -18,7 +18,11 @@ async fn main() {
     let bind_addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&bind_addr).await.unwrap();
     let bound_addr = listener.local_addr().unwrap();
-    println!("http://{bound_addr}");
+    println!(
+        "http://{}{}",
+        bound_addr,
+        kadmium_gateway::condenser_access_path("/")
+    );
 
     let mut gateway_state = kadmium_gateway::GatewayState::new();
     gateway_state.coordinator_lan_ip = "127.0.0.1".to_string();
@@ -28,7 +32,11 @@ async fn main() {
     }
 
     let state = Arc::new(Mutex::new(gateway_state));
-    axum::serve(listener, kadmium_gateway::build_router(state))
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        kadmium_gateway::build_router(state)
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }

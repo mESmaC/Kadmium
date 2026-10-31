@@ -132,7 +132,7 @@ impl InferenceProvider for OllamaProvider {
             .send()
             .await
             .map_err(|error| CondenserError::provider("Ollama", error.to_string()))?;
-        let value: Value = decode_json(ProviderKind::Ollama, response).await?;
+        let value: Value = super::decode_generation_json(ProviderKind::Ollama, response).await?;
         parse_chat(value, &request.model)
     }
 }

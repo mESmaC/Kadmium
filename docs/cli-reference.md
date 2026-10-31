@@ -78,7 +78,7 @@ kadmium checkpoint list --library /models/kadmium
 kadmium checkpoint verify CHECKPOINT_ID --library /models/kadmium
 ```
 
-All three commands print JSON. `--library <DIR>` defaults to `KADMIUM_MODEL_LIBRARY`, then `target/kadmium-model-library`. Normalization preserves originals and writes 64 KiB-aligned KTB banks with SHA-256 identities; it does not load or execute the model. See [local checkpoints](guides/local-checkpoints.md) for supported formats, shard completeness, storage requirements and backend limits.
+All three commands print JSON. `--library <DIR>` defaults to `KADMIUM_MODEL_LIBRARY`, then the shared per-user model directory (for example `%LOCALAPPDATA%\Kadmium\models` on Windows). Normalization preserves originals and writes 64 KiB-aligned KTB banks with SHA-256 identities; it does not load or execute the model. See [local checkpoints](guides/local-checkpoints.md) for supported formats, library migration, shard completeness, storage requirements and backend limits.
 
 ### `kadmium-condenser load-checkpoint`
 
@@ -89,7 +89,7 @@ kadmium-condenser load-checkpoint CHECKPOINT_ID --library /models/kadmium
 kadmium-condenser chat "Explain this algorithm" --provider ollama --model kadmium-CHECKPOINT_ID:latest
 ```
 
-`--library` uses the same default as above. `--base-url` defaults to `http://127.0.0.1:11434` and must be loopback HTTP. The command prints the provider configuration only after source verification, backend tensor checks and preload at the declared context length. It does not quantize, pull a replacement model or select a smaller context. Tensor conversion or unsupported backend behavior fails explicitly. Run from source with `cargo run -p kadmium-condenser --locked -- load-checkpoint CHECKPOINT_ID`.
+`--library` uses the same default as above. `--base-url` defaults to `http://127.0.0.1:11434` and must be loopback HTTP. The command prints the provider configuration only after source verification, backend tensor checks and preload at the declared context length. It does not quantize, pull a replacement model or select a smaller context. Tensor conversion or unsupported backend behavior fails explicitly. Run from source with `cargo run -p kadmium-condenser-app --locked -- load-checkpoint CHECKPOINT_ID`.
 
 ### `kadmium probe`
 
