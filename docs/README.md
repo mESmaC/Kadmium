@@ -28,6 +28,14 @@ Kadmium implements a heterogeneous compute control plane, planners, worker trans
 | [**Hugging Face (`hf://`), GitHub (`gh://`) & Ecosystem Integrations**](./guides/integrations-hf-github.md) | Pull selective Safetensors/GGUF shards and datasets from Hugging Face Hub, mount commit-pinned RL/Dream-RSI worlds from GitHub, and configure `oci://`, `s3://`, and `wandb://` connectors. |
 | [**Model Context Protocol (`kadmium-mcp`) Server**](./guides/mcp-server.md) | Connect Claude Code, Cursor, Antigravity, Windsurf, or any MCP client via `kadmium mcp` (stdio) or `POST /mcp` (Streamable HTTP) to inspect, shard, pull, and run distributed workloads. |
 
+### 3. Business, Market & Strategy
+| Guide | Description |
+| :--- | :--- |
+| [**Strategy Audit (`STRATEGY_AUDIT_2026-10-30.md`)**](./STRATEGY_AUDIT_2026-10-30.md) | Audit of the business and launch plans against the direction of the concept: steelman, structural weaknesses, eighteen unused angles, a tighter narrative, milestone-gated sequencing and a section-by-section scorecard. |
+| [**Business Plan & Stance (`BUSINESS_PLAN_AND_STANCE.md`)**](./BUSINESS_PLAN_AND_STANCE.md) | Pay-in tiers, wholesale index pricing, output-metered Supply Grid clearing, credit liability accounting, compliance boundaries and the `75 / 20 / 5` charter. |
+| [**Market Research & Launch Plan (`MARKET_RESEARCH_AND_LAUNCH_PLAN.md`)**](./MARKET_RESEARCH_AND_LAUNCH_PLAN.md) | Buyer positioning, competitive teardown, reality checks, go-to-market channels, academic and grant engine, referral loops. |
+| [**R4 Market Research Review (`MARKET_RESEARCH_REVIEW_2026-10.md`)**](./MARKET_RESEARCH_REVIEW_2026-10.md) | Claim-by-claim fact-check, capability envelope, risk register and ranked recommendations. |
+
 ---
 
 ## How Kadmium Works at a Glance
