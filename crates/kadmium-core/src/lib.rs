@@ -1113,6 +1113,44 @@ pub use reterminal_cm4::*;
 pub use supply::*;
 pub use tegra_switch::*;
 
+/// Returns `true` when external LAN/USB/ADB hardware probes are permitted.
+///
+/// Loopback endpoints (`127.0.0.1` or `localhost`) are always allowed so local mock listeners
+/// in unit tests work deterministically. Non-loopback LAN/USB/ADB probes are disabled under
+/// `cfg(test)`, when running inside a `cargo test` binary (`target/.../deps/...` or `rustdoctest`),
+/// or when `KADMIUM_DISABLE_LIVE_PROBES` is set in the environment.
+pub fn external_hardware_probes_allowed(custom_endpoint: Option<&str>) -> bool {
+    if let Some(ep) = custom_endpoint {
+        let trimmed = ep.trim();
+        if trimmed == "127.0.0.1"
+            || trimmed.starts_with("127.0.0.1:")
+            || trimmed == "localhost"
+            || trimmed.starts_with("localhost:")
+        {
+            return true;
+        }
+    }
+    if cfg!(test)
+        || std::env::var_os("KADMIUM_DISABLE_LIVE_PROBES").is_some()
+        || std::env::var_os("RUST_TEST_THREADS").is_some()
+        || std::env::var_os("NEXTEST_EXECUTION_MODE").is_some()
+    {
+        return false;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_lossy = exe.to_string_lossy();
+        let in_test_or_example_dir = exe
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case("deps") || n.eq_ignore_ascii_case("examples"));
+        if in_test_or_example_dir || exe_lossy.contains("rustdoctest") {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

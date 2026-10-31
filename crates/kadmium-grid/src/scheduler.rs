@@ -394,7 +394,15 @@ impl Matchmaker {
         {
             return ineligible("backend not allowed");
         }
-        if worker.free_fast_memory_gb < unit.placement.min_fast_memory_gb {
+        let minimum = unit.placement.min_fast_memory_gb;
+        let scratch = unit.placement.scratch_fast_memory_gb;
+        if !minimum.is_finite() || minimum < 0.0 || !scratch.is_finite() || scratch < 0.0 {
+            return ineligible("invalid fast memory requirement");
+        }
+        let required = minimum.max(scratch);
+        let headroom = worker.free_fast_memory_gb;
+        let tolerance = 4.0 * f64::EPSILON * headroom.abs().max(required).max(1.0);
+        if !headroom.is_finite() || required - headroom > tolerance {
             return ineligible("not enough fast memory");
         }
         let availability = worker.availability();
@@ -671,6 +679,7 @@ impl WorkQueue {
         if self.units.contains_key(&unit.id) {
             return Err(GridError::DuplicateUnit(unit.id));
         }
+        Self::validate_memory_requirements(&unit)?;
         let id = unit.id.clone();
         self.units.insert(
             id.clone(),
@@ -687,6 +696,24 @@ impl WorkQueue {
             },
         );
         self.emit(now, SchedulerEvent::Submitted { unit: id });
+        Ok(())
+    }
+
+    fn validate_memory_requirements(unit: &WorkUnit) -> Result<(), GridError> {
+        for (field, value) in [
+            ("min_fast_memory_gb", unit.placement.min_fast_memory_gb),
+            (
+                "scratch_fast_memory_gb",
+                unit.placement.scratch_fast_memory_gb,
+            ),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(GridError::InvalidMemoryRequirement {
+                    unit: unit.id.clone(),
+                    field,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -710,6 +737,9 @@ impl WorkQueue {
     ) -> Result<(), GridError> {
         if let Some(existing) = graph.units().find(|u| self.units.contains_key(&u.id)) {
             return Err(GridError::DuplicateUnit(existing.id.clone()));
+        }
+        for unit in graph.units() {
+            Self::validate_memory_requirements(unit)?;
         }
         let mut external_blocks: BTreeMap<WorkUnitId, BTreeSet<WorkUnitId>> = BTreeMap::new();
         for (unit, prereq) in external {
@@ -869,6 +899,61 @@ impl WorkQueue {
         instance
     }
 
+    fn memory_reservations(&self) -> BTreeMap<NodeId, f64> {
+        let mut reserved = BTreeMap::new();
+        for instance in self
+            .instances
+            .values()
+            .filter(|instance| matches!(instance.state, WorkState::Assigned | WorkState::Running))
+        {
+            if let Some(status) = self.units.get(&instance.unit_id) {
+                let scratch = status.unit.placement.scratch_fast_memory_gb;
+                *reserved.entry(instance.node_id.clone()).or_default() +=
+                    if scratch.is_finite() && scratch >= 0.0 {
+                        scratch
+                    } else {
+                        f64::INFINITY
+                    };
+            } else {
+                reserved.insert(instance.node_id.clone(), f64::INFINITY);
+            }
+        }
+        reserved
+    }
+
+    fn admission_worker(worker: &WorkerProfile, reserved: &BTreeMap<NodeId, f64>) -> WorkerProfile {
+        let mut admission = worker.clone();
+        admission.free_fast_memory_gb -= reserved.get(worker.id()).copied().unwrap_or(0.0);
+        admission
+    }
+
+    /// Ranks workers using outstanding queue scratch, without assigning work.
+    /// Scores describe resource eligibility, not readiness or replica distinctness.
+    pub fn rank_admission(
+        &self,
+        unit_id: &WorkUnitId,
+        workers: &[WorkerProfile],
+        catalog: &ReplicaCatalog,
+        now: u64,
+    ) -> Result<Vec<MatchScore>, GridError> {
+        let status = self
+            .units
+            .get(unit_id)
+            .ok_or_else(|| GridError::UnknownUnit(unit_id.clone()))?;
+        let reserved = self.memory_reservations();
+        let admission: Vec<_> = workers
+            .iter()
+            .map(|worker| Self::admission_worker(worker, &reserved))
+            .collect();
+        Ok(Matchmaker::rank(
+            &status.unit,
+            &admission,
+            catalog,
+            &self.policy,
+            now,
+        ))
+    }
+
     /// Pull dispatch: hands the worker the best-matching ready units it can run, at most
     /// `max_units` and never more than the policy's pull batch or the worker's free slots.
     pub fn request_work(
@@ -879,6 +964,7 @@ impl WorkQueue {
         max_units: usize,
     ) -> Vec<WorkInstance> {
         worker.last_seen_unix_ms = now;
+        let mut admission = Self::admission_worker(worker, &self.memory_reservations());
         let limit = max_units.min(self.policy.max_pull_batch);
         let candidates: Vec<WorkUnitId> = self.ready_units().iter().map(|u| u.id.clone()).collect();
         let mut handed = Vec::new();
@@ -891,14 +977,17 @@ impl WorkQueue {
             if self.has_live_instance_on(status, worker.id()) {
                 continue;
             }
-            let score = Matchmaker::score(&status.unit, worker, catalog, &self.policy, now);
+            let score = Matchmaker::score(&status.unit, &admission, catalog, &self.policy, now);
             if !score.eligible {
                 continue;
             }
             let duplicate_of = self.straggling_original(status);
+            let scratch = status.unit.placement.scratch_fast_memory_gb;
             let node = worker.id().clone();
             let instance = self.assign(&unit_id, &node, now, duplicate_of);
             worker.in_flight += 1;
+            admission.in_flight += 1;
+            admission.free_fast_memory_gb -= scratch;
             handed.push(instance);
         }
         handed
@@ -912,6 +1001,11 @@ impl WorkQueue {
         catalog: &ReplicaCatalog,
         now: u64,
     ) -> Vec<WorkInstance> {
+        let reserved = self.memory_reservations();
+        let mut admission: Vec<_> = workers
+            .iter()
+            .map(|worker| Self::admission_worker(worker, &reserved))
+            .collect();
         let candidates: Vec<WorkUnitId> = self.ready_units().iter().map(|u| u.id.clone()).collect();
         let mut assigned = Vec::new();
 
@@ -921,7 +1015,7 @@ impl WorkQueue {
                 if !self.needs_instances(status) {
                     break;
                 }
-                let ranked = Matchmaker::rank(&status.unit, workers, catalog, &self.policy, now);
+                let ranked = Matchmaker::rank(&status.unit, &admission, catalog, &self.policy, now);
                 let chosen = ranked
                     .iter()
                     .filter(|m| m.eligible)
@@ -931,7 +1025,12 @@ impl WorkQueue {
                     break;
                 };
                 let duplicate_of = self.straggling_original(status);
+                let scratch = status.unit.placement.scratch_fast_memory_gb;
                 let instance = self.assign(&unit_id, &node, now, duplicate_of);
+                if let Some(worker) = admission.iter_mut().find(|worker| worker.id() == &node) {
+                    worker.in_flight += 1;
+                    worker.free_fast_memory_gb -= scratch;
+                }
                 if let Some(w) = workers.iter_mut().find(|w| w.id() == &node) {
                     w.in_flight += 1;
                     w.last_seen_unix_ms = now;
@@ -1813,6 +1912,303 @@ mod tests {
             now,
         )
         .with_check_value(check)
+    }
+
+    fn scratch_unit(id: &str, scratch: f64) -> WorkUnit {
+        WorkUnit::new(id, AppKind::DreamReplay).with_placement(PlacementConstraints {
+            scratch_fast_memory_gb: scratch,
+            ..PlacementConstraints::default()
+        })
+    }
+
+    #[test]
+    fn invalid_submission_preserves_queue_and_graph_atomicity() {
+        for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for field in ["min_fast_memory_gb", "scratch_fast_memory_gb"] {
+                let mut queue = WorkQueue::new(SchedulerPolicy::default());
+                queue.submit(scratch_unit("existing", 0.1), 0).unwrap();
+                let before = serde_json::to_value(&queue).unwrap();
+                let mut unit = scratch_unit("invalid", 0.0);
+                if field == "min_fast_memory_gb" {
+                    unit.placement.min_fast_memory_gb = invalid;
+                } else {
+                    unit.placement.scratch_fast_memory_gb = invalid;
+                }
+                assert_eq!(
+                    queue.submit(unit.clone(), 1),
+                    Err(GridError::InvalidMemoryRequirement {
+                        unit: unit.id.clone(),
+                        field,
+                    })
+                );
+                assert_eq!(serde_json::to_value(&queue).unwrap(), before);
+                let mut graph = WorkGraph::new("graph");
+                graph.add_unit(scratch_unit("valid", 0.1)).add_unit(unit);
+                graph
+                    .add_dependency(&"invalid".into(), &"valid".into())
+                    .unwrap();
+                for external in [vec![], vec![("valid".into(), "existing".into())]] {
+                    assert_eq!(
+                        queue.submit_graph_after(&graph, &external, 2),
+                        Err(GridError::InvalidMemoryRequirement {
+                            unit: "graph/invalid".into(),
+                            field,
+                        })
+                    );
+                    assert_eq!(serde_json::to_value(&queue).unwrap(), before);
+                }
+                let restored: WorkQueue =
+                    serde_json::from_value(serde_json::to_value(&queue).unwrap()).unwrap();
+                assert_eq!(serde_json::to_value(restored).unwrap(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn corrupt_live_reservations_fail_closed_per_worker() {
+        let catalog = ReplicaCatalog::new();
+        for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut queue = WorkQueue::new(SchedulerPolicy::default());
+            let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
+            queue.submit(scratch_unit("live", 1.0), 0).unwrap();
+            assert_eq!(queue.dispatch_push(&mut workers, &catalog, 1).len(), 1);
+            queue
+                .units
+                .get_mut(&"live".into())
+                .unwrap()
+                .unit
+                .placement
+                .scratch_fast_memory_gb = invalid;
+            queue.submit(scratch_unit("next", 0.1), 2).unwrap();
+            assert!(queue.dispatch_push(&mut workers, &catalog, 3).is_empty());
+            assert!(
+                queue
+                    .request_work(&mut workers[0], &catalog, 4, 4)
+                    .is_empty()
+            );
+            workers.push(worker("b", NodeTrustTier::TrustedCore));
+            assert_eq!(queue.dispatch_push(&mut workers, &catalog, 5).len(), 1);
+            if invalid.is_finite() {
+                let restored: WorkQueue =
+                    serde_json::from_str(&serde_json::to_string(&queue).unwrap()).unwrap();
+                assert_eq!(
+                    restored.memory_reservations()[workers[0].id()],
+                    f64::INFINITY
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decimal_exact_fit_survives_batches_but_not_real_shortfall() {
+        let catalog = ReplicaCatalog::new();
+        for push in [false, true] {
+            let mut queue = WorkQueue::new(SchedulerPolicy::default());
+            let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
+            workers[0].free_fast_memory_gb = 0.3;
+            for id in ["first", "second", "third"] {
+                queue.submit(scratch_unit(id, 0.1), 0).unwrap();
+                let assigned = if push {
+                    queue.dispatch_push(&mut workers, &catalog, 1)
+                } else {
+                    queue.request_work(&mut workers[0], &catalog, 1, 4)
+                };
+                assert_eq!(assigned.len(), 1);
+            }
+            queue.submit(scratch_unit("fourth", 0.000001), 2).unwrap();
+            assert!(queue.dispatch_push(&mut workers, &catalog, 3).is_empty());
+            assert!(
+                queue
+                    .request_work(&mut workers[0], &catalog, 4, 4)
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn admission_diagnostic_accounts_for_outstanding_scratch() {
+        let catalog = ReplicaCatalog::new();
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+        let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
+        workers[0].free_fast_memory_gb = 8.0;
+        queue.submit(scratch_unit("live", 5.0), 0).unwrap();
+        queue.dispatch_push(&mut workers, &catalog, 1);
+        queue.submit(scratch_unit("large", 4.0), 2).unwrap();
+        let before = serde_json::to_value(&queue).unwrap();
+        let ranked = queue
+            .rank_admission(&"large".into(), &workers, &catalog, 3)
+            .unwrap();
+        assert_eq!(ranked.len(), 1);
+        assert!(!ranked[0].eligible);
+        assert_eq!(ranked[0].reason, "not enough fast memory");
+        assert_eq!(serde_json::to_value(&queue).unwrap(), before);
+        workers.push(worker("b", NodeTrustTier::TrustedCore));
+        let ranked = queue
+            .rank_admission(&"large".into(), &workers, &catalog, 3)
+            .unwrap();
+        assert!(ranked[0].eligible);
+        assert_eq!(ranked[0].node_id, workers[1].node.id);
+        assert_eq!(
+            queue.rank_admission(&"missing".into(), &workers, &catalog, 3),
+            Err(GridError::UnknownUnit("missing".into()))
+        );
+    }
+
+    #[test]
+    fn scratch_admission_spans_push_and_pull_without_changing_heartbeat_budget() {
+        let catalog = ReplicaCatalog::new();
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+        let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
+        workers[0].free_fast_memory_gb = 8.0;
+        for id in ["first", "second", "third"] {
+            queue.submit(scratch_unit(id, 5.0), 0).unwrap();
+        }
+        let assigned = queue.dispatch_push(&mut workers, &catalog, 1);
+        assert_eq!(assigned.len(), 1);
+        assert_eq!(workers[0].free_fast_memory_gb, 8.0);
+        assert!(
+            queue
+                .request_work(&mut workers[0], &catalog, 2, 4)
+                .is_empty()
+        );
+        assert!(queue.dispatch_push(&mut workers, &catalog, 3).is_empty());
+        queue
+            .report_failure(&assigned[0].instance_id, "test", 4)
+            .unwrap();
+        workers[0].in_flight -= 1;
+        let pulled = queue.request_work(&mut workers[0], &catalog, 5, 4);
+        assert_eq!(pulled.len(), 1);
+        queue
+            .report_result(&pulled[0].instance_id, result(&pulled[0], 42, 1.0, 6), 6)
+            .unwrap();
+        workers[0].in_flight -= 1;
+        assert_eq!(queue.dispatch_push(&mut workers, &catalog, 7).len(), 1);
+    }
+
+    #[test]
+    fn scratch_admission_allows_exact_fit_and_zero_scratch() {
+        let catalog = ReplicaCatalog::new();
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+        let mut worker = worker("a", NodeTrustTier::TrustedCore);
+        worker.free_fast_memory_gb = 8.0;
+        queue.submit(scratch_unit("a", 4.0), 0).unwrap();
+        queue.submit(scratch_unit("b", 4.0), 0).unwrap();
+        queue.submit(scratch_unit("c", 0.0), 0).unwrap();
+        queue.submit(scratch_unit("d", 1.0), 0).unwrap();
+        assert_eq!(queue.request_work(&mut worker, &catalog, 1, 4).len(), 3);
+        assert_eq!(worker.free_fast_memory_gb, 8.0);
+        let restored: WorkQueue =
+            serde_json::from_str(&serde_json::to_string(&queue).unwrap()).unwrap();
+        assert_eq!(restored.memory_reservations()[worker.id()], 8.0);
+    }
+
+    #[test]
+    fn scratch_admission_is_per_worker_and_counts_redundancy() {
+        let catalog = ReplicaCatalog::new();
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+        let mut workers = vec![
+            worker("a", NodeTrustTier::TrustedCore),
+            worker("b", NodeTrustTier::TrustedCore),
+        ];
+        for worker in &mut workers {
+            worker.free_fast_memory_gb = 8.0;
+        }
+        queue
+            .submit(
+                scratch_unit("a", 5.0).with_redundancy(RedundancyPolicy::untrusted()),
+                0,
+            )
+            .unwrap();
+        queue.submit(scratch_unit("b", 5.0), 0).unwrap();
+        assert_eq!(queue.dispatch_push(&mut workers, &catalog, 1).len(), 2);
+        assert!(queue.dispatch_push(&mut workers, &catalog, 2).is_empty());
+        queue.cancel(&"a".into(), 3).unwrap();
+        for worker in &mut workers {
+            worker.in_flight = 0;
+        }
+        assert_eq!(queue.dispatch_push(&mut workers, &catalog, 4).len(), 1);
+    }
+
+    #[test]
+    fn returned_replica_releases_scratch_while_awaiting_quorum() {
+        let catalog = ReplicaCatalog::new();
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+        let mut workers = vec![
+            worker("a", NodeTrustTier::TrustedCore),
+            worker("b", NodeTrustTier::TrustedCore),
+        ];
+        for worker in &mut workers {
+            worker.free_fast_memory_gb = 8.0;
+        }
+        queue
+            .submit(
+                scratch_unit("a", 5.0).with_redundancy(RedundancyPolicy::untrusted()),
+                0,
+            )
+            .unwrap();
+        let assigned = queue.dispatch_push(&mut workers, &catalog, 1);
+        assert_eq!(assigned.len(), 2);
+        let returned = &assigned[0];
+        assert!(matches!(
+            queue
+                .report_result(&returned.instance_id, result(returned, 42, 1.0, 2), 2)
+                .unwrap(),
+            ValidationOutcome::Pending { .. }
+        ));
+        workers
+            .iter_mut()
+            .find(|worker| worker.id() == &returned.node_id)
+            .unwrap()
+            .in_flight -= 1;
+        queue.submit(scratch_unit("b", 5.0), 3).unwrap();
+        let next = queue.dispatch_push(&mut workers, &catalog, 4);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].node_id, returned.node_id);
+    }
+
+    #[test]
+    fn reduced_memory_budget_blocks_admission_until_the_live_attempt_expires() {
+        let catalog = ReplicaCatalog::new();
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+        let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
+        workers[0].free_fast_memory_gb = 8.0;
+        queue
+            .submit(scratch_unit("a", 5.0).with_deadline(10), 0)
+            .unwrap();
+        queue.submit(scratch_unit("b", 1.0), 0).unwrap();
+        assert_eq!(queue.request_work(&mut workers[0], &catalog, 1, 1).len(), 1);
+        workers[0].free_fast_memory_gb = 4.0;
+        assert!(queue.dispatch_push(&mut workers, &catalog, 2).is_empty());
+        queue.tick(11, &workers);
+        workers[0].in_flight -= 1;
+        assert_eq!(queue.dispatch_push(&mut workers, &catalog, 12).len(), 1);
+    }
+
+    #[test]
+    fn malformed_memory_requirements_and_telemetry_are_ineligible() {
+        let catalog = ReplicaCatalog::new();
+        let policy = SchedulerPolicy::default();
+        let mut worker = worker("a", NodeTrustTier::TrustedCore);
+        for invalid in [-1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                !Matchmaker::score(&scratch_unit("a", invalid), &worker, &catalog, &policy, 0)
+                    .eligible
+            );
+            let mut unit = scratch_unit("b", 0.0);
+            unit.placement.min_fast_memory_gb = invalid;
+            assert!(!Matchmaker::score(&unit, &worker, &catalog, &policy, 0).eligible);
+            worker.free_fast_memory_gb = invalid;
+            assert!(
+                !Matchmaker::score(&scratch_unit("c", 0.0), &worker, &catalog, &policy, 0).eligible
+            );
+            worker.free_fast_memory_gb = 8.0;
+        }
+        let mut json = serde_json::to_value(PlacementConstraints::default()).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("scratch_fast_memory_gb");
+        let legacy: PlacementConstraints = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.scratch_fast_memory_gb, 0.0);
     }
 
     #[test]

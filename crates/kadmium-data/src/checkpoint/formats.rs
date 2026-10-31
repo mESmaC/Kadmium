@@ -8,6 +8,7 @@ pub(super) struct InspectedSource {
     pub context_length: u64,
     pub scaled_context_length: Option<u64>,
     pub tensors: Vec<CheckpointTensor>,
+    pub pre_quantized: Option<PreQuantizedSource>,
 }
 
 pub(super) fn inspect(dir: &Path, files: &[PackageFile]) -> Result<InspectedSource> {
@@ -21,6 +22,7 @@ pub(super) fn inspect(dir: &Path, files: &[PackageFile]) -> Result<InspectedSour
     let format;
     let context_length;
     let scaled_context_length;
+    let pre_quantized;
     if !safe.is_empty() && gguf.is_empty() {
         let config: Value = read_json(&dir.join("config.json"))
             .map_err(|e| format!("A SafeTensors model requires config.json: {e}"))?;
@@ -40,7 +42,7 @@ pub(super) fn inspect(dir: &Path, files: &[PackageFile]) -> Result<InspectedSour
             return Err("Directory contains SafeTensors files outside the model index".into());
         }
         for t in parsed.tensors() {
-            let (encoding, _) = safetensors_encoding(t.dtype.as_str())?;
+            let encoding = safetensors_encoding(t.dtype.as_str())?;
             tensors.push(tensor(
                 t.name.clone(),
                 t.dtype.as_str().into(),
@@ -51,6 +53,7 @@ pub(super) fn inspect(dir: &Path, files: &[PackageFile]) -> Result<InspectedSour
                 t.byte_len,
             ));
         }
+        pre_quantized = safetensors_pre_quantization(dir, files, &config, &tensors)?;
         format = "safetensors".into();
     } else if !gguf.is_empty() && safe.is_empty() {
         let count = gguf.len() as u64;
@@ -106,6 +109,7 @@ pub(super) fn inspect(dir: &Path, files: &[PackageFile]) -> Result<InspectedSour
         architecture = architectures.into_iter().next();
         context_length = contexts.into_iter().next().unwrap_or(0);
         scaled_context_length = None;
+        pre_quantized = gguf_pre_quantization(&tensors);
         format = "gguf".into();
     } else {
         return Err(
@@ -120,6 +124,138 @@ pub(super) fn inspect(dir: &Path, files: &[PackageFile]) -> Result<InspectedSour
         context_length,
         scaled_context_length,
         tensors,
+        pre_quantized,
+    })
+}
+
+/// SafeTensors floats below 16 bits. These are stored quantized whether or not the
+/// checkpoint declares a method.
+const SUB_16_BIT_FLOATS: &[&str] = &["F8_E4M3", "F8_E5M2", "F8_E8M0", "F6_E2M3", "F6_E3M2", "F4"];
+const WIDE_FLOATS: &[&str] = &["F64", "F32", "BF16", "F16"];
+const INTEGERS: &[&str] = &["I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64"];
+/// Name suffixes of weight tensors. An integer weight is quantized storage, unlike
+/// integer buffers such as `position_ids`.
+const WEIGHT_SUFFIXES: &[&str] = &["weight", "qweight", "weight_packed", "qzeros"];
+
+fn is_integer_weight(tensor: &CheckpointTensor) -> bool {
+    INTEGERS.contains(&tensor.dtype.as_str())
+        && WEIGHT_SUFFIXES
+            .iter()
+            .any(|suffix| tensor.name.rsplit('.').next() == Some(*suffix))
+}
+
+fn safetensors_pre_quantization(
+    dir: &Path,
+    files: &[PackageFile],
+    config: &Value,
+    tensors: &[CheckpointTensor],
+) -> Result<Option<PreQuantizedSource>> {
+    let has = |name: &str| files.iter().any(|f| f.name == name);
+    let mut declared = ["text_config", "language_config", "llm_config"]
+        .iter()
+        .filter_map(|scope| config.get(*scope))
+        .chain([config])
+        .find_map(|scope| {
+            // compressed-tensors (llm-compressor) exports may use `compression_config`.
+            scope
+                .get("quantization_config")
+                .or_else(|| scope.get("compression_config"))
+        })
+        .and_then(declared_quantization);
+    if declared.is_none() && has("quantize_config.json") {
+        let sidecar: Value = read_json(&dir.join("quantize_config.json"))?;
+        // AutoGPTQ wrote this sidecar before Transformers adopted `quantization_config`.
+        declared = declared_quantization(&sidecar).map(|(method, bits)| {
+            let method = if method == "declared" {
+                "gptq".into()
+            } else {
+                method
+            };
+            (method, bits)
+        });
+    }
+    if declared.is_none() && has("hf_quant_config.json") {
+        let sidecar: Value = read_json(&dir.join("hf_quant_config.json"))?;
+        let algorithm = sidecar["quantization"]["quant_algo"]
+            .as_str()
+            .map(|a| a.trim().to_ascii_lowercase())
+            .filter(|a| !a.is_empty());
+        declared = Some((
+            algorithm.map_or_else(|| "modelopt".into(), |a| format!("modelopt {a}")),
+            None,
+        ));
+    }
+    let tensor_formats: BTreeSet<String> = tensors
+        .iter()
+        .filter(|t| {
+            if declared.is_some() {
+                !WIDE_FLOATS.contains(&t.dtype.as_str())
+            } else {
+                SUB_16_BIT_FLOATS.contains(&t.dtype.as_str()) || is_integer_weight(t)
+            }
+        })
+        .map(|t| t.dtype.clone())
+        .collect();
+    if declared.is_none() && tensor_formats.is_empty() {
+        return Ok(None);
+    }
+    let (method, bits) = declared.map_or((None, None), |(m, b)| (Some(m), b));
+    Ok(Some(PreQuantizedSource {
+        method,
+        bits,
+        tensor_formats: tensor_formats.into_iter().collect(),
+    }))
+}
+
+/// Reads a Transformers `quantization_config` or AutoGPTQ `quantize_config.json` object.
+fn declared_quantization(config: &Value) -> Option<(String, Option<u64>)> {
+    let object = config.as_object()?;
+    let flag = |key: &str| object.get(key).and_then(Value::as_bool) == Some(true);
+    let method = object
+        .get("quant_method")
+        .and_then(Value::as_str)
+        .map(|m| m.trim().to_ascii_lowercase())
+        .filter(|m| !m.is_empty())
+        .or_else(|| (flag("load_in_4bit") || flag("load_in_8bit")).then(|| "bitsandbytes".into()))
+        .unwrap_or_else(|| "declared".into());
+    let group_bits: BTreeSet<u64> = object
+        .get("config_groups")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|groups| groups.values())
+        .filter_map(|group| group["weights"]["num_bits"].as_u64())
+        .collect();
+    let bits = ["bits", "w_bit", "weight_bits", "nbits"]
+        .iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_u64))
+        .or_else(|| flag("load_in_4bit").then_some(4))
+        .or_else(|| flag("load_in_8bit").then_some(8))
+        .or_else(|| {
+            if group_bits.len() == 1 {
+                group_bits.first().copied()
+            } else {
+                None
+            }
+        })
+        .filter(|bits| (1..=64).contains(bits));
+    Some((method, bits))
+}
+
+fn gguf_pre_quantization(tensors: &[CheckpointTensor]) -> Option<PreQuantizedSource> {
+    let tensor_formats: BTreeSet<String> = tensors
+        .iter()
+        .filter_map(|t| match t.encoding {
+            // Integer and F64 GGML types hold exact values, not quantized weights.
+            TensorEncoding::Ggml(code) if !matches!(code, 24..=28) => {
+                ggml_type_name(code).map(String::from)
+            }
+            _ => None,
+        })
+        .collect();
+    (!tensor_formats.is_empty()).then(|| PreQuantizedSource {
+        method: Some("gguf".into()),
+        bits: None,
+        tensor_formats: tensor_formats.into_iter().collect(),
     })
 }
 
@@ -145,14 +281,29 @@ fn tensor(
     }
 }
 
-pub(crate) fn safetensors_encoding(dtype: &str) -> Result<(TensorEncoding, u64)> {
+/// Records each SafeTensors dtype as its own encoding; no dtype is widened or narrowed.
+pub(crate) fn safetensors_encoding(dtype: &str) -> Result<TensorEncoding> {
     Ok(match dtype {
-        "F32" => (TensorEncoding::Fp32, 4),
-        "F16" => (TensorEncoding::Fp16, 2),
-        "BF16" => (TensorEncoding::Bf16, 2),
-        "F8_E4M3" => (TensorEncoding::Fp8E4M3, 1),
-        "I8" => (TensorEncoding::Int8, 1),
-        "U8" => (TensorEncoding::Uint8, 1),
+        "F64" => TensorEncoding::Fp64,
+        "F32" => TensorEncoding::Fp32,
+        "F16" => TensorEncoding::Fp16,
+        "BF16" => TensorEncoding::Bf16,
+        "F8_E4M3" => TensorEncoding::Fp8E4M3,
+        "F8_E5M2" => TensorEncoding::Fp8E5M2,
+        "F8_E8M0" => TensorEncoding::Fp8E8M0,
+        "F6_E2M3" => TensorEncoding::Fp6E2M3,
+        "F6_E3M2" => TensorEncoding::Fp6E3M2,
+        "F4" => TensorEncoding::Fp4E2M1,
+        "BOOL" => TensorEncoding::Bool,
+        "I8" => TensorEncoding::Int8,
+        "U8" => TensorEncoding::Uint8,
+        "I16" => TensorEncoding::Int16,
+        "U16" => TensorEncoding::Uint16,
+        "I32" => TensorEncoding::Int32,
+        "U32" => TensorEncoding::Uint32,
+        "I64" => TensorEncoding::Int64,
+        "U64" => TensorEncoding::Uint64,
+        "C64" => TensorEncoding::Complex64,
         _ => {
             return Err(format!(
                 "Unsupported SafeTensors dtype {dtype}; no precision conversion was performed"
@@ -224,27 +375,64 @@ fn value(file: &mut File, kind: u32, depth: u32, budget: &mut u64) -> Result<Val
     Ok(Value::Null)
 }
 
+/// GGML tensor types as `(code, name, elements per block, bytes per block)`, matching
+/// ggml's `type_traits`. Codes 4 and 5 were retired before GGUF v3. Current ggml no longer
+/// loads the interleaved `*_4_4`, `*_4_8` and `*_8_8` types, but their bytes are still
+/// copied exactly so the backend reports the incompatibility itself.
+const GGML_TYPES: &[(u32, &str, u64, u64)] = &[
+    (0, "F32", 1, 4),
+    (1, "F16", 1, 2),
+    (2, "Q4_0", 32, 18),
+    (3, "Q4_1", 32, 20),
+    (6, "Q5_0", 32, 22),
+    (7, "Q5_1", 32, 24),
+    (8, "Q8_0", 32, 34),
+    (9, "Q8_1", 32, 36),
+    (10, "Q2_K", 256, 84),
+    (11, "Q3_K", 256, 110),
+    (12, "Q4_K", 256, 144),
+    (13, "Q5_K", 256, 176),
+    (14, "Q6_K", 256, 210),
+    (15, "Q8_K", 256, 292),
+    (16, "IQ2_XXS", 256, 66),
+    (17, "IQ2_XS", 256, 74),
+    (18, "IQ3_XXS", 256, 98),
+    (19, "IQ1_S", 256, 50),
+    (20, "IQ4_NL", 32, 18),
+    (21, "IQ3_S", 256, 110),
+    (22, "IQ2_S", 256, 82),
+    (23, "IQ4_XS", 256, 136),
+    (24, "I8", 1, 1),
+    (25, "I16", 1, 2),
+    (26, "I32", 1, 4),
+    (27, "I64", 1, 8),
+    (28, "F64", 1, 8),
+    (29, "IQ1_M", 256, 56),
+    (30, "BF16", 1, 2),
+    (31, "Q4_0_4_4", 32, 18),
+    (32, "Q4_0_4_8", 32, 18),
+    (33, "Q4_0_8_8", 32, 18),
+    (34, "TQ1_0", 256, 54),
+    (35, "TQ2_0", 256, 66),
+    (36, "IQ4_NL_4_4", 32, 18),
+    (37, "IQ4_NL_4_8", 32, 18),
+    (38, "IQ4_NL_8_8", 32, 18),
+    (39, "MXFP4", 32, 17),
+];
+
+/// The ggml name of a GGML tensor type code, as GGUF tools and Ollama report it.
+pub fn ggml_type_name(code: u32) -> Option<&'static str> {
+    GGML_TYPES
+        .iter()
+        .find(|(c, ..)| *c == code)
+        .map(|(_, name, ..)| *name)
+}
+
 fn ggml_layout(code: u32) -> Result<(u64, u64, TensorEncoding)> {
-    let (block, bytes) = match code {
-        0 => (1, 4),
-        1 | 30 => (1, 2),
-        2 => (32, 18),
-        3 => (32, 20),
-        6 => (32, 22),
-        7 => (32, 24),
-        8 => (32, 34),
-        9 => (32, 40),
-        10 => (256, 84),
-        11 => (256, 110),
-        12 => (256, 144),
-        13 => (256, 176),
-        14 => (256, 210),
-        15 => (256, 292),
-        _ => {
-            return Err(format!(
-                "Unsupported GGML tensor type {code}; no replacement format was selected"
-            ));
-        }
+    let Some(&(_, _, block, bytes)) = GGML_TYPES.iter().find(|(c, ..)| *c == code) else {
+        return Err(format!(
+            "Unsupported GGML tensor type {code}; no replacement format was selected"
+        ));
     };
     let encoding = match code {
         0 => TensorEncoding::Fp32,

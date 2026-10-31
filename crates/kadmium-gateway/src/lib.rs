@@ -734,6 +734,35 @@ impl GatewayState {
         }
     }
 
+    /// Initializes a live-only `GatewayState` with zero fabricated demo nodes for standalone
+    /// inspection (e.g., `kadmium mcp` when no `--demo` flag is passed and no live coordinator is attached).
+    pub fn new_live_unconnected() -> Self {
+        let mut state = Self::new();
+        state.live_only_mode = true;
+        state.active_model_loaded = false;
+        state.nodes.clear();
+        state.live_workers.clear();
+        state.fts3_transfers.clear();
+        state.training_step_counter = 0;
+        state.last_training_loss = 0.0;
+        state.training_loss_history.clear();
+        state.last_checkpoint_step = 0;
+        state.coordinator_quorum = CoordinatorFailoverQuorum::from_cluster(&state.nodes);
+        state.inference_plan = ShardPlanner::compute_plan(
+            state.epoch,
+            &state.inference_model,
+            WorkloadKind::Inference,
+            &state.nodes,
+        );
+        state.training_plan = ShardPlanner::compute_plan(
+            state.epoch,
+            &state.training_model,
+            WorkloadKind::DistributedTraining,
+            &state.nodes,
+        );
+        state
+    }
+
     pub fn grid_calibrations_path() -> std::path::PathBuf {
         std::path::Path::new("target/kadmium-state").join("grid_calibrations.json")
     }

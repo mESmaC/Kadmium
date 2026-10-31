@@ -18,7 +18,10 @@ enum AppEvent {
     /// The coordinator answers; show (or reload) the Companion.
     Ready,
     /// The coordinator cannot be reached; show the reason in the window.
-    Unavailable { reason: String },
+    Unavailable {
+        reason: String,
+    },
+    PickPath(kadmium_native::PickerMessage),
 }
 
 pub fn run(args: Args, source: CoordinatorSource) {
@@ -35,7 +38,13 @@ pub fn run(args: Args, source: CoordinatorSource) {
     let port = args.port;
     let attaching = !source.is_embedded();
     let mut web_context = WebContext::new(launch::webview_data_dir());
-    let webview = match build_webview(&mut web_context, &window, port, attaching) {
+    let webview = match build_webview(
+        &mut web_context,
+        &window,
+        port,
+        attaching,
+        event_loop.create_proxy(),
+    ) {
         Ok(webview) => webview,
         Err(err) => {
             eprintln!(
@@ -56,6 +65,9 @@ pub fn run(args: Args, source: CoordinatorSource) {
         // Keep the profile context alive for as long as the webview.
         let _ = &web_context;
         match event {
+            Event::UserEvent(AppEvent::PickPath(request)) => {
+                let _ = webview.evaluate_script(&request.show(&window));
+            }
             Event::UserEvent(AppEvent::Ready) => {
                 let _ = webview.load_url(&launch::companion_entry_url(port));
                 if args.control_room && !opened_control_room {
@@ -95,11 +107,13 @@ fn build_webview(
     window: &Window,
     port: u16,
     attaching: bool,
+    proxy: EventLoopProxy<AppEvent>,
 ) -> wry::Result<WebView> {
     let builder = WebViewBuilder::new_with_web_context(web_context)
         .with_html(splash_page(port, attaching, None))
         .with_background_color((14, 16, 19, 255))
         .with_initialization_script(bridge_script())
+        .with_initialization_script(kadmium_native::bridge_script(&launch::origin(port)))
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(move |url| {
             let stay = stays_in_window(port, &url);
@@ -112,7 +126,17 @@ fn build_webview(
             launch::open_in_browser(&url);
             NewWindowResponse::Deny
         })
-        .with_ipc_handler(move |request| handle_message(port, request.body()));
+        .with_ipc_handler(move |request| {
+            if let Some(picker) = kadmium_native::parse_request(
+                &launch::origin(port),
+                &request.uri().to_string(),
+                request.body(),
+            ) {
+                let _ = proxy.send_event(AppEvent::PickPath(picker));
+            } else {
+                handle_message(port, request.body());
+            }
+        });
 
     // Release builds drop the browser context menu and shortcuts (print, find, reload) so the
     // window behaves like an app; debug builds keep them for inspecting the page.

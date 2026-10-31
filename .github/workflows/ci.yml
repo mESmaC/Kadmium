@@ -32,6 +32,30 @@ jobs:
       - name: Check generated economics match assumptions
         run: python scripts/business_model.py --check
 
+  formal:
+    name: Lean design proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Keep Lean out of every Cargo build (AGENTS.md section 2.1)
+        run: |
+          if git grep -nE 'formal/|\.olean|lean-toolchain|leanprover|leanshared|leanrt|lake (build|exe|env)' -- Cargo.toml ':(glob)crates/**/Cargo.toml' ':(glob)crates/**/build.rs' ':(glob)crates/**/src/**'; then
+            echo "Cargo manifests, build scripts and crate sources must not reference formal/ or the Lean toolchain."
+            exit 1
+          fi
+      - name: Install elan (toolchain pinned by formal/lean-toolchain)
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Check every proof (warnings, including sorry, fail the build)
+        working-directory: formal
+        run: lake build --wfail
+      - name: Check the Rust differential fixture matches the Lean model
+        run: |
+          (cd formal && lake exe repops_vectors ../crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt)
+          git diff --exit-code -- crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt
+
   workspace-ui:
     name: Workspace browser workflows
     runs-on: ubuntu-latest
@@ -57,7 +81,7 @@ jobs:
         run: cargo build -p kadmium-condenser-app --locked
       - name: Test Condenser checkpoint and compute workflows
         working-directory: .
-        run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs crates/kadmium-condenser/tests/agent_workflow.test.cjs
+        run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs crates/kadmium-condenser/tests/agent_workflow.test.cjs crates/kadmium-condenser/tests/file_picker.test.cjs
       - name: Build embedded model setup fixture
         run: cargo build -p kadmium-gateway --example control_room_fixture --locked
       - name: Test model setup from both Kadmium interfaces
@@ -125,7 +149,7 @@ jobs:
           cargo build -p kadmium-gateway --example control_room_fixture
           node --test crates/kadmium-gateway/tests/control_room.test.cjs
       - name: Test Condenser stream and task workflows
-        run: node --test crates/kadmium-condenser/tests/workflow.test.cjs
+        run: node --test crates/kadmium-condenser/tests/workflow.test.cjs crates/kadmium-native/tests/bridge.test.cjs
 
       - name: Smoke-test Kadmium CLI & Condenser engines
         run: |

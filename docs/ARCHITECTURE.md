@@ -285,6 +285,8 @@ The two ideas come from Gensyn: RepOps, a library of operators that produce the 
 
 Rebuilt on it: the fused RMSNorm and RoPE kernel, the paged attention kernel (a two-pass softmax over tree reductions rather than an online rescaling recurrence, which a split-KV backend could not reproduce), the SwiGLU expert, the router, the per-layer reference (trunk, expert contributions, combine), the DeMo DCT and its inverse (every coefficient contributes a term, zeros included, so the tree has the same shape for every packet), the Q4K matvec and QLoRA adapter, the DiLoCo outer step (islands reduced in canonical order, their bytes ascending) and the reduce's summaries. The tests prove bit-exactness across chunk sizes 1 to n, arrival orders and six simulated backends; chain, fan-out and replica-served fan-out still produce identical bytes; every layer boundary carries the same digest in both shapes; a DeMo reduce over three islands is bit-identical in any contributor order; the legacy pipeline and the grid chain agree digest for digest.
 
+The reduction tree itself is **Proved (model)** in Lean (`formal/`, see [its README](../formal/README.md)). For every arrival order and every addition function, with no associativity assumed, `TreeReducer` returns exactly `tree_sum`, so the bit-identity holds for IEEE floats on every input rather than on sampled ones. The legacy `VerdeVerificationEngine::repops_pairwise_tree_sum` builds the same tree. No binary reduction over the same operands performs fewer additions or has a shorter critical path, so the fixed order costs nothing in either measure. These are statements about a Lean model of the Rust; a fixture the model generates ties it to the code (`crates/kadmium-runtime/tests/repops_lean_vectors.rs`).
+
 **What is committed.** Every result record carries `layer_digests`: 12 bytes per layer, in layer order.
 
 | Unit | Each digest covers |
@@ -469,3 +471,82 @@ Windows Intel AI Boost hardware validation covers rectangular and non-tile-align
 
 Settings: `KADMIUM_EXPERT_CACHE_MB` sizes a worker's expert cache (default a quarter of the ledger's room, at most 256 MiB; `0` turns it off), `KADMIUM_EXPERT_PREFETCH_DEPTH` turns the chain-stage prefetch on (default `0`, off), `KADMIUM_HOST_BUDGET_MB` fixes the envelope where the platform probe should not be trusted.
 
+### 9.20 KIP/1 Interdevice Transfer Protocol (`kadmium-data::interdevice`)
+
+`kadmium-data::interdevice` defines KIP/1, a node-local transfer protocol between `Endpoint { Ram, Vram, Storage }` with directional placement costs, bounded submission windows (`Limits`), and a safe `HostBackend`.
+
+**Current status:** Implemented protocol and host backend; not wired into any execution path; GPU adapters are target only. See the [interdevice protocol guide](guides/interdevice-protocol.md).
+
+### 9.21 Local Aggregate Compute (Target)
+
+**Status: design proposal**, except opt-in queue scratch admission in
+`kadmium-grid::WorkQueue`. No shipped workload supplies nonzero scratch estimates.
+The [admission guide](guides/local-compute-fabric.md) documents implementation,
+scientific-grid references and current limitations. This section owns the target
+design; it does not introduce another execution substrate.
+
+#### Resource authority and attempt identity
+
+Preserve the section 9.5 authority order. Spend only an owner-approved
+`ResourceOffer` through `PlanApproval`; use `PlacementFit` for resident allocations
+and `CreditLedger` for economic accounting. Extend the existing `HostMemoryLedger`
+with byte-denominated execution tickets shared by residency, scratch, expert caches,
+KIP staging and transfer windows. Do not add an independent allocator. Issue
+[#60](https://github.com/mESmaC/Kadmium/issues/60) tracks authority and memory-tier
+mapping across those paths. Current offer headroom does not automatically subtract
+resident placement, so admission alone is not safe physical memory enforcement.
+
+Map proposed wire operations onto the existing `WorkInstance` lifecycle:
+
+| Operation (target only) | Existing lifecycle and authority |
+| --- | --- |
+| Reserve/admit | `Unsent` to `Assigned`; use the instance ID, approved offer, coordinator epoch and resource ticket. A busy refusal must identify the exhausted owner-approved resource. |
+| Execute | `Assigned` to `Running`; bind immutable input digests and execution version to that instance. Persist acceptance before acknowledging; replay identical receipts, reject conflicting identity reuse. |
+| Renew | Extend the worker-enforced ticket for the same `Assigned`/`Running` attempt; not a new scheduler state. |
+| Cancel/expire/fail | Keep existing terminal states, but retain physical tickets until worker-confirmed completion or teardown. A timeout does not prove nonexecution. Fence stale epochs and reconcile abandoned originals after duplicate validation. |
+| Result/commit | `Returned` to `Validated` to `Assimilated` through existing quorum/settlement. Release scratch on actual execution completion; retain output handles until consumers acknowledge or their leases expire. |
+
+Durable deduplication must precede non-idempotent retries on section 9.3 transports.
+Use negotiated versions, bounded frames, monotonic sequences and explicit credit
+denials; do not replace KDM2 framing or equate a transport request ID with an
+execution receipt. Reserve separate bounded control capacity so bulk transfers
+cannot starve heartbeats and cancellation. Before untrusted workers, require
+authenticated identities, executor allowlists, per-peer quotas and cryptographic
+artifact integrity; current FNV content labels are not a malicious-peer guarantee.
+
+#### Data plane and adapters
+
+Extend section 6.2 `ReplicaCatalog` / `StagingJob` placement and transfer scheduling
+with immutable prerequisite output handles, consumer references and bounded direct
+transfers; keep inline bytes for small messages. Share byte windows for demand
+and prefetch rather than adding another transfer credit manager.
+
+KIP/1 (section 9.20 and its [guide](guides/interdevice-protocol.md)) owns bounded
+async I/O, Windows IoRing/Linux io_uring capability detection, pinned buffers and
+DMA completion/cancellation lifetimes. Build user-space host/device adapters on
+that contract and vendor-supported executor APIs first, then evaluate same-host
+shared memory or verified RDMA using measured topology. A USB-C connector does not
+establish RDMA or coherent remote VRAM. Consider a kernel component only if
+profiling proves a missing user-space capability, with a narrow ABI, signed
+installation, least privilege, bounded mappings and unplug/suspend recovery review.
+No custom kernel driver is implemented.
+
+#### Delivery gates
+
+1. **Admission (implemented, opt-in):** push/pull reservations, restored state,
+   invalid-value rejection, decimal exact fits, quorum-pending scratch release
+   and queue-aware eligibility diagnostics. No starvation prevention yet.
+2. **Shared worker tickets (target):** integrate residency/offer authority before
+   enabling producers. Fault-test lost acceptance, restart, duplicate execution,
+   expiry during kernels and cancellation before reclamation. Add explicit
+   fairness/headroom policy for large units rather than silently lowering quality.
+3. **Bounded direct data plane (target):** fault-test fan-out, slow consumers,
+   resumable checksum verification and memory pressure against approved windows.
+4. **Measured tuning/adapters (target):** compare serial, local-threaded and
+   distributed runs on identical inputs. Record p50/p95 end-to-end latency,
+   useful work/s, queue wait, hop bytes, peak RAM/VRAM, retries and owner
+   responsiveness with hardware/topology provenance. Bucket execution costs by
+   shape/backend/precision; benchmark dispatch scan/cloning overhead before
+   introducing an indexed reservation cache. Enable optimizations only after
+   measured benefits exceed dispatch, staging and validation costs. No speedup
+   is claimed and no model precision/context/output default is reduced.

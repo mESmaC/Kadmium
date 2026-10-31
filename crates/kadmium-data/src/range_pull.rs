@@ -177,7 +177,7 @@ impl HfByteRangeSlicer {
                 .get("dtype")
                 .and_then(|v| v.as_str())
                 .ok_or("Missing tensor dtype")?;
-            let (target_encoding, _) = crate::checkpoint::formats::safetensors_encoding(dtype)?;
+            let target_encoding = crate::checkpoint::formats::safetensors_encoding(dtype)?;
 
             slices.push(HttpByteRangeSlice {
                 tensor_name: tensor_name.clone(),

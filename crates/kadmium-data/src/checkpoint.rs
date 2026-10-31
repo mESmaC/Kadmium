@@ -4,6 +4,8 @@
 
 pub(crate) mod formats;
 
+pub use formats::ggml_type_name;
+
 use crate::{
     KTB_PAGE_ALIGNMENT_BYTES, KtbBinaryArchiveHeader, KtbPageAlignedTensorEntry, TensorEncoding,
 };
@@ -40,6 +42,48 @@ pub struct CheckpointTensor {
     pub bank_offset: u64,
 }
 
+/// A source stored below 16-bit floating point, or one that declares a quantization method.
+/// Kadmium never produces these bytes; it copies them unchanged, and only after the operator
+/// accepts the source precision for that import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreQuantizedSource {
+    /// Method declared by the checkpoint, such as `gptq`, `awq`, `fp8` or `gguf`. `None` when
+    /// the tensors are sub-16-bit floats but no method is declared.
+    pub method: Option<String>,
+    /// Bits per weight, when the checkpoint metadata states one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bits: Option<u64>,
+    /// Stored tensor formats below 16-bit floating point, such as `Q4_K`, `F8_E4M3` or the
+    /// `I32` words that hold packed GPTQ weights.
+    pub tensor_formats: Vec<String>,
+}
+
+impl PreQuantizedSource {
+    /// One-line description for errors, warnings and labels, such as `gptq 4-bit (I32)`.
+    pub fn description(&self) -> String {
+        let mut text = self
+            .method
+            .clone()
+            .unwrap_or_else(|| "undeclared method".into());
+        if let Some(bits) = self.bits {
+            text.push_str(&format!(" {bits}-bit"));
+        }
+        if !self.tensor_formats.is_empty() {
+            text.push_str(&format!(" ({})", self.tensor_formats.join(", ")));
+        }
+        text
+    }
+}
+
+/// Per-import choices. The default accepts only sources at 16-bit floating point or wider.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportOptions {
+    /// Import a checkpoint that was quantized before it reached Kadmium. Its bytes are kept
+    /// exactly; precision lost before import cannot be recovered.
+    #[serde(default)]
+    pub accept_pre_quantized: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointManifest {
     pub schema_version: u32,
@@ -55,6 +99,9 @@ pub struct CheckpointManifest {
     pub tensors: Vec<CheckpointTensor>,
     /// The importer never changes tensor bytes, drops layers, or changes routing.
     pub quality_policy: String,
+    /// Present when the operator accepted a pre-quantized source for this package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_quantized: Option<PreQuantizedSource>,
     pub warnings: Vec<String>,
 }
 
@@ -72,6 +119,8 @@ pub struct CheckpointSummary {
     pub bank_bytes: u64,
     pub bank_count: usize,
     pub dtypes: BTreeSet<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pre_quantized: Option<PreQuantizedSource>,
     pub warnings: Vec<String>,
 }
 
@@ -89,6 +138,7 @@ impl CheckpointManifest {
             bank_bytes: self.banks.iter().map(|f| f.bytes).sum(),
             bank_count: self.banks.len(),
             dtypes: self.tensors.iter().map(|t| t.dtype.clone()).collect(),
+            pre_quantized: self.pre_quantized.clone(),
             warnings: self.warnings.clone(),
         }
     }
@@ -150,7 +200,7 @@ impl CheckpointLibrary {
     pub fn read(&self, id: &str) -> Result<CheckpointManifest> {
         let path = self.package_dir(id)?.join("manifest.json");
         let manifest: CheckpointManifest = read_json(&path)?;
-        if !matches!(manifest.schema_version, 1 | 2)
+        if !matches!(manifest.schema_version, 1..=3)
             || manifest.id != id
             || manifest.quality_policy != "preserve_source"
         {
@@ -208,6 +258,7 @@ impl CheckpointLibrary {
             context_length: context,
             scaled_context_length: scaled_context,
             tensors,
+            pre_quantized,
         } = formats::inspect(&dir.join("source"), &manifest.source_files)?;
         let recorded: Vec<_> = manifest
             .tensors
@@ -245,6 +296,22 @@ impl CheckpointLibrary {
                 return Err("Checkpoint manifest does not match its source metadata".into());
             }
         }
+        if pre_quantized != manifest.pre_quantized {
+            // Packages written before schema 3 kept quantized sources without recording them.
+            // Record what the source holds so every view labels it; the bytes are unchanged.
+            if manifest.schema_version < 3 && manifest.pre_quantized.is_none() {
+                manifest.schema_version = 3;
+                if let Some(quantized) = &pre_quantized {
+                    manifest.warnings.push(pre_quantized_warning(quantized));
+                }
+                manifest.pre_quantized = pre_quantized;
+                if let Ok(bytes) = serde_json::to_vec_pretty(&manifest) {
+                    let _ = fs::write(dir.join("manifest.json"), bytes);
+                }
+            } else {
+                return Err("Checkpoint manifest does not match its source precision".into());
+            }
+        }
         if manifest.banks.len() != tensors.len().div_ceil(64) {
             return Err("Checkpoint manifest has an inconsistent bank count".into());
         }
@@ -274,7 +341,24 @@ impl CheckpointLibrary {
         Ok(manifest)
     }
 
+    /// Import with the default options, which refuse pre-quantized sources.
     pub fn import(&self, source: &Path) -> Result<CheckpointManifest> {
+        self.import_with(source, ImportOptions::default())
+    }
+
+    pub fn import_with(&self, source: &Path, options: ImportOptions) -> Result<CheckpointManifest> {
+        self.import_in(source, options, None)
+    }
+
+    /// Normalize beside the source by default, or in an explicitly selected working directory.
+    /// The working directory must exist. Publication into the library remains atomic even
+    /// when the workspace and library are on different filesystems.
+    pub fn import_in(
+        &self,
+        source: &Path,
+        options: ImportOptions,
+        working_directory: Option<&Path>,
+    ) -> Result<CheckpointManifest> {
         let source = source.canonicalize().map_err(io_error)?;
         let paths = source_paths(&source)?;
         // Validate headers before copying a potentially multi-terabyte checkpoint.
@@ -292,7 +376,7 @@ impl CheckpointLibrary {
                 })
             })
             .collect::<Result<_>>()?;
-        formats::inspect(
+        let inspected = formats::inspect(
             if source.is_dir() {
                 &source
             } else {
@@ -300,14 +384,15 @@ impl CheckpointLibrary {
             },
             &descriptors,
         )?;
+        refuse_unaccepted(&inspected.pre_quantized, options)?;
         fs::create_dir_all(&self.root).map_err(io_error)?;
-        let temporary = self.root.join(format!(
-            ".import-{}-{}",
-            std::process::id(),
-            NEXT_IMPORT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&temporary).map_err(io_error)?;
-        let staging = Staging(temporary);
+        let work_root = import_working_directory(&source, working_directory)?;
+        let staging = Staging::create(&work_root).map_err(|error| {
+            format!(
+                "Cannot create checkpoint workspace in {}: {error}. Choose another working directory explicitly",
+                work_root.display()
+            )
+        })?;
         fs::create_dir(staging.0.join("source")).map_err(io_error)?;
         fs::create_dir(staging.0.join("banks")).map_err(io_error)?;
         let mut source_files = Vec::new();
@@ -339,7 +424,10 @@ impl CheckpointLibrary {
             context_length,
             scaled_context_length,
             mut tensors,
+            pre_quantized,
         } = formats::inspect(&staging.0.join("source"), &source_files)?;
+        // The copied bytes decide, in case the source changed after the first inspection.
+        refuse_unaccepted(&pre_quantized, options)?;
         let mut banks = Vec::new();
         // A bounded number of descriptors per bank keeps version-1 Page 0 readable everywhere.
         for (index, batch) in tensors.chunks_mut(64).enumerate() {
@@ -352,16 +440,21 @@ impl CheckpointLibrary {
             "KTB normalization preserves source precision; it cannot recover quality lost before import.".into(),
             "Generation requires a compatible inference backend. KTB banks are not a native language-model runtime or a RepOps parity certification.".into(),
         ];
-        if tensors.iter().any(|t| {
+        if let Some(quantized) = &pre_quantized {
+            warnings.push(pre_quantized_warning(quantized));
+        } else if tensors.iter().any(|t| {
             !matches!(
                 t.encoding,
-                TensorEncoding::Fp32 | TensorEncoding::Fp16 | TensorEncoding::Bf16
+                TensorEncoding::Fp64
+                    | TensorEncoding::Fp32
+                    | TensorEncoding::Fp16
+                    | TensorEncoding::Bf16
             )
         }) {
-            warnings.push("This checkpoint contains quantized or non-floating tensors. Their original formats are preserved.".into());
+            warnings.push("This checkpoint contains integer, boolean or complex tensors. Their original formats are preserved.".into());
         }
         let manifest = CheckpointManifest {
-            schema_version: 2,
+            schema_version: 3,
             id,
             name: source
                 .file_name()
@@ -376,6 +469,7 @@ impl CheckpointLibrary {
             banks,
             tensors,
             quality_policy: "preserve_source".into(),
+            pre_quantized,
             warnings,
         };
         let mut file = File::create(staging.0.join("manifest.json")).map_err(io_error)?;
@@ -388,13 +482,114 @@ impl CheckpointLibrary {
             if target.exists() {
                 return self.verify(&manifest.id);
             }
+            if error.kind() == std::io::ErrorKind::CrossesDevices {
+                return self.publish_copy(&staging.0, &manifest);
+            }
             return Err(io_error(error));
         }
         Ok(manifest)
     }
+
+    /// Copy only a completed package across filesystems. Hash each destination stream against
+    /// the normalized manifest before the destination-local rename makes it visible.
+    fn publish_copy(
+        &self,
+        source: &Path,
+        manifest: &CheckpointManifest,
+    ) -> Result<CheckpointManifest> {
+        let target = self.package_dir(&manifest.id)?;
+        let destination = Staging::create(&self.root)?;
+        for (folder, files) in [
+            ("source", &manifest.source_files),
+            ("banks", &manifest.banks),
+        ] {
+            fs::create_dir(destination.0.join(folder)).map_err(io_error)?;
+            for expected in files {
+                simple_name(&expected.name)?;
+                let mut input =
+                    File::open(source.join(folder).join(&expected.name)).map_err(io_error)?;
+                let mut output = File::create(destination.0.join(folder).join(&expected.name))
+                    .map_err(io_error)?;
+                let (bytes, sha256, _) = copy_hash(&mut input, &mut output, Some(expected.bytes))?;
+                if bytes != expected.bytes
+                    || sha256 != expected.sha256
+                    || input.read(&mut [0u8; 1]).map_err(io_error)? != 0
+                {
+                    return Err(format!(
+                        "Checkpoint changed during publication: {folder}/{}",
+                        expected.name
+                    ));
+                }
+                output.sync_all().map_err(io_error)?;
+            }
+        }
+        let mut file = File::create(destination.0.join("manifest.json")).map_err(io_error)?;
+        file.write_all(&serde_json::to_vec_pretty(manifest).map_err(io_error)?)
+            .map_err(io_error)?;
+        file.sync_all().map_err(io_error)?;
+        drop(file);
+        if let Err(error) = fs::rename(&destination.0, &target) {
+            if target.exists() {
+                return self.verify(&manifest.id);
+            }
+            return Err(io_error(error));
+        }
+        Ok(manifest.clone())
+    }
+}
+
+fn import_working_directory(source: &Path, selected: Option<&Path>) -> Result<PathBuf> {
+    let path = selected
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(if source.is_dir() {
+            source
+        } else {
+            source.parent().ok_or("Checkpoint has no parent")?
+        });
+    let path = path.canonicalize().map_err(|error| {
+        format!(
+            "Cannot open checkpoint working directory {}: {error}",
+            path.display()
+        )
+    })?;
+    if !path.is_dir() {
+        return Err(format!(
+            "Checkpoint working directory is not a directory: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+fn pre_quantized_warning(quantized: &PreQuantizedSource) -> String {
+    format!(
+        "You imported a pre-quantized source: {}. Kadmium keeps these bytes exactly; responses reflect the precision this checkpoint had before import.",
+        quantized.description()
+    )
+}
+
+fn refuse_unaccepted(found: &Option<PreQuantizedSource>, options: ImportOptions) -> Result<()> {
+    match found {
+        Some(quantized) if !options.accept_pre_quantized => Err(format!(
+            "This checkpoint is already quantized: {}. Kadmium never quantizes weights, and it imports a pre-quantized source only when you accept its precision for this import. Its bytes are kept exactly, but precision lost before import cannot be recovered. Accept the pre-quantized source to continue, or choose a 16-bit or wider original.",
+            quantized.description()
+        )),
+        _ => Ok(()),
+    }
 }
 
 struct Staging(PathBuf);
+impl Staging {
+    fn create(root: &Path) -> Result<Self> {
+        let path = root.join(format!(
+            ".kadmium-import-{}-{}",
+            std::process::id(),
+            NEXT_IMPORT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path).map_err(io_error)?;
+        Ok(Self(path))
+    }
+}
 impl Drop for Staging {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -431,7 +626,14 @@ fn source_paths(source: &Path) -> Result<Vec<PathBuf>> {
                         | "vocab.json"
                         | "merges.txt"
                         | "chat_template.jinja"
+                        | "chat_template.json"
+                        | "preprocessor_config.json"
+                        | "processor_config.json"
                         | "model.safetensors.index.json"
+                        // Quantization parameters that some pre-quantized exports keep
+                        // outside config.json (AutoGPTQ, NVIDIA ModelOpt).
+                        | "quantize_config.json"
+                        | "hf_quant_config.json"
                 ))
         {
             paths.push(path);
@@ -596,4 +798,122 @@ pub(crate) fn unique_tensors(tensors: &[CheckpointTensor]) -> Result<()> {
         return Err("Checkpoint has no tensors".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+
+    fn fixture() -> (Staging, PathBuf) {
+        let root = Staging::create(&std::env::temp_dir()).unwrap();
+        let source = root.0.join("model");
+        fs::create_dir(&source).unwrap();
+        fs::write(
+            source.join("config.json"),
+            br#"{"model_type":"llama","max_position_embeddings":8192}"#,
+        )
+        .unwrap();
+        fs::write(source.join("tokenizer.json"), b"{}").unwrap();
+        fs::write(
+            source.join("model.safetensors"),
+            crate::SafetensorsToKtbTranscoder::build_safetensors_bytes(&[(
+                "model.weight",
+                "F32",
+                vec![2],
+                &[0, 0, 128, 63, 1, 0, 128, 63],
+            )]),
+        )
+        .unwrap();
+        (root, source)
+    }
+
+    #[test]
+    fn workspace_defaults_to_source_filesystem_and_honors_override() {
+        let (root, source) = fixture();
+        let source = source.canonicalize().unwrap();
+        assert_eq!(import_working_directory(&source, None).unwrap(), source);
+        let gguf = source.join("model.gguf");
+        fs::write(&gguf, b"fixture").unwrap();
+        assert_eq!(import_working_directory(&gguf, None).unwrap(), source);
+        assert_eq!(
+            import_working_directory(&source, Some(Path::new(""))).unwrap(),
+            source
+        );
+        let selected = import_working_directory(&source, Some(&root.0)).unwrap();
+        assert_eq!(selected, root.0.canonicalize().unwrap());
+        assert!(import_working_directory(&source, Some(&gguf)).is_err());
+        assert!(import_working_directory(&source, Some(&root.0.join("missing"))).is_err());
+        let staging = Staging::create(&selected).unwrap();
+        let path = staging.0.clone();
+        assert_eq!(path.parent(), Some(selected.as_path()));
+        drop(staging);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn workspace_override_preserves_package_bytes_and_cleans_up() {
+        let (root, source) = fixture();
+        let default = CheckpointLibrary::new(root.0.join("default"));
+        let expected = default.import(&source).unwrap();
+        let selected = root.0.join("selected");
+        fs::create_dir(&selected).unwrap();
+        let other = CheckpointLibrary::new(root.0.join("other"));
+        let actual = other
+            .import_in(&source, ImportOptions::default(), Some(&selected))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&expected).unwrap(),
+            serde_json::to_value(&actual).unwrap()
+        );
+        assert_eq!(other.verify(&actual.id).unwrap().id, expected.id);
+        assert_eq!(fs::read_dir(&selected).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&source).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn cross_filesystem_copy_preserves_bytes_and_rejects_damaged_staging() {
+        let (root, source) = fixture();
+        let original = CheckpointLibrary::new(root.0.join("original"));
+        let manifest = original.import(&source).unwrap();
+        let package = original.package_dir(&manifest.id).unwrap();
+        let copied = CheckpointLibrary::new(root.0.join("copied"));
+        fs::create_dir(copied.root()).unwrap();
+        copied.publish_copy(&package, &manifest).unwrap();
+        copied.verify(&manifest.id).unwrap();
+        for (folder, files) in [
+            ("source", &manifest.source_files),
+            ("banks", &manifest.banks),
+        ] {
+            for file in files {
+                assert_eq!(
+                    fs::read(package.join(folder).join(&file.name)).unwrap(),
+                    fs::read(
+                        copied
+                            .package_dir(&manifest.id)
+                            .unwrap()
+                            .join(folder)
+                            .join(&file.name)
+                    )
+                    .unwrap()
+                );
+            }
+        }
+        // The same path used after EXDEV must never publish incomplete or changed bytes.
+        let bank = package.join("banks").join(&manifest.banks[0].name);
+        let intact = fs::read(&bank).unwrap();
+        let mut changed = intact.clone();
+        changed[PAGE as usize] ^= 1;
+        let mut appended = intact.clone();
+        appended.push(0);
+        for (index, bytes) in [changed, appended, intact[..intact.len() - 1].to_vec()]
+            .into_iter()
+            .enumerate()
+        {
+            fs::write(&bank, bytes).unwrap();
+            let rejected = CheckpointLibrary::new(root.0.join(format!("rejected-{index}")));
+            fs::create_dir(rejected.root()).unwrap();
+            assert!(rejected.publish_copy(&package, &manifest).is_err());
+            assert_eq!(fs::read_dir(rejected.root()).unwrap().count(), 0);
+        }
+    }
 }

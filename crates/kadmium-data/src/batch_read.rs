@@ -42,12 +42,14 @@ pub struct MergedRead {
 
 impl MergedRead {
     pub fn end(&self) -> u64 {
-        self.offset + self.len
+        self.offset.saturating_add(self.len)
     }
 
     /// Bytes the caller asked for inside this read.
     pub fn useful_bytes(&self) -> u64 {
-        self.parts.iter().map(|p| p.len).sum()
+        self.parts
+            .iter()
+            .fold(0u64, |acc, p| acc.saturating_add(p.len))
     }
 }
 
@@ -67,6 +69,35 @@ impl ReadPlanStats {
     }
 }
 
+fn validate_range(offset: u64, len: u64, alignment: u64) -> io::Result<(u64, u64)> {
+    let alignment = alignment.max(1);
+    let raw_end = offset.checked_add(len).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("range offset {offset} with length {len} overflows u64"),
+        )
+    })?;
+    let _ = usize::try_from(len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("range length {len} exceeds addressable memory"),
+        )
+    })?;
+    let aligned_start = offset / alignment * alignment;
+    let aligned_end = raw_end
+        .div_ceil(alignment)
+        .checked_mul(alignment)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "range {offset}..{raw_end} overflows u64 when aligned to {alignment} bytes"
+                ),
+            )
+        })?;
+    Ok((aligned_start, aligned_end))
+}
+
 /// The merged, aligned reads for `ranges` (`(offset, len)` pairs in any order): ranges whose
 /// aligned spans overlap or sit within `max_gap` of each other become one read, in file order,
 /// as long as the read stays under [`MAX_MERGED_READ_BYTES`]. Empty ranges are kept as parts
@@ -74,7 +105,7 @@ impl ReadPlanStats {
 pub fn plan_reads(ranges: &[(u64, u64)], max_gap: u64, alignment: u64) -> Vec<MergedRead> {
     let alignment = alignment.max(1);
     let align_down = |v: u64| v / alignment * alignment;
-    let align_up = |v: u64| v.div_ceil(alignment) * alignment;
+    let align_up = |v: u64| v.div_ceil(alignment).saturating_mul(alignment);
     let mut order: Vec<usize> = (0..ranges.len()).collect();
     order.sort_by_key(|&i| (ranges[i].0, ranges[i].1));
 
@@ -83,19 +114,19 @@ pub fn plan_reads(ranges: &[(u64, u64)], max_gap: u64, alignment: u64) -> Vec<Me
         let (offset, len) = ranges[index];
         let part = ReadPart { index, offset, len };
         let start = align_down(offset);
-        let end = align_up(offset.saturating_add(len));
+        let end = align_up(offset.saturating_add(len)).max(start);
         match reads.last_mut() {
             Some(last)
                 if start <= last.end().saturating_add(max_gap)
-                    && end.max(last.end()) - last.offset
-                        <= MAX_MERGED_READ_BYTES.max(end - start) =>
+                    && end.max(last.end()).saturating_sub(last.offset)
+                        <= MAX_MERGED_READ_BYTES.max(end.saturating_sub(start)) =>
             {
-                last.len = end.max(last.end()) - last.offset;
+                last.len = end.max(last.end()).saturating_sub(last.offset);
                 last.parts.push(part);
             }
             _ => reads.push(MergedRead {
                 offset: start,
-                len: end - start,
+                len: end.saturating_sub(start),
                 parts: vec![part],
             }),
         }
@@ -107,8 +138,8 @@ pub fn plan_stats(ranges: &[(u64, u64)], reads: &[MergedRead]) -> ReadPlanStats 
     ReadPlanStats {
         ranges: ranges.len(),
         reads: reads.len(),
-        bytes_requested: ranges.iter().map(|r| r.1).sum(),
-        bytes_read: reads.iter().map(|r| r.len).sum(),
+        bytes_requested: ranges.iter().fold(0u64, |acc, r| acc.saturating_add(r.1)),
+        bytes_read: reads.iter().fold(0u64, |acc, r| acc.saturating_add(r.len)),
     }
 }
 
@@ -176,10 +207,75 @@ struct ReadResult {
 /// returns one buffer per caller range, in the caller's order. A range that reaches past the
 /// end of the file is an error; a read whose padding alone passes the end is not.
 pub fn read_planned(path: &Path, reads: &[MergedRead], depth: usize) -> io::Result<Vec<Vec<u8>>> {
-    let total_parts: usize = reads.iter().map(|r| r.parts.len()).sum();
+    let total_parts: usize = reads
+        .iter()
+        .try_fold(0usize, |acc, r| acc.checked_add(r.parts.len()))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "too many read parts"))?;
     let mut out: Vec<Option<Vec<u8>>> = (0..total_parts).map(|_| None).collect();
     if reads.is_empty() {
         return Ok(Vec::new());
+    }
+    for read in reads {
+        let read_end = read.offset.checked_add(read.len).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "planned read offset {} with length {} overflows u64",
+                    read.offset, read.len
+                ),
+            )
+        })?;
+        let _ = usize::try_from(read.len).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "planned read length {} exceeds addressable memory",
+                    read.len
+                ),
+            )
+        })?;
+        for part in &read.parts {
+            let part_end = part.offset.checked_add(part.len).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "range offset {} with length {} overflows u64",
+                        part.offset, part.len
+                    ),
+                )
+            })?;
+            let _ = usize::try_from(part.len).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("range length {} exceeds addressable memory", part.len),
+                )
+            })?;
+            if part.offset < read.offset || part_end > read_end || part.index >= total_parts {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "range part index {} ({}..{}) falls outside planned read {}..{}",
+                        part.index, part.offset, part_end, read.offset, read_end
+                    ),
+                ));
+            }
+        }
+    }
+    let file_len = File::open(path)?.metadata()?.len();
+    for read in reads {
+        for part in &read.parts {
+            if part.offset + part.len > file_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "range at {} of {} bytes passes the end of {}",
+                        part.offset,
+                        part.len,
+                        path.display()
+                    ),
+                ));
+            }
+        }
     }
     let readers = pool_readers(reads.len(), depth);
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -265,6 +361,9 @@ pub fn read_ranges(
     ranges: &[(u64, u64)],
     depth: usize,
 ) -> io::Result<(Vec<Vec<u8>>, ReadPlanStats)> {
+    for &(offset, len) in ranges {
+        validate_range(offset, len, READ_ALIGNMENT_BYTES)?;
+    }
     let reads = plan_reads(ranges, DEFAULT_COALESCE_GAP_BYTES, READ_ALIGNMENT_BYTES);
     let stats = plan_stats(ranges, &reads);
     Ok((read_planned(path, &reads, depth)?, stats))
@@ -362,6 +461,78 @@ mod tests {
         // An empty range is fine.
         let (empty, _) = read_ranges(&path, &[(5, 0)], 1).unwrap();
         assert!(empty[0].is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn overflowing_and_boundary_ranges_return_errors_without_unwinding() {
+        let path = temp_file(&[1u8; 16]);
+        let highest_aligned = u64::MAX / READ_ALIGNMENT_BYTES * READ_ALIGNMENT_BYTES;
+        let invalid_cases: &[&[(u64, u64)]] = &[
+            &[(u64::MAX, 1)],
+            &[(u64::MAX, u64::MAX)],
+            &[(1, u64::MAX)],
+            &[(u64::MAX - 10, 20)],
+            // Doesn't overflow offset + len, but overflows u64 when rounded up to 4096 alignment.
+            &[(highest_aligned + 1, 0)],
+            &[(highest_aligned, 1)],
+            &[(u64::MAX - 5, 5)],
+            &[(0, u64::MAX)],
+            // Mixed valid and overflowing ranges.
+            &[(0, 4), (u64::MAX, 1)],
+        ];
+        for &case in invalid_cases {
+            let result = std::panic::catch_unwind(|| read_ranges(&path, case, 2));
+            assert!(result.is_ok(), "read_ranges panicked on {case:?}");
+            let err = result.unwrap().unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "case {case:?}");
+        }
+
+        // Direct plan_reads also must not panic on extreme values.
+        let planned = std::panic::catch_unwind(|| {
+            plan_reads(
+                &[(u64::MAX, 1), (highest_aligned, 10)],
+                DEFAULT_COALESCE_GAP_BYTES,
+                READ_ALIGNMENT_BYTES,
+            )
+        });
+        assert!(planned.is_ok());
+
+        // Valid boundary cases: zero-length at EOF, reversed, overlapping, duplicate, and EOF-crossing.
+        let complex_ranges = [
+            (16, 0),
+            (12, 4),
+            (0, 16),
+            (4, 8),
+            (4, 8),
+            (0, 0),
+            (8, 8),
+            (2, 6),
+        ];
+        let (out, _) = read_ranges(&path, &complex_ranges, 4).unwrap();
+        assert_eq!(out.len(), complex_ranges.len());
+        for (got, &(offset, len)) in out.iter().zip(complex_ranges.iter()) {
+            assert_eq!(got.len(), len as usize);
+            assert!(got.iter().all(|&b| b == 1));
+            assert!(offset + len <= 16);
+        }
+
+        // Zero-length past EOF and ordinary EOF-crossing ranges fail with UnexpectedEof without huge allocations.
+        for eof_case in [
+            &[(17, 0)][..],
+            &[(16, 1)][..],
+            &[(0, 17)][..],
+            &[(0, 1 << 30)][..],
+            &[(highest_aligned, 0)][..],
+        ] {
+            let err = read_ranges(&path, eof_case, 2).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::UnexpectedEof,
+                "eof case {eof_case:?}"
+            );
+        }
+
         std::fs::remove_file(path).unwrap();
     }
 }

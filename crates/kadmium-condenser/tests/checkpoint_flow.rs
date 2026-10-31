@@ -202,3 +202,67 @@ async fn import_verify_load_and_chat_rejects_backend_precision_changes() {
     mock.abort();
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn pre_quantized_import_requires_the_operator_to_accept_it() {
+    let root = std::env::temp_dir().join(format!("condenser-pre-quantized-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("source")).unwrap();
+    std::fs::write(
+        root.join("source/config.json"),
+        br#"{"model_type":"llama","max_position_embeddings":8192,"quantization_config":{"quant_method":"awq","bits":4}}"#,
+    )
+    .unwrap();
+    std::fs::write(root.join("source/tokenizer.json"), b"{}").unwrap();
+    std::fs::write(
+        root.join("source/model.safetensors"),
+        SafetensorsToKtbTranscoder::build_safetensors_bytes(&[
+            ("model.layers.0.mlp.qweight", "I32", vec![2], &[7; 8]),
+            ("model.layers.0.mlp.scales", "F16", vec![2], &[1; 4]),
+        ]),
+    )
+    .unwrap();
+    let (addr, server) = bind(ServerOptions {
+        port: 0,
+        model_library: root.join("library"),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let server = tokio::spawn(server);
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/checkpoints/import");
+    let refused = client
+        .post(&url)
+        .json(&json!({"source_path":root.join("source")}))
+        .send()
+        .await
+        .unwrap();
+    assert!(!refused.status().is_success());
+    let text = refused.text().await.unwrap();
+    assert!(
+        text.contains("already quantized") && text.contains("awq 4-bit (I32)"),
+        "{text}"
+    );
+    let accepted = client
+        .post(&url)
+        .json(&json!({"source_path":root.join("source"),"accept_pre_quantized":true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 200);
+    let summary: Value = accepted.json().await.unwrap();
+    assert_eq!(summary["pre_quantized"]["method"], "awq");
+    assert_eq!(summary["pre_quantized"]["bits"], 4);
+    assert_eq!(summary["pre_quantized"]["tensor_formats"], json!(["I32"]));
+    let listed: Value = client
+        .get(format!("http://{addr}/api/v1/checkpoints"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["checkpoints"][0]["pre_quantized"]["method"], "awq");
+    server.abort();
+    let _ = std::fs::remove_dir_all(root);
+}

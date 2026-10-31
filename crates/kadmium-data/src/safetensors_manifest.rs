@@ -22,7 +22,8 @@ pub const SAFETENSORS_INDEX_FILE_NAME: &str = "model.safetensors.index.json";
 /// Conventional Hugging Face single-shard model file name.
 pub const SAFETENSORS_SINGLE_FILE_NAME: &str = "model.safetensors";
 
-/// SafeTensors data types with fixed-width element encodings.
+/// SafeTensors data types. Sub-byte floats are packed without padding, so a tensor's
+/// total bit count must be a whole number of bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SafetensorsDtype {
     Bool,
@@ -41,6 +42,10 @@ pub enum SafetensorsDtype {
     F8E4M3,
     F8E5M2,
     F8E8M0,
+    F6E2M3,
+    F6E3M2,
+    F4,
+    C64,
 }
 
 impl SafetensorsDtype {
@@ -62,6 +67,10 @@ impl SafetensorsDtype {
             "F8_E4M3" => Some(Self::F8E4M3),
             "F8_E5M2" => Some(Self::F8E5M2),
             "F8_E8M0" => Some(Self::F8E8M0),
+            "F6_E2M3" => Some(Self::F6E2M3),
+            "F6_E3M2" => Some(Self::F6E3M2),
+            "F4" => Some(Self::F4),
+            "C64" => Some(Self::C64),
             _ => None,
         }
     }
@@ -85,16 +94,31 @@ impl SafetensorsDtype {
             Self::F8E4M3 => "F8_E4M3",
             Self::F8E5M2 => "F8_E5M2",
             Self::F8E8M0 => "F8_E8M0",
+            Self::F6E2M3 => "F6_E2M3",
+            Self::F6E3M2 => "F6_E3M2",
+            Self::F4 => "F4",
+            Self::C64 => "C64",
         }
     }
 
-    /// Number of bytes occupied by one element.
-    pub const fn element_size_bytes(self) -> u64 {
+    /// Number of bits occupied by one element.
+    pub const fn element_size_bits(self) -> u64 {
         match self {
-            Self::Bool | Self::U8 | Self::I8 | Self::F8E4M3 | Self::F8E5M2 | Self::F8E8M0 => 1,
-            Self::I16 | Self::U16 | Self::F16 | Self::Bf16 => 2,
-            Self::I32 | Self::U32 | Self::F32 => 4,
-            Self::I64 | Self::U64 | Self::F64 => 8,
+            Self::F4 => 4,
+            Self::F6E2M3 | Self::F6E3M2 => 6,
+            Self::Bool | Self::U8 | Self::I8 | Self::F8E4M3 | Self::F8E5M2 | Self::F8E8M0 => 8,
+            Self::I16 | Self::U16 | Self::F16 | Self::Bf16 => 16,
+            Self::I32 | Self::U32 | Self::F32 => 32,
+            Self::I64 | Self::U64 | Self::F64 | Self::C64 => 64,
+        }
+    }
+
+    /// Exact payload size of `element_count` elements, or `None` when packed sub-byte
+    /// elements do not fill a whole number of bytes or the size overflows.
+    pub const fn payload_bytes(self, element_count: u64) -> Option<u64> {
+        match element_count.checked_mul(self.element_size_bits()) {
+            Some(bits) if bits % 8 == 0 => Some(bits / 8),
+            _ => None,
         }
     }
 }
@@ -194,6 +218,15 @@ pub enum SafetensorsManifestError {
 
     #[error("cannot allocate {bytes} bytes for {what}")]
     AllocationFailed { what: &'static str, bytes: u64 },
+
+    #[error(
+        "tensor `{tensor}` packs {element_count} {dtype} elements, which do not fill a whole number of bytes"
+    )]
+    PackedTensorNotByteAligned {
+        tensor: String,
+        dtype: &'static str,
+        element_count: u64,
+    },
 
     #[error("unsupported SafeTensors dtype `{dtype}` for tensor `{tensor}`")]
     UnsupportedDtype { tensor: String, dtype: String },
@@ -791,11 +824,20 @@ fn load_shard(
                     context: "tensor shape element count",
                 })
         })?;
-        let expected_bytes = element_count
-            .checked_mul(dtype.element_size_bytes())
-            .ok_or(SafetensorsManifestError::ArithmeticOverflow {
-                context: "tensor dtype byte size",
-            })?;
+        let expected_bytes = match element_count.checked_mul(dtype.element_size_bits()) {
+            None => {
+                return Err(SafetensorsManifestError::ArithmeticOverflow {
+                    context: "tensor dtype byte size",
+                });
+            }
+            Some(_) => dtype.payload_bytes(element_count).ok_or_else(|| {
+                SafetensorsManifestError::PackedTensorNotByteAligned {
+                    tensor: tensor_name.clone(),
+                    dtype: dtype.as_str(),
+                    element_count,
+                }
+            })?,
+        };
         let byte_len = end - start;
         if byte_len != expected_bytes {
             return Err(SafetensorsManifestError::TensorSizeMismatch {
@@ -1226,6 +1268,53 @@ mod tests {
             Err(SafetensorsManifestError::TensorSizeMismatch {
                 expected_bytes: 6,
                 actual_bytes: 8,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn packed_sub_byte_floats_use_exact_bit_sizes() {
+        assert_eq!(SafetensorsDtype::F4.payload_bytes(6), Some(3));
+        assert_eq!(SafetensorsDtype::F6E2M3.payload_bytes(4), Some(3));
+        assert_eq!(SafetensorsDtype::C64.payload_bytes(2), Some(16));
+        assert_eq!(SafetensorsDtype::F4.payload_bytes(3), None);
+
+        let model = TestModelDir::new("packed-fp4");
+        let payload = [0x12u8, 0x34, 0x56];
+        model.write_shard(
+            SAFETENSORS_SINGLE_FILE_NAME,
+            &build_shard_from_specs(&[(
+                LAYER_0,
+                SafetensorFieldSpec {
+                    dtype: "F4".to_string(),
+                    shape: vec![2, 3],
+                    data_offsets: [0, 3],
+                },
+                &payload,
+            )]),
+        );
+        let manifest = SafetensorsManifest::open(&model.path).unwrap();
+        assert_eq!(manifest.tensors()[0].dtype, SafetensorsDtype::F4);
+        assert_eq!(manifest.tensors()[0].byte_len, 3);
+
+        let odd = TestModelDir::new("packed-fp6-odd");
+        odd.write_shard(
+            SAFETENSORS_SINGLE_FILE_NAME,
+            &build_shard_from_specs(&[(
+                LAYER_0,
+                SafetensorFieldSpec {
+                    dtype: "F6_E3M2".to_string(),
+                    shape: vec![3],
+                    data_offsets: [0, 3],
+                },
+                &payload,
+            )]),
+        );
+        assert!(matches!(
+            SafetensorsManifest::open(&odd.path),
+            Err(SafetensorsManifestError::PackedTensorNotByteAligned {
+                element_count: 3,
                 ..
             })
         ));
