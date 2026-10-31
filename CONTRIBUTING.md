@@ -45,6 +45,15 @@ npm test
 
 See `crates/kadmium-gateway/tests/ui/README.md` for browser-test configuration and artifacts.
 
+After that Playwright setup, run Condenser's local checkpoint and distributed compute workflow from the repository root:
+
+```bash
+cargo build -p kadmium-condenser --locked
+node --test crates/kadmium-condenser/tests/local_compute.test.cjs
+```
+
+The test starts a disposable Condenser library, imports a tiny checkpoint, and checks explicit routing, backend failures and desktop/mobile layout. Screenshots go to `target/checkpoint-smoke`.
+
 The separate Control Room navigation and request-recovery regressions use a router fixture. From the repository root:
 
 ```bash

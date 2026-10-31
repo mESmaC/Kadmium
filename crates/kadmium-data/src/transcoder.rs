@@ -142,12 +142,7 @@ impl SafetensorsToKtbTranscoder {
                 continue;
             }
 
-            let encoding = match spec.dtype.as_str() {
-                "BF16" => TensorEncoding::Bf16,
-                "F8_E4M3" => TensorEncoding::Fp8E4M3,
-                "I8" | "U8" => TensorEncoding::Int8Symmetric,
-                _ => TensorEncoding::Fp16,
-            };
+            let (encoding, _) = crate::checkpoint::formats::safetensors_encoding(&spec.dtype)?;
 
             packer.add_tensor_bank(
                 key.clone(),
@@ -178,24 +173,24 @@ pub enum GgmlTypeCode {
 }
 
 impl GgmlTypeCode {
-    pub fn from_u32(v: u32) -> Self {
-        match v {
+    pub fn from_u32(v: u32) -> Result<Self, String> {
+        Ok(match v {
             0 => Self::F32,
             1 => Self::F16,
             2 => Self::Q4_0,
             8 => Self::Q8_0,
             12 => Self::Q4K,
             30 => Self::Bf16,
-            _ => Self::Q4K,
-        }
+            _ => return Err(format!("Unsupported GGML tensor type {v}")),
+        })
     }
 
     pub fn to_ktb_encoding(self) -> TensorEncoding {
         match self {
-            Self::F32 | Self::F16 => TensorEncoding::Fp16,
+            Self::F32 => TensorEncoding::Fp32,
+            Self::F16 => TensorEncoding::Fp16,
             Self::Bf16 => TensorEncoding::Bf16,
-            Self::Q8_0 => TensorEncoding::Int8Symmetric,
-            Self::Q4_0 | Self::Q4K => TensorEncoding::Q4KBlock,
+            Self::Q8_0 | Self::Q4_0 | Self::Q4K => TensorEncoding::Ggml(self as u32),
         }
     }
 }
@@ -283,7 +278,7 @@ impl GgufToKtbTranscoder {
             let ggml_code = read_u32(gguf_bytes, &mut cursor)?;
             let rel_offset = read_size(gguf_bytes, &mut cursor)?;
 
-            parsed_descriptors.push((name, GgmlTypeCode::from_u32(ggml_code), rel_offset));
+            parsed_descriptors.push((name, GgmlTypeCode::from_u32(ggml_code)?, rel_offset));
         }
 
         let data_base = cursor.checked_add(31).ok_or("GGUF alignment overflow")? / 32 * 32;

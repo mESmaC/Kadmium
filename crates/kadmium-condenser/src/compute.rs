@@ -1,4 +1,4 @@
-//! Explicit, read-only access to a Kadmium coordinator, independent of the
+//! Explicit access to a Kadmium coordinator, independent of the
 //! provider selected for a task. Credentials live only for this request.
 
 use crate::server::ApiError;
@@ -18,6 +18,14 @@ pub(crate) struct InspectRequest {
 }
 
 fn workspace_url(base: &str, model_id: Option<&str>) -> Result<reqwest::Url> {
+    let mut url = coordinator_url(base, "inference/workspace")?;
+    if let Some(id) = model_id {
+        url.query_pairs_mut().append_pair("model_id", id);
+    }
+    Ok(url)
+}
+
+fn coordinator_url(base: &str, route: &str) -> Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(base.trim())
         .map_err(|_| CondenserError::Config("Enter a valid coordinator URL".into()))?;
     if !matches!(url.scheme(), "http" | "https")
@@ -33,13 +41,41 @@ fn workspace_url(base: &str, model_id: Option<&str>) -> Result<reqwest::Url> {
         ));
     }
     url.set_path(&format!(
-        "{}/api/v1/inference/workspace",
+        "{}/api/v1/{route}",
         url.path().trim_end_matches('/')
     ));
-    if let Some(id) = model_id {
-        url.query_pairs_mut().append_pair("model_id", id);
-    }
     Ok(url)
+}
+
+#[derive(Deserialize)]
+pub(crate) struct JobRequest {
+    base_url: String,
+    api_key: Option<String>,
+    job: Value,
+}
+
+pub(crate) async fn run_job(Json(request): Json<JobRequest>) -> Result<Json<Value>, ApiError> {
+    let url = coordinator_url(&request.base_url, "compute/jobs")?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(75))
+        .build()
+        .map_err(|e| CondenserError::provider("Kadmium", e.to_string()))?;
+    let mut upstream = client.post(url).json(&request.job);
+    if let Some(key) = request.api_key.filter(|key| !key.is_empty()) {
+        upstream = upstream.bearer_auth(key);
+    }
+    let response = upstream.send().await.map_err(|_| CondenserError::provider("Kadmium","Job connection failed or timed out. The request was not retried; dispatched work may still finish."))?;
+    let report: Value =
+        crate::provider::decode_json(crate::ProviderKind::Kadmium, response).await?;
+    if !report["success"].is_boolean() || !report["traces"].is_array() {
+        return Err(CondenserError::provider(
+            "Kadmium",
+            "Coordinator returned an unsupported job report",
+        )
+        .into());
+    }
+    Ok(Json(report))
 }
 
 pub(crate) async fn inspect(Json(request): Json<InspectRequest>) -> Result<Json<Value>, ApiError> {

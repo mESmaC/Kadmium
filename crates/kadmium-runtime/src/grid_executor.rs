@@ -262,6 +262,7 @@ impl ExecutorRegistry {
         registry.register(Arc::new(VerdeAuditExecutor::default()));
         registry.register(Arc::new(crate::DraftVerifyExecutor));
         registry.register(Arc::new(crate::KvReplayExecutor));
+        registry.register(Arc::new(crate::matrix_job::MatrixProductExecutor));
         registry
     }
 
@@ -2830,7 +2831,7 @@ mod tests {
     fn registry_runs_registered_kinds_and_reports_missing_ones() {
         let local = local_executor("node-a");
         assert!(local.registry.get(&AppKind::StageForward).is_some());
-        assert_eq!(local.registry.kinds().len(), 11);
+        assert_eq!(local.registry.kinds().len(), 12);
 
         let input = ContentRef::named(ContentKind::Activation, "g/in", 3);
         let mut unit = WorkUnit::new("rev", AppKind::Custom("echo-reverse".into()));

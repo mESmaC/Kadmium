@@ -27,7 +27,7 @@ Meanwhile, vast amounts of capable silicon sit underutilized in homes, dorms, st
 
 Distributed scientific computing solved heterogeneous resource aggregation decades ago (**BOINC**, **CERN WLCG / FTS3 / Davix**), yet mainstream ML frameworks still crash or stall when one node is slower than another.
 
-**Kadmium (`Cd-48`)** is a Rust compute-fabric project for heterogeneous machines, with a working control plane, worker transport, planners and reference workloads for inference, training and RL. Its current kernels run small reference tensors; the `/v1` routes return fixed diagnostic text and reference vectors, not language-model generation. Real model execution remains integration work. Rust crates and platform components are dependencies; a packaged CLI does not require a Python environment.
+**Kadmium (`Cd-48`)** is a Rust compute-fabric project for heterogeneous machines, with a working control plane, worker transport, planners and reference workloads for inference, training and RL. Native model kernels run small reference tensors; gateway `/v1` routes return diagnostic text and vectors. Condenser's [local checkpoint workflow](docs/guides/local-checkpoints.md) preserves GGUF/SafeTensors sources and explicitly loads compatible models through local Ollama for generation. The [distributed compute guide](docs/guides/distributed-compute.md) covers user-supplied FP32 matrix jobs on TCP workers and stateful DiLoCo learner integration. Distributed production-model inference remains integration work. Rust crates and platform components are dependencies; a packaged CLI does not require a Python environment.
 
 ---
 

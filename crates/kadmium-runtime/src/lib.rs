@@ -20,6 +20,7 @@ pub mod inference_compute;
 pub mod kernels;
 pub mod kv_replay;
 pub mod live_worker;
+pub mod matrix_job;
 pub mod moe_layer;
 /// Explicit approximate NPU execution, separate from RepOps verification paths.
 pub use kadmium_npu as npu;

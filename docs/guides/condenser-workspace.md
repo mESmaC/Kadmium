@@ -19,6 +19,12 @@ The preview does not select, load or deploy a model. It distinguishes live hardw
 
 Changing the coordinator URL or planning model invalidates the displayed snapshot. Inspection has an eight-second timeout and a 2 MiB response limit. Reverse-proxy path prefixes are supported; redirects are not followed. The coordinator credential is independent of inference-provider credentials and is never attached to a prompt.
 
+## Load checkpoints and run distributed jobs
+
+Choose **Models & compute** in the sidebar or **Load a local checkpoint** in Provider settings. Normalize a GGUF file or complete SafeTensors directory, inspect its source precision and context, then load it in local Ollama. **Use in this task** explicitly selects the loaded model; a failed import or load leaves task routing intact. See [local checkpoints](local-checkpoints.md) for compatibility and the lossless storage contract.
+
+The same panel provides worker connection instructions and **Run on workers** for supplied FP32 matrix products, reference training previews, or replay. Jobs require at least two trusted online TCP workers and never fall back to demo or in-process execution. Results include actual node IDs, measured wall time, unit traces and failures. The training preview does not train an imported checkpoint. Follow [distributed compute](distributed-compute.md) to run jobs or synchronize real learners with the existing stateful DiLoCo API.
+
 ## Continue and control work
 
 - Draft prompts and imported text attachments stay with their task when switching tasks or reloading the same browser origin.
@@ -65,6 +71,8 @@ Kadmium exposes `GET /api/v1/inference/workspace?model_id=<catalog-id>`. Omittin
 
 Condenser exposes `POST /api/v1/compute/inspect` with `base_url`, optional `api_key`, and optional `model_id`; it returns the coordinator snapshot. Like Condenser's other APIs, it requires loopback Host/Origin access.
 
+Checkpoint endpoints and the compute job proxy are documented in the [API reference](../api-reference.md#condenser-checkpoints-and-compute-jobs). Importing, backend loading and running jobs are explicit writes, separate from the read-only placement preview.
+
 Both `POST /api/v1/chat` and `POST /api/v1/chat/stream` accept an optional `run_id` of 1–80 ASCII letters, digits, hyphens or underscores. IDs must be unique among active runs. `POST /api/v1/runs/{run_id}/cancel` returns `{"status":"cancelling","run_id":"..."}` or HTTP 404 if the run is no longer active. Cancellation completion is reported by the original request, not the cancellation acknowledgement. A run ID is not an idempotency key and may be reused after a run ends.
 
 Both chat endpoints also accept `allowed_tools`: omit it or use `null` for all discovered tools, use `[]` for none, or supply exact qualified names such as `["files__read"]`. `enable_tools: false` always disables model tool execution. With tools enabled, unknown or unqualified list entries fail before inference. Streaming reports that configuration failure as an `error` event; nonstreaming requests return HTTP 400. The allowlist does not accept wildcards or argument patterns.
@@ -78,4 +86,4 @@ cargo test -p kadmium-condenser -p kadmium-gateway
 node --test crates/kadmium-condenser/tests/workflow.test.cjs
 ```
 
-The workspace follows T3's conversation/sidebar/inspector and editable queue patterns, DeepSeek harness's explicit run completion and queue cancellation behavior, and Claude Code's scoped tool access. The implementation remains in the existing Rust server and embedded JavaScript UI, with no added Cargo dependencies.
+The workspace follows T3's conversation/sidebar/inspector and editable queue patterns, DeepSeek harness's explicit run completion and queue cancellation behavior, and Claude Code's scoped tool access. The implementation uses the existing Rust server and embedded JavaScript UI. Local model and compute controls use Kadmium's shared graphite and cadmium design tokens. See [contributing](../../CONTRIBUTING.md) for the additional browser workflow check.

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod storage_pool;
 pub use storage_pool::*;
+pub mod checkpoint;
 
 /// Magic header bytes for the Kadmium Tensor Bank (`.ktb`) file format (`"KDTB"`).
 pub const KTB_MAGIC_BYTES: [u8; 4] = *b"KDTB";
@@ -23,6 +24,7 @@ pub const KTB_PAGE_ALIGNMENT_BYTES: u64 = 65_536;
 /// Quantization and tensor encoding format inside a `.ktb` bank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TensorEncoding {
+    Fp32,
     Fp16,
     Bf16,
     Fp8E4M3,
@@ -31,6 +33,12 @@ pub enum TensorEncoding {
     Nf4DoubleQuant,
     /// EXL3 / QTIP (arXiv:2406.11235) Hadamard Incoherence + Bitshift Trellis-Coded Quantization (`2.0–6.0 bpw`).
     Exl3QtpTrellis,
+    /// Original GGML block type. The bytes are not Kadmium's reference Q4/Int8 codec.
+    Ggml(u32),
+    /// Unsigned bytes, distinct from symmetric quantized weights.
+    Uint8,
+    /// Raw signed bytes, without an implied quantization scale.
+    Int8,
 }
 
 /// Metadata descriptor for a pre-merged **Kadmium Tensor Bank (`.ktb`)** shard file.
@@ -612,7 +620,7 @@ mod tests {
         assert_eq!(reader.header.entries.len(), 1);
         assert_eq!(reader.header.entries[0].layer_index, 5);
         assert_eq!(reader.header.entries[0].expert_index, Some(2));
-        assert_eq!(reader.header.entries[0].encoding, TensorEncoding::Q4KBlock);
+        assert_eq!(reader.header.entries[0].encoding, TensorEncoding::Ggml(12));
 
         // Verify FTS3 chunk manifest & delta diffing
         let manifest_a = Fts3ChunkSlicer::compute_chunk_manifest(&ktb_bytes, 65_536);

@@ -21,6 +21,7 @@ use kadmium_sharding::{
     SubClusterPartitioner,
 };
 
+mod checkpoint_ops;
 mod diloco_ops;
 mod grid_ops;
 mod launch;
@@ -41,6 +42,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Normalize, list, and verify complete local checkpoints without reducing precision.
+    Checkpoint(checkpoint_ops::CheckpointArgs),
     /// Run a full simulation of asymmetric model sharding, training, RL, Dream-RSI, FTS3 staging, and live responsibility shifting
     Simulate,
     /// Run a Dream-RSI (Recursive Self-Improvement through Evolving Worlds) offline replay simulation cycle
@@ -323,6 +326,12 @@ async fn main() {
 
     let cli = Cli::parse();
     match cli.command.unwrap_or(Commands::Simulate) {
+        Commands::Checkpoint(args) => {
+            if let Err(error) = checkpoint_ops::run(args) {
+                eprintln!("kadmium checkpoint: {error}");
+                std::process::exit(2);
+            }
+        }
         Commands::Simulate => run_simulation(),
         Commands::Dream => run_dream_rsi(),
         Commands::Diloco {

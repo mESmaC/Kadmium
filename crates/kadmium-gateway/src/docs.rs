@@ -17,6 +17,10 @@ pub(crate) const DOC_INTEGRATIONS_MD: &str =
 pub(crate) const DOC_MCP_MD: &str = include_str!("../../../docs/guides/mcp-server.md");
 pub(crate) const DOC_CONDENSER_MD: &str =
     include_str!("../../../docs/guides/condenser-workspace.md");
+pub(crate) const DOC_LOCAL_CHECKPOINTS_MD: &str =
+    include_str!("../../../docs/guides/local-checkpoints.md");
+pub(crate) const DOC_DISTRIBUTED_COMPUTE_MD: &str =
+    include_str!("../../../docs/guides/distributed-compute.md");
 pub(crate) const DOC_LAUNCH_GUIDE_MD: &str = include_str!("../../../docs/guides/cli.md");
 pub(crate) const DOC_RELEASE_RUNBOOK_MD: &str = include_str!("../../../docs/guides/release.md");
 pub(crate) const DOC_BENCHMARKS_MD: &str = include_str!("../../../docs/BENCHMARKS_2026-10.md");
@@ -99,6 +103,22 @@ pub fn build_documentation_catalog() -> Vec<DocumentationPage> {
             file_path: "docs/guides/condenser-workspace.md".into(),
             summary: "Provider tasks, compute placement previews, task forks, drafts and cancellable bounded runs.".into(),
             markdown: DOC_CONDENSER_MD.into(),
+        },
+        DocumentationPage {
+            slug: "local-checkpoints".into(),
+            title: "Load a Local Checkpoint".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/local-checkpoints.md".into(),
+            summary: "Lossless GGUF/SafeTensors packages, integrity checks and explicit local Ollama loading.".into(),
+            markdown: DOC_LOCAL_CHECKPOINTS_MD.into(),
+        },
+        DocumentationPage {
+            slug: "distributed-compute".into(),
+            title: "Use Distributed Compute".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/distributed-compute.md".into(),
+            summary: "Connect TCP workers, run supplied FP32 matrix jobs and integrate stateful DiLoCo learners.".into(),
+            markdown: DOC_DISTRIBUTED_COMPUTE_MD.into(),
         },
         DocumentationPage {
             slug: "training-and-dream-rsi".into(),

@@ -496,6 +496,7 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             post(crate::grid_api::post_grid_calibrate),
         )
         .route("/api/v1/grid/run", post(crate::grid_api::post_grid_run))
+        .route("/api/v1/compute/jobs", post(crate::grid_api::jobs::run))
         .route(
             "/api/v1/grid/decode",
             post(crate::grid_api::post_grid_decode),
