@@ -137,7 +137,8 @@ impl HuggingFaceHubConnector {
     }
 
     /// Computes a layer-aware selective shard pull plan using a real parsed `SafetensorsIndexManifest`
-    /// when provided, or a clearly labelled `unverified_heuristic_estimate` plan when no index manifest is supplied.
+    /// when provided, or an unindexed layer-budget plan (`index_source: "unverified_missing_index_manifest"`,
+    /// with empty `required_safetensors_files`) when no index manifest is supplied.
     pub fn plan_selective_model_pull_with_index(
         hf_uri: &str,
         shard_plan: &ClusterShardPlan,
@@ -159,11 +160,6 @@ impl HuggingFaceHubConnector {
         };
         let per_layer_gb = total_model_gb / (shard_plan.total_layers.max(1) as f64);
 
-        let heuristic_total_shards = 16u32;
-        let layers_per_file = (shard_plan.total_layers.max(1))
-            .div_ceil(heuristic_total_shards)
-            .max(1);
-
         let mut node_pulls = Vec::new();
         for assign in shard_plan.assignments.iter().filter(|a| a.layer_count > 0) {
             let s_layer = assign.start_layer.unwrap_or(0);
@@ -172,11 +168,7 @@ impl HuggingFaceHubConnector {
             let files: Vec<String> = if let Some(manifest) = index_manifest {
                 HfByteRangeSlicer::filter_required_shard_files(manifest, s_layer, e_layer)
             } else {
-                let first_file_idx = (s_layer / layers_per_file) + 1;
-                let last_file_idx = ((e_layer / layers_per_file) + 1).min(heuristic_total_shards);
-                (first_file_idx..=last_file_idx)
-                    .map(|idx| format!("model-{idx:05}-of-{heuristic_total_shards:05}.safetensors"))
-                    .collect()
+                Vec::new()
             };
 
             let selective_gb = ((assign.layer_count as f64) * per_layer_gb * 100.0).round() / 100.0;
@@ -200,13 +192,19 @@ impl HuggingFaceHubConnector {
         let index_source = if index_manifest.is_some() {
             "parsed_safetensors_index".to_string()
         } else {
-            "unverified_heuristic_estimate".to_string()
+            "unverified_missing_index_manifest".to_string()
         };
+
+        let seed_vault_node = shard_plan
+            .assignments
+            .first()
+            .map(|a| a.hostname.clone())
+            .unwrap_or_else(|| "unassigned".to_string());
 
         Ok(HfSelectivePullPlan {
             index_manifest_url: hf_ref.hub_resolve_url("model.safetensors.index.json"),
             hf_ref,
-            seed_vault_node: "truenas-core-vault".into(),
+            seed_vault_node,
             total_model_gb,
             plan_only: true,
             index_source,
@@ -217,9 +215,18 @@ impl HuggingFaceHubConnector {
         })
     }
 
-    /// Plans a dataset split pull for `hf://datasets/org/name@revision` without fabricating
-    /// `model.safetensors.index.json` or `.ktb` weight banks.
+    /// Plans a dataset pull for `hf://datasets/org/name@revision` without fabricating
+    /// `model.safetensors.index.json`, `.ktb` weight banks, or unverified Parquet split filenames.
     pub fn plan_dataset_pull(hf_uri: &str) -> Result<HfDatasetPullPlan, String> {
+        Self::plan_dataset_pull_with_splits(hf_uri, &[])
+    }
+
+    /// Plans a dataset pull for `hf://datasets/org/name@revision` resolving only caller-supplied
+    /// Parquet split paths (`split_files`).
+    pub fn plan_dataset_pull_with_splits(
+        hf_uri: &str,
+        split_files: &[&str],
+    ) -> Result<HfDatasetPullPlan, String> {
         let hf_ref = HfRepoRef::parse(hf_uri)?;
         if hf_ref.kind != HfRepoKind::Dataset {
             return Err(format!(
@@ -227,10 +234,10 @@ impl HuggingFaceHubConnector {
             ));
         }
         let dataset_info_url = hf_ref.hub_resolve_url("dataset_infos.json");
-        let parquet_split_urls = vec![
-            hf_ref.hub_resolve_url("data/train-00000-of-00001.parquet"),
-            hf_ref.hub_resolve_url("data/test-00000-of-00001.parquet"),
-        ];
+        let parquet_split_urls = split_files
+            .iter()
+            .map(|f| hf_ref.hub_resolve_url(f.trim_start_matches('/')))
+            .collect();
         Ok(HfDatasetPullPlan {
             hf_ref,
             dataset_info_url,
@@ -314,7 +321,7 @@ pub struct GitHubConnector;
 
 impl GitHubConnector {
     /// Plans a slice assignment for a GitHub URI without claiming that the repository was fetched,
-    /// mounted, or verified when no local checkout was staged.
+    /// mounted, or commit-resolved when no local checkout was staged.
     pub fn evaluate_repo_on_slice(gh_uri: &str) -> Result<GitHubSliceCiRun, String> {
         let gh_ref = GitHubRepoRef::parse(gh_uri)?;
         let is_dream = gh_ref.repo.to_lowercase().contains("dream")
@@ -326,11 +333,9 @@ impl GitHubConnector {
             "slice-02-staging-test".to_string()
         };
 
-        let pinned_commit_sha = gh_ref.git_ref.clone();
-
         Ok(GitHubSliceCiRun {
             gh_ref,
-            pinned_commit_sha,
+            pinned_commit_sha: "unverified_unmounted".into(),
             assigned_slice_id: slice_id,
             sandbox_runtime: "WasiMicroSandbox + OCI Bridge (unmounted plan)".into(),
             mounted: false,
@@ -344,8 +349,153 @@ impl GitHubConnector {
         })
     }
 
+    fn resolve_git_dir(checkout: &Path) -> Result<std::path::PathBuf, String> {
+        let dot_git = checkout.join(".git");
+        if dot_git.is_dir() {
+            return Ok(dot_git);
+        }
+        if dot_git.is_file() {
+            let content = std::fs::read_to_string(&dot_git)
+                .map_err(|e| format!("Failed to read .git file '{}': {e}", dot_git.display()))?;
+            if let Some(gitdir) = content.trim().strip_prefix("gitdir:") {
+                let path = std::path::PathBuf::from(gitdir.trim());
+                let resolved = if path.is_relative() {
+                    checkout.join(path)
+                } else {
+                    path
+                };
+                if resolved.is_dir() {
+                    return Ok(resolved);
+                }
+            }
+        }
+        Err(format!(
+            "Local path '{}' is not a Git repository (missing .git metadata)",
+            checkout.display()
+        ))
+    }
+
+    fn verify_and_resolve_git_checkout(
+        checkout: &Path,
+        gh_ref: &GitHubRepoRef,
+    ) -> Result<String, String> {
+        let git_dir = Self::resolve_git_dir(checkout)?;
+        let head_path = git_dir.join("HEAD");
+        let head_raw = std::fs::read_to_string(&head_path)
+            .map_err(|e| format!("Failed to read '{}': {e}", head_path.display()))?;
+        let head_trimmed = head_raw.trim();
+
+        let (checked_out_ref, commit_sha) = if let Some(sym_ref) = head_trimmed.strip_prefix("ref:")
+        {
+            let rel_ref = sym_ref.trim();
+            let ref_file = git_dir.join(rel_ref);
+            let sha = if ref_file.is_file() {
+                std::fs::read_to_string(&ref_file)
+                    .map_err(|e| format!("Failed to read git ref '{}': {e}", ref_file.display()))?
+                    .trim()
+                    .to_string()
+            } else {
+                let packed = git_dir.join("packed-refs");
+                let packed_raw = std::fs::read_to_string(&packed).map_err(|_| {
+                    format!(
+                        "Could not resolve symbolic ref '{rel_ref}' in '{}'",
+                        git_dir.display()
+                    )
+                })?;
+                packed_raw
+                    .lines()
+                    .find_map(|line| {
+                        let line = line.trim();
+                        if line.is_empty() || line.starts_with('#') || line.starts_with('^') {
+                            return None;
+                        }
+                        let (sha_part, ref_part) = line.split_once(' ')?;
+                        if ref_part.trim() == rel_ref {
+                            Some(sha_part.trim().to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "Symbolic ref '{rel_ref}' not found in packed-refs of '{}'",
+                            git_dir.display()
+                        )
+                    })?
+            };
+            let short_branch = rel_ref
+                .strip_prefix("refs/heads/")
+                .or_else(|| rel_ref.strip_prefix("refs/tags/"))
+                .unwrap_or(rel_ref)
+                .to_string();
+            (Some(short_branch), sha)
+        } else {
+            (None, head_trimmed.to_string())
+        };
+
+        let is_hex_sha = commit_sha.len() >= 7
+            && commit_sha.len() <= 64
+            && commit_sha.chars().all(|c| c.is_ascii_hexdigit());
+        if !is_hex_sha {
+            return Err(format!(
+                "Resolved HEAD '{}' in '{}' is not a valid commit SHA",
+                commit_sha,
+                git_dir.display()
+            ));
+        }
+
+        let requested_ref = gh_ref.git_ref.trim();
+        let ref_matches = checked_out_ref
+            .as_deref()
+            .is_some_and(|b| b == requested_ref)
+            || commit_sha.eq_ignore_ascii_case(requested_ref)
+            || (requested_ref.len() >= 7
+                && commit_sha
+                    .to_ascii_lowercase()
+                    .starts_with(&requested_ref.to_ascii_lowercase()));
+        if !ref_matches {
+            return Err(format!(
+                "Local checkout '{}' is at ref {:?} ({commit_sha}), which does not match requested '@{requested_ref}'",
+                checkout.display(),
+                checked_out_ref
+            ));
+        }
+
+        let config_path = git_dir.join("config");
+        if let Ok(cfg_raw) = std::fs::read_to_string(&config_path) {
+            let remote_urls: Vec<&str> = cfg_raw
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("url"))
+                .filter_map(|rest| rest.trim_start().strip_prefix('='))
+                .map(str::trim)
+                .collect();
+            if !remote_urls.is_empty() {
+                let expected_slug =
+                    format!("{}/{}", gh_ref.owner, gh_ref.repo).to_ascii_lowercase();
+                let expected_colon =
+                    format!("{}:{}", gh_ref.owner, gh_ref.repo).to_ascii_lowercase();
+                let matches_remote = remote_urls.iter().any(|u| {
+                    let lower = u.trim_end_matches(".git").to_ascii_lowercase();
+                    lower.ends_with(&expected_slug) || lower.ends_with(&expected_colon)
+                });
+                if !matches_remote {
+                    return Err(format!(
+                        "Local checkout '{}' remote URL(s) {:?} do not match '{}/{}'",
+                        checkout.display(),
+                        remote_urls,
+                        gh_ref.owner,
+                        gh_ref.repo
+                    ));
+                }
+            }
+        }
+
+        Ok(commit_sha)
+    }
+
     /// Stages and verifies a GitHub repository from a local checkout path (`local_checkout`),
-    /// returning `Err` if no local checkout exists or if the requested `#subpath` is missing.
+    /// returning `Err` if no local checkout exists, if `.git` metadata/ref does not match,
+    /// or if the requested `#subpath` is missing.
     pub fn stage_local_repo(
         gh_uri: &str,
         local_checkout: Option<&Path>,
@@ -363,6 +513,7 @@ impl GitHubConnector {
                 checkout.display()
             ));
         }
+        let resolved_sha = Self::verify_and_resolve_git_checkout(checkout, &run.gh_ref)?;
         if let Some(sub) = &run.gh_ref.subpath {
             let target = checkout.join(sub);
             if !target.exists() {
@@ -373,6 +524,7 @@ impl GitHubConnector {
                 ));
             }
         }
+        run.pinned_commit_sha = resolved_sha;
         run.mounted = true;
         run.execution_mode = "local_checkout_mounted".into();
         run.sandbox_runtime = format!("Local checkout mounted from {}", checkout.display());

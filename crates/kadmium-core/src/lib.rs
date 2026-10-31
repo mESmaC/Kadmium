@@ -1060,7 +1060,8 @@ pub use tegra_switch::*;
 ///
 /// Loopback endpoints (`127.0.0.1` or `localhost`) are always allowed so local mock listeners
 /// in unit tests work deterministically. Non-loopback LAN/USB/ADB probes are disabled under
-/// `cfg(test)` or when `KADMIUM_DISABLE_LIVE_PROBES` is set in the environment.
+/// `cfg(test)`, when running inside a `cargo test` binary (`target/.../deps/...` or `rustdoctest`),
+/// or when `KADMIUM_DISABLE_LIVE_PROBES` is set in the environment.
 pub fn external_hardware_probes_allowed(custom_endpoint: Option<&str>) -> bool {
     if let Some(ep) = custom_endpoint {
         let trimmed = ep.trim();
@@ -1078,6 +1079,17 @@ pub fn external_hardware_probes_allowed(custom_endpoint: Option<&str>) -> bool {
         || std::env::var_os("NEXTEST_EXECUTION_MODE").is_some()
     {
         return false;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe_lossy = exe.to_string_lossy();
+        let in_deps_dir = exe
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case("deps"));
+        if in_deps_dir || exe_lossy.contains("rustdoctest") {
+            return false;
+        }
     }
     true
 }

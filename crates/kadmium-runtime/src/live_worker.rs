@@ -1597,6 +1597,7 @@ pub struct WorkerFrameContext {
     pub installed_version: Arc<Mutex<String>>,
     pub ktb_merkle_root_fnv64: Arc<AtomicU64>,
     pub resident_ktb_bank: Arc<Mutex<Vec<u8>>>,
+    pub resident_ktb_booked_bytes: Arc<AtomicU64>,
     pub staged_fts3_transfers: Arc<Mutex<BTreeMap<String, StagedFts3Transfer>>>,
     pub served_forward_stages: Arc<AtomicU64>,
     pub served_training_steps: Arc<AtomicU64>,
@@ -1799,7 +1800,7 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                     .total_bank_bytes
                     .max((req.page_index.saturating_add(1)).saturating_mul(page_size));
 
-                let stage_result: Result<(usize, Option<Vec<u8>>), String> = (|| {
+                let stage_result = (|| -> Result<_, String> {
                     if req.total_pages == 0 || req.page_index >= req.total_pages {
                         return Err(format!(
                             "Invalid FTS3 page index {}/{}",
@@ -1899,15 +1900,11 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                         let finished = transfers
                             .remove(&req.transfer_id)
                             .expect("completed transfer entry");
-                        if finished.booked_ledger_bytes > 0 {
-                            lock_host_ledger(&ctx.host_ledger)
-                                .release(finished.booked_ledger_bytes);
-                        }
                         let mut final_buf = finished.buffer;
                         if req.total_bank_bytes > 0 && final_buf.len() > req.total_bank_bytes {
                             final_buf.truncate(req.total_bank_bytes);
                         }
-                        Some(final_buf)
+                        Some((final_buf, finished.booked_ledger_bytes))
                     } else {
                         None
                     };
@@ -1918,7 +1915,7 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                     Ok((count, completed_bank)) => {
                         verified_pages_received = count;
                         ctx.served_fts3_pages.fetch_add(1, Ordering::Relaxed);
-                        if let Some(full_bank) = completed_bank {
+                        if let Some((full_bank, booked_bytes)) = completed_bank {
                             let recomputed_root =
                                 KtbMerkleTree::from_ktb_bytes(&full_bank).root_hash;
                             if recomputed_root == req.expected_merkle_root {
@@ -1927,14 +1924,23 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                                 *ctx.resident_ktb_bank.lock().expect("ktb bank lock") = full_bank;
                                 ctx.ktb_merkle_root_fnv64
                                     .store(recomputed_root, Ordering::Relaxed);
+                                let prev_booked = ctx
+                                    .resident_ktb_booked_bytes
+                                    .swap(booked_bytes, Ordering::AcqRel);
+                                if prev_booked > 0 {
+                                    lock_host_ledger(&ctx.host_ledger).release(prev_booked);
+                                }
                                 ack_merkle_root = recomputed_root;
                             } else {
+                                if booked_bytes > 0 {
+                                    lock_host_ledger(&ctx.host_ledger).release(booked_bytes);
+                                }
                                 patch_ok = false;
                                 ack_merkle_root = recomputed_root;
                             }
                         } else {
                             patch_ok = true;
-                            ack_merkle_root = req.expected_merkle_root;
+                            ack_merkle_root = 0;
                         }
 
                         if patch_ok {
@@ -2606,6 +2612,7 @@ pub struct LiveNodeWorkerServer {
     pub installed_version: Arc<Mutex<String>>,
     pub ktb_merkle_root_fnv64: Arc<AtomicU64>,
     pub resident_ktb_bank: Arc<Mutex<Vec<u8>>>,
+    pub resident_ktb_booked_bytes: Arc<AtomicU64>,
     pub staged_fts3_transfers: Arc<Mutex<BTreeMap<String, StagedFts3Transfer>>>,
     pub served_forward_stages: Arc<AtomicU64>,
     pub served_training_steps: Arc<AtomicU64>,
@@ -2681,6 +2688,7 @@ impl LiveNodeWorkerServer {
 
         let (initial_ktb, initial_merkle_root) =
             build_initial_resident_ktb_bank("deepseek-v3-671b-moe-q4k", 1);
+        let initial_ktb_bytes = initial_ktb.len() as u64;
 
         let node_arc = Arc::new(Mutex::new(node));
         let version_arc = Arc::new(Mutex::new(DEFAULT_KADMIUM_RUNTIME_VERSION.to_string()));
@@ -2699,11 +2707,24 @@ impl LiveNodeWorkerServer {
 
         let (host_ledger, expert_cache) =
             build_host_ledger_and_expert_cache(expert_loader.stats().cached_bytes as u64);
+        let initial_booked = {
+            let mut ledger = lock_host_ledger(&host_ledger);
+            match ledger.take(initial_ktb_bytes) {
+                Ok(ticket) => {
+                    let b = ticket.bytes;
+                    ledger.commit(ticket);
+                    b
+                }
+                Err(_) => 0,
+            }
+        };
+        let ktb_booked_arc = Arc::new(AtomicU64::new(initial_booked));
         let ctx_template = WorkerFrameContext {
             node: Arc::clone(&node_arc),
             installed_version: Arc::clone(&version_arc),
             ktb_merkle_root_fnv64: Arc::clone(&merkle_arc),
             resident_ktb_bank: Arc::clone(&ktb_bank_arc),
+            resident_ktb_booked_bytes: Arc::clone(&ktb_booked_arc),
             staged_fts3_transfers: Arc::clone(&staged_fts3_arc),
             served_forward_stages: Arc::clone(&fwd_counter),
             served_training_steps: Arc::clone(&trn_counter),
@@ -2737,6 +2758,7 @@ impl LiveNodeWorkerServer {
             installed_version: version_arc,
             ktb_merkle_root_fnv64: merkle_arc,
             resident_ktb_bank: ktb_bank_arc,
+            resident_ktb_booked_bytes: ktb_booked_arc,
             staged_fts3_transfers: staged_fts3_arc,
             served_forward_stages: fwd_counter,
             served_training_steps: trn_counter,
@@ -2778,6 +2800,7 @@ impl LiveNodeWorkerServer {
             installed_version: Arc::clone(&self.installed_version),
             ktb_merkle_root_fnv64: Arc::clone(&self.ktb_merkle_root_fnv64),
             resident_ktb_bank: Arc::clone(&self.resident_ktb_bank),
+            resident_ktb_booked_bytes: Arc::clone(&self.resident_ktb_booked_bytes),
             staged_fts3_transfers: Arc::clone(&self.staged_fts3_transfers),
             served_forward_stages: Arc::clone(&self.served_forward_stages),
             served_training_steps: Arc::clone(&self.served_training_steps),
@@ -3063,12 +3086,17 @@ impl DistributedLanExecutor {
         }
         let ack: LiveFts3ChunkStreamAck = serde_json::from_slice(&reply.payload)
             .map_err(|e| format!("Malformed LiveFts3ChunkStreamAck: {e}"))?;
+        let root_valid = if ack.bank_complete {
+            ack.new_merkle_root_fnv64 == req.expected_merkle_root
+        } else {
+            ack.new_merkle_root_fnv64 == 0 || ack.new_merkle_root_fnv64 == req.expected_merkle_root
+        };
         if ack.transfer_id != req.transfer_id
             || ack.shard_name != req.shard_name
             || ack.page_index != req.page_index
             || ack.patched_bytes != req.page_bytes.len()
             || !ack.verified_merkle_proof
-            || ack.new_merkle_root_fnv64 != req.expected_merkle_root
+            || !root_valid
         {
             return Err(format!(
                 "Unverified or mismatched FTS3 receipt from {worker_tcp_addr}"
@@ -3170,7 +3198,7 @@ impl DistributedLanExecutor {
             .collect();
         let mut verified_sets: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); workers.len()];
         let mut failed_sets: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); workers.len()];
-        let mut worker_ack_roots: Vec<Option<u64>> = vec![None; workers.len()];
+        let mut worker_completed_roots: Vec<Option<u64>> = vec![None; workers.len()];
         let mut first_error: Option<String> = None;
 
         for (worker_index, page_index, total_pages, res) in outcomes {
@@ -3180,8 +3208,8 @@ impl DistributedLanExecutor {
             match res {
                 Ok(ack) => {
                     verified_sets[worker_index].insert(ack.page_index);
-                    if ack.bank_complete || worker_ack_roots[worker_index].is_none() {
-                        worker_ack_roots[worker_index] = Some(ack.new_merkle_root_fnv64);
+                    if ack.bank_complete {
+                        worker_completed_roots[worker_index] = Some(ack.new_merkle_root_fnv64);
                     }
                     receipts.push((worker_index, ack));
                 }
@@ -3212,22 +3240,29 @@ impl DistributedLanExecutor {
                 && summary.verified_pages == summary.total_pages
                 && summary.failed_pages.is_empty()
                 && summary.missing_pages.is_empty();
-            let root_matches = match (worker_ack_roots[idx], expected_root_opt) {
+            let root_matches = match (worker_completed_roots[idx], expected_root_opt) {
                 (Some(r), Some(exp)) => r == exp,
                 _ => false,
             };
             summary.bank_complete = all_pages_verified && root_matches;
             if summary.bank_complete {
-                summary.recomputed_merkle_root_fnv64 = worker_ack_roots[idx];
+                summary.recomputed_merkle_root_fnv64 = worker_completed_roots[idx];
                 complete_destination_count += 1;
             } else if summary.first_error.is_none() && summary.total_pages > 0 {
-                let msg = format!(
-                    "Incomplete FTS3 bank on {}: verified {}/{} pages (missing {:?})",
-                    summary.target_node_id,
-                    summary.verified_pages,
-                    summary.total_pages,
-                    summary.missing_pages
-                );
+                let msg = if all_pages_verified {
+                    format!(
+                        "Uncommitted FTS3 bank on {}: all {} pages acked but no bank_complete commit receipt matched expected root",
+                        summary.target_node_id, summary.total_pages
+                    )
+                } else {
+                    format!(
+                        "Incomplete FTS3 bank on {}: verified {}/{} pages (missing {:?})",
+                        summary.target_node_id,
+                        summary.verified_pages,
+                        summary.total_pages,
+                        summary.missing_pages
+                    )
+                };
                 if first_error.is_none() {
                     first_error = Some(msg.clone());
                 }
@@ -4899,6 +4934,94 @@ mod fts3_transfer_tests {
             server.ktb_merkle_root_fnv64.load(Ordering::Relaxed),
             initial_root
         );
+    }
+
+    #[tokio::test]
+    async fn fts3_staging_eviction_and_non_committing_worker_never_credit_destination() {
+        let node = sample_personal_cluster()[0].clone();
+        let server = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, node.clone(), false)
+            .await
+            .unwrap();
+        let initial_bank = server.resident_ktb_bank.lock().unwrap().clone();
+        let initial_root = server.ktb_merkle_root_fnv64.load(Ordering::Relaxed);
+
+        let bank = vec![77u8; KTB_PAGE_ALIGNMENT_BYTES as usize * 2];
+        let mut victim_reqs = requests(&bank);
+        for req in &mut victim_reqs {
+            req.transfer_id = "0000-victim-transfer".into();
+        }
+
+        // 1. Send page 0 of the victim transfer; non-final ack must not echo expected_merkle_root.
+        let ack0 = DistributedLanExecutor::send_fts3_chunk_tcp(
+            &server.local_addr.to_string(),
+            &victim_reqs[0],
+        )
+        .await
+        .unwrap();
+        assert!(ack0.verified_merkle_proof);
+        assert!(!ack0.bank_complete);
+        assert_eq!(ack0.new_merkle_root_fnv64, 0);
+
+        // 2. Overflow the 8-entry staging map to evict "0000-victim-transfer" before page 1 arrives.
+        for i in 0..8 {
+            let mut evicter = victim_reqs[0].clone();
+            evicter.transfer_id = format!("zzzz-evicter-{i:02}");
+            let ack = DistributedLanExecutor::send_fts3_chunk_tcp(
+                &server.local_addr.to_string(),
+                &evicter,
+            )
+            .await
+            .unwrap();
+            assert!(!ack.bank_complete);
+        }
+
+        // 3. Send page 1 of the victim transfer. Both pages were acked, but neither completed the bank.
+        let ack1 = DistributedLanExecutor::send_fts3_chunk_tcp(
+            &server.local_addr.to_string(),
+            &victim_reqs[1],
+        )
+        .await
+        .unwrap();
+        assert!(ack1.verified_merkle_proof);
+        assert!(!ack1.bank_complete);
+        assert_eq!(ack1.new_merkle_root_fnv64, 0);
+        assert_eq!(*server.resident_ktb_bank.lock().unwrap(), initial_bank);
+        assert_eq!(
+            server.ktb_merkle_root_fnv64.load(Ordering::Relaxed),
+            initial_root
+        );
+
+        // 4. Verify the coordinator aggregator rejects a worker that acks every page without bank_complete.
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (worker, mock_server) = controlled_peer(node, sender).await;
+        let responder = tokio::spawn(async move {
+            while let Some((node_id, frame, tx)) = receiver.recv().await {
+                let mut ack = receipt(&node_id, &frame);
+                ack.bank_complete = false;
+                ack.new_merkle_root_fnv64 = 0;
+                tx.send(
+                    WireFrame::new(frame.kind, frame.epoch, serde_json::to_vec(&ack).unwrap())
+                        .with_request_id(frame.request_id),
+                )
+                .unwrap();
+            }
+        });
+        let (receipts, summaries, _failed_pages, complete_count, first_error) =
+            DistributedLanExecutor::stream_fts3_pages_tcp_detailed(
+                victim_reqs.into_iter(),
+                &[&worker],
+                Some(2),
+            )
+            .await;
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(summaries[0].verified_pages, 2);
+        assert!(summaries[0].missing_pages.is_empty());
+        assert!(!summaries[0].bank_complete);
+        assert!(summaries[0].recomputed_merkle_root_fnv64.is_none());
+        assert_eq!(complete_count, 0);
+        assert!(first_error.is_some());
+        responder.abort();
+        mock_server.abort();
     }
 
     #[tokio::test]

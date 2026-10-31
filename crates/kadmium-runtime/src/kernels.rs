@@ -902,17 +902,22 @@ impl MulMatIdExpertBank {
     }
 }
 
-///// Participant state for `HardwareKernelDispatcher` verification runs.
+/// Participant state for `HardwareKernelDispatcher` verification runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum KernelBenchmarkParticipant {
-    /// Reachable participant that executes the reference fused Transformer/MoE kernel pass.
-    Reachable(HardwareNode),
-    /// Unreachable or offline participant that cannot execute the kernel pass.
+    /// Host CPU reference pass alongside a modelled hardware target profile; does not claim
+    /// that the target node itself executed the kernel.
+    HostReference(HardwareNode),
+    /// Unreachable or offline participant that did not execute the kernel pass.
     Unreachable(HardwareNode),
-    /// Participant whose backend introduces a floating-point perturbation (for drift/divergence testing).
-    Divergent {
+    /// Participant that actually executed the kernel pass on `machine_id` and reported its
+    /// measured timing and RepOps digest.
+    VerifiedDevice {
         node: HardwareNode,
-        perturbation: f32,
+        machine_id: String,
+        repops_digest_fnv1a: u64,
+        elapsed_execution_us: f64,
+        measured_gflops: f64,
     },
 }
 
@@ -923,15 +928,15 @@ pub struct NodeKernelDispatchProfile {
     pub backend: ComputeBackend,
     pub kernel_target: HardwareKernelTarget,
     pub intrinsic_signature: String,
-    /// Provenance of the execution (`"host_reference_cpu_execution"`, `"unreachable_node"`, or `"divergent_execution"`).
+    /// Provenance of the execution (`"host_reference"`, `"verified_device_execution"`, or `"unreachable_node"`).
     pub execution_source: String,
-    /// Whether an independent kernel execution completed for this participant.
+    /// True only when this participant actually executed the kernel pass on its device (`VerifiedDevice`).
     pub execution_verified: bool,
-    /// Measured wall-clock duration in microseconds for this participant's kernel pass.
+    /// Measured wall-clock duration in microseconds (`0.0` when not executed on device, or host reference timing).
     pub elapsed_execution_us: f64,
     /// Measured GFLOP/s computed from actual FLOPs divided by `elapsed_execution_us`.
     pub achieved_gflops: f64,
-    /// Measured host reference GFLOP/s (alias of `achieved_gflops` for explicit schema clarity).
+    /// Measured host reference GFLOP/s.
     pub measured_host_gflops: f64,
     /// Planning estimate GFLOP/s derived from the node's hardware profile (`effective_fp16_tflops * 1000 * 0.78`).
     pub modelled_target_gflops: f64,
@@ -939,7 +944,7 @@ pub struct NodeKernelDispatchProfile {
     pub memory_bw_utilization_pct: f64,
     /// Explicit alias for `memory_bw_utilization_pct` indicating it is a planning model estimate.
     pub modelled_memory_bw_utilization_pct: f64,
-    /// FNV-1a digest of this participant's kernel output (`0` if `execution_verified == false`).
+    /// FNV-1a digest of this participant's kernel output (`0` if `Unreachable`).
     pub repops_digest_fnv1a: u64,
 }
 
@@ -948,15 +953,15 @@ pub struct NodeKernelDispatchProfile {
 pub struct HardwareKernelSuiteReport {
     /// Explicit provenance tag describing what was executed vs modelled.
     pub measurement_kind: String,
-    /// Human-readable verification status (`"unverified_insufficient_participants"`, `"unverified_unreachable_participant"`, `"divergent_digest_detected"`, or `"bit_identical_across_participants"`).
+    /// Human-readable verification status (`"unverified_insufficient_participants"`, `"host_reference_only"`, `"unverified_unreachable_participant"`, `"unverified_single_machine"`, `"divergent_digest_detected"`, or `"bit_identical_across_participants"`).
     pub verification_status: String,
-    /// Number of participants that completed a verified kernel execution.
+    /// Number of participants that completed a verified device kernel execution.
     pub verified_participant_count: usize,
     pub hidden_dim: usize,
     pub intermediate_dim: usize,
     pub kv_pages_streamed: usize,
     pub canonical_repops_digest_fnv1a: u64,
-    /// True only when at least 2 participants executed the kernel pass, all participants were reachable/verified, and all produced identical digests.
+    /// True only when at least 2 participants executed on at least 2 distinct machines, all participants were verified device executions, and all produced identical digests.
     pub cross_silicon_bit_identical: bool,
     pub sample_output_norm: f64,
     pub node_profiles: Vec<NodeKernelDispatchProfile>,
@@ -967,8 +972,7 @@ pub struct HardwareKernelDispatcher;
 
 impl HardwareKernelDispatcher {
     /// Executes one fused Transformer layer pass (`FusedRmsNormRopeKernel` -> `PagedGqaAttentionKernel`
-    /// -> `FusedSwiGluExpertKernel`) with an optional perturbation and returns `(digest_fnv1a, output_norm, total_flops)`.
-    #[allow(clippy::too_many_arguments)]
+    /// -> `FusedSwiGluExpertKernel`) and returns `(digest_fnv1a, output_norm, total_flops)`.
     fn execute_single_pass(
         hidden_dim: usize,
         intermediate_dim: usize,
@@ -976,12 +980,8 @@ impl HardwareKernelDispatcher {
         gamma: &[f32],
         kv_pages: &[KvPageBlock],
         swiglu: &FusedSwiGluExpertKernel,
-        perturbation: f32,
     ) -> (u64, f64, u64) {
-        let mut q_rope = FusedRmsNormRopeKernel::forward(input, gamma, 42, 10_000.0, 1e-5);
-        if perturbation != 0.0 && !q_rope.is_empty() {
-            q_rope[0] += perturbation;
-        }
+        let q_rope = FusedRmsNormRopeKernel::forward(input, gamma, 42, 10_000.0, 1e-5);
         let attn_out = PagedGqaAttentionKernel::forward_flash_paged(&q_rope, kv_pages);
         let post_attn: Vec<f32> = input.iter().zip(&attn_out).map(|(&x, &a)| x + a).collect();
         let mlp_out = swiglu.forward(&post_attn);
@@ -1007,29 +1007,39 @@ impl HardwareKernelDispatcher {
         (digest, output_norm, total_flops)
     }
 
-    /// Executes a fused Transformer layer micro-benchmark across `cluster`, timing each reachable
-    /// participant independently and separating measured host execution from modelled hardware targets.
+    /// Runs the canonical reference pass on the current machine and wraps the measured result as a
+    /// [`KernelBenchmarkParticipant::VerifiedDevice`] receipt for `machine_id`.
+    pub fn measure_local_device_receipt(
+        node: HardwareNode,
+        machine_id: impl Into<String>,
+    ) -> KernelBenchmarkParticipant {
+        let single =
+            Self::run_verified_kernel_benchmark(&[KernelBenchmarkParticipant::HostReference(
+                node.clone(),
+            )]);
+        let p = &single.node_profiles[0];
+        KernelBenchmarkParticipant::VerifiedDevice {
+            node,
+            machine_id: machine_id.into(),
+            repops_digest_fnv1a: p.repops_digest_fnv1a,
+            elapsed_execution_us: p.elapsed_execution_us,
+            measured_gflops: p.measured_host_gflops,
+        }
+    }
+
+    /// Evaluates the fused Transformer layer reference pass alongside the modelled target profiles
+    /// for `cluster`. Because `cluster` provides only node descriptors (not remote execution receipts),
+    /// every reachable descriptor is labelled `host_reference` (`execution_verified: false`) and
+    /// `cross_silicon_bit_identical` is `false`.
     pub fn run_cluster_kernel_benchmark(cluster: &[HardwareNode]) -> HardwareKernelSuiteReport {
         let participants: Vec<KernelBenchmarkParticipant> = cluster
             .iter()
             .cloned()
             .map(|n| {
-                let id_lower = n.id.0.to_ascii_lowercase();
-                let host_lower = n.hostname.to_ascii_lowercase();
-                if n.network_uplink_gbps <= 0.0
-                    || id_lower.contains("unreachable")
-                    || host_lower.contains("unreachable")
-                    || id_lower.contains("offline")
-                    || host_lower.contains("offline")
-                {
+                if n.network_uplink_gbps <= 0.0 {
                     KernelBenchmarkParticipant::Unreachable(n)
-                } else if id_lower.contains("divergent") || host_lower.contains("divergent") {
-                    KernelBenchmarkParticipant::Divergent {
-                        node: n,
-                        perturbation: 0.05,
-                    }
                 } else {
-                    KernelBenchmarkParticipant::Reachable(n)
+                    KernelBenchmarkParticipant::HostReference(n)
                 }
             })
             .collect();
@@ -1093,12 +1103,13 @@ impl HardwareKernelDispatcher {
             &gamma,
             &kv_pages,
             &swiglu,
-            0.0,
         );
 
         let mut node_profiles = Vec::with_capacity(participants.len());
         let mut verified_participant_count = 0usize;
+        let mut distinct_machines = std::collections::BTreeSet::new();
         let mut any_unreachable = false;
+        let mut any_host_reference_only = false;
         let mut any_divergent = false;
 
         for participant in participants {
@@ -1127,7 +1138,8 @@ impl HardwareKernelDispatcher {
                         repops_digest_fnv1a: 0,
                     });
                 }
-                KernelBenchmarkParticipant::Reachable(n) => {
+                KernelBenchmarkParticipant::HostReference(n) => {
+                    any_host_reference_only = true;
                     let target = HardwareKernelTarget::from_node(n);
                     let started = std::time::Instant::now();
                     let (digest, _, flops) = Self::execute_single_pass(
@@ -1137,7 +1149,6 @@ impl HardwareKernelDispatcher {
                         &gamma,
                         &kv_pages,
                         &swiglu,
-                        0.0,
                     );
                     let elapsed = started.elapsed();
                     let elapsed_secs = elapsed.as_secs_f64().max(1e-7);
@@ -1150,17 +1161,13 @@ impl HardwareKernelDispatcher {
                         .round()
                         / 10.0;
 
-                    verified_participant_count += 1;
-                    if digest != canonical_digest {
-                        any_divergent = true;
-                    }
                     node_profiles.push(NodeKernelDispatchProfile {
                         hostname: n.hostname.clone(),
                         backend: n.backend,
                         kernel_target: target,
                         intrinsic_signature: target.intrinsic_signature().into(),
-                        execution_source: "host_reference_cpu_execution".into(),
-                        execution_verified: true,
+                        execution_source: "host_reference".into(),
+                        execution_verified: false,
                         elapsed_execution_us: elapsed_us,
                         achieved_gflops: measured_gflops.max(0.001),
                         measured_host_gflops: measured_gflops.max(0.001),
@@ -1170,26 +1177,14 @@ impl HardwareKernelDispatcher {
                         repops_digest_fnv1a: digest,
                     });
                 }
-                KernelBenchmarkParticipant::Divergent {
+                KernelBenchmarkParticipant::VerifiedDevice {
                     node: n,
-                    perturbation,
+                    machine_id,
+                    repops_digest_fnv1a,
+                    elapsed_execution_us,
+                    measured_gflops,
                 } => {
                     let target = HardwareKernelTarget::from_node(n);
-                    let started = std::time::Instant::now();
-                    let (digest, _, flops) = Self::execute_single_pass(
-                        hidden_dim,
-                        intermediate_dim,
-                        &input,
-                        &gamma,
-                        &kv_pages,
-                        &swiglu,
-                        *perturbation,
-                    );
-                    let elapsed = started.elapsed();
-                    let elapsed_secs = elapsed.as_secs_f64().max(1e-7);
-                    let elapsed_us = ((elapsed_secs * 1_000_000.0) * 100.0).round() / 100.0;
-                    let measured_gflops =
-                        (((flops as f64 / elapsed_secs) / 1e9) * 1000.0).round() / 1000.0;
                     let modelled_target_gflops =
                         ((n.effective_fp16_tflops() * 1000.0 * 0.78) * 10.0).round() / 10.0;
                     let modelled_bw = ((74.0 + (n.compute_q_star_ratio() * 18.0)).min(94.5) * 10.0)
@@ -1197,23 +1192,28 @@ impl HardwareKernelDispatcher {
                         / 10.0;
 
                     verified_participant_count += 1;
-                    if digest != canonical_digest {
+                    let trimmed_machine = machine_id.trim();
+                    if !trimmed_machine.is_empty() {
+                        distinct_machines.insert(trimmed_machine.to_string());
+                    }
+                    if *repops_digest_fnv1a != canonical_digest {
                         any_divergent = true;
                     }
+                    let gflops = (*measured_gflops).max(0.001);
                     node_profiles.push(NodeKernelDispatchProfile {
                         hostname: n.hostname.clone(),
                         backend: n.backend,
                         kernel_target: target,
                         intrinsic_signature: target.intrinsic_signature().into(),
-                        execution_source: "divergent_execution".into(),
+                        execution_source: "verified_device_execution".into(),
                         execution_verified: true,
-                        elapsed_execution_us: elapsed_us,
-                        achieved_gflops: measured_gflops.max(0.001),
-                        measured_host_gflops: measured_gflops.max(0.001),
+                        elapsed_execution_us: *elapsed_execution_us,
+                        achieved_gflops: gflops,
+                        measured_host_gflops: gflops,
                         modelled_target_gflops,
                         memory_bw_utilization_pct: modelled_bw,
                         modelled_memory_bw_utilization_pct: modelled_bw,
-                        repops_digest_fnv1a: digest,
+                        repops_digest_fnv1a: *repops_digest_fnv1a,
                     });
                 }
             }
@@ -1221,7 +1221,9 @@ impl HardwareKernelDispatcher {
 
         let cross_silicon_bit_identical = participants.len() >= 2
             && verified_participant_count == participants.len()
+            && distinct_machines.len() >= 2
             && !any_unreachable
+            && !any_host_reference_only
             && !any_divergent
             && node_profiles
                 .iter()
@@ -1231,6 +1233,10 @@ impl HardwareKernelDispatcher {
             "unverified_insufficient_participants".into()
         } else if any_unreachable {
             "unverified_unreachable_participant".into()
+        } else if any_host_reference_only {
+            "host_reference_only".into()
+        } else if distinct_machines.len() < 2 {
+            "unverified_single_machine".into()
         } else if any_divergent {
             "divergent_digest_detected".into()
         } else {
@@ -1240,6 +1246,10 @@ impl HardwareKernelDispatcher {
         HardwareKernelSuiteReport {
             measurement_kind: if participants.is_empty() {
                 "unverified_empty_cluster".into()
+            } else if verified_participant_count == participants.len()
+                && distinct_machines.len() >= 2
+            {
+                "verified_multi_machine_device_execution".into()
             } else {
                 "host_reference_kernel_execution_with_modelled_targets".into()
             },
@@ -1453,7 +1463,8 @@ mod ollama_kernel_tests {
     }
 
     #[test]
-    fn kernel_benchmark_distinguishes_empty_unreachable_divergent_and_verified_participants() {
+    fn kernel_benchmark_distinguishes_host_reference_unreachable_single_machine_and_verified_multi_machine()
+     {
         use kadmium_core::sample_personal_cluster;
 
         // 1. Zero nodes -> empty profiles and cross_silicon_bit_identical == false
@@ -1467,15 +1478,30 @@ mod ollama_kernel_tests {
         );
 
         let cluster = sample_personal_cluster();
-        // 2. Single node -> insufficient participants for cross-silicon parity
-        let single = HardwareKernelDispatcher::run_cluster_kernel_benchmark(&cluster[..1]);
-        assert_eq!(single.node_profiles.len(), 1);
-        assert!(!single.cross_silicon_bit_identical);
-        assert_eq!(single.verified_participant_count, 1);
+        // 2. Host-reference cluster benchmark over descriptor list -> host_reference_only, unverified
+        let host_ref = HardwareKernelDispatcher::run_cluster_kernel_benchmark(&cluster[..2]);
+        assert_eq!(host_ref.node_profiles.len(), 2);
+        assert!(!host_ref.cross_silicon_bit_identical);
+        assert_eq!(host_ref.verified_participant_count, 0);
+        assert_eq!(host_ref.verification_status, "host_reference_only");
+        for p in &host_ref.node_profiles {
+            assert_eq!(p.execution_source, "host_reference");
+            assert!(!p.execution_verified);
+            assert!(p.elapsed_execution_us > 0.0);
+            assert!(p.measured_host_gflops > 0.0);
+            assert!(p.modelled_target_gflops > 0.0);
+            assert_ne!(p.measured_host_gflops, p.modelled_target_gflops);
+            assert_eq!(
+                p.repops_digest_fnv1a,
+                host_ref.canonical_repops_digest_fnv1a
+            );
+        }
 
         // 3. Unreachable node -> unverified participant fails cross-silicon parity
+        let r0 =
+            HardwareKernelDispatcher::measure_local_device_receipt(cluster[0].clone(), "machine-a");
         let unreachable_report = HardwareKernelDispatcher::run_verified_kernel_benchmark(&[
-            KernelBenchmarkParticipant::Reachable(cluster[0].clone()),
+            r0.clone(),
             KernelBenchmarkParticipant::Unreachable(cluster[1].clone()),
         ]);
         assert!(!unreachable_report.cross_silicon_bit_identical);
@@ -1486,26 +1512,38 @@ mod ollama_kernel_tests {
         assert!(!unreachable_report.node_profiles[1].execution_verified);
         assert_eq!(unreachable_report.node_profiles[1].repops_digest_fnv1a, 0);
 
-        // 4. Deliberately divergent backend -> digest mismatch fails cross-silicon parity
-        let divergent_report = HardwareKernelDispatcher::run_verified_kernel_benchmark(&[
-            KernelBenchmarkParticipant::Reachable(cluster[0].clone()),
-            KernelBenchmarkParticipant::Divergent {
-                node: cluster[1].clone(),
-                perturbation: 0.1,
-            },
-        ]);
+        // 4. Two verified device receipts from the SAME machine -> unverified_single_machine_only
+        let same_machine_r1 =
+            HardwareKernelDispatcher::measure_local_device_receipt(cluster[1].clone(), "machine-a");
+        let single_machine_report =
+            HardwareKernelDispatcher::run_verified_kernel_benchmark(&[r0.clone(), same_machine_r1]);
+        assert!(!single_machine_report.cross_silicon_bit_identical);
+        assert_eq!(single_machine_report.verified_participant_count, 2);
+        assert_eq!(
+            single_machine_report.verification_status,
+            "unverified_single_machine_only"
+        );
+
+        // 5. Divergent device digest from a second machine -> divergent_digest_detected
+        let divergent_r1 = KernelBenchmarkParticipant::VerifiedDevice {
+            node: cluster[1].clone(),
+            machine_id: "machine-b".to_string(),
+            repops_digest_fnv1a: host_ref.canonical_repops_digest_fnv1a ^ 0xdead_beef,
+            elapsed_execution_us: 42.0,
+            measured_gflops: 12.5,
+        };
+        let divergent_report =
+            HardwareKernelDispatcher::run_verified_kernel_benchmark(&[r0.clone(), divergent_r1]);
         assert!(!divergent_report.cross_silicon_bit_identical);
         assert_eq!(
             divergent_report.verification_status,
             "divergent_digest_detected"
         );
-        assert_ne!(
-            divergent_report.node_profiles[0].repops_digest_fnv1a,
-            divergent_report.node_profiles[1].repops_digest_fnv1a
-        );
 
-        // 5. Two reachable participants -> verified bit-identical execution with elapsed timing
-        let two_ok = HardwareKernelDispatcher::run_cluster_kernel_benchmark(&cluster[..2]);
+        // 6. Two verified device receipts across two distinct machines with matching digests -> bit-identical
+        let r1 =
+            HardwareKernelDispatcher::measure_local_device_receipt(cluster[1].clone(), "machine-b");
+        let two_ok = HardwareKernelDispatcher::run_verified_kernel_benchmark(&[r0, r1]);
         assert!(two_ok.cross_silicon_bit_identical);
         assert_eq!(two_ok.verified_participant_count, 2);
         assert_eq!(
@@ -1513,11 +1551,8 @@ mod ollama_kernel_tests {
             "bit_identical_across_participants"
         );
         for p in &two_ok.node_profiles {
+            assert_eq!(p.execution_source, "verified_device_execution");
             assert!(p.execution_verified);
-            assert!(p.elapsed_execution_us > 0.0);
-            assert!(p.measured_host_gflops > 0.0);
-            assert!(p.modelled_target_gflops > 0.0);
-            assert_ne!(p.measured_host_gflops, p.modelled_target_gflops);
             assert_eq!(p.repops_digest_fnv1a, two_ok.canonical_repops_digest_fnv1a);
         }
     }

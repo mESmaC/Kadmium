@@ -168,7 +168,7 @@ impl KadmiumMcpServer {
             },
             McpToolDescriptor {
                 name: "kadmium_pull_artifact".into(),
-                description: "Plan or stage a Hugging Face model/dataset URI (hf://owner/repo@rev) into selective 64 KB-aligned .ktb shards or mount a local GitHub repo/Dream-RSI world (gh://owner/repo@ref#subpath) onto a subcluster slice.".into(),
+                description: "Plan a Hugging Face model/dataset URI (hf://owner/repo@rev) into selective 64 KB-aligned .ktb shards or compute an unmounted slice assignment preview for a GitHub repo/Dream-RSI world (gh://owner/repo@ref#subpath).".into(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -178,11 +178,7 @@ impl KadmiumMcpServer {
                         },
                         "plan_only": {
                             "type": "boolean",
-                            "description": "When true, compute an unmounted/unfetched plan preview without requiring a local checkout or index file."
-                        },
-                        "local_path": {
-                            "type": "string",
-                            "description": "Optional local checkout directory for mounting a gh:// repository."
+                            "description": "When true, compute an unmounted/unfetched plan preview. Required for gh:// URIs over MCP."
                         },
                         "index_json": {
                             "type": "string",
@@ -469,21 +465,25 @@ impl KadmiumMcpServer {
                     .get("plan_only")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let local_path = args.get("local_path").and_then(|v| v.as_str());
+                if args
+                    .get("local_path")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.trim().is_empty())
+                {
+                    return Err(McpJsonRpcError {
+                        code: -32602,
+                        message: "Mounting host filesystem paths ('local_path') is not permitted over MCP; use `kadmium pull <gh://...> --local-path <dir>` on the local CLI or pass `plan_only: true`.".into(),
+                    });
+                }
 
                 if uri.starts_with("gh://") || uri.contains("github.com") {
-                    let run = if plan_only {
-                        GitHubConnector::evaluate_repo_on_slice(uri)
-                    } else if let Some(dir) = local_path {
-                        GitHubConnector::stage_local_repo(uri, Some(std::path::Path::new(dir)))
-                    } else {
-                        GitHubConnector::evaluate_repo_on_slice(uri)
-                    }
-                    .map_err(|e| McpJsonRpcError {
-                        code: -32602,
-                        message: e,
+                    let run = GitHubConnector::evaluate_repo_on_slice(uri).map_err(|e| {
+                        McpJsonRpcError {
+                            code: -32602,
+                            message: e,
+                        }
                     })?;
-                    let is_err = !plan_only && local_path.is_some() && !run.mounted;
+                    let is_err = !plan_only;
                     let text = serde_json::to_string_pretty(&run).unwrap_or_default();
                     Ok(json!({
                         "content": [{ "type": "text", "text": text }],
@@ -558,11 +558,7 @@ impl KadmiumMcpServer {
             }
             "kadmium_verify_rl_sandbox" => {
                 let grpo_report = GrpoEpochExecutor::run_verified_grpo_step();
-                let host_node = state
-                    .nodes
-                    .first()
-                    .map(|n| n.hostname.clone())
-                    .unwrap_or_else(|| "local-wasi-sandbox".to_string());
+                let host_node = "local-host-wasi-sandbox";
                 let custom_trace =
                     args.get("candidate_code")
                         .and_then(|v| v.as_str())
@@ -572,7 +568,7 @@ impl KadmiumMcpServer {
                                 format!("mcp-rollout-{:08x}", (digest & 0xffff_ffff) as u32);
                             WasiMicroSandbox::default().verify_candidate_code(
                                 rollout_id,
-                                &host_node,
+                                host_node,
                                 code,
                                 &[(0, -7), (2, 3), (5, 33), (-3, -7)],
                             )

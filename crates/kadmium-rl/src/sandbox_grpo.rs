@@ -51,12 +51,24 @@ impl Default for WasiMicroSandbox {
 }
 
 impl WasiMicroSandbox {
+    const MAX_CANDIDATE_CODE_BYTES: usize = 4096;
+    const MAX_CANDIDATE_TOKENS: usize = 512;
+    const MAX_COMPILED_OPS: usize = 512;
+    const MAX_PARSE_DEPTH: usize = 32;
+
     /// Compiles a candidate polynomial/arithmetic expression over `x` (or explicit `SandboxOp`
     /// sequence) into deterministic `SandboxOp` instructions, or returns a compile/validation error.
     pub fn compile_candidate_code(code: &str) -> Result<Vec<SandboxOp>, String> {
         let trimmed = code.trim();
         if trimmed.is_empty() {
             return Err("Empty candidate code snippet".into());
+        }
+        if trimmed.len() > Self::MAX_CANDIDATE_CODE_BYTES {
+            return Err(format!(
+                "Candidate code length ({} bytes) exceeds sandbox limit ({} bytes)",
+                trimmed.len(),
+                Self::MAX_CANDIDATE_CODE_BYTES
+            ));
         }
 
         let forbidden_keywords = [
@@ -80,6 +92,13 @@ impl WasiMicroSandbox {
         }
 
         if let Some(ops) = Self::try_parse_stack_dsl(trimmed)? {
+            if ops.len() > Self::MAX_COMPILED_OPS {
+                return Err(format!(
+                    "Compiled SandboxOp count ({}) exceeds limit ({})",
+                    ops.len(),
+                    Self::MAX_COMPILED_OPS
+                ));
+            }
             return Ok(ops);
         }
 
@@ -88,13 +107,27 @@ impl WasiMicroSandbox {
         if tokens.is_empty() {
             return Err("Candidate expression produced no executable tokens".into());
         }
+        if tokens.len() > Self::MAX_CANDIDATE_TOKENS {
+            return Err(format!(
+                "Candidate expression token count ({}) exceeds sandbox limit ({})",
+                tokens.len(),
+                Self::MAX_CANDIDATE_TOKENS
+            ));
+        }
         let mut cursor = 0usize;
         let mut ops = Vec::new();
-        Self::parse_add_sub(&tokens, &mut cursor, &mut ops)?;
+        Self::parse_add_sub(&tokens, &mut cursor, &mut ops, 0)?;
         if cursor != tokens.len() {
             return Err(format!(
                 "Unexpected trailing token '{}' at position {}",
                 tokens[cursor], cursor
+            ));
+        }
+        if ops.len() > Self::MAX_COMPILED_OPS {
+            return Err(format!(
+                "Compiled SandboxOp count ({}) exceeds limit ({})",
+                ops.len(),
+                Self::MAX_COMPILED_OPS
             ));
         }
         Ok(ops)
@@ -159,6 +192,13 @@ impl WasiMicroSandbox {
                     return Err(format!("Unknown SandboxOp instruction '{other}'"));
                 }
             }
+            if ops.len() > Self::MAX_COMPILED_OPS {
+                return Err(format!(
+                    "Compiled SandboxOp count ({}) exceeds limit ({})",
+                    ops.len(),
+                    Self::MAX_COMPILED_OPS
+                ));
+            }
         }
 
         if ops.is_empty() {
@@ -213,6 +253,12 @@ impl WasiMicroSandbox {
                 i += 1;
                 continue;
             }
+            if tokens.len() >= Self::MAX_CANDIDATE_TOKENS {
+                return Err(format!(
+                    "Candidate expression token count exceeds sandbox limit ({})",
+                    Self::MAX_CANDIDATE_TOKENS
+                ));
+            }
             match c {
                 '+' | '-' | '(' | ')' => {
                     tokens.push(c.to_string());
@@ -266,23 +312,44 @@ impl WasiMicroSandbox {
         Ok(tokens)
     }
 
+    fn check_depth_and_ops(depth: usize, ops: &[SandboxOp]) -> Result<(), String> {
+        if depth > Self::MAX_PARSE_DEPTH {
+            return Err(format!(
+                "Expression nesting depth ({depth}) exceeds sandbox limit ({})",
+                Self::MAX_PARSE_DEPTH
+            ));
+        }
+        if ops.len() > Self::MAX_COMPILED_OPS {
+            return Err(format!(
+                "Compiled SandboxOp count ({}) exceeds limit ({})",
+                ops.len(),
+                Self::MAX_COMPILED_OPS
+            ));
+        }
+        Ok(())
+    }
+
     fn parse_add_sub(
         tokens: &[String],
         cursor: &mut usize,
         ops: &mut Vec<SandboxOp>,
+        depth: usize,
     ) -> Result<(), String> {
-        Self::parse_mul(tokens, cursor, ops)?;
+        Self::check_depth_and_ops(depth, ops)?;
+        Self::parse_mul(tokens, cursor, ops, depth + 1)?;
         while *cursor < tokens.len() {
             match tokens[*cursor].as_str() {
                 "+" => {
                     *cursor += 1;
-                    Self::parse_mul(tokens, cursor, ops)?;
+                    Self::parse_mul(tokens, cursor, ops, depth + 1)?;
                     ops.push(SandboxOp::Add);
+                    Self::check_depth_and_ops(depth, ops)?;
                 }
                 "-" => {
                     *cursor += 1;
-                    Self::parse_mul(tokens, cursor, ops)?;
+                    Self::parse_mul(tokens, cursor, ops, depth + 1)?;
                     ops.push(SandboxOp::Sub);
+                    Self::check_depth_and_ops(depth, ops)?;
                 }
                 _ => break,
             }
@@ -294,12 +361,15 @@ impl WasiMicroSandbox {
         tokens: &[String],
         cursor: &mut usize,
         ops: &mut Vec<SandboxOp>,
+        depth: usize,
     ) -> Result<(), String> {
-        Self::parse_unary(tokens, cursor, ops)?;
+        Self::check_depth_and_ops(depth, ops)?;
+        Self::parse_unary(tokens, cursor, ops, depth + 1)?;
         while *cursor < tokens.len() && tokens[*cursor] == "*" {
             *cursor += 1;
-            Self::parse_unary(tokens, cursor, ops)?;
+            Self::parse_unary(tokens, cursor, ops, depth + 1)?;
             ops.push(SandboxOp::Mul);
+            Self::check_depth_and_ops(depth, ops)?;
         }
         Ok(())
     }
@@ -308,23 +378,25 @@ impl WasiMicroSandbox {
         tokens: &[String],
         cursor: &mut usize,
         ops: &mut Vec<SandboxOp>,
+        depth: usize,
     ) -> Result<(), String> {
+        Self::check_depth_and_ops(depth, ops)?;
         if *cursor >= tokens.len() {
             return Err("Unexpected end of expression".into());
         }
         match tokens[*cursor].as_str() {
             "+" => {
                 *cursor += 1;
-                Self::parse_unary(tokens, cursor, ops)
+                Self::parse_unary(tokens, cursor, ops, depth + 1)
             }
             "-" => {
                 *cursor += 1;
                 ops.push(SandboxOp::PushConst(0));
-                Self::parse_unary(tokens, cursor, ops)?;
+                Self::parse_unary(tokens, cursor, ops, depth + 1)?;
                 ops.push(SandboxOp::Sub);
-                Ok(())
+                Self::check_depth_and_ops(depth, ops)
             }
-            _ => Self::parse_power(tokens, cursor, ops),
+            _ => Self::parse_power(tokens, cursor, ops, depth + 1),
         }
     }
 
@@ -332,8 +404,10 @@ impl WasiMicroSandbox {
         tokens: &[String],
         cursor: &mut usize,
         ops: &mut Vec<SandboxOp>,
+        depth: usize,
     ) -> Result<(), String> {
-        Self::parse_primary(tokens, cursor, ops)?;
+        Self::check_depth_and_ops(depth, ops)?;
+        Self::parse_primary(tokens, cursor, ops, depth + 1)?;
         if *cursor < tokens.len() && tokens[*cursor] == "^" {
             *cursor += 1;
             if *cursor >= tokens.len() {
@@ -359,6 +433,7 @@ impl WasiMicroSandbox {
             } else {
                 return Err(format!("Exponent {exp} exceeds sandbox unroll limit (8)"));
             }
+            Self::check_depth_and_ops(depth, ops)?;
         }
         Ok(())
     }
@@ -367,14 +442,16 @@ impl WasiMicroSandbox {
         tokens: &[String],
         cursor: &mut usize,
         ops: &mut Vec<SandboxOp>,
+        depth: usize,
     ) -> Result<(), String> {
+        Self::check_depth_and_ops(depth, ops)?;
         if *cursor >= tokens.len() {
             return Err("Unexpected end of expression".into());
         }
         let tok = &tokens[*cursor];
         if tok == "(" {
             *cursor += 1;
-            Self::parse_add_sub(tokens, cursor, ops)?;
+            Self::parse_add_sub(tokens, cursor, ops, depth + 1)?;
             if *cursor >= tokens.len() || tokens[*cursor] != ")" {
                 return Err("Missing closing ')' in expression".into());
             }
@@ -383,11 +460,11 @@ impl WasiMicroSandbox {
         } else if tok == "x" {
             *cursor += 1;
             ops.push(SandboxOp::PushInputX);
-            Ok(())
+            Self::check_depth_and_ops(depth, ops)
         } else if let Ok(val) = tok.parse::<i64>() {
             *cursor += 1;
             ops.push(SandboxOp::PushConst(val));
-            Ok(())
+            Self::check_depth_and_ops(depth, ops)
         } else {
             Err(format!("Unexpected token '{tok}' in expression"))
         }
@@ -673,5 +750,32 @@ impl GrpoEpochExecutor {
             best_rollout_id,
             mean_group_reward: mean_reward,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_candidate_code_rejects_deeply_nested_parens_and_unary_minus_without_stack_overflow()
+    {
+        let deep_parens = format!("{}x{}", "(".repeat(200), ")".repeat(200));
+        let err_parens = WasiMicroSandbox::compile_candidate_code(&deep_parens).unwrap_err();
+        assert!(
+            err_parens.contains("exceeds sandbox limit"),
+            "unexpected error for deep parens: {err_parens}"
+        );
+
+        let deep_unary = format!("{}x", "-".repeat(200));
+        let err_unary = WasiMicroSandbox::compile_candidate_code(&deep_unary).unwrap_err();
+        assert!(
+            err_unary.contains("exceeds sandbox limit"),
+            "unexpected error for deep unary minus: {err_unary}"
+        );
+
+        let oversized = "x + 1 ".repeat(1000);
+        let err_oversized = WasiMicroSandbox::compile_candidate_code(&oversized).unwrap_err();
+        assert!(err_oversized.contains("exceeds sandbox limit"));
     }
 }

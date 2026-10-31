@@ -1147,8 +1147,9 @@ pub fn run_pull(
             None => None,
         };
 
-        let cluster = sample_personal_cluster();
-        let model = ModelSpec::deepseek_v3_671b_moe();
+        let local_node = LiveHardwareProfiler::probe_local_host();
+        let cluster = vec![local_node];
+        let model = ModelSpec::recommended_for_cluster(&cluster);
         let plan = ShardPlanner::compute_plan(1, &model, WorkloadKind::Inference, &cluster);
         let hf_plan = HuggingFaceHubConnector::plan_selective_model_pull_with_index(
             uri,

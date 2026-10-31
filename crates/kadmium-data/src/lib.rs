@@ -652,15 +652,16 @@ mod tests {
         assert!(hf_plan.plan_only);
         assert_eq!(hf_plan.files_downloaded, 0);
         assert_eq!(hf_plan.ktb_banks_compiled, 0);
-        assert_eq!(hf_plan.index_source, "unverified_heuristic_estimate");
+        assert_eq!(hf_plan.index_source, "unverified_missing_index_manifest");
+        assert_eq!(hf_plan.seed_vault_node, plan.assignments[0].hostname);
         assert!(!hf_plan.node_pulls.is_empty());
         for np in &hf_plan.node_pulls {
-            assert!(!np.required_safetensors_files.is_empty());
+            assert!(np.required_safetensors_files.is_empty());
             assert!(np.full_repo_avoided_gb > 150.0);
             assert!(np.output_ktb_bank_path.ends_with(".ktb"));
         }
 
-        // Dataset URIs must not be planned as 16-shard .safetensors/.ktb models
+        // Dataset URIs must not be planned as .safetensors/.ktb models and must not invent split filenames
         assert!(
             HuggingFaceHubConnector::plan_selective_model_pull(
                 "hf://datasets/open-r1/OpenR1-Math-220k@main",
@@ -674,10 +675,17 @@ mod tests {
         .expect("plan dataset pull");
         assert_eq!(ds_plan.hf_ref.kind, HfRepoKind::Dataset);
         assert!(ds_plan.dataset_info_url.contains("dataset_infos.json"));
-        assert!(!ds_plan.parquet_split_urls.is_empty());
+        assert!(ds_plan.parquet_split_urls.is_empty());
         assert_eq!(ds_plan.files_downloaded, 0);
 
-        // Real parsed index manifest overrides the 16-shard heuristic
+        let ds_with_splits = HuggingFaceHubConnector::plan_dataset_pull_with_splits(
+            "hf://datasets/open-r1/OpenR1-Math-220k@main",
+            &["data/train-00000-of-00001.parquet"],
+        )
+        .expect("plan dataset pull with explicit split");
+        assert_eq!(ds_with_splits.parquet_split_urls.len(), 1);
+
+        // Real parsed index manifest populates exact shard files
         let single_shard_index = SafetensorsIndexManifest {
             total_size_bytes: 14_000_000_000,
             weight_map: (0..=plan.total_layers)
@@ -709,7 +717,8 @@ mod tests {
         .expect("evaluate github repo on slice");
         assert_eq!(gh_run.gh_ref.owner, "zhengkid");
         assert_eq!(gh_run.gh_ref.repo, "Dream-RSI");
-        assert_eq!(gh_run.pinned_commit_sha, "a4f91c2");
+        assert_eq!(gh_run.gh_ref.git_ref, "a4f91c2");
+        assert_eq!(gh_run.pinned_commit_sha, "unverified_unmounted");
         assert_eq!(gh_run.assigned_slice_id, "slice-04-rl-dream-rsi");
         assert!(!gh_run.mounted);
         assert_eq!(gh_run.execution_mode, "plan_only_unmounted");

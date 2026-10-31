@@ -180,7 +180,7 @@ enum Commands {
         #[arg(long)]
         local_path: Option<String>,
         /// Optional path to a local model.safetensors.index.json file for exact layer-to-shard mapping
-        #[arg(long)]
+        #[arg(long, visible_alias = "index-manifest")]
         index: Option<String>,
     },
     /// Launch the Kadmium Model Context Protocol (MCP) Server over stdio (or --inspect to view manifest & IDE config)

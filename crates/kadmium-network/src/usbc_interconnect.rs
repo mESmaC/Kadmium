@@ -447,43 +447,36 @@ impl UsbCDirectInterconnectScanner {
 
         let handheld_30gbps_dma_benchmark = Self::benchmark_multistream_dma(30.0, 0.12);
         let switchless_daisy_chain_plan = Self::build_daisy_chain_topology_plan(cluster_nodes);
-        let backups: Vec<PeerLinkMetrics> = if switchless_daisy_chain_plan
+        let backups: Vec<PeerLinkMetrics> = switchless_daisy_chain_plan
             .bonded_failover_schedule
             .channel_allocations
-            .is_empty()
-        {
-            vec![
-                PeerLinkMetrics {
-                    from_node: NodeId("local".into()),
-                    to_node: NodeId("peer".into()),
-                    transport: TransportKind::WiredLanQuic,
-                    bandwidth_gbps: 2.5,
-                    rtt_latency_ms: 0.45,
-                },
-                PeerLinkMetrics {
-                    from_node: NodeId("local".into()),
-                    to_node: NodeId("peer".into()),
-                    transport: TransportKind::WirelessLanQuic,
-                    bandwidth_gbps: 1.2,
-                    rtt_latency_ms: 1.60,
-                },
-            ]
+            .iter()
+            .filter(|c| c.transport != TransportKind::ThunderboltBridge)
+            .map(|c| PeerLinkMetrics {
+                from_node: NodeId("local".into()),
+                to_node: NodeId("peer".into()),
+                transport: c.transport,
+                bandwidth_gbps: c.bandwidth_gbps,
+                rtt_latency_ms: c.rtt_ms,
+            })
+            .collect();
+        let delta_bridge_plan = if let Some(live_primary) = live_interfaces.first() {
+            Self::plan_delta_bridge(live_primary, &backups, 0.9)
         } else {
-            switchless_daisy_chain_plan
-                .bonded_failover_schedule
-                .channel_allocations
-                .iter()
-                .filter(|c| c.transport != TransportKind::ThunderboltBridge)
-                .map(|c| PeerLinkMetrics {
-                    from_node: NodeId("local".into()),
-                    to_node: NodeId("peer".into()),
-                    transport: c.transport,
-                    bandwidth_gbps: c.bandwidth_gbps,
-                    rtt_latency_ms: c.rtt_ms,
-                })
-                .collect()
+            UsbCDeltaBridgePlan {
+                lanes: Vec::new(),
+                segment_bytes: DEFAULT_BRIDGE_SEGMENT_BYTES,
+                window_bytes: 0,
+                bonded_goodput_gbps: 0.0,
+                chunk_reuse_fraction: 0.0,
+                logical_goodput_gbps: 0.0,
+                unplug_detect_ms: 0.0,
+                unplug_resend_bytes: 0,
+                unplug_recovery_ms: 0.0,
+                plain_reconnect_resend_bytes: 0,
+                plain_reconnect_recovery_ms: 0.0,
+            }
         };
-        let delta_bridge_plan = Self::plan_delta_bridge(&interfaces[0], &backups, 0.9);
 
         UsbCHostDiscoveryReport {
             host_os: std::env::consts::OS.to_string(),
@@ -942,10 +935,27 @@ mod tests {
 
     #[test]
     fn test_delta_bridge_plan_bounds_unplug_resend_to_the_window() {
+        let cluster = sample_personal_cluster();
         let report =
-            UsbCDirectInterconnectScanner::scan_host_usbc_links(&sample_personal_cluster());
-        let plan = &report.delta_bridge_plan;
-        let usbc = &report.interfaces[0];
+            UsbCDirectInterconnectScanner::scan_host_usbc_links_with_options(&cluster, false);
+        assert!(report.delta_bridge_plan.lanes.is_empty());
+
+        let usbc = &report.reference_tier_catalog[0];
+        let backups: Vec<PeerLinkMetrics> = report
+            .switchless_daisy_chain_plan
+            .bonded_failover_schedule
+            .channel_allocations
+            .iter()
+            .filter(|c| c.transport != TransportKind::ThunderboltBridge)
+            .map(|c| PeerLinkMetrics {
+                from_node: NodeId("local".into()),
+                to_node: NodeId("peer".into()),
+                transport: c.transport,
+                bandwidth_gbps: c.bandwidth_gbps,
+                rtt_latency_ms: c.rtt_ms,
+            })
+            .collect();
+        let plan = UsbCDirectInterconnectScanner::plan_delta_bridge(usbc, &backups, 0.9);
         assert_eq!(
             plan.lanes.len(),
             usbc.parallel_dma_streams + 2,
