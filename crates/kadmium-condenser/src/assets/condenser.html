@@ -135,7 +135,7 @@
         <header class="models-hero">
           <p class="k-eyebrow">Models</p>
           <h1 id="models-title">Bring your own model</h1>
-          <p class="models-lede">Pick a model on this computer. Condenser prepares it without changing a single weight, then you run it here or on Kadmium Cloud. Full context and full output by default.</p>
+          <p class="models-lede">Pick a model on this computer. Condenser prepares it without changing a single weight, then you run it here or send it to a Kadmium coordinator. Full context and full output by default.</p>
           <ol class="k-steps" aria-label="Progress">
             <li id="step-choose" data-state="current">Choose</li>
             <li id="step-prepare">Prepare</li>
@@ -180,7 +180,7 @@
           <div class="model-card-head"><span class="model-step">3</span><div><h2 id="run-title">Run it</h2><p>Choose where the model runs. You can switch at any time.</p></div></div>
           <div class="k-segmented destination-switch" role="radiogroup" aria-label="Where the model runs">
             <label><input type="radio" name="destination" id="destination-local" value="local" checked>This computer</label>
-            <label><input type="radio" name="destination" id="destination-cloud" value="cloud">Kadmium Cloud <span class="k-pill premium">Premium</span></label>
+            <label><input type="radio" name="destination" id="destination-cloud" value="cloud">Remote coordinator</label>
           </div>
 
           <div id="destination-local-panel" class="destination-panel">
@@ -195,15 +195,15 @@
           </div>
 
           <div id="destination-cloud-panel" class="destination-panel" hidden>
-            <p class="destination-lede">Sends your prepared model to a Kadmium coordinator — Kadmium Cloud, or your own by changing the address — in verified, resumable chunks. If the connection drops, send again and it picks up where it stopped. The coordinator runs the model in its Ollama with full context and unlimited output.</p>
+            <p class="destination-lede">Sends your prepared model to a Kadmium coordinator you run, in verified, resumable chunks. If the connection drops, send again and it picks up where it stopped. The coordinator loads it in its own Ollama at the model's full context unless you lower it, and Condenser asks for unlimited output on every request; what the coordinator's hardware can hold is up to that computer. Kadmium Cloud, the planned premium hosted service, will accept models through this same flow.</p>
             <div class="field-grid two">
-              <div class="field"><label for="cloud-endpoint">Kadmium address</label><input id="cloud-endpoint" class="code-sm" type="url" value="https://api.kadmium.ai" spellcheck="false"></div>
+              <div class="field"><label for="cloud-endpoint">Coordinator address</label><input id="cloud-endpoint" class="code-sm" type="url" placeholder="https://coordinator.example:7848" spellcheck="false"></div>
               <div class="field"><label for="cloud-key">Access token</label><input id="cloud-key" type="password" autocomplete="off" placeholder="The coordinator's token · memory only"></div>
               <div class="field"><label for="cloud-context">Context window (tokens)</label><input id="cloud-context" type="number" min="1" step="1" placeholder="Maximum"></div>
             </div>
             <p id="cloud-context-hint" class="tradeoff" data-tone="ok">Maximum — the model's full context.</p>
             <div id="cloud-progress-wrap" class="cloud-progress" hidden><div id="cloud-progress" class="k-progress" role="progressbar" aria-label="Sending model" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div><span id="cloud-progress-label" class="caption muted"></span></div>
-            <div class="model-actions"><button id="cloud-send" class="primary-btn" disabled>Send to Kadmium</button><button id="cloud-use" class="secondary-btn" disabled>Use in current task</button></div>
+            <div class="model-actions"><button id="cloud-send" class="primary-btn" disabled>Send to coordinator</button><button id="cloud-use" class="secondary-btn" disabled>Use in current task</button></div>
             <p id="cloud-status" class="caption muted" role="status">Select a prepared model to send it.</p>
           </div>
         </section>

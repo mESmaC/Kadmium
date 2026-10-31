@@ -9,7 +9,7 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { chromium } = require(path.resolve('crates/kadmium-gateway/tests/ui/node_modules/playwright'));
 
-test('model preparation, local and Kadmium Cloud routing, quality tradeoffs, recovery and distributed jobs fit desktop and mobile', { timeout: 120000 }, async () => {
+test('model preparation, local and remote coordinator routing, quality tradeoffs, recovery and distributed jobs fit desktop and mobile', { timeout: 120000 }, async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'condenser-compute-ui-'));
   const source = path.join(cwd, 'source'); fs.mkdirSync(source);
   fs.writeFileSync(path.join(source, 'config.json'), JSON.stringify({ model_type: 'llama', max_position_embeddings: 8192 }));
@@ -31,6 +31,10 @@ test('model preparation, local and Kadmium Cloud routing, quality tradeoffs, rec
     await page.goto(base);
     await page.locator('#open-model-library').click();
     await page.locator('#checkpoint-path').fill(source);
+    // The working folder and pre-quantized opt-in sit under Advanced, closed by default.
+    assert.equal(await page.locator('#checkpoint-accept-quantized').isVisible(), false);
+    await page.locator('.model-advanced summary').click();
+    assert.equal(await page.locator('#checkpoint-accept-quantized').isChecked(), false);
     assert.equal(await page.locator('#checkpoint-working-directory').inputValue(), '');
     const work = path.join(cwd, 'normalization-work'); fs.mkdirSync(work);
     await page.locator('#checkpoint-working-directory').fill(path.join(cwd, 'missing-work'));
@@ -67,21 +71,22 @@ test('model preparation, local and Kadmium Cloud routing, quality tradeoffs, rec
     await page.locator('#checkpoint-backend').fill('http://127.0.0.1:11435');
     assert.equal(await page.locator('#checkpoint-use').isDisabled(),true);
 
-    // Kadmium Cloud: send, follow progress, then route the task to the remote model.
+    // Remote coordinator: send, follow progress, then route the task to the remote model.
     await page.locator('label:has(#destination-cloud)').click();
     assert.equal(await page.locator('#destination-cloud-panel').isVisible(),true);
-    assert.equal(await page.locator('#cloud-endpoint').inputValue(),'https://api.kadmium.ai');
+    assert.equal(await page.locator('#cloud-endpoint').inputValue(),'');
+    await page.locator('#cloud-endpoint').fill('https://coordinator.example:7848');
     let polls=0;
     await page.route('**/api/v1/checkpoints/publish*',route=>{
       if(route.request().method()==='POST'){
         const body=route.request().postDataJSON();
-        assert.deepEqual(body,{checkpoint_id:id,endpoint:'https://api.kadmium.ai',api_key:'cloud-key',context_length:null});
+        assert.deepEqual(body,{checkpoint_id:id,endpoint:'https://coordinator.example:7848',api_key:'cloud-key',context_length:null});
         return route.fulfill({json:{state:'uploading',checkpoint_id:id,total_bytes:2000,sent_bytes:500,skipped_bytes:0,message:'Sending verified 16 MiB chunks'}});
       }
       assert.equal(new URL(route.request().url()).searchParams.get('checkpoint_id'),id);
       polls+=1;
       return route.fulfill({json:polls<2?{state:'uploading',checkpoint_id:id,total_bytes:2000,sent_bytes:1000,skipped_bytes:0,message:'Sending verified 16 MiB chunks'}
-        :{state:'ready',checkpoint_id:id,total_bytes:2000,sent_bytes:2000,skipped_bytes:0,message:'Verified and loaded in the Kadmium coordinator\'s Ollama',result:{checkpoint:{id,name:'source',context_length:8192},context_length:8192,provider:{kind:'ollama',model:'kadmium-'+id+':latest',base_url:'https://api.kadmium.ai/api/v1/model-transport/ollama'}}}});
+        :{state:'ready',checkpoint_id:id,total_bytes:2000,sent_bytes:2000,skipped_bytes:0,message:'Verified and loaded in the Kadmium coordinator\'s Ollama',result:{checkpoint:{id,name:'source',context_length:8192},context_length:8192,provider:{kind:'ollama',model:'kadmium-'+id+':latest',base_url:'https://coordinator.example:7848/api/v1/model-transport/ollama'}}}});
     });
     await page.locator('#cloud-key').fill('cloud-key');
     await page.locator('#cloud-send').click();

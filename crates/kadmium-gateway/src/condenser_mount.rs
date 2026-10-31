@@ -169,7 +169,10 @@ fn denied() -> Response {
         .into_response()
 }
 
-async fn guard(request: Request, next: Next) -> Response {
+/// A same-origin request from a loopback peer. Necessary for the embedded workspace but not
+/// sufficient: a local reverse proxy or another local user also passes it, so anything beyond
+/// read-only data also needs a secret (this launch's access cookie, or a bearer token).
+pub(crate) fn local_browser_request(request: &Request) -> bool {
     let local = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -186,7 +189,11 @@ async fn guard(request: Request, next: Next) -> Response {
             .zip(expected.as_deref())
             .is_some_and(|(origin, expected)| origin == expected)
     });
-    if !local || !same_origin {
+    local && same_origin
+}
+
+async fn guard(request: Request, next: Next) -> Response {
+    if !local_browser_request(&request) {
         return (
             StatusCode::FORBIDDEN,
             "Open Condenser on the coordinator computer using http://127.0.0.1:<port>/condenser/",

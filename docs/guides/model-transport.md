@@ -1,6 +1,6 @@
 # Model transport
 
-Preparing a model in Condenser writes a transport manifest (`transport.json`) next to the package. It describes every byte a receiver needs, so a model can move to a Kadmium coordinator — Kadmium Cloud or your own — without changing a weight, and a dropped connection resumes instead of starting over.
+Preparing a model in Condenser writes a transport manifest (`transport.json`) next to the package. It describes every byte a receiver needs, so a model can move to another Kadmium coordinator without changing a weight, and a dropped connection resumes instead of starting over.
 
 ## Layout
 
@@ -17,16 +17,25 @@ The layout follows InferSSD's streaming rules and adds the integrity checks Infe
 
 The manifest lists `manifest.json` first, then `source/` originals, then `banks/` shards. Tensor bytes are never cast, quantized, or reordered inside a file; the read order is metadata only. Building the manifest re-reads the package and fails if any byte differs from what preparation recorded.
 
+The chunk map is **Proved (model)** in `formal/KadmiumFormal/Transport/ChunkMap.lean`, tied to the Rust code by a differential fixture (see [formal/README.md](../../formal/README.md)):
+
+- `Kadmium.Transport.readLoop_eq_chunkPlan`: the map the sender reads from each file (`hash_stream`) is exactly `chunk_plan`, so every map it builds passes the receiver's check.
+- `Kadmium.Transport.validChunks_iff`: the receiver's check in `TransportManifest::validate` accepts exactly one map per file, `chunk_plan`.
+- `Kadmium.Transport.chunkPlan_tiles`: that map starts at offset 0, each chunk starts where the previous one ends, every chunk holds 1 byte to 16 MiB, and together they cover the file exactly once.
+- `Kadmium.Transport.chunkPlan_aligned` and `layout_divides`: every chunk offset is a multiple of 16 MiB, so of the 64 KiB page and the 4 KiB direct-I/O boundary.
+
+The rest of the layout (extent alignment inside banks, expert-major read order, identity) is checked by `validate` and the tests in `crates/kadmium-data/tests/checkpoint_transport.rs`, not by a theorem.
+
 ## Protocol
 
-A receiver is any Kadmium coordinator that runs these endpoints. This repository implements the coordinator side; `https://api.kadmium.ai` is only the default address in Condenser, and a hosted Kadmium Cloud service is not part of this repository.
+A receiver is any Kadmium coordinator that runs these endpoints. This repository implements the coordinator side. Kadmium Cloud, the planned premium hosted service, will use the same protocol; it is not available yet, so Condenser has no default address.
 
 | Method and path | Purpose |
 | --- | --- |
 | `POST /api/v1/model-transport` | Body: the transport manifest (up to 64 MiB). Validates layout, paths and identity, stages the package, and returns `{checkpoint_id, complete, total_bytes, received_bytes, missing: [{file, chunk}]}`. Repeating it resumes. Files are created as verified chunks arrive; nothing is pre-allocated from declared sizes. |
 | `PUT /api/v1/model-transport/{id}/files/{file}/chunks/{chunk}` | Raw chunk bytes. Rejected unless length and SHA-256 match. |
-| `POST /api/v1/model-transport/{id}/complete` | Starts verifying the whole package (identity, every byte, metadata, bank layout) in the background. Returns `202 {state: "verifying"}` until it publishes (`200 {state: "published", checkpoint}`) or fails (`400` with the reason). Senders poll it. |
-| `POST /api/v1/model-transport/{id}/load` | `{context_length?}` loads the preserved originals into the coordinator's Ollama at full context by default and returns `{model, context_length, checkpoint, execution, ollama_path}`. |
+| `POST /api/v1/model-transport/{id}/complete` | Starts verifying the whole package (identity, every byte, metadata, bank layout) in the background. Returns `202 {state: "verifying"}` until it publishes (`200 {state: "published", checkpoint}`) or fails (`400` with the reason). One package is verified at a time; another returns `409 {state: "busy"}`. Senders poll it. |
+| `POST /api/v1/model-transport/{id}/load` | `{context_length?}` starts loading the preserved originals into the coordinator's Ollama in the background, at full context unless you lower it. Returns `202 {state: "loading"}` until it answers `200 {model, context_length, checkpoint, execution, ollama_path}` or fails (`502`). One model loads at a time; another returns `409 {state: "busy"}`. Senders poll it. |
 | `GET /api/v1/model-transport` | Lists received models and the ones currently served. |
 | `POST /api/v1/model-transport/ollama/api/chat`, `…/api/show` | Native Ollama proxy, restricted to received models. |
 
@@ -34,12 +43,12 @@ A receiver is any Kadmium coordinator that runs these endpoints. This repository
 
 A received model runs in the **single Ollama the coordinator is configured with** (`KADMIUM_OLLAMA_URL`). It is not split across Kadmium's grid, and Kadmium's arithmetic guarantees do not apply to it.
 
-Condenser routes tasks for a received model through the native Ollama proxy, using the Ollama provider. Every request therefore carries the same quality settings as a local model: an explicit `num_ctx` at the loaded context, `num_predict: -1` (unlimited until stop), `truncate: false` and `shift: false`, with tools and sampling options passed through unchanged.
+Condenser routes tasks for a received model through the native Ollama proxy, using the Ollama provider. Every request therefore carries the same quality settings as a local model: the full context the coordinator created the model with (Condenser sends `num_ctx` only when you lower it), `num_predict: -1` (unlimited until stop), `truncate: false` and `shift: false`, with tools and sampling options passed through unchanged.
 
-`POST /v1/chat/completions` with `model: "kadmium-<id>:latest"` also reaches the loaded model through Ollama's OpenAI-compatible endpoint, but that endpoint cannot carry the no-truncation options, so prefer the native proxy. A received-model name that is not loaded returns `409` instead of a reply from any other handler. After a coordinator restart, a received model that is still present in Ollama is found again automatically. `POST /v1/messages` with a received-model name returns `400` and names the supported routes.
+Received models are served **only** through the native proxy. Ollama's OpenAI-compatible endpoint cannot turn off truncation or context shifting, so `POST /v1/chat/completions` and `POST /v1/messages` with a received-model name (`kadmium-<id>`, with any tag) return `400` and name the native route instead of answering with reduced quality. A received-model name that is not loaded, including any tag other than `:latest`, returns `409` instead of a reply from Kadmium's diagnostic handlers. After a coordinator restart, a received model that is still present in Ollama is found again automatically.
 
 ## Access
 
-Set `KADMIUM_TRANSPORT_TOKEN` on a coordinator to accept uploads and chat for received models from other computers with `Authorization: Bearer <token>`; Condenser calls this the **access token** and keeps it in memory only. It is not a Kadmium Cloud account key. Without a token, only requests made from the coordinator itself are accepted: the peer must be loopback, the `Host` must be a loopback name, any `Origin` must match it, and forwarding headers (`Forwarded`, `X-Forwarded-*`, `X-Real-IP`) are refused, so a reverse proxy on the same machine cannot bypass the check. Use a token whenever a proxy sits in front of the coordinator.
+A coordinator receives and serves models only when `KADMIUM_TRANSPORT_TOKEN` is set. Every upload, load and chat request needs `Authorization: Bearer <token>`; Condenser calls this the **access token** and keeps it in memory only. Without a token the transport routes answer `403`. A loopback peer is not accepted as proof of the owner, because a reverse proxy or another user on the same computer also connects from loopback. Only the read-only listing (`GET /api/v1/model-transport`) is also open to a same-origin browser on the coordinator itself, through the same check the embedded Condenser workspace uses.
 
-`KADMIUM_OLLAMA_URL` (default `http://127.0.0.1:11434`) selects the backend that loads received models, and `KADMIUM_MODEL_LIBRARY` selects where they are stored. `KADMIUM_TRANSPORT_MAX_BYTES`, when set, refuses larger models with `413`. Abandoned transfers older than seven days are removed when a new transfer starts. Condenser only sends over HTTPS, except to loopback, private-network or `.local` addresses.
+`KADMIUM_OLLAMA_URL` (default `http://127.0.0.1:11434`) selects the backend that loads received models, and `KADMIUM_MODEL_LIBRARY` selects where they are stored. `KADMIUM_TRANSPORT_MAX_BYTES`, when set, refuses larger models with `413`. Abandoned transfers older than seven days are removed when a new transfer starts. The coordinator does not check free disk space before accepting a transfer; a full disk fails the chunk that cannot be written, and resending resumes after you free space. Condenser only sends over HTTPS, except to loopback, private-network or `.local` addresses.

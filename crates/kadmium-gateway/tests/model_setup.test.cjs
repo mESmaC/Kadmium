@@ -40,7 +40,7 @@ test('Control Room and desktop Companion launch the shared preparation flow and 
       await page.goto(access);
       await page.goto(base + shell);
       await page.getByRole('heading', { name: 'Run your own model' }).waitFor();
-      assert.equal(await page.getByRole('link', { name: /Send to Kadmium Cloud/ }).getAttribute('href'), '/condenser/#models-cloud');
+      assert.equal(await page.getByRole('link', { name: /Send to a coordinator/ }).getAttribute('href'), '/condenser/#models-cloud');
       await page.getByRole('link', { name: /Prepare a local model/ }).click();
       await page.waitForURL('**/condenser/#models');
       await page.locator('#return-kadmium').waitFor();

@@ -98,7 +98,10 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
                 "/api/chat",
                 post(|Json(body): Json<Value>| async move {
                     // Received models keep local quality guarantees on every request.
-                    assert_eq!(body["options"]["num_ctx"], 131072);
+                    // The model was created at its full context; a request may only restate it.
+                    assert!(
+                        body["options"]["num_ctx"].is_null() || body["options"]["num_ctx"] == 131072
+                    );
                     assert_eq!(body["options"]["num_predict"], -1);
                     assert_eq!(body["truncate"], false);
                     assert_eq!(body["shift"], false);
@@ -254,15 +257,16 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
             None => request.send(),
         }
     };
-    let answer: Value = chat(Some("cloud-key"), model.clone())
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        answer["choices"][0]["message"]["content"],
-        "served by the transported model"
+    // Ollama's OpenAI-compatible endpoint cannot turn off truncation, so a received model is
+    // refused there with a pointer to the native route, never answered with reduced quality.
+    let refused = chat(Some("cloud-key"), model.clone()).await.unwrap();
+    assert_eq!(refused.status(), 400);
+    assert!(
+        refused
+            .text()
+            .await
+            .unwrap()
+            .contains("/api/v1/model-transport/ollama/api/chat")
     );
     assert_eq!(chat(None, model.clone()).await.unwrap().status(), 401);
     let other: Value = chat(None, "reference".into())
@@ -300,20 +304,46 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
         Some("cloud-key".into()),
     )))
     .await;
-    let restarted_chat: Value = client
-        .post(format!("{restarted}/v1/chat/completions"))
-        .bearer_auth("cloud-key")
-        .json(&json!({"model": model, "messages":[{"role":"user","content":"hi"}]}))
+    let native = |base: String, key: Option<&'static str>, model: String| {
+        let request = client
+            .post(format!("{base}{OLLAMA_PROXY_PATH}/api/chat"))
+            .json(
+                &json!({"model": model, "messages":[{"role":"user","content":"hi"}],
+                "options":{"num_ctx":131072,"num_predict":-1}, "truncate":false, "shift":false}),
+            );
+        match key {
+            Some(key) => request.bearer_auth(key),
+            None => request,
+        }
         .send()
+    };
+    let restarted_chat: Value = native(restarted.clone(), Some("cloud-key"), model.clone())
         .await
         .unwrap()
         .json()
         .await
         .unwrap();
     assert_eq!(
-        restarted_chat["choices"][0]["message"]["content"],
-        "served by the transported model"
+        restarted_chat["message"]["content"],
+        "native answer from the transported model"
     );
+    assert_eq!(
+        native(restarted.clone(), None, model.clone())
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    // Another tag on a received ID was never created here: refused, not answered by a fixture.
+    let tagged = model.replace(":latest", ":other");
+    let other_tag = client
+        .post(format!("{restarted}/v1/chat/completions"))
+        .bearer_auth("cloud-key")
+        .json(&json!({"model": tagged, "messages":[{"role":"user","content":"hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(other_tag.status(), 409);
     let unknown = format!("kadmium-{}:latest", "c".repeat(64));
     let missing = client
         .post(format!("{restarted}/v1/chat/completions"))

@@ -1887,7 +1887,7 @@
   }
 
   async function sendToCloud() {
-    if (!$('checkpoint-select').value || !$('cloud-context').reportValidity()) return;
+    if (!$('checkpoint-select').value || !$('cloud-endpoint').reportValidity() || !$('cloud-context').reportValidity()) return;
     const request = { checkpoint_id: $('checkpoint-select').value, endpoint: $('cloud-endpoint').value.trim(), api_key: $('cloud-key').value || null, context_length: $('cloud-context').value === '' ? null : Number($('cloud-context').value) };
     try {
       renderCloud(await postJson('/api/v1/checkpoints/publish', request));

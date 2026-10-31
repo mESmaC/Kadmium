@@ -1,4 +1,4 @@
-//! Sends a prepared checkpoint to a Kadmium coordinator — Kadmium Cloud or your own — using the
+//! Sends a prepared checkpoint to a Kadmium coordinator using the
 //! verified, resumable chunk protocol in `kadmium_data::checkpoint::transport`. The receiver
 //! loads the preserved originals into its Ollama at the checkpoint's full context by default,
 //! and tasks then reach it through the receiver's native Ollama proxy, so every request keeps
@@ -16,8 +16,6 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// The hosted Kadmium service. Any Kadmium coordinator speaks the same protocol.
-pub const KADMIUM_CLOUD_ENDPOINT: &str = "https://api.kadmium.ai";
 const CHUNK_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -231,24 +229,32 @@ async fn send(
                 .send()
                 .await
                 .map_err(failure)?;
-        match response.status() {
-            reqwest::StatusCode::OK => break,
-            reqwest::StatusCode::ACCEPTED => tokio::time::sleep(Duration::from_secs(2)).await,
-            _ => return Err(remote_error(response).await),
+        if !poll(response.status()) {
+            if response.status().is_success() {
+                break;
+            }
+            return Err(remote_error(response).await);
         }
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
     update(progress, |p| {
         p.state = "loading";
         p.message = "Loading at the model's full context".into();
     });
-    let loaded: Value = decode(
-        // Loading a large model can take a long time; the receiver bounds its backend calls.
-        authorize(client.post(format!("{base}/api/v1/model-transport/{id}/load")))
+    // Loading also runs in the background on the receiver; poll until it reports the model.
+    let loaded: Value = loop {
+        let response = authorize(client.post(format!("{base}/api/v1/model-transport/{id}/load")))
+            .timeout(Duration::from_secs(120))
             .json(&json!({ "context_length": request.context_length }))
             .send()
-            .await,
-    )
-    .await?;
+            .await;
+        match response {
+            Ok(response) if poll(response.status()) => {
+                tokio::time::sleep(Duration::from_secs(2)).await
+            }
+            response => break decode(response).await?,
+        }
+    };
     let model = loaded["model"]
         .as_str()
         .ok_or_else(|| failure("the coordinator did not report the loaded model"))?;
@@ -266,6 +272,14 @@ async fn send(
         "provider": provider,
         "transport": transport.summary(),
     }))
+}
+
+/// The receiver is still working (202) or busy with another model (409): ask again shortly.
+fn poll(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::ACCEPTED | reqwest::StatusCode::CONFLICT
+    )
 }
 
 fn backend_client() -> &'static reqwest::Client {
@@ -360,9 +374,10 @@ async fn remote_error(response: reqwest::Response) -> CondenserError {
         .and_then(|v| v["error"].as_str().map(str::to_owned))
         .unwrap_or(body);
     let hint = match status.as_u16() {
-        401 | 403 => "Check the access token, or open this coordinator from its own computer. ",
+        401 => "Check the access token (the coordinator's KADMIUM_TRANSPORT_TOKEN). ",
         404 => "This address does not accept model uploads; check it, or update the coordinator. ",
-        409 => "The coordinator is busy or the model is not loaded there. ",
+        403 => "This coordinator does not receive models; set KADMIUM_TRANSPORT_TOKEN on it. ",
+        409 => "The model is not loaded on the coordinator. ",
         413 => "The coordinator does not accept a model this large. ",
         _ => "",
     };
@@ -380,7 +395,7 @@ fn failure(error: impl std::fmt::Display) -> CondenserError {
 pub(crate) fn remote_url(base: &str) -> Result<reqwest::Url> {
     let invalid = || {
         CondenserError::Config(
-            "Enter a Kadmium address such as https://api.kadmium.ai or http://192.168.1.48:7848"
+            "Enter a coordinator address such as https://coordinator.example:7848 or http://192.168.1.48:7848"
                 .into(),
         )
     };

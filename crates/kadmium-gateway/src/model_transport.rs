@@ -3,13 +3,15 @@
 //! published, and the model loads at its full context by default. Received models run on this
 //! coordinator's single Ollama backend, not across the grid.
 //!
-//! Access: set `KADMIUM_TRANSPORT_TOKEN` to accept bearer-authenticated requests from other
-//! computers (required behind a reverse proxy). Without it, only same-origin requests from this
-//! computer that carry no forwarding headers are accepted.
+//! Access: every upload, load and chat request needs `Authorization: Bearer <token>` matching
+//! `KADMIUM_TRANSPORT_TOKEN`. Without a token the coordinator does not receive or serve models.
+//! A loopback peer is not treated as proof of the owner: a local reverse proxy or another local
+//! user also connects from loopback. Only the read-only listing is also open to a same-origin
+//! browser on this computer, through the same check as the embedded Condenser workspace.
 
 use axum::body::{Body, Bytes};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Request, State};
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::extract::{DefaultBodyLimit, Path, Request, State};
+use axum::http::{Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -19,7 +21,6 @@ use kadmium_data::checkpoint::transport::{TRANSPORT_CHUNK_BYTES, TransportManife
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 const MAX_CHAT_BODY: usize = 64 * 1024 * 1024;
@@ -28,8 +29,10 @@ const MAX_MANIFEST_BODY: usize = 64 * 1024 * 1024;
 /// carries explicit full context, no truncation and no context shifting.
 pub const OLLAMA_PROXY_PATH: &str = "/api/v1/model-transport/ollama";
 
-enum Finishing {
+/// A background step (verification or loading) for one checkpoint.
+enum Step {
     Running,
+    Done(Value),
     Failed(String),
 }
 
@@ -41,8 +44,8 @@ pub struct TransportState {
     max_bytes: Option<u64>,
     /// Loaded model name -> the Ollama base URL serving it.
     served: Arc<Mutex<BTreeMap<String, Arc<str>>>>,
-    finishing: Arc<Mutex<HashMap<String, Finishing>>>,
-    loads: Arc<tokio::sync::Semaphore>,
+    finishing: Arc<Mutex<HashMap<String, Step>>>,
+    loading: Arc<Mutex<HashMap<String, Step>>>,
 }
 
 impl TransportState {
@@ -68,7 +71,7 @@ impl TransportState {
             max_bytes: None,
             served: Default::default(),
             finishing: Default::default(),
-            loads: Arc::new(tokio::sync::Semaphore::new(1)),
+            loading: Default::default(),
         }
     }
 
@@ -108,51 +111,13 @@ pub fn router(state: TransportState) -> Router {
 }
 
 fn authorized(state: &TransportState, request: &Request) -> bool {
-    match &state.token {
-        Some(token) => request
+    state.token.as_deref().is_some_and(|token| {
+        request
             .headers()
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
-            .is_some_and(|given| constant_time_eq(given.trim().as_bytes(), token.as_bytes())),
-        None => {
-            request
-                .extensions()
-                .get::<ConnectInfo<SocketAddr>>()
-                .is_some_and(|peer| peer.0.ip().is_loopback())
-                && local_same_origin(request.headers())
-        }
-    }
-}
-
-/// A loopback peer is not enough on its own: a local reverse proxy makes every request look
-/// local, and a browser on this computer can be steered here by a rebound DNS name.
-fn local_same_origin(headers: &HeaderMap) -> bool {
-    if [
-        "forwarded",
-        "x-forwarded-for",
-        "x-forwarded-host",
-        "x-real-ip",
-    ]
-    .iter()
-    .any(|name| headers.contains_key(*name))
-    {
-        return false;
-    }
-    let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) else {
-        return false;
-    };
-    let name = host
-        .rsplit_once(':')
-        .filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit()))
-        .map_or(host, |(name, _)| name);
-    if !matches!(name, "127.0.0.1" | "localhost" | "[::1]") {
-        return false;
-    }
-    headers.get(header::ORIGIN).is_none_or(|origin| {
-        origin
-            .to_str()
-            .is_ok_and(|origin| origin == format!("http://{host}"))
+            .is_some_and(|given| constant_time_eq(given.trim().as_bytes(), token.as_bytes()))
     })
 }
 
@@ -161,16 +126,25 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 fn denied(state: &TransportState) -> Response {
-    let message = if state.token.is_some() {
-        "A valid access token is required (the coordinator's KADMIUM_TRANSPORT_TOKEN)"
+    if state.token.is_some() {
+        failed(
+            StatusCode::UNAUTHORIZED,
+            "A valid access token is required (the coordinator's KADMIUM_TRANSPORT_TOKEN)",
+        )
     } else {
-        "Requests from other computers or through a proxy need KADMIUM_TRANSPORT_TOKEN set on this coordinator"
-    };
-    (StatusCode::UNAUTHORIZED, Json(json!({ "error": message }))).into_response()
+        failed(
+            StatusCode::FORBIDDEN,
+            "This coordinator does not receive models. Set KADMIUM_TRANSPORT_TOKEN on it and restart Kadmium.",
+        )
+    }
 }
 
 async fn guard(State(state): State<TransportState>, request: Request, next: Next) -> Response {
-    if authorized(&state, &request) {
+    let listing =
+        request.method() == Method::GET && request.uri().path() == "/api/v1/model-transport";
+    if authorized(&state, &request)
+        || (listing && crate::condenser_mount::local_browser_request(&request))
+    {
         next.run(request).await
     } else {
         denied(&state)
@@ -258,14 +232,19 @@ async fn complete(State(state): State<TransportState>, Path(id): Path<String>) -
     }
     let mut finishing = state.finishing.lock().expect("finishing");
     match finishing.remove(&id) {
-        Some(Finishing::Running) => {
-            finishing.insert(id, Finishing::Running);
+        Some(Step::Running) => {
+            finishing.insert(id, Step::Running);
             return (StatusCode::ACCEPTED, Json(json!({ "state": "verifying" }))).into_response();
         }
-        Some(Finishing::Failed(error)) => return failed(StatusCode::BAD_REQUEST, error),
-        None => {}
+        Some(Step::Failed(error)) => return failed(StatusCode::BAD_REQUEST, error),
+        Some(Step::Done(_)) | None => {}
     }
-    finishing.insert(id.clone(), Finishing::Running);
+    // Each verification re-reads a whole model; run one at a time so concurrent senders cannot
+    // multiply the disk load.
+    if finishing.values().any(|step| matches!(step, Step::Running)) {
+        return busy("Another model is being verified");
+    }
+    finishing.insert(id.clone(), Step::Running);
     drop(finishing);
     let library = state.library.clone();
     let tracker = state.finishing.clone();
@@ -274,7 +253,7 @@ async fn complete(State(state): State<TransportState>, Path(id): Path<String>) -
         let mut finishing = tracker.lock().expect("finishing");
         match outcome {
             Ok(_) => finishing.remove(&id),
-            Err(error) => finishing.insert(id, Finishing::Failed(error)),
+            Err(error) => finishing.insert(id, Step::Failed(error)),
         };
     });
     (StatusCode::ACCEPTED, Json(json!({ "state": "verifying" }))).into_response()
@@ -285,55 +264,82 @@ struct LoadRequest {
     context_length: Option<u32>,
 }
 
+fn busy(what: &str) -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({ "state": "busy", "error": format!("{what}; try again shortly") })),
+    )
+        .into_response()
+}
+
+/// Starts (or reports) loading into this coordinator's Ollama. Loading streams every source file
+/// to the backend and preloads the model, which can outlast an HTTP request, so it runs in the
+/// background: callers repeat this request until it answers 200 with the loaded model.
 async fn load(
     State(state): State<TransportState>,
     Path(id): Path<String>,
     request: Option<Json<LoadRequest>>,
 ) -> Response {
-    let Ok(_permit) = state.loads.clone().try_acquire_owned() else {
-        return failed(
-            StatusCode::CONFLICT,
-            "Another model is loading; try again shortly",
-        );
-    };
     let context = request.map(|Json(r)| r).unwrap_or_default().context_length;
-    match kadmium_condenser::local_models::load_ollama_with_context(
-        &state.library,
-        &id,
-        &state.ollama,
-        context,
-    )
-    .await
-    {
-        Ok(loaded) => {
-            let base: Arc<str> = loaded
-                .provider
-                .base_url
-                .clone()
-                .unwrap_or_else(|| state.ollama.to_string())
-                .into();
-            state
-                .served
-                .lock()
-                .expect("served")
-                .insert(loaded.provider.model.clone(), base);
-            Json(json!({
-                "model": loaded.provider.model,
-                "context_length": loaded.context_length,
-                "checkpoint": loaded.checkpoint,
-                "execution": "This coordinator's Ollama, using the preserved source files. Backend arithmetic and KV precision are not RepOps-certified.",
-                "ollama_path": OLLAMA_PROXY_PATH,
-            }))
-            .into_response()
+    let key = format!(
+        "{id}@{}",
+        context.map_or_else(|| "max".into(), |c| c.to_string())
+    );
+    let mut loading = state.loading.lock().expect("loading");
+    match loading.remove(&key) {
+        Some(Step::Running) => {
+            loading.insert(key, Step::Running);
+            return (StatusCode::ACCEPTED, Json(json!({ "state": "loading" }))).into_response();
         }
-        Err(error) => failed(StatusCode::BAD_GATEWAY, error),
+        Some(Step::Done(loaded)) => return Json(loaded).into_response(),
+        Some(Step::Failed(error)) => return failed(StatusCode::BAD_GATEWAY, error),
+        None => {}
     }
+    if loading.values().any(|step| matches!(step, Step::Running)) {
+        return busy("Another model is loading");
+    }
+    loading.insert(key.clone(), Step::Running);
+    drop(loading);
+    let task = state.clone();
+    tokio::spawn(async move {
+        let outcome = kadmium_condenser::local_models::load_ollama_with_context(
+            &task.library,
+            &id,
+            &task.ollama,
+            context,
+        )
+        .await;
+        let step = match outcome {
+            Ok(loaded) => {
+                let base: Arc<str> = loaded
+                    .provider
+                    .base_url
+                    .clone()
+                    .unwrap_or_else(|| task.ollama.to_string())
+                    .into();
+                task.served
+                    .lock()
+                    .expect("served")
+                    .insert(loaded.provider.model.clone(), base);
+                Step::Done(json!({
+                    "model": loaded.provider.model,
+                    "context_length": loaded.context_length,
+                    "checkpoint": loaded.checkpoint,
+                    "execution": "This coordinator's Ollama, using the preserved source files. Backend arithmetic and KV precision are not RepOps-certified.",
+                    "ollama_path": OLLAMA_PROXY_PATH,
+                }))
+            }
+            Err(error) => Step::Failed(error.to_string()),
+        };
+        task.loading.lock().expect("loading").insert(key, step);
+    });
+    (StatusCode::ACCEPTED, Json(json!({ "state": "loading" }))).into_response()
 }
 
-/// `kadmium-<64 lowercase hex>` with an optional `:latest` tag: a name only received models use.
+/// `kadmium-<64 lowercase hex>` with any tag or none: a name only received models use.
 fn transported_id(model: &str) -> Option<&str> {
     let id = model.strip_prefix("kadmium-")?;
-    let id = id.strip_suffix(":latest").unwrap_or(id);
+    let id = id.split_once(':').map_or(id, |(id, _)| id);
     (id.len() == 64
         && id
             .bytes()
@@ -357,11 +363,15 @@ async fn backend_for(state: &TransportState, model: &str) -> Result<Arc<str>, Bo
         ))
     };
     let id = transported_id(model).ok_or_else(not_loaded)?.to_string();
+    // Loading creates only `:latest`; any other tag was never created here.
+    let name = format!("kadmium-{id}:latest");
+    if model != name && model != format!("kadmium-{id}") {
+        return Err(not_loaded());
+    }
     let library = state.library.clone();
     if blocking(move || library.read(&id)).await.is_err() {
         return Err(not_loaded());
     }
-    let name = format!("{}:latest", model.trim_end_matches(":latest"));
     if !kadmium_condenser::model_transport::ollama_has_model(&state.ollama, &name).await {
         return Err(not_loaded());
     }
@@ -403,9 +413,11 @@ async fn tags(State(state): State<TransportState>) -> Response {
     Json(json!({ "models": models })).into_response()
 }
 
-/// Routes OpenAI-compatible chat for received models to the backend that loaded them, and
-/// refuses received-model names the coordinator cannot serve (including on `/v1/messages`)
-/// instead of letting the diagnostic handler answer for them. Other requests are unchanged.
+/// Keeps received-model names away from the diagnostic `/v1` handlers. Ollama's
+/// OpenAI-compatible endpoint cannot turn off prompt truncation or context shifting, so a
+/// received model is never served there: both `/v1` chat routes answer with an explicit error
+/// that names the native route, which carries full context and no truncation on every request.
+/// Other requests are unchanged.
 pub async fn serve_loaded_models(
     State(state): State<TransportState>,
     request: Request,
@@ -416,7 +428,6 @@ pub async fn serve_loaded_models(
     {
         return next.run(request).await;
     }
-    let messages = path == "/v1/messages";
     let (parts, body) = request.into_parts();
     let bytes = match axum::body::to_bytes(body, MAX_CHAT_BODY).await {
         Ok(bytes) => bytes,
@@ -434,57 +445,25 @@ pub async fn serve_loaded_models(
     if !authorized(&state, &request) {
         return denied(&state);
     }
-    if messages {
-        return failed(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "Received models are served through /v1/chat/completions and {OLLAMA_PROXY_PATH}, not /v1/messages"
-            ),
-        );
+    if let Err(response) = backend_for(&state, &model).await {
+        return *response;
     }
-    match backend_for(&state, &model).await {
-        Ok(base) => {
-            kadmium_condenser::model_transport::forward_json(&base, "v1/chat/completions", bytes)
-                .await
-        }
-        Err(response) => *response,
-    }
+    failed(
+        StatusCode::BAD_REQUEST,
+        format!(
+            "Received models are served only through {OLLAMA_PROXY_PATH}/api/chat, which keeps full context with no truncation. Ollama's OpenAI-compatible endpoint cannot guarantee that, so Kadmium does not serve {model} on {}. Condenser uses the native route automatically.",
+            path_of(&request)
+        ),
+    )
+}
+
+fn path_of(request: &Request) -> String {
+    request.uri().path().to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{local_same_origin, transported_id};
-    use axum::http::HeaderMap;
-
-    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
-        let mut map = HeaderMap::new();
-        for (name, value) in pairs {
-            map.insert(*name, value.parse().unwrap());
-        }
-        map
-    }
-
-    #[test]
-    fn local_access_requires_a_loopback_host_without_forwarding_or_foreign_origin() {
-        assert!(local_same_origin(&headers(&[("host", "127.0.0.1:7848")])));
-        assert!(local_same_origin(&headers(&[
-            ("host", "localhost:7848"),
-            ("origin", "http://localhost:7848")
-        ])));
-        assert!(!local_same_origin(&headers(&[(
-            "host",
-            "evil.example:7848"
-        )])));
-        assert!(!local_same_origin(&headers(&[
-            ("host", "127.0.0.1:7848"),
-            ("origin", "http://evil.example")
-        ])));
-        assert!(!local_same_origin(&headers(&[
-            ("host", "127.0.0.1:7848"),
-            ("x-forwarded-for", "203.0.113.9")
-        ])));
-        assert!(!local_same_origin(&HeaderMap::new()));
-    }
+    use super::transported_id;
 
     #[test]
     fn only_content_addressed_names_are_received_models() {
@@ -494,6 +473,10 @@ mod tests {
             Some(id.as_str())
         );
         assert_eq!(transported_id(&format!("kadmium-{id}")), Some(id.as_str()));
+        assert_eq!(
+            transported_id(&format!("kadmium-{id}:other")),
+            Some(id.as_str())
+        );
         assert_eq!(transported_id("kadmium-deepseek"), None);
         assert_eq!(transported_id("llama3.2"), None);
     }
