@@ -147,8 +147,7 @@ throughput improvement.
 
 ## Reference and validation
 
-The design was informed by the local InferSSD checkout at
-`C:\Users\engin\Desktop\inferssd`, especially:
+The design was informed by the InferSSD reference architecture, especially:
 
 - `engine/ggml/src/ggml-ssd/io/submit-window.h`: bounded submission and the rule that
   read completion does not release an H2D source slot.

@@ -13,9 +13,10 @@ path = "src/main.rs"
 default = []
 # Linux uses the browser shell by default. Enable the same native window used on
 # Windows and macOS when WebKitGTK 4.1 and GTK 3 development files are available.
-linux-native = ["dep:wry", "dep:tao"]
+linux-native = ["dep:wry", "dep:tao", "kadmium-native/linux-native"]
 
 [dependencies]
+kadmium-native.workspace = true
 kadmium-condenser.workspace = true
 kadmium-core.workspace = true
 kadmium-data.workspace = true

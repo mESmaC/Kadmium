@@ -179,21 +179,26 @@ impl PhoneFarmBoxController {
     /// Probes the local host for an installed `adb` binary and lists any physical Android phones
     /// or Phone Farm Box motherboards currently attached over USB/TCP.
     pub fn scan_local_adb_devices() -> AdbBridgeDiscoveryReport {
-        let output = Command::new("adb").arg("devices").arg("-l").output();
-        let (adb_binary_detected, connected_physical_devices) = match output {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                let devices: Vec<String> = stdout
-                    .lines()
-                    .skip(1)
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty() && !l.starts_with('*'))
-                    .map(String::from)
-                    .collect();
-                (true, devices)
-            }
-            _ => (false, Vec::new()),
-        };
+        let (adb_binary_detected, connected_physical_devices) =
+            if crate::external_hardware_probes_allowed(None) {
+                let output = Command::new("adb").arg("devices").arg("-l").output();
+                match output {
+                    Ok(out) if out.status.success() => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let devices: Vec<String> = stdout
+                            .lines()
+                            .skip(1)
+                            .map(str::trim)
+                            .filter(|l| !l.is_empty() && !l.starts_with('*'))
+                            .map(String::from)
+                            .collect();
+                        (true, devices)
+                    }
+                    _ => (false, Vec::new()),
+                }
+            } else {
+                (false, Vec::new())
+            };
 
         let bootstrap_script_preview = [
             "# Zero-touch provisioning for a 20-Slot Phone Farm Box over USB-ADB Hub:",

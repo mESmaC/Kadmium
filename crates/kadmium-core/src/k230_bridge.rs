@@ -397,20 +397,23 @@ impl K230UsbComputeBridge {
         let mut die_id = "K230-11ADD33A7799E0CD".to_string();
         let mut detected_com: Option<String> = None;
 
-        // 0. Check explicit environment variable override on any OS
-        for env_key in ["KADMIUM_RISCV_SERIAL_PORT", "KADMIUM_K230_PORT"] {
-            if let Ok(port_val) = std::env::var(env_key)
-                && !port_val.trim().is_empty()
-            {
-                detected_com = Some(port_val.trim().to_string());
-                stage = K230UsbStage::CanMvRtSmartUsbCdc;
-                pnp_instance = format!("ENV:{env_key}={}", port_val.trim());
-                break;
+        if crate::external_hardware_probes_allowed(None) {
+            // 0. Check explicit environment variable override on any OS
+            for env_key in ["KADMIUM_RISCV_SERIAL_PORT", "KADMIUM_K230_PORT"] {
+                if let Ok(port_val) = std::env::var(env_key)
+                    && !port_val.trim().is_empty()
+                {
+                    detected_com = Some(port_val.trim().to_string());
+                    stage = K230UsbStage::CanMvRtSmartUsbCdc;
+                    pnp_instance = format!("ENV:{env_key}={}", port_val.trim());
+                    break;
+                }
             }
         }
 
         // 1. Windows PnP USB & Serial enumeration
-        if stage == K230UsbStage::Disconnected
+        if crate::external_hardware_probes_allowed(None)
+            && stage == K230UsbStage::Disconnected
             && cfg!(target_os = "windows")
             && let Ok(out) = Command::new("powershell")
                 .args([
@@ -463,7 +466,8 @@ impl K230UsbComputeBridge {
         }
 
         // 2. Linux sysfs USB (/sys/bus/usb/devices) & CDC-ACM (/dev/ttyACM*) enumeration
-        if stage == K230UsbStage::Disconnected
+        if crate::external_hardware_probes_allowed(None)
+            && stage == K230UsbStage::Disconnected
             && cfg!(target_os = "linux")
             && let Ok(entries) = std::fs::read_dir("/sys/bus/usb/devices")
         {
@@ -504,7 +508,8 @@ impl K230UsbComputeBridge {
         }
 
         // 3. macOS /dev/cu.usbmodem* & ioreg USB enumeration
-        if stage == K230UsbStage::Disconnected
+        if crate::external_hardware_probes_allowed(None)
+            && stage == K230UsbStage::Disconnected
             && cfg!(target_os = "macos")
             && let Ok(entries) = std::fs::read_dir("/dev")
         {
@@ -670,6 +675,9 @@ impl K230UsbComputeBridge {
     }
 
     fn eval_resident_k230(port: &str, expr: &str) -> Option<String> {
+        if !crate::external_hardware_probes_allowed(None) {
+            return None;
+        }
         let mut guard = K230_SERIAL_LOCK.lock().ok()?;
         let needs_spawn = match guard.as_ref() {
             Some(b) => b.port != port,
@@ -695,6 +703,9 @@ impl K230UsbComputeBridge {
     }
 
     fn dispatch_serial_repl_to_k230(port: &str) -> Option<K230LiveSerialJson> {
+        if !crate::external_hardware_probes_allowed(None) {
+            return None;
+        }
         let mut guard = K230_SERIAL_LOCK.lock().ok()?;
         if let Some(mut old) = guard.take() {
             let _ = old.child.kill();

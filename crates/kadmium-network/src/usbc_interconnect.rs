@@ -181,26 +181,34 @@ pub struct UsbCInterfaceDescriptor {
 
 /// Benchmark comparing naive single-stream TCP (`1500 B` MTU) vs. Kadmium Multi-Stream DMA Striping
 /// (`4x–8x` parallel lanes + `64 KiB` frames) over a high-bandwidth USB-C link.
+///
+/// All values in this struct are deterministic arithmetic model estimates derived from `rated_cable_gbps`
+/// and `rtt_ms`; no physical USB-C or PCIe DMA transfer is executed by [`UsbCDirectInterconnectScanner::benchmark_multistream_dma`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiStreamUsbCDmaBenchmark {
+    /// Explicit provenance tag (`"modelled_arithmetic_estimate"`).
+    pub measurement_kind: String,
+    /// Always `false` for planner/model calculations that do not execute a physical DMA transfer.
+    pub live_dma_measured: bool,
+    /// Explicit statement of the arithmetic assumptions behind the figures below.
+    pub assumptions_note: String,
     pub rated_cable_gbps: f64,
     pub single_stream_1500_mtu_gbps: f64,
     pub kadmium_multistream_striped_gbps: f64,
     pub sustained_throughput_gb_per_sec: f64,
     pub parallel_socket_lanes: usize,
     pub negotiated_mtu_bytes: usize,
-    /// Time in microseconds to transfer a `64 KiB` FP16 hidden-state activation tensor (`4096 x 8`).
+    /// Modelled time in microseconds to transfer a `64 KiB` FP16 hidden-state activation tensor (`4096 x 8`).
     pub activation_64kb_transfer_us: f64,
-    /// Time in milliseconds to drain a `512 MB` active KV-cache window to the peer if the user
-    /// launches a game on the handheld or prepares for hot-unplug.
+    /// Modelled time in milliseconds to drain a `512 MB` active KV-cache window at the rated USB-C goodput.
     pub kv_window_512mb_drain_ms: f64,
-    /// Time in milliseconds to drain a full `2.0 GB` model/KV shard over the USB-C cable.
+    /// Modelled time in milliseconds to drain a full `2.0 GB` model/KV shard over the USB-C cable.
     pub full_shard_2gb_drain_ms: f64,
     /// Speedup factor compared to a standard `1.0 Gbps` RJ45 Ethernet patch cable (`~0.94 Gbps` goodput).
     pub vs_1gbe_patch_cable_speedup: f64,
     /// Speedup factor compared to a `2.5 Gbps` Ethernet connection (`~2.35 Gbps` goodput).
     pub vs_2_5gbe_patch_cable_speedup: f64,
-    /// Whether this USB-C link qualifies for intra-layer Tensor Parallelism (`TP`) and MoE All-to-All.
+    /// Whether this modelled USB-C profile qualifies for intra-layer Tensor Parallelism (`TP`) and MoE All-to-All in the planner.
     pub unlocks_tensor_parallelism: bool,
 }
 
@@ -226,7 +234,7 @@ pub struct UsbCDaisyChainTopologyPlan {
     pub bottleneck_goodput_gbps: f64,
     pub end_to_end_ring_rtt_ms: f64,
     pub hops: Vec<UsbCDaisyChainHop>,
-    /// Multi-homed bonding & instant hot-unplug failover schedule combining USB-C + LAN/Wi-Fi backup paths.
+    /// Multi-homed bonding & hot-unplug failover schedule combining USB-C + LAN/Wi-Fi backup paths.
     pub bonded_failover_schedule: MultiPathStripedSchedule,
 }
 
@@ -234,8 +242,18 @@ pub struct UsbCDaisyChainTopologyPlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsbCHostDiscoveryReport {
     pub host_os: String,
+    /// Explicit provenance tag (`"host_adapter_scan_with_modelled_estimates"` or `"hermetic_reference_catalog_only"`).
+    pub measurement_kind: String,
+    /// Always `false` unless a physical peer-to-peer DMA transfer benchmark was executed.
+    pub live_dma_measured: bool,
     pub live_usb_c_interfaces_detected: usize,
+    /// True only when at least one live USB-C / USB4 / Thunderbolt adapter was detected on this host.
     pub zero_config_link_local_ready: bool,
+    /// Live host interfaces detected on the OS (`live_detected_on_host == true`).
+    pub live_interfaces: Vec<UsbCInterfaceDescriptor>,
+    /// Reference tier descriptors (`live_detected_on_host == false`) used for capability comparison and offline planning.
+    pub reference_tier_catalog: Vec<UsbCInterfaceDescriptor>,
+    /// Combined interface list (live interfaces first, followed by reference tier descriptors).
     pub interfaces: Vec<UsbCInterfaceDescriptor>,
     pub handheld_30gbps_dma_benchmark: MultiStreamUsbCDmaBenchmark,
     pub switchless_daisy_chain_plan: UsbCDaisyChainTopologyPlan,
@@ -276,7 +294,7 @@ pub struct UsbCDeltaBridgePlan {
 pub struct UsbCDirectInterconnectScanner;
 
 impl UsbCDirectInterconnectScanner {
-    /// Computes the multi-stream DMA performance profile for a given rated USB-C bandwidth (e.g. `30.0 Gbps`).
+    /// Computes the modelled multi-stream DMA performance estimate for a given rated USB-C bandwidth (e.g. `30.0 Gbps`).
     pub fn benchmark_multistream_dma(rated_gbps: f64, rtt_ms: f64) -> MultiStreamUsbCDmaBenchmark {
         let clamped_rated = rated_gbps.clamp(0.48, 120.0);
         // Without multi-stream striping or jumbo frames, single-stream 1500B MTU TCP over USB4/TB
@@ -287,8 +305,8 @@ impl UsbCDirectInterconnectScanner {
             clamped_rated * 0.62
         };
 
-        // With Kadmium's 4x–8x parallel socket lanes + 64 KiB jumbo frame batching, sustained
-        // DMA tunnel goodput reaches ~92% of the usable PCIe/USB4 payload envelope (~27.6 Gbps on a 30 Gbps link).
+        // Modelled estimate assuming 4x–8x parallel socket lanes + 64 KiB frame batching at
+        // 92% of the rated link bandwidth (~27.6 Gbps on a 30 Gbps link).
         let parallel_lanes = if clamped_rated >= 60.0 {
             8
         } else if clamped_rated >= 20.0 {
@@ -318,6 +336,9 @@ impl UsbCDirectInterconnectScanner {
         let vs_2_5gbe = ((striped_goodput_gbps / 2.35) * 10.0).round() / 10.0;
 
         MultiStreamUsbCDmaBenchmark {
+            measurement_kind: "modelled_arithmetic_estimate".into(),
+            live_dma_measured: false,
+            assumptions_note: "Derived from rated_cable_gbps * 0.92 and payload / goodput division; no physical USB-C or PCIe DMA transfer was executed.".into(),
             rated_cable_gbps: clamped_rated,
             single_stream_1500_mtu_gbps: (single_stream_gbps * 100.0).round() / 100.0,
             kadmium_multistream_striped_gbps: striped_goodput_gbps,
@@ -338,20 +359,32 @@ impl UsbCDirectInterconnectScanner {
     }
 
     /// Probes the host OS for physical or virtual USB4 / Thunderbolt / USB-NCM / RNDIS network adapters,
-    /// and returns the full USB-C direct interconnect discovery report.
+    /// and returns the USB-C direct interconnect discovery report.
     pub fn scan_host_usbc_links(cluster_nodes: &[HardwareNode]) -> UsbCHostDiscoveryReport {
-        let mut detected_interfaces = Self::probe_os_usbc_adapters();
-        let live_count = detected_interfaces
-            .iter()
-            .filter(|i| i.live_detected_on_host)
-            .count();
+        let allow_live = kadmium_core::external_hardware_probes_allowed(None);
+        Self::scan_host_usbc_links_with_options(cluster_nodes, allow_live)
+    }
 
-        // Always include reference descriptors for the supported USB-C tiers so the control plane
-        // and sharding solver can evaluate USB4/Thunderbolt 30–80 Gbps and USB 3.2 DRD capabilities.
-        if detected_interfaces.is_empty() {
-            detected_interfaces.push(UsbCInterfaceDescriptor {
+    /// Returns the USB-C direct interconnect discovery report, probing the OS only when `allow_live_os_probe` is `true`.
+    pub fn scan_host_usbc_links_with_options(
+        cluster_nodes: &[HardwareNode],
+        allow_live_os_probe: bool,
+    ) -> UsbCHostDiscoveryReport {
+        let live_interfaces: Vec<UsbCInterfaceDescriptor> = if allow_live_os_probe {
+            Self::probe_os_usbc_adapters()
+                .into_iter()
+                .filter(|i| i.live_detected_on_host)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let live_count = live_interfaces.len();
+
+        let reference_tier_catalog = vec![
+            UsbCInterfaceDescriptor {
                 interface_id: "usbc-p2p-usb4-30g".into(),
-                interface_name: "USB4(TM) / Thunderbolt P2P Direct Tunnel (usb4_p2p0)".into(),
+                interface_name:
+                    "USB4(TM) / Thunderbolt P2P Direct Tunnel (usb4_p2p0, reference profile)".into(),
                 os_driver_stack: Self::default_os_driver_label(),
                 tier: UsbCInterconnectTier::Usb4Thunderbolt4_30To40Gbps,
                 data_role: UsbCDataRole::HostToHostSymmetricP2p,
@@ -366,47 +399,51 @@ impl UsbCDirectInterconnectScanner {
                 supports_tensor_parallel_allreduce: true,
                 live_detected_on_host: false,
                 transport_paths: vec![UsbCTransportPath::Usb4IpNetwork],
-            });
-        }
+            },
+            UsbCInterfaceDescriptor {
+                interface_id: "usbc-p2p-tb5-80g".into(),
+                interface_name:
+                    "Thunderbolt 5 / USB4 v2 Symmetric DMA Tunnel (tb5_p2p0, reference profile)"
+                        .into(),
+                os_driver_stack: Self::default_os_driver_label(),
+                tier: UsbCInterconnectTier::Thunderbolt5Usb4V2_80Gbps,
+                data_role: UsbCDataRole::HostToHostSymmetricP2p,
+                link_local_ipv4: "169.254.78.20".into(),
+                link_local_ipv6: "fe80::7848:tb5:20".into(),
+                peer_link_local_addr: Some("169.254.78.21:7848".into()),
+                negotiated_mtu_bytes: 65_536,
+                parallel_dma_streams: 8,
+                rated_phy_gbps: 80.0,
+                effective_goodput_gbps: 64.0,
+                rtt_latency_ms: 0.08,
+                supports_tensor_parallel_allreduce: true,
+                live_detected_on_host: false,
+                transport_paths: vec![UsbCTransportPath::Usb4IpNetwork],
+            },
+            UsbCInterfaceDescriptor {
+                interface_id: "usbc-drd-ncm-20g".into(),
+                interface_name:
+                    "USB 3.2 Gen 2x2 Dual-Role USB-NCM Gadget Bridge (usb_ncm0, reference profile)"
+                        .into(),
+                os_driver_stack: "CDC-NCM / FunctionFS Zero-Copy Bulk".into(),
+                tier: UsbCInterconnectTier::Usb32Gen2x2_20GbpsDrd,
+                data_role: UsbCDataRole::DualRoleHostDfp,
+                link_local_ipv4: "169.254.78.30".into(),
+                link_local_ipv6: "fe80::7848:ncm:30".into(),
+                peer_link_local_addr: Some("169.254.78.31:7848".into()),
+                negotiated_mtu_bytes: 65_536,
+                parallel_dma_streams: 4,
+                rated_phy_gbps: 20.0,
+                effective_goodput_gbps: 15.2,
+                rtt_latency_ms: 0.18,
+                supports_tensor_parallel_allreduce: false,
+                live_detected_on_host: false,
+                transport_paths: vec![UsbCTransportPath::CdcNcmIp],
+            },
+        ];
 
-        // Add Tier-1 80Gbps USB4v2/TB5 and Tier-2 10Gbps/20Gbps USB-NCM DRD descriptors if not already present.
-        detected_interfaces.push(UsbCInterfaceDescriptor {
-            interface_id: "usbc-p2p-tb5-80g".into(),
-            interface_name: "Thunderbolt 5 / USB4 v2 Symmetric DMA Tunnel (tb5_p2p0)".into(),
-            os_driver_stack: Self::default_os_driver_label(),
-            tier: UsbCInterconnectTier::Thunderbolt5Usb4V2_80Gbps,
-            data_role: UsbCDataRole::HostToHostSymmetricP2p,
-            link_local_ipv4: "169.254.78.20".into(),
-            link_local_ipv6: "fe80::7848:tb5:20".into(),
-            peer_link_local_addr: Some("169.254.78.21:7848".into()),
-            negotiated_mtu_bytes: 65_536,
-            parallel_dma_streams: 8,
-            rated_phy_gbps: 80.0,
-            effective_goodput_gbps: 64.0,
-            rtt_latency_ms: 0.08,
-            supports_tensor_parallel_allreduce: true,
-            live_detected_on_host: false,
-            transport_paths: vec![UsbCTransportPath::Usb4IpNetwork],
-        });
-
-        detected_interfaces.push(UsbCInterfaceDescriptor {
-            interface_id: "usbc-drd-ncm-20g".into(),
-            interface_name: "USB 3.2 Gen 2x2 Dual-Role USB-NCM Gadget Bridge (usb_ncm0)".into(),
-            os_driver_stack: "CDC-NCM / FunctionFS Zero-Copy Bulk".into(),
-            tier: UsbCInterconnectTier::Usb32Gen2x2_20GbpsDrd,
-            data_role: UsbCDataRole::DualRoleHostDfp,
-            link_local_ipv4: "169.254.78.30".into(),
-            link_local_ipv6: "fe80::7848:ncm:30".into(),
-            peer_link_local_addr: Some("169.254.78.31:7848".into()),
-            negotiated_mtu_bytes: 65_536,
-            parallel_dma_streams: 4,
-            rated_phy_gbps: 20.0,
-            effective_goodput_gbps: 15.2,
-            rtt_latency_ms: 0.18,
-            supports_tensor_parallel_allreduce: false,
-            live_detected_on_host: false,
-            transport_paths: vec![UsbCTransportPath::CdcNcmIp],
-        });
+        let mut interfaces = live_interfaces.clone();
+        interfaces.extend(reference_tier_catalog.clone());
 
         let handheld_30gbps_dma_benchmark = Self::benchmark_multistream_dma(30.0, 0.12);
         let switchless_daisy_chain_plan = Self::build_daisy_chain_topology_plan(cluster_nodes);
@@ -423,13 +460,37 @@ impl UsbCDirectInterconnectScanner {
                 rtt_latency_ms: c.rtt_ms,
             })
             .collect();
-        let delta_bridge_plan = Self::plan_delta_bridge(&detected_interfaces[0], &backups, 0.9);
+        let delta_bridge_plan = if let Some(live_primary) = live_interfaces.first() {
+            Self::plan_delta_bridge(live_primary, &backups, 0.9)
+        } else {
+            UsbCDeltaBridgePlan {
+                lanes: Vec::new(),
+                segment_bytes: DEFAULT_BRIDGE_SEGMENT_BYTES,
+                window_bytes: 0,
+                bonded_goodput_gbps: 0.0,
+                chunk_reuse_fraction: 0.0,
+                logical_goodput_gbps: 0.0,
+                unplug_detect_ms: 0.0,
+                unplug_resend_bytes: 0,
+                unplug_recovery_ms: 0.0,
+                plain_reconnect_resend_bytes: 0,
+                plain_reconnect_recovery_ms: 0.0,
+            }
+        };
 
         UsbCHostDiscoveryReport {
             host_os: std::env::consts::OS.to_string(),
+            measurement_kind: if allow_live_os_probe {
+                "host_adapter_scan_with_modelled_estimates".into()
+            } else {
+                "hermetic_reference_catalog_only".into()
+            },
+            live_dma_measured: false,
             live_usb_c_interfaces_detected: live_count,
-            zero_config_link_local_ready: true,
-            interfaces: detected_interfaces,
+            zero_config_link_local_ready: live_count > 0,
+            live_interfaces,
+            reference_tier_catalog,
+            interfaces,
             handheld_30gbps_dma_benchmark,
             switchless_daisy_chain_plan,
             delta_bridge_plan,
@@ -544,22 +605,58 @@ impl UsbCDirectInterconnectScanner {
         paths
     }
 
-    /// Builds a switchless USB-C daisy-chain / ring topology plan across the cluster nodes and computes
-    /// a bonded multi-path failover schedule (`USB4 30Gbps` primary + `Wi-Fi 6E / Ethernet` backup).
+    /// Builds a switchless USB-C daisy-chain / ring topology plan across the supplied cluster nodes.
+    ///
+    /// Does not invent synthetic peer nodes when fewer than two nodes are supplied:
+    /// - `nodes.is_empty()` returns `total_usb_c_nodes: 0` and no hops or failover allocations.
+    /// - `nodes.len() == 1` returns `total_usb_c_nodes: 1` and no hops or failover allocations.
     pub fn build_daisy_chain_topology_plan(nodes: &[HardwareNode]) -> UsbCDaisyChainTopologyPlan {
-        let mut chain_nodes: Vec<HardwareNode> = nodes.to_vec();
-        if chain_nodes.len() < 2 {
-            chain_nodes.push(Self::build_usb4_handheld_gaming_node(
-                Some("node-usb4-handheld-30gbps"),
-                Some(30.0),
-            ));
+        if nodes.is_empty() {
+            return UsbCDaisyChainTopologyPlan {
+                topology_mode: "No USB-C cluster nodes supplied (0 nodes)".into(),
+                total_usb_c_nodes: 0,
+                ring_closed: false,
+                bottleneck_goodput_gbps: 0.0,
+                end_to_end_ring_rtt_ms: 0.0,
+                hops: Vec::new(),
+                bonded_failover_schedule: MultiPathStripedSchedule {
+                    total_chunks: 0,
+                    chunk_size_kb: 0,
+                    bonded_bandwidth_gbps: 0.0,
+                    single_best_link_gbps: 0.0,
+                    multi_path_speedup: 0.0,
+                    estimated_transfer_ms: 0.0,
+                    channel_allocations: Vec::new(),
+                },
+            };
         }
 
+        if nodes.len() == 1 {
+            return UsbCDaisyChainTopologyPlan {
+                topology_mode: "Single host node only (no peer nodes to form a USB-C link)".into(),
+                total_usb_c_nodes: 1,
+                ring_closed: false,
+                bottleneck_goodput_gbps: 0.0,
+                end_to_end_ring_rtt_ms: 0.0,
+                hops: Vec::new(),
+                bonded_failover_schedule: MultiPathStripedSchedule {
+                    total_chunks: 0,
+                    chunk_size_kb: 0,
+                    bonded_bandwidth_gbps: 0.0,
+                    single_best_link_gbps: 0.0,
+                    multi_path_speedup: 0.0,
+                    estimated_transfer_ms: 0.0,
+                    channel_allocations: Vec::new(),
+                },
+            };
+        }
+
+        let chain_nodes: &[HardwareNode] = &nodes[..nodes.len().min(4)];
         let mut hops = Vec::new();
         let mut min_goodput = f64::MAX;
         let mut total_rtt = 0.0f64;
 
-        let count = chain_nodes.len().min(4);
+        let count = chain_nodes.len();
         for idx in 0..count {
             let next_idx = (idx + 1) % count;
             if count == 2 && idx == 1 {
@@ -597,20 +694,10 @@ impl UsbCDirectInterconnectScanner {
             });
         }
 
-        if min_goodput == f64::MAX {
-            min_goodput = 27.6;
-        }
-
-        // Construct a bonded primary (30 Gbps USB4) + backup (2.5 GbE LAN + Wi-Fi 6E) schedule
-        // so that if a user unplugs the USB-C cable mid-inference, traffic seamlessly fails over.
-        let primary_from = chain_nodes
-            .first()
-            .map(|n| n.id.clone())
-            .unwrap_or_else(|| NodeId("node-desktop-host".into()));
-        let primary_to = chain_nodes
-            .get(1)
-            .map(|n| n.id.clone())
-            .unwrap_or_else(|| NodeId("node-usb4-handheld-30gbps".into()));
+        // Construct a modelled bonded primary (30 Gbps USB4) + backup (2.5 GbE LAN + Wi-Fi 6E) schedule
+        // across the first two supplied nodes.
+        let primary_from = chain_nodes[0].id.clone();
+        let primary_to = chain_nodes[1].id.clone();
 
         let failover_links = vec![
             PeerLinkMetrics {
@@ -641,9 +728,9 @@ impl UsbCDirectInterconnectScanner {
 
         UsbCDaisyChainTopologyPlan {
             topology_mode: if count >= 3 {
-                "Switchless USB4 Ring / Daisy-Chain (Zero-Switch 169.254.x.x Point-to-Point)".into()
+                "Modelled Switchless USB4 Ring / Daisy-Chain (169.254.x.x Point-to-Point)".into()
             } else {
-                "Direct Host-to-Host USB4 / Thunderbolt DMA Cable (Point-to-Point)".into()
+                "Modelled Direct Host-to-Host USB4 / Thunderbolt Point-to-Point".into()
             },
             total_usb_c_nodes: count,
             ring_closed: count >= 3,
@@ -848,10 +935,27 @@ mod tests {
 
     #[test]
     fn test_delta_bridge_plan_bounds_unplug_resend_to_the_window() {
+        let cluster = sample_personal_cluster();
         let report =
-            UsbCDirectInterconnectScanner::scan_host_usbc_links(&sample_personal_cluster());
-        let plan = &report.delta_bridge_plan;
-        let usbc = &report.interfaces[0];
+            UsbCDirectInterconnectScanner::scan_host_usbc_links_with_options(&cluster, false);
+        assert!(report.delta_bridge_plan.lanes.is_empty());
+
+        let usbc = &report.reference_tier_catalog[0];
+        let backups: Vec<PeerLinkMetrics> = report
+            .switchless_daisy_chain_plan
+            .bonded_failover_schedule
+            .channel_allocations
+            .iter()
+            .filter(|c| c.transport != TransportKind::ThunderboltBridge)
+            .map(|c| PeerLinkMetrics {
+                from_node: NodeId("local".into()),
+                to_node: NodeId("peer".into()),
+                transport: c.transport,
+                bandwidth_gbps: c.bandwidth_gbps,
+                rtt_latency_ms: c.rtt_ms,
+            })
+            .collect();
+        let plan = UsbCDirectInterconnectScanner::plan_delta_bridge(usbc, &backups, 0.9);
         assert_eq!(
             plan.lanes.len(),
             usbc.parallel_dma_streams + 2,
@@ -883,8 +987,18 @@ mod tests {
         nodes.push(handheld);
 
         let report = UsbCDirectInterconnectScanner::scan_host_usbc_links(&nodes);
-        assert!(report.zero_config_link_local_ready);
+        assert_eq!(
+            report.zero_config_link_local_ready,
+            report.live_usb_c_interfaces_detected > 0
+        );
+        assert!(!report.live_dma_measured);
+        assert_eq!(
+            report.handheld_30gbps_dma_benchmark.measurement_kind,
+            "modelled_arithmetic_estimate"
+        );
+        assert!(!report.handheld_30gbps_dma_benchmark.live_dma_measured);
         assert!(report.interfaces.len() >= 3);
+        assert_eq!(report.reference_tier_catalog.len(), 3);
         assert!(report.switchless_daisy_chain_plan.ring_closed);
         assert!(
             report
@@ -892,6 +1006,39 @@ mod tests {
                 .bonded_failover_schedule
                 .bonded_bandwidth_gbps
                 > 30.0
+        );
+    }
+
+    #[test]
+    fn test_empty_and_single_node_topology_plans_do_not_invent_synthetic_peers() {
+        let empty = UsbCDirectInterconnectScanner::build_daisy_chain_topology_plan(&[]);
+        assert_eq!(empty.total_usb_c_nodes, 0);
+        assert!(!empty.ring_closed);
+        assert_eq!(empty.bottleneck_goodput_gbps, 0.0);
+        assert_eq!(empty.end_to_end_ring_rtt_ms, 0.0);
+        assert!(empty.hops.is_empty());
+        assert!(
+            empty
+                .bonded_failover_schedule
+                .channel_allocations
+                .is_empty()
+        );
+
+        let single_node = UsbCDirectInterconnectScanner::build_usb4_handheld_gaming_node(
+            Some("node-single-host"),
+            Some(30.0),
+        );
+        let single = UsbCDirectInterconnectScanner::build_daisy_chain_topology_plan(&[single_node]);
+        assert_eq!(single.total_usb_c_nodes, 1);
+        assert!(!single.ring_closed);
+        assert_eq!(single.bottleneck_goodput_gbps, 0.0);
+        assert_eq!(single.end_to_end_ring_rtt_ms, 0.0);
+        assert!(single.hops.is_empty());
+        assert!(
+            single
+                .bonded_failover_schedule
+                .channel_allocations
+                .is_empty()
         );
     }
 }

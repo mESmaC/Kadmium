@@ -200,6 +200,6 @@ test('Control Room mobile navigation, recovery, and honest diagnostic status', {
     if (browser) await browser.close();
     server.kill();
     await new Promise(resolve => { if (server.exitCode !== null) resolve(); else server.once('exit', resolve); });
-    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

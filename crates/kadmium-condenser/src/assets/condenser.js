@@ -3,6 +3,7 @@
 
   const STORAGE_KEY = 'condenser.agent.tasks.v1';
   const workflow = window.CondenserWorkflow;
+  const nativeFiles = window.__KADMIUM_FILES__;
   const MAX_INTERVIEW_QUESTIONS = 6;
   const INTERVIEW_READY = '[[READY]]';
   const INTERVIEW_QUESTION_INSTRUCTION = 'Conduct a clarifying interview before the final response. Ask exactly ONE concise, high-leverage question about the original task, using the previous Q/A context. Return only that question: no task answer, preamble, or list. If you already have enough context to answer well, return exactly [[READY]].';
@@ -429,13 +430,88 @@
     });
   }
 
+  function syncSessionRailAccessibility() {
+    const rail = $('session-rail');
+    if (!rail) return;
+    const overlay = overlayPanes();
+    const mobileOpen = overlay && document.body.classList.contains('sessions-open');
+    const desktopOpen = !overlay && !document.body.classList.contains('sidebar-closed');
+    const hidden = !(mobileOpen || desktopOpen);
+    rail.inert = hidden;
+    if (hidden) rail.setAttribute('inert', '');
+    else rail.removeAttribute('inert');
+    rail.setAttribute('aria-hidden', String(hidden));
+    const toggleSessions = $('toggle-sessions');
+    if (toggleSessions) toggleSessions.setAttribute('aria-expanded', String(mobileOpen));
+    const toggleSidebar = $('toggle-sidebar');
+    if (toggleSidebar) toggleSidebar.setAttribute('aria-expanded', String(desktopOpen));
+    if (hidden && rail.contains(document.activeElement)) {
+      const target = overlay ? toggleSessions : toggleSidebar;
+      if (target) target.focus();
+    }
+  }
+
+  function railFocusableElements() {
+    const rail = $('session-rail');
+    if (!rail) return [];
+    return Array.from(rail.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+      .filter((node) => !node.classList.contains('pane-resizer') && !node.closest('[hidden], .hidden'));
+  }
+
+  function openMobileSessions(focusTarget) {
+    document.body.classList.add('sessions-open');
+    syncSessionRailAccessibility();
+    const rail = $('session-rail');
+    if (rail) void rail.offsetWidth;
+    const target = focusTarget || $('new-task') || railFocusableElements()[0];
+    if (target) target.focus();
+  }
+
+  function closeMobileSessions(restoreFocus) {
+    const wasOpen = document.body.classList.contains('sessions-open');
+    document.body.classList.remove('sessions-open');
+    syncSessionRailAccessibility();
+    if (wasOpen && restoreFocus && overlayPanes()) {
+      const toggle = $('toggle-sessions');
+      if (toggle) toggle.focus();
+    }
+  }
+
+  function trapSessionRailFocus(event) {
+    if (event.key !== 'Tab' || !overlayPanes() || !document.body.classList.contains('sessions-open')) return;
+    const focusables = railFocusableElements();
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const rail = $('session-rail');
+    const active = document.activeElement;
+    if (!rail.contains(active)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+      return;
+    }
+    if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   function setView(name) {
+    const railHadFocus = Boolean($('session-rail') && $('session-rail').contains(document.activeElement));
     document.body.dataset.view = name;
     document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === 'view-' + name));
     document.querySelectorAll('.rail-nav').forEach((button) => button.classList.toggle('active', button.dataset.view === name));
-    document.body.classList.remove('sessions-open');
+    closeMobileSessions(false);
     applyPaneWidths();
-    if (name === 'capabilities') loadPlugins();
+    if (name === 'capabilities') {
+      loadPlugins();
+      if (overlayPanes() && railHadFocus && $('refresh-plugins')) $('refresh-plugins').focus();
+    } else if (overlayPanes() && railHadFocus && $('prompt')) {
+      $('prompt').focus();
+    }
   }
 
   function saveDockLayout() {
@@ -477,6 +553,7 @@
   }
 
   function applyPaneWidths() {
+    syncSessionRailAccessibility();
     if (overlayPanes()) return;
     const railLimits = paneLimits('rail');
     const contextLimits = paneLimits('context');
@@ -582,10 +659,25 @@
       state.workspace = await api('/api/v1/workspace');
       $('workspace-name').textContent = state.workspace.name || 'Workspace';
       $('workspace-name').title = state.workspace.root || '';
-      await loadFiles('');
+      if (!nativeFiles) await loadFiles('');
+      else state.files.loaded = true;
     } catch (error) {
       $('file-list').replaceChildren(element('p', 'panel-empty error', error.message));
+      if (nativeFiles) setFileOperationStatus(error.message, true);
     }
+  }
+
+  async function pickWorkspaceFile() {
+    const button = $('files-open-native');
+    button.disabled = true;
+    try {
+      if (!state.workspace.root) await loadWorkspace();
+      if (!state.workspace.root) throw new Error('The workspace is not ready. Refresh and try again.');
+      setFileOperationStatus('');
+      const path = await nativeFiles.pick({ kind: 'workspace_file', root: state.workspace.root });
+      if (path !== null) await openFile(path);
+    } catch (error) { setFileOperationStatus(error.message, true); }
+    finally { button.disabled = false; }
   }
 
   async function loadFiles(path) {
@@ -1599,7 +1691,7 @@
 
   function checkpointControls() {
     const busy = state.localModels.busy;
-    ['checkpoint-path', 'checkpoint-accept-quantized', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse'].forEach(id => { $(id).disabled = busy; });
+    ['checkpoint-path', 'checkpoint-accept-quantized', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded'].forEach(id => { $(id).disabled = busy; });
     $('checkpoint-load').disabled = busy || !$('checkpoint-select').value;
     $('checkpoint-use').disabled = busy || state.busy || !state.localModels.loaded;
   }
@@ -1693,6 +1785,20 @@
     $('prompt').focus();
   }
 
+  async function chooseCheckpoint(folder) {
+    if (!nativeFiles) return browseCheckpoints($('checkpoint-path').value.trim());
+    $('checkpoint-browse').disabled = true;
+    $('checkpoint-browse-folder').disabled = true;
+    try {
+      const path = await nativeFiles.pick({ kind: folder ? 'model_folder' : 'model_file', path: $('checkpoint-path').value.trim() || null });
+      if (path !== null && !state.localModels.busy) $('checkpoint-path').value = path;
+    } catch (error) { $('checkpoint-status').textContent = error.message; }
+    finally {
+      $('checkpoint-browse').disabled = state.localModels.busy;
+      $('checkpoint-browse-folder').disabled = state.localModels.busy;
+    }
+  }
+
   async function browseCheckpoints(path) {
     const request = state.localModels.browseRequest = (state.localModels.browseRequest || 0) + 1;
     $('checkpoint-browser').hidden = false;
@@ -1712,7 +1818,7 @@
           if (entry.directory) browseCheckpoints(entry.path);
           else {
             // A SafeTensors file needs its full sibling package, including tokenizer/config.
-            $('checkpoint-path').value = entry.name.endsWith('.safetensors') ? listing.path : entry.path;
+            $('checkpoint-path').value = entry.name.toLowerCase().endsWith('.safetensors') ? listing.path : entry.path;
             $('checkpoint-browser').hidden = true;
           }
         });
@@ -2375,10 +2481,26 @@
     $('settings-local-model').addEventListener('click', openModelLibrary);
     $('checkpoint-form').addEventListener('submit', event => { event.preventDefault(); importCheckpoint(); });
     $('quality-maximum').addEventListener('click', () => { $('max-tokens').value = ''; $('context-window').value = ''; $('compact-history').checked = false; $('provider-timeout').value = ''; $('quality-error').textContent = ''; });
-    $('checkpoint-browse').addEventListener('click', () => browseCheckpoints($('checkpoint-path').value.trim()));
+    $('checkpoint-browse').addEventListener('click', () => chooseCheckpoint(false));
+    $('checkpoint-browse-folder').addEventListener('click', () => chooseCheckpoint(true));
     $('checkpoint-parent').addEventListener('click', () => { if (state.localModels.browse) browseCheckpoints(state.localModels.browse.parent); });
     $('checkpoint-choose-folder').addEventListener('click', () => { if (!state.localModels.busy && state.localModels.browse) { $('checkpoint-path').value = state.localModels.browse.path; $('checkpoint-browser').hidden = true; } });
-    $('checkpoint-browser-close').addEventListener('click', () => { $('checkpoint-browser').hidden = true; });
+    $('checkpoint-browser-close').addEventListener('click', () => { state.localModels.browseRequest = (state.localModels.browseRequest || 0) + 1; $('checkpoint-browser').hidden = true; });
+    if (nativeFiles) {
+      $('checkpoint-embedded').hidden = false;
+      $('checkpoint-embedded').addEventListener('click', () => browseCheckpoints($('checkpoint-path').value.trim()));
+      $('checkpoint-picker-note').textContent = 'Uses your system file dialog. Selecting a SafeTensors file includes its complete model folder.';
+      $('files-open-native').hidden = false;
+      $('files-toggle-tree').hidden = false;
+      $('context-files').classList.add('native-files');
+      $('files-open-native').addEventListener('click', pickWorkspaceFile);
+      $('files-toggle-tree').addEventListener('click', () => {
+        const visible = $('context-files').classList.toggle('show-tree');
+        $('files-toggle-tree').textContent = visible ? 'Hide workspace tree' : 'Show workspace tree';
+        $('files-toggle-tree').setAttribute('aria-expanded', String(visible));
+        if (visible) loadFiles(state.files.path);
+      });
+    }
     $('checkpoint-context').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Context changed. Load again to verify this allocation.'; });
     $('checkpoint-refresh').addEventListener('click', () => refreshCheckpoints());
     $('checkpoint-select').addEventListener('change', () => { state.localModels.loaded = null; $('checkpoint-load-status').textContent = 'Load this checkpoint before using it in a task.'; renderCheckpoint(); });
@@ -2495,22 +2617,32 @@
     $('session-search').addEventListener('input', renderSessions);
     document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => closeLayer(button.dataset.close)));
     document.addEventListener('keydown', (event) => {
+      trapSessionRailFocus(event);
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        if (window.matchMedia('(max-width: 980px)').matches) document.body.classList.add('sessions-open');
-        $('session-search').focus();
+        if (overlayPanes()) openMobileSessions($('session-search'));
+        else if (document.body.classList.contains('sidebar-closed')) {
+          document.body.classList.remove('sidebar-closed');
+          applyPaneWidths();
+          $('session-search').focus();
+        } else {
+          $('session-search').focus();
+        }
       }
       if (event.key === 'Escape') {
         closeLayer('settings');
         closeLayer('tool');
-        document.body.classList.remove('sessions-open');
+        closeMobileSessions(true);
       }
     });
     $('toggle-context').addEventListener('click', () => { document.body.classList.toggle('context-closed'); applyPaneWidths(); });
     $('close-context').addEventListener('click', () => { document.body.classList.add('context-closed'); applyPaneWidths(); });
     $('toggle-sidebar').addEventListener('click', () => { document.body.classList.toggle('sidebar-closed'); applyPaneWidths(); });
-    $('toggle-sessions').addEventListener('click', () => document.body.classList.toggle('sessions-open'));
-    $('session-backdrop').addEventListener('click', () => document.body.classList.remove('sessions-open'));
+    $('toggle-sessions').addEventListener('click', () => {
+      if (document.body.classList.contains('sessions-open')) closeMobileSessions(true);
+      else openMobileSessions();
+    });
+    $('session-backdrop').addEventListener('click', () => closeMobileSessions(true));
     bindPaneResizer('rail', $('resize-sessions'));
     bindPaneResizer('context', $('resize-context'));
 
@@ -2645,8 +2777,13 @@
     bindEvents();
     resetJobInputs();
     const paneObserver = new ResizeObserver(() => {
-      if (overlayPanes()) finishPaneDrag();
-      else applyPaneWidths();
+      if (overlayPanes()) {
+        finishPaneDrag();
+        syncSessionRailAccessibility();
+      } else {
+        document.body.classList.remove('sessions-open');
+        applyPaneWidths();
+      }
     });
     paneObserver.observe(document.querySelector('.app-shell'));
     $('toggle-context-width').title = state.contextWide ? 'Collapse dock width' : 'Expand dock';
@@ -2654,6 +2791,7 @@
     setContextPanel(state.contextPanel, false);
     updateBrowserHistory();
     if (window.matchMedia('(max-width: 980px)').matches) document.body.classList.add('context-closed');
+    syncSessionRailAccessibility();
     await loadProviders();
     loadSessions();
     renderAll();

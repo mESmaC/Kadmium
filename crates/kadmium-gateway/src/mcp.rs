@@ -10,8 +10,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use kadmium_core::{ModelSpec, WorkloadKind};
-use kadmium_data::{GitHubConnector, HuggingFaceHubConnector};
-use kadmium_rl::{GrpoEpochExecutor, SandboxOp, WasiMicroSandbox};
+use kadmium_data::{
+    GitHubConnector, HfByteRangeSlicer, HfRepoKind, HfRepoRef, HuggingFaceHubConnector,
+    compute_fnv1a64_checksum,
+};
+use kadmium_rl::{GrpoEpochExecutor, WasiMicroSandbox};
 use kadmium_runtime::DistributedMoEPipelineExecutor;
 use kadmium_sharding::{
     DistributedPagedKvPlanner, HybridCloudArbitragePlanner, MinMaxStageLatencyOptimizer,
@@ -141,7 +144,7 @@ impl KadmiumMcpServer {
         vec![
             McpToolDescriptor {
                 name: "kadmium_cluster_status".into(),
-                description: "Inspect live Kadmium (Cd-48) heterogeneous cluster topology, aggregate VRAM/RAM capacity, effective TFLOPS, node polite states, and coordinator Bully+CRDT quorum.".into(),
+                description: "Inspect Kadmium (Cd-48) cluster topology, fleet_mode (live_only vs demo_fixture), aggregate VRAM/RAM capacity, effective TFLOPS, node polite states, and coordinator Bully+CRDT quorum.".into(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -165,13 +168,21 @@ impl KadmiumMcpServer {
             },
             McpToolDescriptor {
                 name: "kadmium_pull_artifact".into(),
-                description: "Stage a Hugging Face model/dataset URI (hf://owner/repo@rev) into selective 64 KB-aligned .ktb shards or mount a GitHub repo/Dream-RSI world (gh://owner/repo@ref#subpath) onto a subcluster slice.".into(),
+                description: "Plan a Hugging Face model/dataset URI (hf://owner/repo@rev) into selective 64 KB-aligned .ktb shards or compute an unmounted slice assignment preview for a GitHub repo/Dream-RSI world (gh://owner/repo@ref#subpath).".into(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "uri": {
                             "type": "string",
-                            "description": "Ecosystem URI such as 'hf://deepseek-ai/DeepSeek-V3@main' or 'gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt'."
+                            "description": "Ecosystem URI such as 'hf://deepseek-ai/DeepSeek-V3@main', 'hf://datasets/open-r1/OpenR1-Math-220k@main', or 'gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt'."
+                        },
+                        "plan_only": {
+                            "type": "boolean",
+                            "description": "When true, compute an unmounted/unfetched plan preview. Required for gh:// URIs over MCP."
+                        },
+                        "index_json": {
+                            "type": "string",
+                            "description": "Optional model.safetensors.index.json content for exact layer-to-shard mapping."
                         }
                     },
                     "required": ["uri"]
@@ -179,7 +190,7 @@ impl KadmiumMcpServer {
             },
             McpToolDescriptor {
                 name: "kadmium_run_inference".into(),
-                description: "Execute a distributed MoE forward pass across the asymmetric Kadmium pipeline with rk3588-sbc-bramble speculative draft verification and Verde RepOps.".into(),
+                description: "Execute a distributed MoE forward pass across the asymmetric Kadmium pipeline with speculative draft verification and Verde RepOps.".into(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -193,13 +204,13 @@ impl KadmiumMcpServer {
             },
             McpToolDescriptor {
                 name: "kadmium_verify_rl_sandbox".into(),
-                description: "Execute candidate code or GPU kernel synthesis inside the deterministic fuel-metered WasiMicroSandbox on rk3588-sbc-bramble and compute verified GRPO group advantages.".into(),
+                description: "Compile and evaluate a candidate polynomial/arithmetic expression over x (or SandboxOp stack program) inside the deterministic fuel-metered WasiMicroSandbox on the local host and compute verified GRPO group advantages.".into(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "candidate_code": {
                             "type": "string",
-                            "description": "Optional Rust/CUDA/Triton snippet to evaluate inside the deterministic WASI sandbox."
+                            "description": "Optional polynomial/arithmetic expression over x (e.g. 'fn solve(x: i64) -> i64 { x * x + 3 * x - 7 }') or SandboxOp list to compile and evaluate inside the deterministic WASI micro-sandbox."
                         }
                     },
                     "required": []
@@ -207,7 +218,7 @@ impl KadmiumMcpServer {
             },
             McpToolDescriptor {
                 name: "kadmium_cloud_shield_arbitrage".into(),
-                description: "Query live multi-provider spot GPU arbitrage quotes (RunPod, Vast.ai, Lambda, Prime Intellect, AWS) and bidirectional local<->cloud failover simulations.".into(),
+                description: "Evaluate modelled reference multi-provider spot GPU arbitrage catalog offers and bidirectional local<->cloud failover shield simulations (reference catalog & simulation, not live provider quotes).".into(),
                 input_schema: json!({
                     "type": "object",
                     "properties": {},
@@ -241,7 +252,7 @@ impl KadmiumMcpServer {
             McpResourceDescriptor {
                 uri: "kadmium://cluster/topology".into(),
                 name: "Heterogeneous Cluster Topology & Telemetry".into(),
-                description: "Live hardware nodes, VRAM/RAM budgets, bandwidth, Q* ratios, and Polite Gaming Mode states.".into(),
+                description: "Cluster hardware nodes, VRAM/RAM budgets, bandwidth, Q* ratios, and Polite Gaming Mode states.".into(),
                 mime_type: "application/json".into(),
             },
             McpResourceDescriptor {
@@ -259,7 +270,7 @@ impl KadmiumMcpServer {
             McpResourceDescriptor {
                 uri: "kadmium://cluster/cloud-shield".into(),
                 name: "Multi-Provider Cloud Arbitrage & Failover Shield".into(),
-                description: "Real-time $/TFLOP/hr spot comparison and zero-downtime failover simulations.".into(),
+                description: "Modelled reference catalog $/TFLOP/hr spot comparison and zero-downtime failover simulations.".into(),
                 mime_type: "application/json".into(),
             },
             McpResourceDescriptor {
@@ -371,9 +382,24 @@ impl KadmiumMcpServer {
                     .nodes
                     .iter()
                     .map(|n| n.memory.vram_gb + n.memory.unified_mem_gb)
-                    .sum();
-                let total_ram: f64 = snap.nodes.iter().map(|n| n.memory.system_ram_gb).sum();
-                let total_tflops: f64 = snap.nodes.iter().map(|n| n.fp16_tflops).sum();
+                    .sum::<f64>()
+                    + 0.0;
+                let total_ram: f64 = snap
+                    .nodes
+                    .iter()
+                    .map(|n| n.memory.system_ram_gb)
+                    .sum::<f64>()
+                    + 0.0;
+                let total_tflops: f64 = snap.nodes.iter().map(|n| n.fp16_tflops).sum::<f64>() + 0.0;
+                let fleet_mode = if state.live_only_mode {
+                    if snap.nodes.is_empty() {
+                        "live_unconnected"
+                    } else {
+                        "live_only"
+                    }
+                } else {
+                    "demo_fixture"
+                };
                 let ctx_cap = DistributedPagedKvPlanner::plan_cluster_context_capacity(
                     &snap.inference_plan,
                     &state.inference_model,
@@ -384,9 +410,11 @@ impl KadmiumMcpServer {
                     .map(|n| n.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
                 let summary = format!(
-                    "Kadmium (Cd-48) Epoch {} | {} active nodes | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Modelled KV context: {}–{} tokens (theoretical estimate, native {}) | Leader: {} (Term {}) | Throughput: {:.1} {}",
+                    "Kadmium (Cd-48) Epoch {} [{}] | {} active nodes ({} live workers) | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Modelled KV context: {}\u{2013}{} tokens (theoretical estimate, native {}) | Leader: {} (Term {}) | Throughput: {:.1} {}",
                     snap.inference_plan.epoch,
+                    fleet_mode,
                     snap.nodes.len(),
+                    state.live_workers.len(),
                     total_vram,
                     total_ram,
                     total_tflops,
@@ -402,6 +430,9 @@ impl KadmiumMcpServer {
                     "content": [{ "type": "text", "text": summary }],
                     "structuredContent": {
                         "epoch": snap.inference_plan.epoch,
+                        "fleet_mode": fleet_mode,
+                        "live_only_mode": state.live_only_mode,
+                        "live_worker_count": state.live_workers.len(),
                         "active_leader": snap.coordinator_quorum.active_leader,
                         "node_count": snap.nodes.len(),
                         "total_vram_gb": total_vram,
@@ -455,34 +486,83 @@ impl KadmiumMcpServer {
                     .get("uri")
                     .and_then(|v| v.as_str())
                     .unwrap_or("hf://deepseek-ai/DeepSeek-V3@main");
-                if uri.starts_with("gh://") {
+                let plan_only = args
+                    .get("plan_only")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if args
+                    .get("local_path")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.trim().is_empty())
+                {
+                    return Err(McpJsonRpcError {
+                        code: -32602,
+                        message: "Mounting host filesystem paths ('local_path') is not permitted over MCP; use `kadmium pull <gh://...> --local-path <dir>` on the local CLI or pass `plan_only: true`.".into(),
+                    });
+                }
+
+                if uri.starts_with("gh://") || uri.contains("github.com") {
                     let run = GitHubConnector::evaluate_repo_on_slice(uri).map_err(|e| {
                         McpJsonRpcError {
                             code: -32602,
                             message: e,
                         }
                     })?;
+                    let is_err = !plan_only;
                     let text = serde_json::to_string_pretty(&run).unwrap_or_default();
                     Ok(json!({
                         "content": [{ "type": "text", "text": text }],
                         "structuredContent": run,
-                        "isError": false
+                        "isError": is_err
                     }))
                 } else {
-                    let pull_plan = HuggingFaceHubConnector::plan_selective_model_pull(
-                        uri,
-                        &state.inference_plan,
-                    )
-                    .map_err(|e| McpJsonRpcError {
+                    let hf_ref = HfRepoRef::parse(uri).map_err(|e| McpJsonRpcError {
                         code: -32602,
                         message: e,
                     })?;
-                    let text = serde_json::to_string_pretty(&pull_plan).unwrap_or_default();
-                    Ok(json!({
-                        "content": [{ "type": "text", "text": text }],
-                        "structuredContent": pull_plan,
-                        "isError": false
-                    }))
+                    if hf_ref.kind == HfRepoKind::Dataset {
+                        let ds_plan =
+                            HuggingFaceHubConnector::plan_dataset_pull(uri).map_err(|e| {
+                                McpJsonRpcError {
+                                    code: -32602,
+                                    message: e,
+                                }
+                            })?;
+                        let text = serde_json::to_string_pretty(&ds_plan).unwrap_or_default();
+                        Ok(json!({
+                            "content": [{ "type": "text", "text": text }],
+                            "structuredContent": ds_plan,
+                            "isError": false
+                        }))
+                    } else {
+                        let parsed_index = match args.get("index_json").and_then(|v| v.as_str()) {
+                            Some(raw_idx) => {
+                                Some(HfByteRangeSlicer::parse_index_manifest(raw_idx).map_err(
+                                    |e| McpJsonRpcError {
+                                        code: -32602,
+                                        message: e,
+                                    },
+                                )?)
+                            }
+                            None => None,
+                        };
+                        let pull_plan =
+                            HuggingFaceHubConnector::plan_selective_model_pull_with_index(
+                                uri,
+                                &state.inference_plan,
+                                parsed_index.as_ref(),
+                            )
+                            .map_err(|e| McpJsonRpcError {
+                                code: -32602,
+                                message: e,
+                            })?;
+                        let text = serde_json::to_string_pretty(&pull_plan).unwrap_or_default();
+                        Ok(json!({
+                            "content": [{ "type": "text", "text": text }],
+                            "structuredContent": pull_plan,
+                            "isError": false
+                        }))
+                    }
                 }
             }
             "kadmium_run_inference" => {
@@ -494,36 +574,35 @@ impl KadmiumMcpServer {
                     &state.inference_plan,
                     prompt,
                 );
+                let is_err = report.stages.is_empty();
                 let text = serde_json::to_string_pretty(&report).unwrap_or_default();
                 Ok(json!({
                     "content": [{ "type": "text", "text": text }],
                     "structuredContent": report,
-                    "isError": false
+                    "isError": is_err
                 }))
             }
             "kadmium_verify_rl_sandbox" => {
                 let grpo_report = GrpoEpochExecutor::run_verified_grpo_step();
+                let host_node = "local-host-wasi-sandbox";
                 let custom_trace =
                     args.get("candidate_code")
                         .and_then(|v| v.as_str())
-                        .map(|_code| {
-                            WasiMicroSandbox::default().verify_candidate_program(
-                                "mcp-agent-rollout-99",
-                                "rk3588-sbc-bramble",
-                                &[
-                                    SandboxOp::PushInputX,
-                                    SandboxOp::Dup,
-                                    SandboxOp::Mul,
-                                    SandboxOp::PushInputX,
-                                    SandboxOp::PushConst(3),
-                                    SandboxOp::Mul,
-                                    SandboxOp::Add,
-                                    SandboxOp::PushConst(7),
-                                    SandboxOp::Sub,
-                                ],
+                        .map(|code| {
+                            let digest = compute_fnv1a64_checksum(code.as_bytes());
+                            let rollout_id =
+                                format!("mcp-rollout-{:08x}", (digest & 0xffff_ffff) as u32);
+                            WasiMicroSandbox::default().verify_candidate_code(
+                                rollout_id,
+                                host_node,
+                                code,
                                 &[(0, -7), (2, 3), (5, 33), (-3, -7)],
                             )
                         });
+                let has_compile_err = custom_trace
+                    .as_ref()
+                    .and_then(|t| t.compile_error.as_ref())
+                    .is_some();
                 let payload = json!({
                     "grpo_step": grpo_report,
                     "custom_candidate_trace": custom_trace
@@ -532,7 +611,7 @@ impl KadmiumMcpServer {
                 Ok(json!({
                     "content": [{ "type": "text", "text": text }],
                     "structuredContent": payload,
-                    "isError": false
+                    "isError": has_compile_err
                 }))
             }
             "kadmium_cloud_shield_arbitrage" => {
@@ -540,6 +619,9 @@ impl KadmiumMcpServer {
                     HybridCloudArbitragePlanner::compute_arbitrage_plan(&state.inference_model);
                 let sims = HybridCloudArbitragePlanner::simulate_bidirectional_failover_shield();
                 let payload = json!({
+                    "quote_source": arb.quote_source,
+                    "live_provider_quotes": arb.live_provider_quotes,
+                    "simulation_only": arb.simulation_only,
                     "arbitrage_plan": arb,
                     "failover_simulations": sims
                 });

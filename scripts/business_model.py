@@ -5,6 +5,7 @@ import argparse
 import html
 import json
 from decimal import Decimal, ROUND_HALF_UP
+from fractions import Fraction
 from pathlib import Path
 
 
@@ -18,7 +19,16 @@ def dec(value):
     return Decimal(str(value))
 
 
+def frac(value):
+    return value if isinstance(value, Fraction) else Fraction(dec(value))
+
+
 def money(value):
+    if isinstance(value, Fraction):
+        sign = -1 if value < 0 else 1
+        scaled = abs(value) * 100
+        cents = sign * ((2 * scaled.numerator + scaled.denominator) // (2 * scaled.denominator))
+        return (Decimal(cents) * CENT).quantize(CENT, rounding=ROUND_HALF_UP)
     return dec(value).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
@@ -42,11 +52,16 @@ def fulfillment_ratio(markup):
     return dec(1) / (dec(1) + dec(markup))
 
 
+def fulfillment_cost(consumed_credits, markup):
+    require(dec(markup) >= 0, "Markup cannot be negative")
+    return money(frac(consumed_credits) / (Fraction(1) + frac(markup)))
+
+
 def prepaid_bridge(sold, consumed, markup, payment):
     sold, consumed = dec(sold), dec(consumed)
     require(0 <= consumed <= sold, "Consumption must be within the purchased balance")
     deferred = sold - consumed
-    cogs = money(consumed * fulfillment_ratio(markup))
+    cogs = fulfillment_cost(consumed, markup)
     fee = payment_fee(sold, payment)
     remaining_cash = sold - cogs - fee
     # Assume unused face value is refundable; do not replace that obligation with COGS.
@@ -62,9 +77,9 @@ def bundle_result(inputs, redemption):
     redemption = dec(redemption)
     require(0 <= redemption <= 1, "Redemption must be between zero and one")
     price = dec(bundle["price"])
-    fulfillment = money(
-        dec(bundle["included_credit"]) * redemption
-        * fulfillment_ratio(bundle["wholesale_markup"])
+    fulfillment = fulfillment_cost(
+        frac(bundle["included_credit"]) * frac(redemption),
+        bundle["wholesale_markup"],
     )
     fee = payment_fee(price, inputs["payment"])
     refund = money(price * dec(service["refund_loss_rate"]))

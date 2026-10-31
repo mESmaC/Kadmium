@@ -105,7 +105,8 @@ Workspace members and their place in the dependency graph. Dependencies point do
 | `kadmium-condenser` | Inference workspace: providers, local checkpoints, agent harness, embedded UI | core, data |
 | `kadmium-gateway` | Axum coordinator, `/v1` diagnostics, cluster API, MCP, Control Room, Condenser mount | everything above except cuda and npu directly |
 | `kadmium-cli` | The `kadmium` binary | gateway and most libraries |
-| `kadmium-desktop` | Native Companion (WebView2, WKWebView, optional WebKitGTK) | gateway |
+| `kadmium-desktop` | Native Companion (WebView2, WKWebView, optional WebKitGTK) | gateway, native |
+| `kadmium-native` | Shared OS file dialogs and desktop IPC bridge; used by both native shells | nothing in-workspace |
 
 Add a mechanism to the crate that owns it. Do not duplicate a planner, cache, budget or transport in a higher crate because it is convenient. Memory budgets, owner offers and transfer windows are meant to have one authority; see issue #60 before adding another.
 

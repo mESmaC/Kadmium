@@ -221,6 +221,24 @@ impl DistributedMoEPipelineExecutor {
             });
         }
 
+        if stages.is_empty() {
+            return DistributedPipelineExecutionReport {
+                model_id: plan.model_id.clone(),
+                epoch: plan.epoch,
+                stages,
+                speculative_verification: SpeculativeDraftVerificationReport {
+                    draft_node_id: "unassigned".into(),
+                    proposed_draft_tokens: 0,
+                    accepted_draft_tokens: 0,
+                    acceptance_rate: 0.0,
+                    effective_speedup_multiplier: 0.0,
+                    per_token_acceptance_probs: Vec::new(),
+                },
+                total_pipeline_latency_ms: 0.0,
+                effective_tokens_per_sec: 0.0,
+            };
+        }
+
         // Verify 4 speculative draft tokens proposed by rk3588-sbc-bramble
         let draft_probs = [0.82f64, 0.76, 0.71, 0.64];
         let target_probs = [0.88f64, 0.79, 0.68, 0.41];
