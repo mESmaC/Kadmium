@@ -183,7 +183,8 @@ kadmium/
     ├── kadmium-gateway/        # Axum server, Control Room, Docs Portal, reference API diagnostics and MCP
     ├── kadmium-cli/            # Single-binary `kadmium` CLI (serve, join, desktop, probe, plan, bench, import, exl3)
     ├── kadmium-desktop/        # Native Desktop Companion window (WebView2 / WKWebView / WebKitGTK)
-    └── kadmium-condenser/      # Kadmium Power Plant inference harness: native UI + CLI, provider adapters, bounded tool turns, process plugins
+    ├── kadmium-condenser/      # Kadmium Power Plant inference harness: native UI + CLI, provider adapters, bounded tool turns, process plugins
+    └── kadmium-cuda/           # Pure-Rust CUDA kernels (NVIDIA cuda-oxide), bit-identical to the RepOps reference; GPU harness in device/
 ```
 
 ---

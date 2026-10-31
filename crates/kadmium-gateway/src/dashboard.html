@@ -320,12 +320,14 @@
       .cr-side, .cr-task .go, .cr-progress i { transition: none; }
     }
   </style>
+  <link rel="stylesheet" href="/workspace.css">
 </head>
 <body>
 <div id="app"></div>
 <script src="/components/lib/react.production.min.js"></script>
 <script src="/components/lib/react-dom.production.min.js"></script>
 <script src="/components/bundle.js"></script>
+<script src="/workspace.js"></script>
 <script>
 /* ============================================================
    Kadmium Control Room — core: data layer, routing, shell, helpers
@@ -765,7 +767,7 @@
         h(K.Badge, { tone: cloudMode ? 'cloud' : 'local', title: cloudMode ? 'Linked to Kadmium Cloud' : 'Runs only on your machines; nothing is rented' }, cloudMode ? 'kadmium cloud' : 'self-hosted'),
         live ? h(K.Badge, { tone: 'neutral', title: 'Kadmium worker processes answering on the network' }, live + ' live worker' + (live === 1 ? '' : 's')) : null,
         (cloudMode || burn > 0) ? h(K.Badge, { tone: burn > 0 ? 'cloud' : 'neutral', title: 'Cloud spend right now' }, fmt.usd(burn) + ' / hr') : null),
-      h('div', { className: 'actions' }, h(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setTheme(theme === 'dark' ? 'light' : 'dark'), 'aria-label': 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' theme' }, theme === 'dark' ? 'Light' : 'Dark')));
+      h('div', { className: 'actions' }, h(KadmiumWorkspace.Launcher), h(K.Button, { variant: 'ghost', size: 'sm', onClick: () => setTheme(theme === 'dark' ? 'light' : 'dark'), 'aria-label': 'Switch to ' + (theme === 'dark' ? 'light' : 'dark') + ' theme' }, theme === 'dark' ? 'Light' : 'Dark')));
   }
   function PageHead(props) {
     const p = PAGES[props.page] || PAGES.overview;
@@ -907,9 +909,23 @@
     const runLivePass = () => act(post('/api/v1/pipeline/live', {}), d => (d.live_hops || []).length ? 'Test pass ran across ' + plural(d.live_hops.length, 'machine') + ' · ' + fmt.num(d.effective_tokens_per_sec, 1) + ' tok/s (' + fmt.ms(d.total_pipeline_latency_ms) + ')' : 'Nothing ran: no machine holds layers of ' + inf.model_id + ' yet', 'ok').catch(() => {});
     const loadRecommended = () => act(post('/api/v1/cluster/model', { inference_model_id: inf.model_id }, { into: '/api/v1/cluster/overview', refresh: C.CLUSTER_PATHS.concat(['/api/v1/dataflow', '/v1/models']) }), 'Loaded ' + inf.model_id + ' across your machines').catch(() => {});
     const setFleet = v => act(post('/api/v1/cluster/mode', { live_only: v === 'off' }, { into: '/api/v1/cluster/workers' }), v === 'off' ? 'Showing your real hardware only' : 'Added simulated demo machines next to your real ones', 'ok').catch(() => {});
+    const nextStep = !live ? 0 : !modelLoaded ? 1 : 2;
+    const journey = [
+      { title: 'Connect hardware', detail: workers ? plural(live, 'live worker') + ' connected' : 'Checking workers…', to: 'nodes/add' },
+      { title: 'Load a model', detail: modelLoaded ? inf.model_id : 'Choose what your cluster runs', to: 'models' },
+      { title: 'Make it useful', detail: 'Try a prompt or connect your app', to: 'gateway' }
+    ];
     return h(F, null,
-      h('section', { 'aria-labelledby': 'cr-start' },
-        h('h2', { className: 'cr-label', id: 'cr-start' }, 'Start here'),
+      h('section', { className: 'kw-journey', 'aria-labelledby': 'kw-journey-title' },
+        h('div', { className: 'kw-journey-head' },
+          h('div', null, h('span', { className: 'kw-eyebrow' }, 'Your machines. One workspace.'),
+            h('h2', { id: 'kw-journey-title' }, nextStep === 2 ? 'Your cluster, ready for work.' : 'From spare compute to your first prompt.'),
+            h('p', null, nextStep === 2 ? 'Explore your workloads below, or put your model to work through the playground and API.' : 'Connect your hardware, choose a model, and start using it. Kadmium handles how the work is distributed.')),
+          h(K.Button, { variant: 'primary', onClick: () => go(journey[nextStep].to), icon: I('arrow', 16) }, ['Connect a machine', 'Choose a model', 'Open playground'][nextStep])),
+        h('ol', null, journey.map((step, index) => h('li', { key: step.to, 'aria-current': nextStep === index ? 'step' : undefined },
+          h('a', { href: '#/' + step.to }, h('span', { className: 'kw-step-number', 'aria-hidden': true }, '0' + (index + 1)), h('span', null, step.title, h('small', null, step.detail))))))),
+      h('details', { className: 'kw-quick-actions' },
+        h('summary', null, 'Quick actions', h('span', null, 'Models, training, storage, and APIs')),
         h('div', { className: 'cr-tasks' },
           h(TaskCard, { to: 'nodes/add', icon: I('plus', 20), title: 'Add a machine', desc: 'Join another computer to the cluster with one command.', status: resident + ' of ' + plural(nodes.length, 'machine') + ' ready', statusTone: offline ? 'warn' : '' }),
           h(TaskCard, { to: 'models', icon: I('models', 20), title: 'Run a model', desc: 'Choose a model and load it across your machines.', status: modelLoaded ? 'Running ' + inf.model_id : 'Nothing loaded yet', statusTone: modelLoaded ? '' : 'idle' }),

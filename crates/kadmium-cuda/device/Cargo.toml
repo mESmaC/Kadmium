@@ -1,0 +1,24 @@
+[package]
+name = "kadmium-cuda-device"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Kadmium's cuda-oxide kernels and their GPU parity harness"
+
+# Standalone: `cargo oxide` builds this crate with NVIDIA's rustc CUDA backend on the toolchain
+# pinned in `rust-toolchain.toml`. The Kadmium workspace excludes it, so `cargo test --workspace`
+# never needs CUDA. Build and run with `cargo oxide run` from this directory (see README.md).
+[workspace]
+
+[[bin]]
+name = "kadmium-cuda-device"
+path = "src/main.rs"
+
+[dependencies]
+kadmium-cuda = { path = ".." }
+
+# NVIDIA/cuda-rust, pinned: cuda-oxide is alpha and its codegen backend is matched to this rev.
+cuda-device = { git = "https://github.com/NVIDIA/cuda-rust.git", rev = "18a0407cc2" }
+cuda-host = { git = "https://github.com/NVIDIA/cuda-rust.git", rev = "18a0407cc2" }
+cuda-core = { git = "https://github.com/NVIDIA/cuda-rust.git", rev = "18a0407cc2" }
