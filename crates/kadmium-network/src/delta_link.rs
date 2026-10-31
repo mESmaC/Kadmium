@@ -940,6 +940,12 @@ impl<R: AsyncReadExt + Unpin> FrameReader<R> {
         self.decoder.as_ref().map(DeltaDecoder::stats)
     }
 
+    /// The stream frames are read from, for example to tell a peer that ended the stream between
+    /// frames from one that broke it mid-frame.
+    pub fn get_mut(&mut self) -> &mut R {
+        &mut self.stream
+    }
+
     /// Reads the next frame, rebuilding it if it arrived as a `DeltaFrame`. Any error, including
     /// a `DeltaFrame` the decoder cannot rebuild, ends the connection.
     pub async fn read_frame(&mut self) -> Result<WireFrame, String> {

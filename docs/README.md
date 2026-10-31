@@ -38,6 +38,7 @@ The commercial plan is a proposal for review. It separates current evidence from
 | [**Distributed Training, RL & Dream-RSI Evolving Worlds**](./guides/training-and-dream-rsi.md) | Run Sharded-Island DiLoCo + `DeMo` training over consumer broadband, and use SBCs/legacy laptops to run **Dream-RSI** offline causal replay at zero GPU cost. |
 | [**Sub-Cluster Slicing, Desktop Companion & CloudShield**](./guides/subclusters-and-cloud-shield.md) | Partition a 100-node pool into isolated sub-clusters (Prod, Staging, Training, RL), switch the Companion App between Self-Hosted OSS and `kadmium.ai` Cloud, and configure Bidirectional Failover Shield. |
 | [**Hugging Face (`hf://`), GitHub (`gh://`) & Ecosystem Integrations**](./guides/integrations-hf-github.md) | Pull selective Safetensors/GGUF shards and datasets from Hugging Face Hub, mount commit-pinned RL/Dream-RSI worlds from GitHub, and configure `oci://`, `s3://`, and `wandb://` connectors. |
+| [**USB-C Delta Bridges**](./guides/usbc-delta-bridge.md) | Stripe one stream over USB4 / NCM cables and Wi-Fi lanes so an unplug resends only in-flight segments and delta links keep their chunk stores; October 2026 USB4 transport research. |
 | [**Model Context Protocol (`kadmium-mcp`) Server**](./guides/mcp-server.md) | Connect Claude Code, Cursor, Antigravity, Windsurf, or any MCP client via `kadmium mcp` (stdio) or `POST /mcp` (Streamable HTTP) to inspect, shard, pull, and run distributed workloads. |
 
 ---

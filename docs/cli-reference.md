@@ -266,6 +266,8 @@ The worker measures its memory streaming rate before registering (a single-threa
 | `--slots <N>` | `4` | Work instances this machine runs at once. |
 | `--require-approval` | off for owned hardware | Review placement plans before anything is staged here. |
 
+Set `KADMIUM_USBC_BRIDGE_BIND` (for example `0.0.0.0:7871`) to also accept [USB-C delta bridge](guides/usbc-delta-bridge.md) sessions. A coordinator then reaches the worker at a `kdbr://` address that lists one lane per path, and a pulled USB-C cable fails over to the other lanes without resetting the delta link.
+
 ---
 
 ## 13. `kadmium mcp`
