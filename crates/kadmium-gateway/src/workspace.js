@@ -4,7 +4,7 @@
   const h = React.createElement;
   const features = [
     { title: 'Prepare a local model', description: 'Choose a GGUF or SafeTensors model, prepare it without quality loss, and run it on this computer.', href: '/condenser/#models', group: 'Build', keywords: 'import weights checkpoint library bring your own' },
-    { title: 'Send a model to Kadmium Cloud', description: 'Run a prepared model on managed GPUs. Sent in verified, resumable chunks.', href: '/condenser/#models-cloud', group: 'Build', keywords: 'upload transport remote premium hosted gpu' },
+    { title: 'Send a model to Kadmium Cloud', description: 'Send a prepared model to a Kadmium coordinator in verified, resumable chunks.', href: '/condenser/#models-cloud', group: 'Build', keywords: 'upload transport remote premium hosted gpu' },
     { title: 'Launch Condenser', description: 'Chat, code, and run tools with your chosen model.', href: '/condenser/', group: 'Build', keywords: 'agent inference model context tokens' },
     { title: 'Cluster overview', description: 'Machines, workloads, and recent activity.', path: 'overview', local: 'home', group: 'Monitor', keywords: 'home dashboard status' },
     { title: 'Machines', description: 'Join a computer, inspect hardware, or pause sharing.', path: 'nodes', local: 'cluster', group: 'Monitor', keywords: 'add pair node worker lan' },
@@ -102,7 +102,7 @@
     const served = new Set(received ? received.served : []);
     const destinations = [
       { id: 'local', title: 'On this computer', badge: h('span', { className: 'k-pill' }, 'Private'), body: 'Runs through Ollama on this machine. Nothing leaves your network. Best when this computer has enough memory for the model.', href: '/condenser/#models', action: 'Prepare a local model' },
-      { id: 'cloud', title: 'Kadmium Cloud', badge: h('span', { className: 'k-pill premium' }, 'Premium'), body: 'Managed GPUs for models larger than your hardware. Condenser sends the prepared model in verified, resumable chunks and loads it at full context.', href: '/condenser/#models-cloud', action: 'Send to Kadmium Cloud' }
+      { id: 'cloud', title: 'Kadmium Cloud', badge: h('span', { className: 'k-pill premium' }, 'Premium'), body: 'Send the prepared model to a Kadmium coordinator — Kadmium Cloud or your own — in verified, resumable chunks. It loads in the coordinator\u2019s Ollama at full context.', href: '/condenser/#models-cloud', action: 'Send to Kadmium Cloud' }
     ];
     return h('section', { className: 'kw-model-setup', 'aria-labelledby': 'kw-model-title' },
       h('div', { className: 'kw-model-head' },

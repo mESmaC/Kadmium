@@ -26,7 +26,7 @@ Install and start Ollama separately, then build and start Condenser:
 cargo run -p kadmium-condenser-app --locked -- serve
 ```
 
-Open `http://127.0.0.1:7856` and choose **Models**. Enter your GGUF file or complete SafeTensors folder and choose **Prepare model**. Under **Run it**, keep **This computer**, choose **Load on this computer**, then **Use in current task**. To run on managed GPUs instead, pick **Kadmium Cloud** and choose **Send to Kadmium**. Normalization preserves source bytes; loading rejects backend tensor changes and never selects a smaller model or context to make it fit. Backend arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for supported inputs, storage needs, CLI commands and compatibility limits.
+Open `http://127.0.0.1:7856` and choose **Models**. Enter your GGUF file or complete SafeTensors folder and choose **Prepare model**. Under **Run it**, keep **This computer**, choose **Load on this computer**, then **Use in current task**. To run it on a Kadmium coordinator instead (Kadmium Cloud or your own), pick **Kadmium Cloud**, enter the coordinator's access token, and choose **Send to Kadmium**. Normalization preserves source bytes; loading rejects backend tensor changes and never selects a smaller model or context to make it fit. Backend arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for supported inputs, storage needs, CLI commands and compatibility limits.
 
 ### Checked release installers (next tagged release)
 

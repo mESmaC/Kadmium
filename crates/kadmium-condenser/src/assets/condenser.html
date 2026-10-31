@@ -195,10 +195,10 @@
           </div>
 
           <div id="destination-cloud-panel" class="destination-panel" hidden>
-            <p class="destination-lede">Runs on Kadmium Cloud's managed GPUs, so large models don't need your hardware. Your prepared model is sent in verified, resumable chunks. If the connection drops, send again and it picks up where it stopped. To use your own Kadmium coordinator, change the address.</p>
+            <p class="destination-lede">Sends your prepared model to a Kadmium coordinator — Kadmium Cloud, or your own by changing the address — in verified, resumable chunks. If the connection drops, send again and it picks up where it stopped. The coordinator runs the model in its Ollama with full context and unlimited output.</p>
             <div class="field-grid two">
               <div class="field"><label for="cloud-endpoint">Kadmium address</label><input id="cloud-endpoint" class="code-sm" type="url" value="https://api.kadmium.ai" spellcheck="false"></div>
-              <div class="field"><label for="cloud-key">Kadmium API key</label><input id="cloud-key" type="password" autocomplete="off" placeholder="Kept in memory only"></div>
+              <div class="field"><label for="cloud-key">Access token</label><input id="cloud-key" type="password" autocomplete="off" placeholder="The coordinator's token · memory only"></div>
               <div class="field"><label for="cloud-context">Context window (tokens)</label><input id="cloud-context" type="number" min="1" step="1" placeholder="Maximum"></div>
             </div>
             <p id="cloud-context-hint" class="tradeoff" data-tone="ok">Maximum — the model's full context.</p>

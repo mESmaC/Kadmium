@@ -9,7 +9,9 @@ use axum::{
 };
 use kadmium_condenser::server::{ServerOptions, bind};
 use kadmium_data::{SafetensorsToKtbTranscoder, checkpoint::CheckpointLibrary};
-use kadmium_gateway::model_transport::{TransportState, router, serve_loaded_models};
+use kadmium_gateway::model_transport::{
+    OLLAMA_PROXY_PATH, TransportState, router, serve_loaded_models,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -81,8 +83,26 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
             )
             .route(
                 "/api/show",
-                post(|| async {
-                    Json(json!({"tensors":[{"name":"model.layers.0.mlp.experts.0.up_proj.weight","shape":[2],"type":"BF16"}]}))
+                post(|State(o): State<Ollama>, Json(body): Json<Value>| async move {
+                    // Only models this backend actually created exist.
+                    if body["model"] != *o.model.lock().unwrap() {
+                        return (StatusCode::NOT_FOUND, Json(json!({"error":"model not found"})));
+                    }
+                    (StatusCode::OK, Json(json!({
+                        "model_info":{"general.architecture":"llama","llama.context_length":131072},
+                        "tensors":[{"name":"model.layers.0.mlp.experts.0.up_proj.weight","shape":[2],"type":"BF16"}]
+                    })))
+                }),
+            )
+            .route(
+                "/api/chat",
+                post(|Json(body): Json<Value>| async move {
+                    // Received models keep local quality guarantees on every request.
+                    assert_eq!(body["options"]["num_ctx"], 131072);
+                    assert_eq!(body["options"]["num_predict"], -1);
+                    assert_eq!(body["truncate"], false);
+                    assert_eq!(body["shift"], false);
+                    Json(json!({"model":body["model"],"message":{"role":"assistant","content":"native answer from the transported model"},"done":true,"eval_count":2,"prompt_eval_count":3}))
                 }),
             )
             .route("/api/generate", post(|| async { Json(json!({"done":true})) }))
@@ -108,18 +128,22 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
         backend.clone(),
         Some("cloud-key".into()),
     );
-    let kadmium = serve(
+    let coordinator = |transport: TransportState| {
         router(transport.clone())
             .route(
                 "/v1/chat/completions",
                 post(|| async { Json(json!({"choices":[{"message":{"content":"coordinator"}}]})) }),
             )
+            .route(
+                "/v1/messages",
+                post(|| async { Json(json!({"content":[{"text":"coordinator"}]})) }),
+            )
             .layer(axum::middleware::from_fn_with_state(
                 transport,
                 serve_loaded_models,
-            )),
-    )
-    .await;
+            ))
+    };
+    let kadmium = serve(coordinator(transport.clone())).await;
 
     let (address, condenser) = bind(ServerOptions {
         port: 0,
@@ -163,7 +187,9 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     let wait = || async {
         loop {
             let progress: Value = client
-                .get(format!("{condenser}/api/v1/checkpoints/publish"))
+                .get(format!(
+                    "{condenser}/api/v1/checkpoints/publish?checkpoint_id={id}"
+                ))
                 .send()
                 .await
                 .unwrap()
@@ -180,7 +206,7 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     let failed = wait().await;
     assert_eq!(failed["state"], "failed");
     assert!(
-        failed["message"].as_str().unwrap().contains("API key"),
+        failed["message"].as_str().unwrap().contains("access token"),
         "{failed}"
     );
 
@@ -188,8 +214,24 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
     let ready = wait().await;
     assert_eq!(ready["state"], "ready", "{ready}");
     assert_eq!(ready["result"]["context_length"], 131072);
-    assert_eq!(ready["result"]["provider"]["kind"], "kadmium");
-    assert_eq!(ready["result"]["provider"]["base_url"], kadmium);
+    assert_eq!(ready["result"]["provider"]["kind"], "ollama");
+    assert_eq!(
+        ready["result"]["provider"]["base_url"],
+        format!("{kadmium}{OLLAMA_PROXY_PATH}")
+    );
+    // Another model's progress never reads as this one's.
+    let other: Value = client
+        .get(format!(
+            "{condenser}/api/v1/checkpoints/publish?checkpoint_id={}",
+            "b".repeat(64)
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(other["state"], "idle");
     let model = ready["result"]["provider"]["model"]
         .as_str()
         .unwrap()
@@ -222,7 +264,7 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
         answer["choices"][0]["message"]["content"],
         "served by the transported model"
     );
-    assert_eq!(chat(None, model).await.unwrap().status(), 401);
+    assert_eq!(chat(None, model.clone()).await.unwrap().status(), 401);
     let other: Value = chat(None, "reference".into())
         .await
         .unwrap()
@@ -230,5 +272,66 @@ async fn prepared_model_is_sent_verified_loaded_and_served() {
         .await
         .unwrap();
     assert_eq!(other["choices"][0]["message"]["content"], "coordinator");
+
+    // A Condenser task routed to the received model runs through the native Ollama proxy with
+    // full context, unlimited output and no truncation, exactly like a local model.
+    let mut provider = ready["result"]["provider"].clone();
+    provider["api_key"] = json!("cloud-key");
+    let task: Value = client
+        .post(format!("{condenser}/api/v1/chat"))
+        .json(&json!({"provider": provider, "messages":[{"role":"user","content":"hi"}], "enable_tools": false}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        task.to_string()
+            .contains("native answer from the transported model"),
+        "{task}"
+    );
+
+    // After a coordinator restart the published model is found again, not answered by the
+    // diagnostic handler; an unknown received-model name is refused outright.
+    let restarted = serve(coordinator(TransportState::new(
+        receiver_library.clone(),
+        backend.clone(),
+        Some("cloud-key".into()),
+    )))
+    .await;
+    let restarted_chat: Value = client
+        .post(format!("{restarted}/v1/chat/completions"))
+        .bearer_auth("cloud-key")
+        .json(&json!({"model": model, "messages":[{"role":"user","content":"hi"}]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted_chat["choices"][0]["message"]["content"],
+        "served by the transported model"
+    );
+    let unknown = format!("kadmium-{}:latest", "c".repeat(64));
+    let missing = client
+        .post(format!("{restarted}/v1/chat/completions"))
+        .bearer_auth("cloud-key")
+        .json(&json!({"model": unknown, "messages":[{"role":"user","content":"hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 409);
+    assert!(missing.text().await.unwrap().contains("not loaded"));
+    let messages = client
+        .post(format!("{restarted}/v1/messages"))
+        .bearer_auth("cloud-key")
+        .json(&json!({"model": model, "messages":[{"role":"user","content":"hi"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(messages.status(), 400);
+    assert!(!messages.text().await.unwrap().contains("coordinator\""));
     let _ = std::fs::remove_dir_all(&root);
 }

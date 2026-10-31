@@ -56,7 +56,10 @@
 
   const $ = (id) => document.getElementById(id);
   // Relative assets and requests work both standalone and mounted at /condenser/.
-  const apiPath = (path) => new URL(path.replace(/^\//, ''), document.baseURI).pathname;
+  const apiPath = (path) => {
+    const url = new URL(path.replace(/^\//, ''), document.baseURI);
+    return url.pathname + url.search;
+  };
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -1876,9 +1879,9 @@
     $('cloud-progress').classList.toggle('indeterminate', active && progress.state !== 'uploading');
     $('cloud-progress').style.setProperty('--value', percent + '%');
     $('cloud-progress').setAttribute('aria-valuenow', String(percent));
-    $('cloud-progress-label').textContent = total ? formatBytes(done) + ' of ' + formatBytes(total) + (progress.skipped_bytes ? ' · ' + formatBytes(progress.skipped_bytes) + ' already on Kadmium' : '') : '';
+    $('cloud-progress-label').textContent = total ? formatBytes(done) + ' of ' + formatBytes(total) + (progress.skipped_bytes ? ' · ' + formatBytes(progress.skipped_bytes) + ' already on the coordinator' : '') : '';
     $('cloud-status').textContent = progress.state === 'ready' && progress.result
-      ? 'Ready on Kadmium with ' + formatTokens(progress.result.context_length) + ' of context. Choose Use in current task to start.'
+      ? 'Ready in the Kadmium coordinator\u2019s Ollama with ' + formatTokens(progress.result.context_length) + ' of context. Choose Use in current task to start.'
       : progress.message;
     checkpointControls();
   }
@@ -1891,7 +1894,7 @@
       state.localModels.cloudKey = request.api_key;
       while (state.localModels.cloud && ['preparing', 'uploading', 'verifying', 'loading'].includes(state.localModels.cloud.state)) {
         await new Promise(resolve => setTimeout(resolve, 400));
-        renderCloud(await api('/api/v1/checkpoints/publish'));
+        renderCloud(await api('/api/v1/checkpoints/publish?checkpoint_id=' + encodeURIComponent(request.checkpoint_id)));
       }
     } catch (error) {
       renderCloud({ state: 'failed', message: error.message });
@@ -1902,7 +1905,7 @@
     const cloud = state.localModels.cloud;
     if (!cloud || cloud.state !== 'ready' || !cloud.result) return;
     if (!routeTask(cloud.result.provider, cloud.result.checkpoint, cloud.result.context_length, state.localModels.cloudKey)) return;
-    $('cloud-status').textContent = 'This task now runs ' + cloud.result.checkpoint.name + ' on Kadmium. Enter a prompt to start.';
+    $('cloud-status').textContent = 'This task now runs ' + cloud.result.checkpoint.name + ' on the Kadmium coordinator. Enter a prompt to start.';
     setView('harness');
     $('prompt').focus();
   }

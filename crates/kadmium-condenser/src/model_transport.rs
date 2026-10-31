@@ -1,6 +1,8 @@
-//! Sends a prepared checkpoint to a Kadmium endpoint — Kadmium Cloud or your own coordinator —
-//! using the verified, resumable chunk protocol in `kadmium_data::checkpoint::transport`.
-//! The receiver loads the preserved originals at the checkpoint's full context by default.
+//! Sends a prepared checkpoint to a Kadmium coordinator — Kadmium Cloud or your own — using the
+//! verified, resumable chunk protocol in `kadmium_data::checkpoint::transport`. The receiver
+//! loads the preserved originals into its Ollama at the checkpoint's full context by default,
+//! and tasks then reach it through the receiver's native Ollama proxy, so every request keeps
+//! explicit full context, unlimited output, tools, and no truncation or context shifting.
 
 use crate::server::{ApiError, ServerState};
 use crate::{CondenserError, ProviderConfig, ProviderKind, Result};
@@ -34,6 +36,11 @@ pub struct PublishProgress {
 pub(crate) type SharedProgress = Arc<Mutex<PublishProgress>>;
 
 #[derive(Deserialize)]
+pub(crate) struct StatusQuery {
+    checkpoint_id: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub(crate) struct TransportRequest {
     checkpoint_id: String,
 }
@@ -59,10 +66,21 @@ pub(crate) async fn transport(
     Ok(Json(json!(manifest.summary())))
 }
 
-pub(crate) async fn publish_status(State(state): State<ServerState>) -> Json<PublishProgress> {
-    let mut progress = state.publish.lock().expect("publish progress").clone();
-    if progress.state.is_empty() {
-        progress.state = "idle";
+/// Progress of the latest send. With `?checkpoint_id=`, another model's send reads as idle, so
+/// a second tab never shows a different model's progress as its own.
+pub(crate) async fn publish_status(
+    State(state): State<ServerState>,
+    axum::extract::Query(query): axum::extract::Query<StatusQuery>,
+) -> Json<PublishProgress> {
+    let progress = state.publish.lock().expect("publish progress").clone();
+    let other = query
+        .checkpoint_id
+        .is_some_and(|id| progress.checkpoint_id.as_deref() != Some(id.as_str()));
+    if progress.state.is_empty() || other {
+        return Json(PublishProgress {
+            state: "idle",
+            ..Default::default()
+        });
     }
     Json(progress)
 }
@@ -100,7 +118,7 @@ pub(crate) async fn publish(
         match outcome {
             Ok(result) => {
                 current.state = "ready";
-                current.message = "Verified and loaded on Kadmium".into();
+                current.message = "Verified and loaded in the Kadmium coordinator's Ollama".into();
                 current.result = Some(result);
             }
             Err(error) => {
@@ -149,7 +167,7 @@ async fn send(
         p.total_bytes = status.total_bytes;
         p.skipped_bytes = status.received_bytes;
         p.message = if status.received_bytes > 0 {
-            "Resuming; chunks Kadmium already has are skipped".into()
+            "Resuming; chunks the coordinator already has are skipped".into()
         } else {
             "Sending verified 16 MiB chunks".into()
         };
@@ -203,22 +221,29 @@ async fn send(
     }
     update(progress, |p| {
         p.state = "verifying";
-        p.message = "Kadmium is verifying every byte before publishing".into();
+        p.message = "The coordinator is verifying every byte before publishing".into();
     });
-    let _: Value = decode(
-        authorize(client.post(format!("{base}/api/v1/model-transport/{id}/complete")))
-            .timeout(Duration::from_secs(3600))
-            .send()
-            .await,
-    )
-    .await?;
+    // Verification runs in the background on the receiver; poll until it publishes or fails.
+    loop {
+        let response =
+            authorize(client.post(format!("{base}/api/v1/model-transport/{id}/complete")))
+                .timeout(Duration::from_secs(120))
+                .send()
+                .await
+                .map_err(failure)?;
+        match response.status() {
+            reqwest::StatusCode::OK => break,
+            reqwest::StatusCode::ACCEPTED => tokio::time::sleep(Duration::from_secs(2)).await,
+            _ => return Err(remote_error(response).await),
+        }
+    }
     update(progress, |p| {
         p.state = "loading";
         p.message = "Loading at the model's full context".into();
     });
     let loaded: Value = decode(
+        // Loading a large model can take a long time; the receiver bounds its backend calls.
         authorize(client.post(format!("{base}/api/v1/model-transport/{id}/load")))
-            .timeout(Duration::from_secs(3600))
             .json(&json!({ "context_length": request.context_length }))
             .send()
             .await,
@@ -226,32 +251,62 @@ async fn send(
     .await?;
     let model = loaded["model"]
         .as_str()
-        .ok_or_else(|| failure("Kadmium did not report the loaded model"))?;
-    let mut provider = ProviderConfig::new(ProviderKind::Kadmium);
+        .ok_or_else(|| failure("the coordinator did not report the loaded model"))?;
+    let ollama_path = loaded["ollama_path"]
+        .as_str()
+        .filter(|path| path.starts_with('/') && !path.contains(".."))
+        .ok_or_else(|| failure("the coordinator does not serve received models"))?;
+    let mut provider = ProviderConfig::new(ProviderKind::Ollama);
     provider.model = model.into();
-    provider.base_url = Some(base);
+    provider.base_url = Some(format!("{base}{ollama_path}"));
     Ok(json!({
         "checkpoint": loaded["checkpoint"],
         "context_length": loaded["context_length"],
+        "execution": loaded["execution"],
         "provider": provider,
         "transport": transport.summary(),
     }))
 }
 
-/// Forwards an OpenAI-compatible chat request to a model the receiver loaded into its local
-/// Ollama, streaming the reply unchanged. The model keeps the context it was loaded with.
-pub async fn forward_chat(ollama_base: &str, body: axum::body::Bytes) -> axum::response::Response {
-    use axum::response::IntoResponse;
+fn backend_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    let client = CLIENT.get_or_init(|| {
+    CLIENT.get_or_init(|| {
         reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(5))
             .build()
             .expect("HTTP client")
-    });
-    let url = format!("{}/v1/chat/completions", ollama_base.trim_end_matches('/'));
+    })
+}
+
+/// Whether a model was created in the Ollama at `ollama_base` (used to re-register received
+/// models after a coordinator restart).
+pub async fn ollama_has_model(ollama_base: &str, model: &str) -> bool {
+    let url = format!("{}/api/show", ollama_base.trim_end_matches('/'));
+    backend_client()
+        .post(url)
+        .timeout(Duration::from_secs(30))
+        .json(&json!({ "model": model }))
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
+}
+
+/// Forwards a JSON request to a model the receiver loaded into its local Ollama, streaming the
+/// reply unchanged.
+pub async fn forward_json(
+    ollama_base: &str,
+    path: &str,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let client = backend_client();
+    let url = format!(
+        "{}/{}",
+        ollama_base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    );
     match client
         .post(url)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -305,8 +360,10 @@ async fn remote_error(response: reqwest::Response) -> CondenserError {
         .and_then(|v| v["error"].as_str().map(str::to_owned))
         .unwrap_or(body);
     let hint = match status.as_u16() {
-        401 | 403 => "Check the Kadmium API key or open this coordinator from its own computer. ",
-        404 => "This endpoint does not accept model uploads; check the address. ",
+        401 | 403 => "Check the access token, or open this coordinator from its own computer. ",
+        404 => "This address does not accept model uploads; check it, or update the coordinator. ",
+        409 => "The coordinator is busy or the model is not loaded there. ",
+        413 => "The coordinator does not accept a model this large. ",
         _ => "",
     };
     failure(format!(

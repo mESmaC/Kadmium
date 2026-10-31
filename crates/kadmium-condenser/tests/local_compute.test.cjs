@@ -72,24 +72,25 @@ test('model preparation, local and Kadmium Cloud routing, quality tradeoffs, rec
     assert.equal(await page.locator('#destination-cloud-panel').isVisible(),true);
     assert.equal(await page.locator('#cloud-endpoint').inputValue(),'https://api.kadmium.ai');
     let polls=0;
-    await page.route('**/api/v1/checkpoints/publish',route=>{
+    await page.route('**/api/v1/checkpoints/publish*',route=>{
       if(route.request().method()==='POST'){
         const body=route.request().postDataJSON();
         assert.deepEqual(body,{checkpoint_id:id,endpoint:'https://api.kadmium.ai',api_key:'cloud-key',context_length:null});
         return route.fulfill({json:{state:'uploading',checkpoint_id:id,total_bytes:2000,sent_bytes:500,skipped_bytes:0,message:'Sending verified 16 MiB chunks'}});
       }
+      assert.equal(new URL(route.request().url()).searchParams.get('checkpoint_id'),id);
       polls+=1;
       return route.fulfill({json:polls<2?{state:'uploading',checkpoint_id:id,total_bytes:2000,sent_bytes:1000,skipped_bytes:0,message:'Sending verified 16 MiB chunks'}
-        :{state:'ready',checkpoint_id:id,total_bytes:2000,sent_bytes:2000,skipped_bytes:0,message:'Verified and loaded on Kadmium',result:{checkpoint:{id,name:'source',context_length:8192},context_length:8192,provider:{kind:'kadmium',model:'kadmium-'+id+':latest',base_url:'https://api.kadmium.ai'}}}});
+        :{state:'ready',checkpoint_id:id,total_bytes:2000,sent_bytes:2000,skipped_bytes:0,message:'Verified and loaded in the Kadmium coordinator\'s Ollama',result:{checkpoint:{id,name:'source',context_length:8192},context_length:8192,provider:{kind:'ollama',model:'kadmium-'+id+':latest',base_url:'https://api.kadmium.ai/api/v1/model-transport/ollama'}}}});
     });
     await page.locator('#cloud-key').fill('cloud-key');
     await page.locator('#cloud-send').click();
     await page.waitForFunction(()=>!document.querySelector('#cloud-use').disabled);
-    assert.match(await page.locator('#cloud-status').textContent(),/Ready on Kadmium with 8,192 tokens/);
+    assert.match(await page.locator('#cloud-status').textContent(),/Ready in the Kadmium coordinator’s Ollama with 8,192 tokens/);
     assert.equal(await page.locator('#cloud-progress').getAttribute('aria-valuenow'),'100');
     await page.locator('#cloud-use').click();
-    assert.match(await page.locator('#header-provider').textContent(),/Kadmium/);
-    await page.unroute('**/api/v1/checkpoints/publish');
+    assert.match(await page.locator('#header-provider').textContent(),/Ollama/);
+    await page.unroute('**/api/v1/checkpoints/publish*');
 
     // Quality controls start at maximum and explain each reduction.
     await page.locator('#provider-button').click();

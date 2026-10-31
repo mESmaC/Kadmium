@@ -29,6 +29,8 @@ const _: () = assert!(TRANSPORT_CHUNK_BYTES.is_multiple_of(PAGE));
 const TRANSPORT_FILE: &str = "transport.json";
 const RECEIVING: &str = ".receiving";
 const MAX_FILES: usize = 100_000;
+/// Abandoned transfers older than this are removed when a new transfer starts.
+const STALE_STAGING: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransportChunk {
@@ -233,19 +235,17 @@ impl CheckpointLibrary {
                 missing: Vec::new(),
             });
         }
+        self.remove_stale_transfers(id);
         let staging = self.receiving_dir(id)?;
         let staged = read_json::<TransportManifest>(&staging.join(TRANSPORT_FILE));
         if staged.as_ref().is_ok_and(|staged| staged != transport) || staged.is_err() {
             if staging.exists() {
                 fs::remove_dir_all(&staging).map_err(io_error)?;
             }
+            // Files are created as verified chunks arrive; nothing is pre-allocated from sizes
+            // the sender merely declares.
             for folder in ["source", "banks", ".chunks"] {
                 fs::create_dir_all(staging.join(folder)).map_err(io_error)?;
-            }
-            for file in &transport.files {
-                File::create(staging.join(&file.path))
-                    .and_then(|f| f.set_len(file.bytes))
-                    .map_err(io_error)?;
             }
             fs::write(
                 staging.join(TRANSPORT_FILE),
@@ -277,6 +277,8 @@ impl CheckpointLibrary {
         }
         let mut output = File::options()
             .write(true)
+            .create(true)
+            .truncate(false)
             .open(staging.join(&entry.path))
             .map_err(io_error)?;
         output
@@ -303,6 +305,9 @@ impl CheckpointLibrary {
                 status.missing.len()
             ));
         }
+        for file in transport.files.iter().filter(|f| f.bytes == 0) {
+            File::create(staging.join(&file.path)).map_err(io_error)?;
+        }
         let manifest_bytes = fs::read(staging.join("manifest.json")).map_err(io_error)?;
         if hash_bytes(&manifest_bytes) != transport.files[0].sha256 {
             return Err("manifest.json failed verification; resend the transfer".into());
@@ -322,6 +327,26 @@ impl CheckpointLibrary {
             return Err(io_error(error));
         }
         Ok(manifest)
+    }
+
+    fn remove_stale_transfers(&self, keep: &str) {
+        let Ok(entries) = fs::read_dir(self.root().join(RECEIVING)) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let stale = fs::metadata(path.join(TRANSPORT_FILE))
+                .or_else(|_| entry.metadata())
+                .and_then(|m| m.modified())
+                .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age > STALE_STAGING));
+            // Chunk markers refresh activity: a transfer still receiving chunks is not stale.
+            let active = fs::metadata(path.join(".chunks"))
+                .and_then(|m| m.modified())
+                .is_ok_and(|modified| modified.elapsed().is_ok_and(|age| age <= STALE_STAGING));
+            if entry.file_name() != keep && stale && !active {
+                let _ = fs::remove_dir_all(path);
+            }
+        }
     }
 
     fn receiving_dir(&self, id: &str) -> Result<PathBuf> {
