@@ -31,10 +31,10 @@ use kadmium_sharding::{
     CalibrationBinding, CalibrationRecord, CalibrationStore, ClusterShardPlan, CombineParams,
     DraftProfile, ExecutionStrategy, ExpertPlacementPlan, ExpertPlacementPlanner, ExpertPopularity,
     ExpertSliceParams, KvPageNames, KvSessionState, KvTierPlan, KvTierPlanner, KvTierPolicy,
-    LinkSegments, PlacementFit, RepinPlanner, RepinPolicy, RepinProposal, RepinSwap, ReplicaChange,
-    StageForwardParams, StepGraphBuilder, StepsPerSecondProfile, StrategyChoice, StrategyCostModel,
-    SweepPoint, TrainStageParams, TrunkForwardParams, TrunkRange, UsageSummary, VerificationPolicy,
-    records_for_placement,
+    LinkSegments, PlacementFit, PromptReuse, PromptTokens, RepinPayback, RepinPlanner, RepinPolicy,
+    RepinProposal, RepinSwap, ReplicaChange, StageForwardParams, StepGraphBuilder,
+    StepsPerSecondProfile, StrategyChoice, StrategyCostModel, SweepPoint, TrainStageParams,
+    TrunkForwardParams, TrunkRange, UsageSummary, VerificationPolicy, records_for_placement,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -443,6 +443,9 @@ fn cost_model(
         if let Some(gbps) = t.measured_stream_gbps {
             model = model.with_measured_stream(node.clone(), gbps);
         }
+        if let Some(hop) = t.hop.as_ref().filter(|h| h.is_learned()) {
+            model = model.with_measured_hop_line(node.clone(), hop.fixed_ms, hop.ms_per_mb);
+        }
     }
     model
 }
@@ -550,6 +553,11 @@ pub struct GridStepOutcome {
     pub routing_recorded: usize,
     /// The re-pin boundary applied after the step, when one was asked for.
     pub repin: Option<GridRepinOutcome>,
+    /// The cached prompt this step could start from, if any: a session whose decoder state
+    /// covers a prefix of this prompt (ARCHITECTURE 9.12's cross-session hit policy).
+    pub prompt_reuse: Option<PromptReuse>,
+    /// Tokens of the prompt, as the prompt cache keys it.
+    pub prompt_tokens: u64,
 }
 
 /// Books a finished run: credits and receipts, the last-run record, and the measured telemetry
@@ -633,6 +641,14 @@ pub async fn run_grid_decode_step_with(
     };
 
     let session = format!("gateway-e{}", snap.epoch);
+    // What a cached session's state would let this prompt skip. The matching key is a
+    // deterministic tokenization of the text; the model never sees it.
+    let prompt_tokens = PromptTokens::from_text(prompt);
+    let prompt_reuse = state
+        .lock()
+        .expect("gateway state lock")
+        .grid_prompt_cache
+        .lookup(&model.id, &prompt_tokens, 0, now_unix_ms());
     let mut workers = mesh_workers(
         &snap.nodes,
         &snap.live_workers,
@@ -714,6 +730,24 @@ pub async fn run_grid_decode_step_with(
         Some(policy) => repin_now(state, &model, &policy, true).ok(),
         None => None,
     };
+    // The state the session reached after this prompt: modelled as one KV page per layer at
+    // the prompt's length, kept for the next prompt that starts the same way.
+    {
+        let state_bytes =
+            KvPageNames::page_bytes(&model, prompt_tokens.len() as u64) * model.num_layers as u64;
+        state
+            .lock()
+            .expect("gateway state lock")
+            .grid_prompt_cache
+            .save(
+                &model.id,
+                &session,
+                &prompt_tokens,
+                state_bytes,
+                Vec::new(),
+                now_unix_ms(),
+            );
+    }
     Ok(GridStepOutcome {
         strategy,
         choice,
@@ -727,6 +761,8 @@ pub async fn run_grid_decode_step_with(
         placement_cached,
         routing_recorded,
         repin,
+        prompt_reuse,
+        prompt_tokens: prompt_tokens.len() as u64,
     })
 }
 
@@ -1498,6 +1534,12 @@ pub struct GridRepinRequest {
     pub max_swaps: Option<usize>,
     /// Apply the swaps to the placement in force (default) or only propose them.
     pub apply: Option<bool>,
+    /// Require every swap to pay for its two transfers with the extra hits it should earn
+    /// (default false, like the re-pin a decode step asks for): the mesh's median fast and
+    /// system-RAM bandwidths price what a hit saves, and the slowest uplink (or, for a swap on
+    /// one node, two memory copies) prices the transfers, as InferSSD's VRAM tier prices an
+    /// admission by its upload. On a slow link this keeps most swaps streamed.
+    pub payback: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1546,6 +1588,10 @@ pub async fn post_grid_repin(
     let _ = current_placement(&state, &snap, &model, None);
     let policy = RepinPolicy {
         max_swaps: req.max_swaps.unwrap_or(4).clamp(1, 64),
+        payback: req
+            .payback
+            .unwrap_or(false)
+            .then(|| RepinPayback::for_mesh(&model, &snap.nodes)),
         ..RepinPolicy::default()
     };
     match repin_now(&state, &model, &policy, req.apply.unwrap_or(true)) {
@@ -3093,6 +3139,7 @@ mod tests {
                 model: None,
                 max_swaps: Some(2),
                 apply: Some(true),
+                payback: None,
             })),
         )
         .await
@@ -3160,6 +3207,36 @@ mod tests {
         );
         assert!(ep.report.accesses.iter().any(|a| a.app == "TrunkForward"));
         assert_eq!(state.lock().unwrap().usage_for(&model_id).turns, 2);
+
+        // The prompt cache: the first step with this prompt saved its state, so a prompt that
+        // extends it starts from that state; an unrelated prompt starts cold.
+        assert!(ep.prompt_reuse.is_none() || ep.prompt_reuse.as_ref().unwrap().reuse_tokens > 0);
+        let extended = run_grid_decode_step(
+            &state,
+            "learn from this step and then some",
+            1,
+            Some(ExecutionStrategy::ExpertParallel),
+        )
+        .await
+        .expect("extended step runs");
+        let reuse = extended.prompt_reuse.expect("a cached prefix");
+        assert_eq!(reuse.reuse_tokens, 4);
+        assert_eq!(reuse.model_id, model_id);
+        assert_eq!(extended.prompt_tokens, 7);
+        let cold = run_grid_decode_step(
+            &state,
+            "something else entirely",
+            1,
+            Some(ExecutionStrategy::ExpertParallel),
+        )
+        .await
+        .expect("cold step runs");
+        assert!(cold.prompt_reuse.is_none());
+        {
+            let guard = state.lock().unwrap();
+            assert!(guard.grid_prompt_cache.stats.hits >= 1);
+            assert!(guard.grid_prompt_cache.len() >= 2);
+        }
     }
 
     #[tokio::test]

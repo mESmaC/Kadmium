@@ -22,8 +22,9 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    AppKind, ComputeEwma, ComputeSample, GridError, InstanceId, ReplicaCatalog, ValidationRule,
-    WorkGraph, WorkInstance, WorkResultRecord, WorkState, WorkUnit, WorkUnitId, trust_satisfies,
+    AppKind, ComputeEwma, ComputeSample, GridError, HopLine, InstanceId, ReplicaCatalog,
+    ValidationRule, WorkGraph, WorkInstance, WorkResultRecord, WorkState, WorkUnit, WorkUnitId,
+    trust_satisfies,
 };
 
 /// A worker as the scheduler sees it: the capability vector plus live load and measurements.
@@ -49,6 +50,11 @@ pub struct WorkerProfile {
     /// The owner's explicit offer, if the worker sent one; `None` means the node's default offer.
     #[serde(default)]
     pub offer: Option<ResourceOffer>,
+    /// The learned cost of a hop to this worker: a fixed term and a per-megabyte term fitted
+    /// from the coordinator's dispatch timings, used once it has
+    /// [`crate::MIN_HOP_SAMPLES`] samples.
+    #[serde(default)]
+    pub hop: Option<HopLine>,
 }
 
 impl WorkerProfile {
@@ -66,6 +72,7 @@ impl WorkerProfile {
             free_system_ram_gb: None,
             compute: BTreeMap::new(),
             offer: None,
+            hop: None,
         }
     }
 
@@ -113,6 +120,32 @@ impl WorkerProfile {
             self.measured_rtt_ms
         } else {
             self.node.network_latency_ms
+        }
+    }
+
+    /// Folds one measured hop in: `wire_bytes` carried both ways and `ms` the dispatch spent
+    /// outside the worker's own execution. The line's prior is the round trip and the uplink
+    /// the profile already knows.
+    pub fn record_hop(&mut self, wire_bytes: u64, ms: f64, now: u64) {
+        let prior_rtt = self.hop_latency_ms();
+        let uplink = self.node.network_uplink_gbps;
+        self.hop
+            .get_or_insert_with(|| HopLine::with_prior(prior_rtt, uplink))
+            .observe(wire_bytes, ms, now);
+    }
+
+    /// The learned hop line, once it has enough samples to price hops.
+    pub fn learned_hop(&self) -> Option<&HopLine> {
+        self.hop.as_ref().filter(|h| h.is_learned())
+    }
+
+    /// What a hop carrying `wire_bytes` should cost: the learned line when it is learned,
+    /// else the round trip alone, as before hop lines existed (bytes are priced only once
+    /// measured, so an unmeasured mesh routes as it always did).
+    pub fn hop_estimate_ms(&self, wire_bytes: u64) -> f64 {
+        match self.learned_hop() {
+            Some(line) => line.predict_ms(wire_bytes),
+            None => self.hop_latency_ms(),
         }
     }
 
@@ -167,7 +200,13 @@ impl WorkerProfile {
         policy: &SchedulerPolicy,
         now: u64,
     ) -> Option<f64> {
-        self.completion_estimate_for(&unit.app.label(), unit.cost.work(), policy, now)
+        self.completion_estimate_with_bytes(
+            &unit.app.label(),
+            unit.cost.work(),
+            unit.cost.bytes_moved,
+            policy,
+            now,
+        )
     }
 
     /// [`WorkerProfile::completion_estimate_ms`] for `work` units of a kind of work, for callers
@@ -179,9 +218,22 @@ impl WorkerProfile {
         policy: &SchedulerPolicy,
         now: u64,
     ) -> Option<f64> {
+        self.completion_estimate_with_bytes(app, work, 0, policy, now)
+    }
+
+    /// [`WorkerProfile::completion_estimate_for`] with the bytes the hop carries, priced by
+    /// the learned hop line once it is learned.
+    pub fn completion_estimate_with_bytes(
+        &self,
+        app: &str,
+        work: f64,
+        wire_bytes: u64,
+        policy: &SchedulerPolicy,
+        now: u64,
+    ) -> Option<f64> {
         let ewma = self.compute_estimate(app, policy, now)?;
         let queued = self.in_flight as f64 + 1.0;
-        Some(self.hop_latency_ms() + ewma.predict_ms(work) * queued)
+        Some(self.hop_estimate_ms(wire_bytes) + ewma.predict_ms(work) * queued)
     }
 }
 

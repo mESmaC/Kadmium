@@ -226,6 +226,12 @@ pub struct RepinPolicy {
     pub hysteresis: f64,
     /// Heat a streamed expert needs before it is considered at all.
     pub min_hits: u64,
+    /// When set, a swap must also pay for its transfers: the hits the promoted expert should
+    /// earn beyond the demoted one, times what a fast-tier hit saves over a streamed read, must
+    /// cover the two transfers the swap makes (InferSSD's adaptive VRAM admission, where an
+    /// expert is admitted only if its expected extra hits pay back its upload).
+    #[serde(default)]
+    pub payback: Option<RepinPayback>,
 }
 
 impl Default for RepinPolicy {
@@ -234,6 +240,108 @@ impl Default for RepinPolicy {
             max_swaps: 4,
             hysteresis: 0.25,
             min_hits: 1,
+            payback: None,
+        }
+    }
+}
+
+/// What a swap costs and what a hit on the promoted expert saves, in the units the re-pin
+/// planner compares: `admission_hits = transfer_ms / (miss_ms - hit_ms)`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RepinPayback {
+    pub expert_bytes: u64,
+    /// Read bandwidth of the fast tier an expert is promoted into, in GB/s.
+    pub fast_gbps: f64,
+    /// Read bandwidth of the tier it is streamed from today, in GB/s.
+    pub streamed_gbps: f64,
+    /// The link the promotion and the demotion cross, in GB/s.
+    pub link_gbps: f64,
+}
+
+impl RepinPayback {
+    /// A payback for a mesh: the median fast-tier and system-RAM bandwidths of the nodes, and
+    /// the slowest uplink among them as the link both transfers cross.
+    pub fn for_mesh(model: &ModelSpec, nodes: &[HardwareNode]) -> Self {
+        fn median(mut values: Vec<f64>, fallback: f64) -> f64 {
+            values.retain(|v| v.is_finite() && *v > 0.0);
+            if values.is_empty() {
+                return fallback;
+            }
+            values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            values[values.len() / 2]
+        }
+        let fast = median(
+            nodes
+                .iter()
+                .map(|n| {
+                    if n.memory.unified_mem_gb > 0.0 {
+                        n.memory.unified_mem_bw_gbps
+                    } else {
+                        n.memory.vram_bw_gbps
+                    }
+                })
+                .collect(),
+            ResidencyTier::Vram.nominal_bandwidth_gbps(),
+        );
+        let streamed = median(
+            nodes.iter().map(|n| n.memory.system_ram_bw_gbps).collect(),
+            ResidencyTier::SystemRam.nominal_bandwidth_gbps(),
+        );
+        let link = nodes
+            .iter()
+            .map(|n| n.network_uplink_gbps / 8.0)
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .fold(f64::INFINITY, f64::min);
+        Self {
+            expert_bytes: (model.single_expert_size_gb * 1_073_741_824.0) as u64,
+            fast_gbps: fast,
+            streamed_gbps: streamed,
+            link_gbps: if link.is_finite() { link } else { 0.125 },
+        }
+    }
+
+    fn ms_at(&self, gbps: f64) -> f64 {
+        self.expert_bytes as f64 / (gbps.max(1e-6) * 1e9) * 1000.0
+    }
+
+    /// A read of the expert from the fast tier.
+    pub fn hit_ms(&self) -> f64 {
+        self.ms_at(self.fast_gbps)
+    }
+
+    /// A read of the expert from where it is streamed today.
+    pub fn miss_ms(&self) -> f64 {
+        self.ms_at(self.streamed_gbps)
+    }
+
+    /// The promotion and the demotion, both across the link.
+    pub fn transfer_ms(&self) -> f64 {
+        self.transfer_ms_for(false)
+    }
+
+    /// The two transfers of a swap: across the link between two nodes, or two copies through
+    /// the streamed tier's memory when the promoted and demoted experts share a node.
+    pub fn transfer_ms_for(&self, same_node: bool) -> f64 {
+        if same_node {
+            2.0 * self.ms_at(self.streamed_gbps)
+        } else {
+            2.0 * self.ms_at(self.link_gbps)
+        }
+    }
+
+    /// Hits the promoted expert must earn beyond the demoted one to repay the transfers across
+    /// the link; infinite when a fast hit saves nothing.
+    pub fn admission_hits(&self) -> f64 {
+        self.admission_hits_for(false)
+    }
+
+    /// [`RepinPayback::admission_hits`] for a swap on one node or across the link.
+    pub fn admission_hits_for(&self, same_node: bool) -> f64 {
+        let saved = self.miss_ms() - self.hit_ms();
+        if saved <= 0.0 {
+            f64::INFINITY
+        } else {
+            self.transfer_ms_for(same_node) / saved
         }
     }
 }
@@ -252,6 +360,9 @@ pub struct RepinSwap {
     /// Where the promoted expert came from, and the tier the demoted one goes to.
     pub from_node: NodeId,
     pub from_tier: ResidencyTier,
+    /// Extra hits the swap had to earn to pay for its transfers, 0 without a payback rule.
+    #[serde(default)]
+    pub required_hits: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -335,6 +446,7 @@ impl RepinPlanner {
         layers.sort_unstable();
         layers.dedup();
         let mut candidates: Vec<(u64, RepinSwap)> = Vec::new();
+        let mut unpaid = 0usize;
 
         for layer in &layers {
             let homes: Vec<_> = placement
@@ -362,6 +474,14 @@ impl RepinPlanner {
             if hot_hits <= cold_hits || (hot_hits as f64) <= threshold {
                 continue;
             }
+            let same_node = hot.holders[0] == cold.holders[0];
+            let required_hits = policy
+                .payback
+                .map_or(0.0, |p| p.admission_hits_for(same_node));
+            if ((hot_hits - cold_hits) as f64) < required_hits {
+                unpaid += 1;
+                continue;
+            }
             candidates.push((
                 hot_hits - cold_hits,
                 RepinSwap {
@@ -374,6 +494,7 @@ impl RepinPlanner {
                     fast_tier: cold.tier,
                     from_node: hot.holders[0].clone(),
                     from_tier: hot.tier,
+                    required_hits,
                 },
             ));
         }
@@ -384,7 +505,7 @@ impl RepinPlanner {
             .take(policy.max_swaps)
             .map(|(_, s)| s)
             .collect();
-        let rationale = if swaps.is_empty() {
+        let mut rationale = if swaps.is_empty() {
             format!(
                 "no streamed expert is more than {:.0}% hotter than the coldest pinned expert of its layer",
                 policy.hysteresis * 100.0
@@ -398,6 +519,18 @@ impl RepinPlanner {
                 policy.hysteresis * 100.0
             )
         };
+        if let Some(payback) = policy.payback
+            && unpaid > 0
+        {
+            rationale = format!(
+                "{rationale}; {unpaid} hotter expert{} left streamed because their extra hits would not repay the two transfers (a swap needs {:.1} extra hits across the link at {:.2} ms, {:.1} on one node at {:.2} ms)",
+                if unpaid == 1 { "" } else { "s" },
+                payback.admission_hits_for(false),
+                payback.transfer_ms_for(false),
+                payback.admission_hits_for(true),
+                payback.transfer_ms_for(true)
+            );
+        }
         RepinProposal {
             swaps,
             layers_considered: layers.len(),
@@ -726,6 +859,107 @@ mod tests {
         // Nothing left to swap at this heat.
         let again = RepinPlanner::propose(&placement, &heat, &policy);
         assert!(again.swaps.is_empty());
+    }
+
+    #[test]
+    fn payback_keeps_a_swap_whose_extra_hits_would_not_repay_its_transfers() {
+        let nodes = sample_personal_cluster();
+        let model = toy_moe();
+        let offers: BTreeMap<_, ResourceOffer> = nodes
+            .iter()
+            .map(|n| {
+                let mut offer = n.default_offer();
+                offer.fast_memory_gb = 0.0;
+                (n.id.clone(), offer)
+            })
+            .collect();
+        let mut placement = ExpertPlacementPlanner::plan_with_offers(
+            &model,
+            &nodes,
+            ExecutionStrategy::PipelineChain,
+            None,
+            WorkloadKind::Inference,
+            &offers,
+        );
+        for home in placement.experts.iter_mut() {
+            home.tier = if home.expert < 2 {
+                ResidencyTier::Vram
+            } else {
+                ResidencyTier::SystemRam
+            };
+        }
+        let mut heat = ExpertPopularity::default();
+        for layer in 0..4 {
+            heat.record(layer, 0, 10);
+            heat.record(layer, 1, 10);
+        }
+        heat.record(0, 7, 40); // 30 extra hits
+        heat.record(1, 6, 13); // 3 extra hits
+
+        // Across a slow link, 10 MiB experts over 1 Gb/s (0.125 GB/s) cost 168 ms for the two
+        // transfers; a fast hit saves 10 MiB at 60 GB/s against 800 GB/s, about 0.16 ms, so a
+        // cross-node swap would need about a thousand extra hits. The chain placement swaps
+        // within one node, where the two transfers are memory copies at the streamed rate
+        // (0.35 ms) and a couple of extra hits pay.
+        let payback = RepinPayback {
+            expert_bytes: (model.single_expert_size_gb * 1_073_741_824.0) as u64,
+            fast_gbps: 800.0,
+            streamed_gbps: 60.0,
+            link_gbps: 0.125,
+        };
+        assert!(
+            payback.admission_hits() > 500.0,
+            "{}",
+            payback.admission_hits()
+        );
+        let on_node = payback.transfer_ms_for(true);
+        assert!((on_node - 2.0 * payback.miss_ms()).abs() < 1e-9);
+        assert!(payback.admission_hits_for(true) < 5.0);
+        assert!(payback.admission_hits_for(true) < payback.admission_hits_for(false));
+
+        // When a fast hit saves nothing over the streamed read, no swap can ever repay.
+        let strict = RepinPolicy {
+            payback: Some(RepinPayback {
+                fast_gbps: 60.0,
+                ..payback
+            }),
+            ..RepinPolicy::default()
+        };
+        let none = RepinPlanner::propose(&placement, &heat, &strict);
+        assert!(none.swaps.is_empty(), "{:?}", none.swaps);
+        assert!(
+            none.rationale.contains("would not repay"),
+            "{}",
+            none.rationale
+        );
+
+        // A slow streamed tier: a hit saves 10 MiB at 5 GB/s (NVMe) against 800 GB/s, about
+        // 2 ms, and the two on-node copies cost 4.2 ms, so two extra hits pay. Both the
+        // 30-hit and the 3-hit swap qualify.
+        let cheap = RepinPolicy {
+            payback: Some(RepinPayback {
+                streamed_gbps: 5.0,
+                link_gbps: 40.0,
+                ..payback
+            }),
+            ..RepinPolicy::default()
+        };
+        let both = RepinPlanner::propose(&placement, &heat, &cheap);
+        assert_eq!(both.swaps.len(), 2, "{:?}", both.swaps);
+        assert!(both.swaps[0].required_hits > 1.0 && both.swaps[0].required_hits < 3.0);
+
+        // A mesh-derived payback is finite and positive.
+        let mesh = RepinPayback::for_mesh(&model, &nodes);
+        assert!(mesh.expert_bytes > 0 && mesh.link_gbps > 0.0);
+        assert!(mesh.admission_hits().is_finite());
+        let _ = RepinPlanner::propose(
+            &placement,
+            &heat,
+            &RepinPolicy {
+                payback: Some(mesh),
+                ..RepinPolicy::default()
+            },
+        );
     }
 
     #[test]

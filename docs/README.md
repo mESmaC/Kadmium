@@ -17,7 +17,7 @@ Documents distinguish **implemented reference behavior**, **modelled/simulated o
 | [CLI command reference](cli-reference.md) | Every current CLI subcommand, flag, default, and execution qualification. |
 | [HTTP and gateway API](api-reference.md) | Reference `/v1` diagnostics, cluster control plane, DiLoCo sessions, MCP, and grid endpoints. |
 | [Technical specsheet and roadmap](SPECSHEET_AND_ROADMAP.md) | Current formats, algorithms, execution support, and planned production work. |
-| [Deep technical architecture](ARCHITECTURE.md) | Current mechanisms and explicitly labelled target designs. |
+| [Deep technical architecture](ARCHITECTURE.md) | Current mechanisms and explicitly labelled target designs, including the InferSSD-derived expert cache, learned cost lines, prompt cache and host envelope (9.19). |
 | [Measured benchmark ledger](BENCHMARKS_2026-10.md) | Dated measurements, derived arithmetic, provenance, and harness limitations. |
 
 ### Operator and developer guides

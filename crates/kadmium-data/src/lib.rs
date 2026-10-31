@@ -458,6 +458,7 @@ impl<'a> KtbBankReader<'a> {
     }
 }
 
+pub mod batch_read;
 pub mod expert;
 pub mod importer;
 pub mod integrations;
@@ -467,6 +468,7 @@ pub mod range_pull;
 pub mod safetensors_manifest;
 pub mod transcoder;
 
+pub use batch_read::*;
 pub use expert::*;
 pub use importer::*;
 pub use integrations::*;
@@ -743,6 +745,37 @@ mod tests {
         assert_eq!(slices.len(), 1);
         assert!(slices[0].http_range_header.starts_with("bytes="));
         assert_eq!(slices[0].payload_len_bytes, 1024);
+
+        // Two adjacent tensors of one file share one range request; a far one does not.
+        let both = HfByteRangeSlicer::plan_http_range_requests(
+            "deepseek-ai/DeepSeek-V3",
+            "main",
+            "model-00004-of-00016.safetensors",
+            &raw_st,
+            0,
+            14,
+        )
+        .expect("plan both");
+        assert_eq!(both.len(), 2);
+        let merged = HfByteRangeSlicer::coalesce_range_requests(&both, 0);
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        assert_eq!(merged[0].members.len(), 2);
+        assert_eq!(merged[0].len(), 512 + 1024);
+        assert_eq!(merged[0].gap_bytes, 0);
+        let (a, b) = merged[0].slice_bounds(&both[merged[0].members[1]]);
+        assert_eq!(b - a, both[merged[0].members[1]].payload_len_bytes);
+        let mut far = both.clone();
+        far[1].byte_start += 100_000;
+        far[1].byte_end_inclusive += 100_000;
+        far[1].http_range_header =
+            format!("bytes={}-{}", far[1].byte_start, far[1].byte_end_inclusive);
+        assert_eq!(
+            HfByteRangeSlicer::coalesce_range_requests(&far, 1024).len(),
+            2
+        );
+        let bridged = HfByteRangeSlicer::coalesce_range_requests(&far, 200_000);
+        assert_eq!(bridged.len(), 1);
+        assert_eq!(bridged[0].gap_bytes, 100_000);
 
         let ktb = HfByteRangeSlicer::assemble_range_slices_to_ktb(
             "deepseek-v3-671b-moe",

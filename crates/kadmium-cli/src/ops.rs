@@ -929,7 +929,7 @@ pub async fn run_join(
         join_ticket: Some(token),
         switch_to_live_only: live_only,
         offer: offer.clone(),
-        free_system_ram_gb: None,
+        free_system_ram_gb: Some(worker_server.host_room_gb()),
         measured_stream_gbps: Some(measured_stream_gbps),
     };
 
@@ -998,7 +998,9 @@ pub async fn run_join(
                             package_temp_celsius: sample.package_temp_celsius,
                             applied_ota_ack: pending_ack.take(),
                             offer: offer.clone(),
-                            free_system_ram_gb: None,
+                            // The room the host memory ledger has now, below its reserve and
+                            // learned margin: what the coordinator may count on.
+                            free_system_ram_gb: Some(worker_server.host_room_gb()),
                         };
 
                         if let Ok(hb_ack) = MeshHttpClient::post_json::<WorkerHeartbeatRequest, WorkerHeartbeatAck>(
