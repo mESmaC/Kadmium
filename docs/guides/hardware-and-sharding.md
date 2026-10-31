@@ -22,7 +22,7 @@ Native device execution currently covers a specific set of CUDA kernels and one 
 
 ## 2. Local `.ktb` ingestion
 
-For an actual local model, prefer `kadmium checkpoint normalize <PATH>` or Condenser's **Models & compute** panel. This lossless package path supports GGUF metadata and complete sharded checkpoints, retains originals and tokenizer/config files, and records SHA-256 hashes. See [local checkpoints](local-checkpoints.md). It does not make KTB banks a native inference runtime.
+For an actual local model, prefer `kadmium checkpoint normalize <PATH>` or Condenser's **Models** view. This lossless package path supports GGUF metadata and complete sharded checkpoints, retains originals and tokenizer/config files, and records SHA-256 hashes. See [local checkpoints](local-checkpoints.md). It does not make KTB banks a native inference runtime.
 
 `kadmium import --path <FILE>` is a constrained **local single-file reference importer** for SafeTensors and GGUF v3. The GGUF parser currently accepts only compact streams with zero metadata key-value pairs, which excludes many standard GGUF models. Omitting `--path` synthesizes a reference input file.
 

@@ -72,6 +72,7 @@ const WORKSPACE_JS: &str = include_str!("workspace.js");
 const DESIGN_SYSTEM_DEMO_HTML: &str = include_str!("../../../design-system/demo.html");
 
 const DS_TOKENS_CSS: &str = include_str!("../../../design-system/tokens.css");
+const DS_GLASS_CSS: &str = include_str!("../../../design-system/glass.css");
 const DS_TOKENS_JSON: &str = include_str!("../../../design-system/tokens.json");
 const DS_BUNDLE_CSS: &str = include_str!("../../../design-system/components/bundle.css");
 const DS_BUNDLE_JS: &str = include_str!("../../../design-system/components/bundle.js");
@@ -266,6 +267,7 @@ pub struct OtaUpdatePushRequest {
 
 /// Builds the Axum router serving both the Unified Dashboard and all Backend REST/AI Gateway APIs.
 pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
+    let transport = crate::model_transport::TransportState::from_env();
     Router::new()
         .merge(crate::diloco_api::router())
         .route("/", get(serve_dashboard))
@@ -277,6 +279,15 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/docs", get(serve_docs_portal))
         .route("/design-system", get(serve_design_system_demo))
         .route("/tokens.css", get(serve_tokens_css))
+        .route(
+            "/glass.css",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+                    DS_GLASS_CSS,
+                )
+            }),
+        )
         .route("/tokens.json", get(serve_tokens_json))
         .route("/components/bundle.css", get(serve_bundle_css))
         .route("/components/bundle.js", get(serve_bundle_js))
@@ -526,6 +537,11 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/v1/messages", post(anthropic_messages))
         .with_state(state)
         .merge(crate::condenser_mount::router())
+        .merge(crate::model_transport::router(transport.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            transport,
+            crate::model_transport::serve_loaded_models,
+        ))
 }
 
 async fn serve_dashboard() -> Html<&'static str> {

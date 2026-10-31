@@ -19,6 +19,8 @@ pub(crate) const DOC_CONDENSER_MD: &str =
     include_str!("../../../docs/guides/condenser-workspace.md");
 pub(crate) const DOC_LOCAL_CHECKPOINTS_MD: &str =
     include_str!("../../../docs/guides/local-checkpoints.md");
+pub(crate) const DOC_MODEL_TRANSPORT_MD: &str =
+    include_str!("../../../docs/guides/model-transport.md");
 pub(crate) const DOC_DISTRIBUTED_COMPUTE_MD: &str =
     include_str!("../../../docs/guides/distributed-compute.md");
 pub(crate) const DOC_LAUNCH_GUIDE_MD: &str = include_str!("../../../docs/guides/cli.md");
@@ -106,11 +108,19 @@ pub fn build_documentation_catalog() -> Vec<DocumentationPage> {
         },
         DocumentationPage {
             slug: "local-checkpoints".into(),
-            title: "Load a Local Checkpoint".into(),
+            title: "Bring Your Own Model".into(),
             category: "2. Operator & Developer Guides".into(),
             file_path: "docs/guides/local-checkpoints.md".into(),
-            summary: "Lossless GGUF/SafeTensors packages, integrity checks and explicit local Ollama loading.".into(),
+            summary: "Choose, prepare and run GGUF/SafeTensors models on this computer or Kadmium Cloud without quality loss.".into(),
             markdown: DOC_LOCAL_CHECKPOINTS_MD.into(),
+        },
+        DocumentationPage {
+            slug: "model-transport".into(),
+            title: "Model Transport".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/model-transport.md".into(),
+            summary: "InferSSD-aligned, verified and resumable model transfer to Kadmium Cloud or any coordinator.".into(),
+            markdown: DOC_MODEL_TRANSPORT_MD.into(),
         },
         DocumentationPage {
             slug: "distributed-compute".into(),

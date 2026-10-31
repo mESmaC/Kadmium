@@ -3,7 +3,8 @@
   'use strict';
   const h = React.createElement;
   const features = [
-    { title: 'Prepare a local model', description: 'Choose GGUF or SafeTensors, normalize shards, and load for inference.', href: '/condenser/#models', group: 'Build', keywords: 'import weights checkpoint library' },
+    { title: 'Prepare a local model', description: 'Choose a GGUF or SafeTensors model, prepare it without quality loss, and run it on this computer.', href: '/condenser/#models', group: 'Build', keywords: 'import weights checkpoint library bring your own' },
+    { title: 'Send a model to Kadmium Cloud', description: 'Run a prepared model on managed GPUs. Sent in verified, resumable chunks.', href: '/condenser/#models-cloud', group: 'Build', keywords: 'upload transport remote premium hosted gpu' },
     { title: 'Launch Condenser', description: 'Chat, code, and run tools with your chosen model.', href: '/condenser/', group: 'Build', keywords: 'agent inference model context tokens' },
     { title: 'Cluster overview', description: 'Machines, workloads, and recent activity.', path: 'overview', local: 'home', group: 'Monitor', keywords: 'home dashboard status' },
     { title: 'Machines', description: 'Join a computer, inspect hardware, or pause sharing.', path: 'nodes', local: 'cluster', group: 'Monitor', keywords: 'add pair node worker lan' },
@@ -91,13 +92,38 @@
   }
   function ModelSetup() {
     const local = ['127.0.0.1', 'localhost'].includes(location.hostname);
-    return h('section', { className: 'kw-model-setup', 'aria-label': 'Prepare and run a model' },
-      h('div', null, h('span', { className: 'kw-eyebrow' }, 'Your model → normalized shards → inference'),
-        h('h2', null, 'Prepare and run your model'),
-        h('p', null, 'Choose a GGUF file or complete SafeTensors folder. Preserve source precision, normalize into KTB shards, then load and use the model in Condenser.'),
-        h('p', null, 'Maximum model context and output by default. Adjust limits per task in Provider settings.'),
-        local ? null : h('p', { role: 'status' }, 'Model files belong to the coordinator computer. Open Kadmium on that computer at http://127.0.0.1:' + location.port + '/ to prepare models and launch Condenser.')),
-      local ? h('div', { className: 'kw-model-actions' }, h('a', { href: '/condenser/#models' }, 'Prepare a local model'), h('a', { href: '/condenser/' }, 'Launch Condenser')) : null);
+    const [received, setReceived] = React.useState(null);
+    React.useEffect(() => {
+      if (!local) return undefined;
+      let live = true;
+      fetch('/api/v1/model-transport').then(r => r.ok ? r.json() : null).then(d => { if (live && d) setReceived(d); }).catch(() => {});
+      return () => { live = false; };
+    }, [local]);
+    const served = new Set(received ? received.served : []);
+    const destinations = [
+      { id: 'local', title: 'On this computer', badge: h('span', { className: 'k-pill' }, 'Private'), body: 'Runs through Ollama on this machine. Nothing leaves your network. Best when this computer has enough memory for the model.', href: '/condenser/#models', action: 'Prepare a local model' },
+      { id: 'cloud', title: 'Kadmium Cloud', badge: h('span', { className: 'k-pill premium' }, 'Premium'), body: 'Managed GPUs for models larger than your hardware. Condenser sends the prepared model in verified, resumable chunks and loads it at full context.', href: '/condenser/#models-cloud', action: 'Send to Kadmium Cloud' }
+    ];
+    return h('section', { className: 'kw-model-setup', 'aria-labelledby': 'kw-model-title' },
+      h('div', { className: 'kw-model-head' },
+        h('span', { className: 'k-eyebrow' }, 'Your models'),
+        h('h2', { id: 'kw-model-title' }, 'Run your own model'),
+        h('p', null, 'Choose a model file, let Condenser prepare it, then run it here or on Kadmium Cloud. Weights are never quantized, pruned, or shortened, and every model starts with its full context and output.'),
+        h('ol', { className: 'k-steps', 'aria-label': 'How it works' },
+          h('li', null, 'Choose a GGUF or SafeTensors model'),
+          h('li', null, 'Prepare: verified, 4 KiB-aligned shards'),
+          h('li', null, 'Run on this computer or Kadmium Cloud'))),
+      local ? h('div', { className: 'kw-destinations' }, destinations.map(d => h('article', { key: d.id, className: 'kw-destination-card ' + d.id },
+        h('header', null, h('h3', null, d.title), d.badge),
+        h('p', null, d.body),
+        h('a', { className: 'kw-cta', href: d.href }, d.action, h('span', { 'aria-hidden': 'true' }, ' →'))))) : null,
+      local && received && received.checkpoints.length ? h('div', { className: 'kw-received' },
+        h('h3', null, 'Models on this coordinator'),
+        h('ul', null, received.checkpoints.map(m => h('li', { key: m.id },
+          h('span', null, m.name), h('span', { className: 'k-pill ' + (served.has('kadmium-' + m.id + ':latest') ? 'ok' : '') }, served.has('kadmium-' + m.id + ':latest') ? 'Serving' : 'Ready to load'))))) : null,
+      h('p', { className: 'kw-model-foot' }, local
+        ? h(React.Fragment, null, 'Lower context or output per task in Condenser → Model & quality; each limit explains what it costs. ', h('a', { href: '/condenser/' }, 'Launch Condenser'))
+        : h('span', { role: 'status' }, 'Model files live on the coordinator computer. Open Kadmium there at http://127.0.0.1:' + location.port + '/ to prepare models and launch Condenser.')));
   }
   window.KadmiumWorkspace = { Launcher, ModelSetup };
 })();

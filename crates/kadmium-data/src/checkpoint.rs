@@ -3,6 +3,7 @@
 //! Large payloads are copied with bounded buffers, never loaded as a whole checkpoint.
 
 pub(crate) mod formats;
+pub mod transport;
 
 pub use formats::ggml_type_name;
 
@@ -437,8 +438,8 @@ impl CheckpointLibrary {
             banks.push(hash_file(&path, &name)?);
         }
         let mut warnings = vec![
-            "KTB normalization preserves source precision; it cannot recover quality lost before import.".into(),
-            "Generation requires a compatible inference backend. KTB banks are not a native language-model runtime or a RepOps parity certification.".into(),
+            "Preparing keeps the original precision. It cannot restore quality lost before the model was imported.".into(),
+            "Answers come from the backend you load the model into, such as Ollama or Kadmium. KTB shards are a storage layout, not a separate runtime, and backend arithmetic is not RepOps-certified.".into(),
         ];
         if let Some(quantized) = &pre_quantized {
             warnings.push(pre_quantized_warning(quantized));
@@ -451,7 +452,7 @@ impl CheckpointLibrary {
                     | TensorEncoding::Bf16
             )
         }) {
-            warnings.push("This checkpoint contains integer, boolean or complex tensors. Their original formats are preserved.".into());
+            warnings.push("This model contains integer, boolean or complex tensors. Their original formats are kept as-is.".into());
         }
         let manifest = CheckpointManifest {
             schema_version: 3,

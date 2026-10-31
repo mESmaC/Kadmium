@@ -22,6 +22,8 @@ The identity comes from the name. In a reactor, cadmium control rods are inserte
 
 **Marks and icons.** The mark, wordmark, tiles and favicon are in `assets/Logos` (SVG, dark- and light-ground versions; read `assets/Logos/README.md` for clear space and don'ts). Icons are 24px, 1.75px stroke, round caps — the twelve Kadmium-specific glyphs live in `assets/Icons`; for everything else use Lucide at the same stroke, as `4-marks-and-iconography.md` explains.
 
+**Glass.** `glass.css` is the shared material layer for Kadmium and Condenser. Load it after `tokens.css` for translucent surfaces (`.k-glass`), native system type, generous radii, segmented controls (`.k-segmented`), steppers (`.k-steps`), pills (`.k-pill`) and progress bars (`.k-progress`). Opaque fallbacks apply without `backdrop-filter`, and reduced-transparency and reduced-motion preferences are honoured.
+
 **Components.** `components/bundle.js` is one classic script that attaches `window.Kadmium` (`Button`, `Badge`, `Meter`, `NodeCard`, `ShardRail`, `PlanCard`, `CodeBlock`, `Input`, `Tabs`, `Mark`) and expects React 18 as `window.React` / `window.ReactDOM` (carried in `components/lib/`), with `tokens.css` and `components/bundle.css` on the page. Each component's `README.md` says what you provide and when to use it; `components/index.d.ts` documents the props.
 
 The sections that follow cover voice and copy, the visual foundations in depth, how the two products are told apart, and the marks, patterns and icons.

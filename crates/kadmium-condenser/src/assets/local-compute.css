@@ -1,22 +1,117 @@
-/* Local operator surfaces use Kadmium's shared graphite and cadmium tokens. */
-#context-compute { background: var(--graphite-0); --surface-1: var(--graphite-1); --surface-2: var(--graphite-2); --surface-3: var(--graphite-3); --abyss: var(--graphite-0); --glow: var(--cadmium-text); --glow-hover: var(--cadmium-hover); --glow-soft: var(--cadmium-soft); }
+/* Condenser on Kadmium glass: shell materials, the Models view, and the compute dock.
+   Loaded after kadmium-tokens.css and kadmium-glass.css so shared materials win. */
+
+/* Shell materials */
+body { background: var(--ambient), var(--abyss); font-family: var(--font-sans); letter-spacing: -.003em; }
+.topbar { background: color-mix(in srgb, var(--abyss) 72%, transparent); border-bottom-color: var(--glass-edge); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
+.brand-product, .headline, .title, .empty-harness h1 { font-family: var(--font-display); }
+.session-rail, .context-rail { background: color-mix(in srgb, var(--surface-1) 70%, transparent); border-color: var(--glass-edge); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
+.workspace { background: transparent; }
+.run-header { background: color-mix(in srgb, var(--abyss) 55%, transparent); border-bottom-color: var(--glass-edge); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
+.rail-section-head, .rail-footer, .inspector-section, .dock-header, .drawer-header, .drawer-footer, .sampling-settings { border-color: var(--glass-edge); }
+.rail-nav, .session-card { border-radius: 10px; }
+
+/* Controls */
+input, textarea, select { border-radius: 10px; border-color: var(--glass-edge-strong); background: color-mix(in srgb, var(--ink) 4%, var(--abyss)); transition: border-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-fast) var(--ease-out); }
+input:focus, textarea:focus, select:focus { border-color: var(--glow); box-shadow: 0 0 0 4px color-mix(in srgb, var(--glow) 18%, transparent); }
+.primary-btn, .secondary-btn, .run-button, .new-task { border-radius: 10px; transition: background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out), transform var(--motion-fast) var(--ease-out); }
+.primary-btn, .run-button { box-shadow: 0 1px 0 #ffffff40 inset, 0 6px 18px -8px color-mix(in srgb, var(--glow) 70%, transparent); }
+.primary-btn:active:not(:disabled), .secondary-btn:active:not(:disabled), .run-button:active:not(:disabled) { transform: scale(.98); }
+.secondary-btn { background: var(--glass-2); border-color: var(--glass-edge-strong); box-shadow: var(--glass-highlight); }
+.icon-btn { border-radius: 10px; }
+.composer { border-radius: 22px; border-color: var(--glass-edge-strong); background: var(--glass-1); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); box-shadow: var(--glass-shadow); }
+.starter-card, .tool-step, .stat-card, .plugin-card, .reasoning-trace, .running-indicator, .registry-note { border-radius: 16px; border-color: var(--glass-edge); background: var(--glass-1); box-shadow: var(--glass-highlight); }
+.starter-card:hover { transform: translateY(-2px); border-color: var(--glass-edge-strong); }
+.user-event .event-main { border-radius: 18px 18px 6px 18px; }
+
+/* Floating drawer and dialogs */
+.modal-backdrop { background: #02050b8c; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+.settings-drawer { margin: 10px; height: calc(100% - 20px); border: 1px solid var(--glass-edge-strong); border-radius: 22px; background: var(--glass-1); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); box-shadow: var(--glass-shadow); overflow: hidden; }
+.tool-console { border-radius: 22px; border-color: var(--glass-edge-strong); background: var(--glass-1); -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur); }
+.sampling-settings summary { color: var(--ink); font-weight: 600; }
+
+/* Quality & limits */
+.quality-field { display: grid; gap: 6px; margin-top: var(--space-4); }
+.quality-summary { margin: var(--space-3) 0 var(--space-2); padding: 10px 12px; border-radius: 12px; border: 1px solid var(--glass-edge); background: var(--glass-2); font-size: 13px; font-weight: 600; }
+.tradeoff { position: relative; margin: 0; padding-left: 16px; color: var(--ink-muted); font-size: 12px; line-height: 18px; }
+.tradeoff::before { content: ""; position: absolute; left: 2px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
+.tradeoff[data-tone="ok"]::before, .quality-summary[data-tone="ok"] { --tone: var(--ok); }
+.tradeoff[data-tone="warn"]::before, .quality-summary[data-tone="warn"] { --tone: var(--warn); }
+.tradeoff[data-tone="error"]::before { --tone: var(--danger); }
+.tradeoff[data-tone]::before { background: var(--tone); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 18%, transparent); }
+.tradeoff[data-tone="warn"], .tradeoff[data-tone="error"] { color: var(--ink); }
+.quality-summary[data-tone] { color: var(--tone); border-color: color-mix(in srgb, var(--tone) 30%, transparent); background: color-mix(in srgb, var(--tone) 9%, transparent); }
+.compact-toggle { display: flex; gap: 8px; align-items: flex-start; line-height: 18px; }
+.compact-toggle input { flex-shrink: 0; margin-top: 1px; }
+
+/* Models view */
+body[data-view="models"] .app-shell { grid-template-columns: var(--rail-width) minmax(0, 1fr); }
+body[data-view="models"].sidebar-closed .app-shell { grid-template-columns: minmax(0, 1fr); }
+body[data-view="models"] .context-rail, body[data-view="models"] #resize-context { display: none; }
+#view-models.active { display: block; overflow-y: auto; }
+.models-page { max-width: 880px; margin: 0 auto; padding: 48px 32px 72px; display: grid; gap: 20px; }
+.models-hero { display: grid; gap: 10px; margin-bottom: 8px; }
+.models-hero h1 { margin: 0; font: 700 36px/1.12 var(--font-display); letter-spacing: -.032em; }
+.models-lede { margin: 0 0 8px; max-width: 64ch; color: var(--ink-muted); font-size: 16px; line-height: 1.55; }
+.k-steps li[data-state="current"]::before { background: var(--glow); color: var(--on-glow); }
+.model-card { padding: 24px; display: grid; gap: 16px; min-width: 0; }
+.model-card-head { display: flex; align-items: flex-start; gap: 14px; }
+.model-card-head > div { flex: 1; min-width: 0; }
+.model-card-head.inset { margin-top: 12px; padding-top: 20px; border-top: 1px solid var(--glass-edge); }
+.model-card h2 { margin: 2px 0 4px; font: 600 18px/24px var(--font-display); letter-spacing: -.015em; }
+.model-card-head p, .destination-lede { margin: 0; color: var(--ink-muted); font-size: 14px; line-height: 1.55; }
+.model-step { flex: 0 0 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: color-mix(in srgb, var(--glow) 16%, transparent); color: var(--glow); font: 700 13px/1 var(--font-sans); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--glow) 30%, transparent); }
+#checkpoint-form { display: grid; gap: 14px; }
+.path-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.model-browser { display: grid; gap: 8px; padding: 12px; border-radius: 14px; border: 1px solid var(--glass-edge); background: var(--glass-2); }
+.model-browser[hidden] { display: none; }
+.model-browser-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.model-browser-bar .code-sm { flex: 1; min-width: 0; color: var(--ink-muted); overflow-wrap: anywhere; }
+#checkpoint-files { max-height: 260px; overflow: auto; display: grid; gap: 2px; }
+.checkpoint-file { padding: 8px 10px; border-radius: 8px; text-align: left; overflow-wrap: anywhere; color: var(--ink); font-size: 13px; }
+.checkpoint-file:hover { background: color-mix(in srgb, var(--glow) 10%, transparent); color: var(--glow); }
+.model-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.model-actions > p { flex: 1; min-width: 220px; margin: 0; }
+.model-facts { margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.model-facts:empty { display: none; }
+.model-facts > div { min-width: 0; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--glass-edge); background: var(--glass-2); }
+.model-facts dt { color: var(--ink-faint); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+.model-facts dd { margin: 2px 0 0; color: var(--ink); font-size: 14px; overflow-wrap: anywhere; }
+.library-path code, #checkpoint-directory { overflow-wrap: anywhere; }
+.destination-switch { display: grid; width: 100%; max-width: 440px; }
+.destination-panel { display: grid; gap: 14px; }
+.destination-panel[hidden] { display: none; }
+.field-grid.two { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 0; }
+.cloud-progress { display: grid; gap: 6px; }
+.cloud-progress[hidden] { display: none; }
+#cloud-status, #checkpoint-load-status, #checkpoint-status { overflow-wrap: anywhere; }
+.models-footnote { text-align: center; max-width: 64ch; margin: 4px auto 0; }
+
+/* Compute dock keeps Kadmium's graphite and cadmium identity. */
+#context-compute { --glow: var(--cadmium-text); --glow-hover: var(--cadmium-hover); --glow-soft: var(--cadmium-soft); --on-glow: var(--on-cadmium); }
 #context-compute h2 { margin: 0; font-size: 14px; }
 #context-compute .inspector-section { padding: var(--space-4); }
 #context-compute .field { margin-top: var(--space-3); }
 #context-compute .field-inline { flex-wrap: wrap; gap: var(--space-2); }
-#context-compute input, #context-compute select, #context-compute textarea { background: var(--graphite-0); border-color: var(--line-strong); }
-#context-compute pre { padding: var(--space-3); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--graphite-1); }
-#context-compute .compute-label, .local-compute-link { color: var(--cadmium-text); }
-#open-model-library { color: var(--cadmium-text); }
-#context-compute #checkpoint-import, #context-compute #checkpoint-use, #context-compute #compute-job-run { background: var(--cadmium); color: var(--on-cadmium); border-color: var(--cadmium); }
-#context-compute #checkpoint-import:hover, #context-compute #checkpoint-use:hover, #context-compute #compute-job-run:hover { background: var(--cadmium-hover); }
+#context-compute pre { padding: var(--space-3); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; border: 1px solid var(--glass-edge); border-radius: 12px; background: var(--glass-2); }
+#context-compute .compute-label { color: var(--cadmium-text); }
+#context-compute #compute-job-run { background: var(--cadmium); color: var(--on-cadmium); border-color: var(--cadmium); }
+#context-compute #compute-job-run:hover { background: var(--cadmium-hover); }
 #context-compute .run-facts dd { overflow-wrap: anywhere; }
 .compute-setup { margin: var(--space-4) 0; }
 .compute-setup summary { cursor: pointer; color: var(--ink); font-size: 14px; }
 .compute-setup a { color: var(--cadmium-text); }
 #context-compute button:focus-visible, #context-compute summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-@media (prefers-reduced-motion: reduce) { #context-compute * { transition: none; } }
 
-#checkpoint-files { max-height:240px; overflow:auto; display:grid; gap:8px; }
-.checkpoint-file { text-align:left; overflow-wrap:anywhere; }
-#checkpoint-browser-path, #checkpoint-directory { overflow-wrap:anywhere; }
+@media (max-width: 980px) {
+  body[data-view="models"] .app-shell { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 680px) {
+  .models-page { padding: 28px 16px 48px; gap: 16px; }
+  .models-hero h1 { font-size: 28px; }
+  .model-card { padding: 18px; }
+  .path-row { grid-template-columns: 1fr; }
+  .destination-switch { max-width: none; }
+  .destination-switch label { padding: 6px 8px; }
+}
+@media (prefers-reduced-motion: reduce) { #context-compute *, .model-card * { transition: none; } }
