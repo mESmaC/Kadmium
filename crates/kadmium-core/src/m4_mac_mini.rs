@@ -104,7 +104,10 @@ impl AppleM4ProductFormFactor {
             Self::IMac
         } else if m.starts_with("iPad16,") {
             Self::IPadPro
-        } else if matches!(tier, AppleM4SiliconTier::M4Max | AppleM4SiliconTier::M4Ultra) {
+        } else if matches!(
+            tier,
+            AppleM4SiliconTier::M4Max | AppleM4SiliconTier::M4Ultra
+        ) {
             Self::MacStudio
         } else {
             Self::MacMini
@@ -265,7 +268,10 @@ struct PooledM4TcpConn {
 
 static M4_PERSISTENT_CONN: Mutex<Option<PooledM4TcpConn>> = Mutex::new(None);
 
-fn send_m4_json_rpc(addr_str: &str, payload: &serde_json::Value) -> Option<(serde_json::Value, f64)> {
+fn send_m4_json_rpc(
+    addr_str: &str,
+    payload: &serde_json::Value,
+) -> Option<(serde_json::Value, f64)> {
     let mut guard = M4_PERSISTENT_CONN.lock().ok()?;
     let mut line = serde_json::to_string(payload).ok()?;
     line.push('\n');
@@ -328,8 +334,8 @@ impl M4MacMiniLanBridge {
         let fp16_tflops = (telemetry.gpu_cores as f64) * 0.85;
         let int4_tops = (telemetry.gpu_cores as f64) * 1.70;
         let npu_tops = (telemetry.ane_cores as f64) * 2.375;
-        let cpu_tflops = (telemetry.cpu_cores_perf as f64) * 0.40
-            + (telemetry.cpu_cores_eff as f64) * 0.10;
+        let cpu_tflops =
+            (telemetry.cpu_cores_perf as f64) * 0.40 + (telemetry.cpu_cores_eff as f64) * 0.10;
         let polite_state = match form_factor {
             AppleM4ProductFormFactor::MacBookAir | AppleM4ProductFormFactor::IPadPro => {
                 PoliteState::LightDesktopUse
@@ -401,7 +407,8 @@ impl M4MacMiniLanBridge {
 
     /// Returns a reference catalog of all Apple M4-family product configurations (`Mac mini M4/M4 Pro`,
     /// `MacBook Pro M4/Pro/Max`, `MacBook Air M4`, `iMac 24" M4`, `Mac Studio M4 Max/Ultra`, and `iPad Pro M4`).
-    pub fn catalog_all_m4_products() -> Vec<(AppleM4ProductFormFactor, AppleM4SiliconTier, HardwareNode)> {
+    pub fn catalog_all_m4_products()
+    -> Vec<(AppleM4ProductFormFactor, AppleM4SiliconTier, HardwareNode)> {
         let configs = vec![
             (
                 "Mac16,10",
@@ -811,7 +818,7 @@ impl M4MacMiniLanBridge {
                 local_telem.unified_mem_bw_gbps
             );
             return M4MacMiniProbeReport {
-                physical_board_online: true,
+                physical_board_online: false,
                 board_model,
                 lan_endpoint: "127.0.0.1 (Local Apple Silicon Host)".to_string(),
                 mac_address_oui: format!(
@@ -822,7 +829,7 @@ impl M4MacMiniLanBridge {
                 telemetry: local_telem,
                 hardware_node: hw_node,
                 execution_proof: M4MacMiniExecutionProof {
-                    executed_on_physical_silicon: true,
+                    executed_on_physical_silicon: false,
                     endpoint_addr: "127.0.0.1".to_string(),
                     kernel_uname: "Darwin Local-Apple-Silicon arm64".to_string(),
                     lan_round_trip_ms: 0.05,
@@ -1167,10 +1174,8 @@ impl M4MacMiniLanBridge {
             tiled_gemm1024_gflops: resp.get("tiled_gemm1024_gflops")?.as_f64()?,
             tiled_gemm1024_fnv1a64: resp.get("tiled_gemm1024_fnv1a64")?.as_u64()?,
             rmsnorm_rope_ms: resp.get("rmsnorm_rope_ms")?.as_f64()?,
-            rmsnorm_rope_sample8: serde_json::from_value(
-                resp.get("rmsnorm_rope_sample8")?.clone(),
-            )
-            .ok()?,
+            rmsnorm_rope_sample8: serde_json::from_value(resp.get("rmsnorm_rope_sample8")?.clone())
+                .ok()?,
             rmsnorm_rope_repops_digest: resp.get("rmsnorm_rope_repops_digest")?.as_u64()?,
             flash_gqa_seq256_ms: resp.get("flash_gqa_seq256_ms")?.as_f64()?,
             flash_gqa_sample4: serde_json::from_value(resp.get("flash_gqa_sample4")?.clone())

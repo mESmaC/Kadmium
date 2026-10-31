@@ -428,8 +428,12 @@ impl ReplicaCatalog {
         let mut catalog = Self::new();
         for rule in rules {
             for node in &rule.candidate_nodes {
-                let mut replica =
-                    Replica::new(rule.content.clone(), node.clone(), rule.preferred_tier, now_unix_ms);
+                let mut replica = Replica::new(
+                    rule.content.clone(),
+                    node.clone(),
+                    rule.preferred_tier,
+                    now_unix_ms,
+                );
                 replica.pinned = rule.pin;
                 catalog.record(replica);
             }

@@ -34,6 +34,7 @@ use kadmium_core::{
     PoliteState,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 
 /// Physical & protocol tier of a USB-C direct interconnect link.
@@ -247,7 +248,11 @@ impl UsbCDirectInterconnectScanner {
             kadmium_multistream_striped_gbps: striped_goodput_gbps,
             sustained_throughput_gb_per_sec: sustained_gb_per_sec,
             parallel_socket_lanes: parallel_lanes,
-            negotiated_mtu_bytes: if clamped_rated >= 10.0 { 65_536 } else { 16_384 },
+            negotiated_mtu_bytes: if clamped_rated >= 10.0 {
+                65_536
+            } else {
+                16_384
+            },
             activation_64kb_transfer_us,
             kv_window_512mb_drain_ms,
             full_shard_2gb_drain_ms,
@@ -435,8 +440,7 @@ impl UsbCDirectInterconnectScanner {
 
         UsbCDaisyChainTopologyPlan {
             topology_mode: if count >= 3 {
-                "Switchless USB4 Ring / Daisy-Chain (Zero-Switch 169.254.x.x Point-to-Point)"
-                    .into()
+                "Switchless USB4 Ring / Daisy-Chain (Zero-Switch 169.254.x.x Point-to-Point)".into()
             } else {
                 "Direct Host-to-Host USB4 / Thunderbolt DMA Cable (Point-to-Point)".into()
             },
@@ -549,26 +553,26 @@ impl UsbCDirectInterconnectScanner {
 
         #[cfg(target_os = "macos")]
         {
-            if let Ok(output) = Command::new("ifconfig").arg("bridge0").output() {
-                if output.status.success() {
-                    out.push(UsbCInterfaceDescriptor {
-                        interface_id: "macos-tb-bridge0-live".into(),
-                        interface_name: "macOS Thunderbolt Bridge (bridge0)".into(),
-                        os_driver_stack: "macOS AppleThunderboltIP".into(),
-                        tier: UsbCInterconnectTier::Usb4Thunderbolt4_30To40Gbps,
-                        data_role: UsbCDataRole::HostToHostSymmetricP2p,
-                        link_local_ipv4: "169.254.78.10".into(),
-                        link_local_ipv6: "fe80::7848:tb:10".into(),
-                        peer_link_local_addr: Some("169.254.78.11:7848".into()),
-                        negotiated_mtu_bytes: 65_536,
-                        parallel_dma_streams: 6,
-                        rated_phy_gbps: 40.0,
-                        effective_goodput_gbps: 32.4,
-                        rtt_latency_ms: 0.10,
-                        supports_tensor_parallel_allreduce: true,
-                        live_detected_on_host: true,
-                    });
-                }
+            if let Ok(output) = Command::new("ifconfig").arg("bridge0").output()
+                && output.status.success()
+            {
+                out.push(UsbCInterfaceDescriptor {
+                    interface_id: "macos-tb-bridge0-live".into(),
+                    interface_name: "macOS Thunderbolt Bridge (bridge0)".into(),
+                    os_driver_stack: "macOS AppleThunderboltIP".into(),
+                    tier: UsbCInterconnectTier::Usb4Thunderbolt4_30To40Gbps,
+                    data_role: UsbCDataRole::HostToHostSymmetricP2p,
+                    link_local_ipv4: "169.254.78.10".into(),
+                    link_local_ipv6: "fe80::7848:tb:10".into(),
+                    peer_link_local_addr: Some("169.254.78.11:7848".into()),
+                    negotiated_mtu_bytes: 65_536,
+                    parallel_dma_streams: 6,
+                    rated_phy_gbps: 40.0,
+                    effective_goodput_gbps: 32.4,
+                    rtt_latency_ms: 0.10,
+                    supports_tensor_parallel_allreduce: true,
+                    live_detected_on_host: true,
+                });
             }
         }
 
@@ -625,9 +629,7 @@ mod tests {
         assert_eq!(bench.rated_cable_gbps, 30.0);
         // Multi-stream striping must significantly beat naive single-stream 1500B MTU TCP
         assert!(bench.kadmium_multistream_striped_gbps >= 25.0);
-        assert!(
-            bench.kadmium_multistream_striped_gbps > bench.single_stream_1500_mtu_gbps * 2.0
-        );
+        assert!(bench.kadmium_multistream_striped_gbps > bench.single_stream_1500_mtu_gbps * 2.0);
         // Must beat 1GbE by >25x and 2.5GbE by >10x
         assert!(bench.vs_1gbe_patch_cable_speedup >= 25.0);
         assert!(bench.vs_2_5gbe_patch_cable_speedup >= 10.0);

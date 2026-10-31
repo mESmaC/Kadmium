@@ -288,7 +288,13 @@ impl ElasticLocalBoostPlanner {
 
         // 1. Plaintext hidden state h on the user's desktop PC
         let h: Vec<f64> = (0..d)
-            .map(|i| if i == 0 { 6.5 } else { ((i as f64) * 0.37).cos() * 0.8 })
+            .map(|i| {
+                if i == 0 {
+                    6.5
+                } else {
+                    ((i as f64) * 0.37).cos() * 0.8
+                }
+            })
             .collect();
 
         // 2. Plaintext weight matrix W [d x d] for a spilled middle layer
@@ -400,7 +406,8 @@ impl ElasticLocalBoostPlanner {
             ElasticBoostOptionQuote {
                 mode: ElasticBoostMode::BaselineLocalCpuRamSpillover,
                 mode_label: "1. Standard Local CPU-RAM Spillover (`llama.cpp -ngl 60/80`)".into(),
-                spill_target_description: "Spills 8.0 GB (20 layers) to slow 50 GB/s Motherboard DDR5 RAM".into(),
+                spill_target_description:
+                    "Spills 8.0 GB (20 layers) to slow 50 GB/s Motherboard DDR5 RAM".into(),
                 primary_desktop_layer_share_pct: 75.0,
                 overflow_vram_absorbed_gb: deficit_gb,
                 effective_decode_tok_s: cpu_offload_tok_s,
@@ -412,7 +419,10 @@ impl ElasticLocalBoostPlanner {
             ElasticBoostOptionQuote {
                 mode: ElasticBoostMode::BaselineFullCloudGpuRental,
                 mode_label: "2. Standard Full Cloud GPU Rental (Leaves Local PC 100% Idle)".into(),
-                spill_target_description: format!("Rents full 80GB Cloud A100 (${:.2}/hr indexed); local RTX 4090 sits unused", full_cloud_usd),
+                spill_target_description: format!(
+                    "Rents full 80GB Cloud A100 (${:.2}/hr indexed); local RTX 4090 sits unused",
+                    full_cloud_usd
+                ),
                 primary_desktop_layer_share_pct: 0.0,
                 overflow_vram_absorbed_gb: total_required_gb,
                 effective_decode_tok_s: 52.0,
@@ -424,7 +434,8 @@ impl ElasticLocalBoostPlanner {
             ElasticBoostOptionQuote {
                 mode: ElasticBoostMode::KadmiumFreeLanDeviceSpillover,
                 mode_label: "3. Kadmium FREE LAN Boost (Desktop 75% + Local Laptop/Mac 25%)".into(),
-                spill_target_description: "Spills only L56..L75 (8.0 GB) to idle Laptop/Mac Mini on home Wi-Fi/LAN".into(),
+                spill_target_description:
+                    "Spills only L56..L75 (8.0 GB) to idle Laptop/Mac Mini on home Wi-Fi/LAN".into(),
                 primary_desktop_layer_share_pct: 75.0,
                 overflow_vram_absorbed_gb: deficit_gb,
                 effective_decode_tok_s: 54.2,
@@ -435,14 +446,18 @@ impl ElasticLocalBoostPlanner {
             },
             ElasticBoostOptionQuote {
                 mode: ElasticBoostMode::KadmiumFractionalGridMicroBoost,
-                mode_label: "4. Kadmium Fractional Grid Micro-Boost (Desktop 75% + 8GB Grid Slice)".into(),
-                spill_target_description: "Leases ONLY an 8.0 GB blind middle-shard (L56..L75) from Kadmium Supply Grid".into(),
+                mode_label: "4. Kadmium Fractional Grid Micro-Boost (Desktop 75% + 8GB Grid Slice)"
+                    .into(),
+                spill_target_description:
+                    "Leases ONLY an 8.0 GB blind middle-shard (L56..L75) from Kadmium Supply Grid"
+                        .into(),
                 primary_desktop_layer_share_pct: 75.0,
                 overflow_vram_absorbed_gb: deficit_gb,
                 effective_decode_tok_s: 49.6,
                 speedup_vs_cpu_offload_x: ((49.6 / cpu_offload_tok_s) * 100.0).round() / 100.0,
                 hourly_cost_usd: 0.07,
-                cost_savings_vs_full_cloud_pct: (((1.0 - 0.07 / full_cloud_usd) * 1000.0).round()) / 10.0,
+                cost_savings_vs_full_cloud_pct: (((1.0 - 0.07 / full_cloud_usd) * 1000.0).round())
+                    / 10.0,
                 blind_middle_layer_privacy_preserved: true,
             },
         ];
@@ -528,7 +543,8 @@ impl ElasticLocalBoostPlanner {
             target_model_id: "llama-3.3-70b-instruct-exl3-3.25bpw (32K Context)".into(),
             total_model_and_kv_vram_gb: total_required_gb,
             vram_deficit_gb: deficit_gb,
-            local_pinned_layers: "L00..L55 (Embeddings + 56 Layers) & L76..L79 (Output LM Head)".into(),
+            local_pinned_layers: "L00..L55 (Embeddings + 56 Layers) & L76..L79 (Output LM Head)"
+                .into(),
             overflow_middle_layers: (56, 75),
             evaluated_options: options,
             resilience_and_privacy: ElasticBoostResilienceReport {
@@ -560,10 +576,32 @@ mod tests {
         assert!(grid_boost.blind_middle_layer_privacy_preserved);
 
         // Verify Self-Healing & Orthogonal Blind Shield guarantees
-        assert_eq!(rep.resilience_and_privacy.dynamic_kv_slider_timeline.len(), 4);
-        assert!(rep.resilience_and_privacy.blind_orthogonal_shield.mathematical_privacy_verified);
-        assert!(rep.resilience_and_privacy.blind_orthogonal_shield.unmasked_output_max_abs_error < 1e-12);
-        assert_eq!(rep.resilience_and_privacy.shadow_fallback_and_jitter.dropped_tokens_during_disconnect, 0);
-        assert_eq!(rep.resilience_and_privacy.micro_metering_ledger.net_out_of_pocket_usd_with_idle_offset, 0.0);
+        assert_eq!(
+            rep.resilience_and_privacy.dynamic_kv_slider_timeline.len(),
+            4
+        );
+        assert!(
+            rep.resilience_and_privacy
+                .blind_orthogonal_shield
+                .mathematical_privacy_verified
+        );
+        assert!(
+            rep.resilience_and_privacy
+                .blind_orthogonal_shield
+                .unmasked_output_max_abs_error
+                < 1e-12
+        );
+        assert_eq!(
+            rep.resilience_and_privacy
+                .shadow_fallback_and_jitter
+                .dropped_tokens_during_disconnect,
+            0
+        );
+        assert_eq!(
+            rep.resilience_and_privacy
+                .micro_metering_ledger
+                .net_out_of_pocket_usd_with_idle_offset,
+            0.0
+        );
     }
 }

@@ -321,7 +321,12 @@ impl QuantizedKvPageBlock {
             let round_bit = (mant >> 12) & 1;
             let sticky = if (mant & 0x0FFF) != 0 { 1 } else { 0 };
             let m10 = (mant >> 13) as u16;
-            let rounded = m10 + (if round_bit == 1 && (sticky == 1 || (m10 & 1) == 1) { 1 } else { 0 });
+            let rounded = m10
+                + (if round_bit == 1 && (sticky == 1 || (m10 & 1) == 1) {
+                    1
+                } else {
+                    0
+                });
             sign | (((exp as u16) << 10) + rounded)
         }
     }
@@ -437,11 +442,11 @@ impl QuantizedKvPageBlock {
             OllamaKvCacheType::F16 => {
                 let base = t * hd * 2;
                 let mut terms = Vec::with_capacity(hd);
-                for d in 0..hd {
+                for (d, &query) in q[..hd].iter().enumerate() {
                     let lo = self.key_payload[base + d * 2];
                     let hi = self.key_payload[base + d * 2 + 1];
                     let k_val = Self::ieee_f16_to_f32(u16::from_le_bytes([lo, hi]));
-                    terms.push(q[d] * k_val);
+                    terms.push(query * k_val);
                 }
                 repops::tree_sum_f32(&terms)
             }

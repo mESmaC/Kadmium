@@ -309,7 +309,7 @@ pub struct DecodeLoopReport {
     pub sessions: Vec<DecodeSessionReport>,
     pub mean_gap_ms: f64,
     pub max_gap_ms: f64,
-    /// Whether units of two sessions were in flight at the same time.
+    /// Whether units of two sessions were in flight at the same time or alternated in the queue.
     pub interleaved: bool,
     pub wall_ms: f64,
     pub tokens: u64,
@@ -513,7 +513,7 @@ fn total_accounting(sessions: &[DecodeSessionReport]) -> Option<AcceptanceAccoun
     Some(total)
 }
 
-/// Whether the traces of two different sessions overlap in time.
+/// Whether the traces of two different sessions overlap in time or alternate in the queue.
 fn interleaved(report: &GridRunReport, sessions: &[DecodeSessionPlan]) -> bool {
     let session_of = |id: &WorkUnitId| {
         sessions
@@ -526,11 +526,29 @@ fn interleaved(report: &GridRunReport, sessions: &[DecodeSessionPlan]) -> bool {
         .filter(|t| t.ok)
         .filter_map(|t| session_of(&t.unit_id).map(|s| (s, t.dispatched_at_ms, t.returned_at_ms)))
         .collect();
-    spans.iter().any(|(sa, a0, a1)| {
+    let time_overlap = spans.iter().any(|(sa, a0, a1)| {
         spans
             .iter()
             .any(|(sb, b0, b1)| sa != sb && a0 < b1 && b0 < a1)
-    })
+    });
+    // One pass: a session whose run of traces resumes after another session's trace alternated
+    // with it in the queue (some i < j < k with session i == session k != session j).
+    let mut ended = vec![false; sessions.len()];
+    let mut current: Option<usize> = None;
+    let order_interleaved = spans.iter().any(|&(s, _, _)| {
+        if current == Some(s) {
+            return false;
+        }
+        if ended[s] {
+            return true;
+        }
+        if let Some(previous) = current {
+            ended[previous] = true;
+        }
+        current = Some(s);
+        false
+    });
+    time_overlap || order_interleaved
 }
 
 /// A session's step `t + 1` input: the previous step's sink output, seeded into the next runner
@@ -571,9 +589,8 @@ pub async fn run_decode_loop(
             .collect::<Vec<_>>()
             .join("+")
     );
-    let report: GridRunReport;
 
-    if !pipelined {
+    let report: GridRunReport = if !pipelined {
         let mut all_traces = Vec::new();
         let mut merged: Option<GridRunReport> = None;
         for (index, plan) in plans.iter().enumerate() {
@@ -652,7 +669,7 @@ pub async fn run_decode_loop(
         }) {
             m.wall_ms = round3(last - first);
         }
-        report = m;
+        m
     } else {
         let mut runner = GridRunner::new(workers, catalog, live_workers, local, config);
         // Per session: the graphs submitted so far and the outcomes collected.
@@ -739,8 +756,8 @@ pub async fn run_decode_loop(
         for (i, plan) in plans.iter().enumerate() {
             sessions.push(session_report(plan, std::mem::take(&mut outcomes[i])));
         }
-        report = runner.report_all(&combined_id);
-    }
+        runner.report_all(&combined_id)
+    };
 
     let gaps: Vec<f64> = sessions
         .iter()

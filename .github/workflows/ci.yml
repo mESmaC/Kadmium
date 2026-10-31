@@ -5,6 +5,14 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,16 +35,19 @@ jobs:
   workspace-ui:
     name: Workspace browser workflows
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: crates/kadmium-gateway/tests/ui
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
         with:
-          node-version: '24'
+          toolchain: "1.99.0"
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
           cache: npm
           cache-dependency-path: crates/kadmium-gateway/tests/ui/package-lock.json
       - run: npm ci
@@ -50,6 +61,7 @@ jobs:
 
   check-and-test:
     name: Test & Lint (${{ matrix.os }})
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -57,11 +69,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Install Rust stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux native WebView development libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.99.0"
           components: rustfmt, clippy
 
       - name: Cache Cargo registry and target build
@@ -72,24 +91,38 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy lints across all workspace crates
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets --locked
 
-      - name: Run workspace unit & async integration tests
-        run: cargo test --workspace
+      - name: Run Clippy lints for Linux native WebView feature path
+        if: runner.os == 'Linux'
+        run: cargo clippy -p kadmium-desktop -p kadmium-condenser --features linux-native --all-targets --locked
+
+      - name: Run workspace unit, integration & doc tests
+        run: cargo test --workspace --locked
 
       - name: Install Node for embedded UI protocol tests
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: '24'
+          node-version: "24"
 
       - name: Test Condenser stream and task workflows
         run: node --test crates/kadmium-condenser/tests/workflow.test.cjs
 
-      - name: Smoke-test Kadmium CLI engines (probe, simulate, dream, slice, dataflow, cloud-shield)
+      - name: Smoke-test Kadmium CLI & Condenser engines
         run: |
-          cargo run --bin kadmium -- probe
-          cargo run --bin kadmium -- simulate
-          cargo run --bin kadmium -- dream
-          cargo run --bin kadmium -- slice --pool-size 100 --slices 5
-          cargo run --bin kadmium -- dataflow --model deepseek-v3-671b-moe --batch-tokens 512
-          cargo run --bin kadmium -- cloud-shield
+          cargo run --locked --bin kadmium -- probe
+          cargo run --locked --bin kadmium -- simulate
+          cargo run --locked --bin kadmium -- dream
+          cargo run --locked --bin kadmium -- slice --pool-size 100 --slices 5
+          cargo run --locked --bin kadmium -- dataflow --model deepseek-v3-671b-moe --batch-tokens 512
+          cargo run --locked --bin kadmium -- cloud-shield
+          cargo run --locked --bin kadmium-condenser -- dsv41-profile --json
+
+      - name: Test Windows release installer with offline fixtures
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test_installers.ps1 -Executable target/debug/kadmium.exe
+
+      - name: Test Unix release installer with offline fixtures
+        if: runner.os != 'Windows'
+        run: sh scripts/test_install.sh

@@ -11,8 +11,7 @@ use axum::{
     extract::{Query, State},
 };
 use kadmium_core::{
-    HardwareNode, ModelSpec, NodeId, NodeRole, ResourceOffer, VerifiedComputeReceipt,
-    WorkloadKind,
+    HardwareNode, ModelSpec, NodeId, NodeRole, ResourceOffer, VerifiedComputeReceipt, WorkloadKind,
 };
 use kadmium_grid::{
     AppKind, CreditEntry, PlanApproval, PoolInventory, Replica, ReplicaCatalog, ResidencyTier,
@@ -30,12 +29,12 @@ use kadmium_runtime::{
 use kadmium_sharding::{
     AcceptanceAccounting, BalanceReport, CALIBRATION_MAX_STEPS, CALIBRATION_MAX_WALL_MS,
     CalibrationBinding, CalibrationRecord, CalibrationStore, ClusterShardPlan, CombineParams,
-    DraftProfile, ExecutionStrategy, ExpertPlacementPlan, ExpertPlacementPlanner,
-    ExpertPopularity, ExpertSliceParams, KvPageNames, KvSessionState, KvTierPlan, KvTierPlanner,
-    KvTierPolicy, LinkSegments, PlacementFit, ReplicaChange, RepinPlanner, RepinPolicy,
-    RepinProposal, RepinSwap, StageForwardParams, StepGraphBuilder, StepsPerSecondProfile,
-    StrategyChoice, StrategyCostModel, SweepPoint, TrainStageParams, TrunkForwardParams,
-    TrunkRange, UsageSummary, VerificationPolicy, records_for_placement,
+    DraftProfile, ExecutionStrategy, ExpertPlacementPlan, ExpertPlacementPlanner, ExpertPopularity,
+    ExpertSliceParams, KvPageNames, KvSessionState, KvTierPlan, KvTierPlanner, KvTierPolicy,
+    LinkSegments, PlacementFit, RepinPlanner, RepinPolicy, RepinProposal, RepinSwap, ReplicaChange,
+    StageForwardParams, StepGraphBuilder, StepsPerSecondProfile, StrategyChoice, StrategyCostModel,
+    SweepPoint, TrainStageParams, TrunkForwardParams, TrunkRange, UsageSummary, VerificationPolicy,
+    records_for_placement,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -190,7 +189,14 @@ fn calibration_binding(
             (n.id.0.clone(), version)
         })
         .collect();
-    CalibrationBinding::new(model_id, strategy, placement_digest, node_ids, versions, rows)
+    CalibrationBinding::new(
+        model_id,
+        strategy,
+        placement_digest,
+        node_ids,
+        versions,
+        rows,
+    )
 }
 
 /// Attaches the calibrations that bind to the cached shapes, letting measurements decide the
@@ -305,8 +311,12 @@ fn current_placement(
         let ledger = guard.usage_for(&model.id);
         (!ledger.is_empty()).then(|| ledger.popularity())
     };
-    let (choice, chain_plan, ep_plan) = cost_model(&snap.nodes, &snap.live_workers, &snap.telemetry)
-        .choose_both_with_offers(model, &snap.nodes, popularity.as_ref(), &snap.offers);
+    let (choice, chain_plan, ep_plan) = cost_model(
+        &snap.nodes,
+        &snap.live_workers,
+        &snap.telemetry,
+    )
+    .choose_both_with_offers(model, &snap.nodes, popularity.as_ref(), &snap.offers);
     let mut cached = CachedPlacement {
         choice,
         chain_plan,
@@ -807,7 +817,10 @@ pub async fn run_kv_replay(
         epoch: snap.epoch,
         ..GridRunConfig::default()
     }
-    .with_seed(StepGraphBuilder::replay_input_ref(&graph.id), seed.to_le_bytes());
+    .with_seed(
+        StepGraphBuilder::replay_input_ref(&graph.id),
+        seed.to_le_bytes(),
+    );
     let local = local_executor(&snap.local_node);
     let report = GridDispatcher::run_graph(
         &graph,
@@ -847,11 +860,22 @@ pub async fn run_kv_replay(
                 s.replayed_tokens += suffix_tokens as u64;
                 s.tier = nodes
                     .iter()
-                    .find(|n| placement.trunk_ranges.first().is_some_and(|r| r.owner == n.id))
+                    .find(|n| {
+                        placement
+                            .trunk_ranges
+                            .first()
+                            .is_some_and(|r| r.owner == n.id)
+                    })
                     .map(KvTierPlanner::fast_tier_of)
                     .unwrap_or(ResidencyTier::Vram);
-                pages_rebuilt =
-                    KvTierPlanner::record_resident(&mut catalog, &model, &placement, &nodes, s, now);
+                pages_rebuilt = KvTierPlanner::record_resident(
+                    &mut catalog,
+                    &model,
+                    &placement,
+                    &nodes,
+                    s,
+                    now,
+                );
                 bytes_modelled = pages_rebuilt as u64 * KvPageNames::page_bytes(&model, s.tokens);
             }
             guard.grid_kv_catalog = catalog;
@@ -903,7 +927,12 @@ fn record_sessions(
         entry.last_active_unix_ms = now;
         entry.tier = nodes
             .iter()
-            .find(|n| placement.trunk_ranges.first().is_some_and(|r| r.owner == n.id))
+            .find(|n| {
+                placement
+                    .trunk_ranges
+                    .first()
+                    .is_some_and(|r| r.owner == n.id)
+            })
             .map(KvTierPlanner::fast_tier_of)
             .unwrap_or(ResidencyTier::Vram);
         KvTierPlanner::record_resident(&mut catalog, model, placement, &nodes, entry, now);
@@ -980,7 +1009,14 @@ async fn decode_loop_on_mesh(
     placement: &ExpertPlacementPlan,
     strategy: ExecutionStrategy,
     shape: &LoopShape,
-) -> Result<(DecodeLoopReport, Vec<WorkerProfile>, Option<StepsPerSecondProfile>), String> {
+) -> Result<
+    (
+        DecodeLoopReport,
+        Vec<WorkerProfile>,
+        Option<StepsPerSecondProfile>,
+    ),
+    String,
+> {
     let live_workers: BTreeMap<String, LiveWorkerRegistration> = snap
         .live_workers
         .iter()
@@ -1090,7 +1126,11 @@ pub async fn run_grid_decode_loop(
         rows.clamp(1, 64)
     };
     let steps = steps.clamp(1, 64);
-    let sessions = if session.is_some() { 1 } else { sessions.clamp(1, 8) };
+    let sessions = if session.is_some() {
+        1
+    } else {
+        sessions.clamp(1, 8)
+    };
     let model = snap.inference_model.clone();
     let (choice, placement, placement_cached) = current_placement(state, &snap, &model, forced);
     if placement.trunk_ranges.is_empty() {
@@ -1126,7 +1166,11 @@ pub async fn run_grid_decode_loop(
     .await?;
     record_run(
         state,
-        if pipelined { "decode-loop" } else { "decode-loop-sequential" },
+        if pipelined {
+            "decode-loop"
+        } else {
+            "decode-loop-sequential"
+        },
         &loop_report.report.graph_id,
         Some(strategy),
         &loop_report.report,
@@ -1623,7 +1667,9 @@ pub async fn post_grid_calibrate(
         }
     }
     let Some(outcome) = last else {
-        return Json(failure("no calibration step ran within the time budget".to_string()));
+        return Json(failure(
+            "no calibration step ran within the time budget".to_string(),
+        ));
     };
     let strategy = outcome.strategy;
     let digest_matches_chain = match strategy {
@@ -1647,13 +1693,7 @@ pub async fn post_grid_calibrate(
         *v /= steps_run.max(1) as f64;
     }
     let snap = snapshot(&state);
-    let binding = calibration_binding(
-        &snap,
-        &model_id,
-        strategy,
-        outcome.placement.digest(),
-        rows,
-    );
+    let binding = calibration_binding(&snap, &model_id, strategy, outcome.placement.digest(), rows);
     let record = CalibrationRecord::from_steps(
         binding,
         &walls,
@@ -1921,7 +1961,7 @@ pub struct GridDecodeApiResponse {
     /// The next step's first dispatch minus this step's last return, over every boundary.
     pub mean_inter_step_gap_ms: f64,
     pub max_inter_step_gap_ms: f64,
-    /// Whether units of two sessions were in flight at the same time.
+    /// Whether units of two sessions were in flight at the same time or alternated in the queue.
     pub interleaved: bool,
     pub modelled_ms_per_token: f64,
     /// The kernels the measured figures ran on: `reference-synthetic` today.
@@ -2006,8 +2046,10 @@ fn session_views(guard: &GatewayState) -> (Vec<GridSessionView>, BTreeMap<String
                     && session == s.session_id
                 {
                     pages += 1;
-                    *by_tier.entry(format!("{:?}", replica.tier)).or_default() += replica.content.bytes;
-                    *total.entry(format!("{:?}", replica.tier)).or_default() += replica.content.bytes;
+                    *by_tier.entry(format!("{:?}", replica.tier)).or_default() +=
+                        replica.content.bytes;
+                    *total.entry(format!("{:?}", replica.tier)).or_default() +=
+                        replica.content.bytes;
                 }
             }
             GridSessionView {
@@ -2074,7 +2116,15 @@ pub async fn post_grid_sessions_tier(
     let nodes = guard.nodes.clone();
     let mut catalog = std::mem::take(&mut guard.grid_kv_catalog);
     let mut sessions: Vec<KvSessionState> = guard.grid_sessions.values().cloned().collect();
-    let plan = KvTierPlanner::tier(&mut catalog, &mut sessions, &model, &placement, &nodes, &policy, at);
+    let plan = KvTierPlanner::tier(
+        &mut catalog,
+        &mut sessions,
+        &model,
+        &placement,
+        &nodes,
+        &policy,
+        at,
+    );
     for s in sessions {
         guard.grid_sessions.insert(s.session_id.clone(), s);
     }
@@ -2133,7 +2183,10 @@ fn decode_speculation(req: &GridDecodeRequest) -> Result<Option<DecodeSpeculatio
     if !req.speculative.unwrap_or(false) {
         return Ok(None);
     }
-    let name = req.draft_profile.clone().unwrap_or_else(|| "code".to_string());
+    let name = req
+        .draft_profile
+        .clone()
+        .unwrap_or_else(|| "code".to_string());
     let draft_profile = DraftProfile::named(&name)
         .ok_or_else(|| format!("unknown draft profile `{name}`: use code, chat or none"))?;
     Ok(Some(DecodeSpeculation {
@@ -2161,7 +2214,9 @@ pub async fn post_grid_decode(
         .prompt
         .clone()
         .filter(|p| !p.trim().is_empty())
-        .unwrap_or_else(|| "Decode several steps as chained work graphs across the mesh.".to_string());
+        .unwrap_or_else(|| {
+            "Decode several steps as chained work graphs across the mesh.".to_string()
+        });
     let forced = parse_strategy(req.strategy.as_deref());
     let pipelined = req.pipelined.unwrap_or(true);
     let speculation = match decode_speculation(&req) {
@@ -2417,7 +2472,10 @@ pub async fn post_grid_sweep(
         (!ledger.is_empty()).then(|| ledger.popularity())
     };
     let record_calibrations = req.record_calibrations.unwrap_or(true);
-    let repository_state = format!("kadmium {}", kadmium_network::DEFAULT_KADMIUM_RUNTIME_VERSION);
+    let repository_state = format!(
+        "kadmium {}",
+        kadmium_network::DEFAULT_KADMIUM_RUNTIME_VERSION
+    );
 
     let mut table = kadmium_sharding::SweepTable::new(&tag);
     let mut skipped = Vec::new();
@@ -2445,7 +2503,10 @@ pub async fn post_grid_sweep(
             ExecutionStrategy::ExpertParallel => ep_plan,
         };
         if placement.trunk_ranges.is_empty() {
-            skipped.push(format!("{n} node{}: no node can hold the model's trunk", if n == 1 { "" } else { "s" }));
+            skipped.push(format!(
+                "{n} node{}: no node can hold the model's trunk",
+                if n == 1 { "" } else { "s" }
+            ));
             continue;
         }
         let mut node_ids: Vec<String> = nodes.iter().map(|nd| nd.id.0.clone()).collect();
@@ -2472,14 +2533,27 @@ pub async fn post_grid_sweep(
                     .map(|i| format!("sweep-{tag}-n{n}-r{r}-s{i}"))
                     .collect(),
             };
-            let (report, workers, _) = match decode_loop_on_mesh(&state, &snap, &model, &nodes, &placement, strategy, &shape).await {
+            let (report, workers, _) = match decode_loop_on_mesh(
+                &state, &snap, &model, &nodes, &placement, strategy, &shape,
+            )
+            .await
+            {
                 Ok(run) => run,
                 Err(e) => {
                     skipped.push(format!("{n} nodes, {r} rows: {e}"));
                     continue;
                 }
             };
-            record_run(&state, "sweep", &report.report.graph_id, Some(strategy), &report.report, None, snap.epoch, &workers);
+            record_run(
+                &state,
+                "sweep",
+                &report.report.graph_id,
+                Some(strategy),
+                &report.report,
+                None,
+                snap.epoch,
+                &workers,
+            );
             if !report.success {
                 skipped.push(format!(
                     "{n} nodes, {r} rows: validated {} of {} units",
@@ -2509,7 +2583,10 @@ pub async fn post_grid_sweep(
                     binding,
                     &walls,
                     exec_by_node,
-                    report.sessions[0].steps.last().map_or(0, |s| s.output_fnv1a),
+                    report.sessions[0]
+                        .steps
+                        .last()
+                        .map_or(0, |s| s.output_fnv1a),
                     None,
                     now,
                 );
@@ -2531,26 +2608,38 @@ pub async fn post_grid_sweep(
                     versions: versions.clone(),
                     kernels: kadmium_sharding::CALIBRATION_KERNELS_REFERENCE.to_string(),
                     pipelined,
-                    speculative: speculation.as_ref().map(|s| kadmium_sharding::SweepSpeculation {
-                        draft_profile: req
-                            .draft_profile
-                            .clone()
-                            .unwrap_or_else(|| "code".to_string())
-                            .to_ascii_lowercase(),
-                        max_draft: s.policy.max_draft,
-                    }),
+                    speculative: speculation
+                        .as_ref()
+                        .map(|s| kadmium_sharding::SweepSpeculation {
+                            draft_profile: req
+                                .draft_profile
+                                .clone()
+                                .unwrap_or_else(|| "code".to_string())
+                                .to_ascii_lowercase(),
+                            max_draft: s.policy.max_draft,
+                        }),
                     repository_state: repository_state.clone(),
                 },
                 measured: report.sweep_measurement(now),
             });
         }
     }
-    let title = format!("Sweep `{tag}`: {} point{}", table.len(), if table.len() == 1 { "" } else { "s" });
+    let title = format!(
+        "Sweep `{tag}`: {} point{}",
+        table.len(),
+        if table.len() == 1 { "" } else { "s" }
+    );
     let markdown = table.to_markdown(&title);
     let ledger_path = if req.write_ledger.unwrap_or(true) && !table.is_empty() {
         let safe: String = tag
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let path = std::path::Path::new("target/kadmium-state/sweeps").join(format!("{safe}.md"));
         table
@@ -2688,14 +2777,7 @@ pub async fn post_grid_train(
         .output(&reduce_ref.content_id)
         .and_then(|bytes| serde_json::from_slice::<DeMoReduceReport>(bytes).ok());
     record_run(
-        &state,
-        "train",
-        &graph.id,
-        None,
-        &report,
-        None,
-        snap.epoch,
-        &workers,
+        &state, "train", &graph.id, None, &report, None, snap.epoch, &workers,
     );
     Json(GridTrainApiResponse {
         graph_id: graph.id.clone(),
@@ -2785,14 +2867,7 @@ pub async fn post_grid_replay(
     nodes_used.sort();
     nodes_used.dedup();
     record_run(
-        &state,
-        "replay",
-        &graph.id,
-        None,
-        &report,
-        None,
-        snap.epoch,
-        &workers,
+        &state, "replay", &graph.id, None, &report, None, snap.epoch, &workers,
     );
     Json(GridReplayApiResponse {
         graph_id: graph.id.clone(),
@@ -2906,7 +2981,10 @@ mod tests {
             inventory.inventory.compute_samples,
             outcome.report.units_total as u64
         );
-        assert_eq!(inventory.telemetry.total_samples(), outcome.report.units_total as u64);
+        assert_eq!(
+            inventory.telemetry.total_samples(),
+            outcome.report.units_total as u64
+        );
 
         let credits = get_grid_credits(State(state.clone())).await.0;
         assert_eq!(credits.entries.len(), outcome.report.units_total);
@@ -3080,12 +3158,7 @@ mod tests {
                     .filter(|c| c.add)
                     .count()
         );
-        assert!(
-            ep.report
-                .accesses
-                .iter()
-                .any(|a| a.app == "TrunkForward")
-        );
+        assert!(ep.report.accesses.iter().any(|a| a.app == "TrunkForward"));
         assert_eq!(state.lock().unwrap().usage_for(&model_id).turns, 2);
     }
 
@@ -3112,13 +3185,19 @@ mod tests {
         assert_eq!(record.kernels, "reference-synthetic");
         assert!(chain.applies_to_plan_in_force);
         assert_eq!(chain.digest_matches_chain, None);
-        assert_ne!(chain.decided_by, "measured", "one shape measured decides nothing");
+        assert_ne!(
+            chain.decided_by, "measured",
+            "one shape measured decides nothing"
+        );
 
         let plan = get_grid_plan(State(state.clone()), Query(GridPlanQuery::default()))
             .await
             .0;
         assert_eq!(
-            plan.choice.measured_chain.as_ref().map(|r| r.binding.placement_digest),
+            plan.choice
+                .measured_chain
+                .as_ref()
+                .map(|r| r.binding.placement_digest),
             Some(record.binding.placement_digest)
         );
         assert!(plan.choice.measured_expert_parallel.is_none());
@@ -3135,7 +3214,11 @@ mod tests {
         .await
         .0;
         assert!(ep.error.is_none(), "{:?}", ep.error);
-        assert_eq!(ep.digest_matches_chain, Some(true), "the fan-out bytes match the chain");
+        assert_eq!(
+            ep.digest_matches_chain,
+            Some(true),
+            "the fan-out bytes match the chain"
+        );
         assert!(ep.applies_to_plan_in_force);
         assert_eq!(ep.decided_by, "measured");
         assert!(ep.rationale.starts_with("measured"));
@@ -3146,7 +3229,12 @@ mod tests {
         assert_eq!(decided.choice.decided_by, "measured");
         assert!(decided.choice.measured_chain.is_some());
         assert!(decided.choice.measured_expert_parallel.is_some());
-        let faster = if decided.choice.measured_chain.as_ref().unwrap().measured_ms_per_token
+        let faster = if decided
+            .choice
+            .measured_chain
+            .as_ref()
+            .unwrap()
+            .measured_ms_per_token
             <= decided
                 .choice
                 .measured_expert_parallel
@@ -3191,7 +3279,11 @@ mod tests {
         assert!(plan.staging.approval_required.contains(&node_id));
         let holds_content = plan.staging.nodes_awaiting_approval.contains(&node_id);
         assert_eq!(
-            plan.fit.per_node.iter().find(|n| n.node.0 == node_id).map(|n| n.requires_approval),
+            plan.fit
+                .per_node
+                .iter()
+                .find(|n| n.node.0 == node_id)
+                .map(|n| n.requires_approval),
             Some(true)
         );
 
@@ -3257,7 +3349,10 @@ mod tests {
             .0;
         assert!(sequential.error.is_none(), "{:?}", sequential.error);
         assert!(!sequential.pipelined);
-        assert!(!sequential.interleaved, "one graph at a time never overlaps");
+        assert!(
+            !sequential.interleaved,
+            "one graph at a time never overlaps"
+        );
         let pipelined = post_grid_decode(State(state.clone()), Some(Json(request(true))))
             .await
             .0;
@@ -3283,8 +3378,7 @@ mod tests {
             assert!(p.success);
         }
         assert_ne!(
-            pipelined.sessions[0].final_output_fnv1a,
-            pipelined.sessions[1].final_output_fnv1a,
+            pipelined.sessions[0].final_output_fnv1a, pipelined.sessions[1].final_output_fnv1a,
             "sessions start from different prompts and stay apart"
         );
         assert_eq!(pipelined.units_validated, pipelined.units_total);
@@ -3299,7 +3393,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn speculative_decode_sizes_verification_from_the_profile_and_discloses_both_accountings() {
+    async fn speculative_decode_sizes_verification_from_the_profile_and_discloses_both_accountings()
+    {
         let state = demo_state();
         let request = |profile: &str| GridDecodeRequest {
             prompt: Some("speculative".into()),
@@ -3332,11 +3427,17 @@ mod tests {
         assert!(v.tokens_full_acceptance >= v.tokens_accepted);
         assert_eq!(v.tokens_full_acceptance, 6 + v.proposed);
         assert_eq!(v.tokens_accepted, 6 + v.accepted);
-        assert_eq!(code.tokens_total, v.tokens_accepted, "throughput counts accepted tokens");
+        assert_eq!(
+            code.tokens_total, v.tokens_accepted,
+            "throughput counts accepted tokens"
+        );
         assert!(v.measured_tokens_per_sec_full_acceptance >= v.measured_tokens_per_sec_accepted);
         assert!(v.tau >= 1.0);
         assert!(v.accounting_note.contains("modelled"));
-        assert!(code.sessions.iter().all(|s| s.rows == 1), "a speculative session decodes one row");
+        assert!(
+            code.sessions.iter().all(|s| s.rows == 1),
+            "a speculative session decodes one row"
+        );
         assert!(code.sessions.iter().all(|s| s.accounting.is_some()));
         assert!(v.mean_batch_tokens >= 2.0, "{v:?}");
 
@@ -3352,7 +3453,12 @@ mod tests {
         let unknown = post_grid_decode(State(state.clone()), Some(Json(request("poetry"))))
             .await
             .0;
-        assert!(unknown.error.as_deref().is_some_and(|e| e.contains("unknown draft profile")));
+        assert!(
+            unknown
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("unknown draft profile"))
+        );
 
         // Two calibrated widths of the chain placement make the profile measured.
         for rows in [1u32, 2] {
@@ -3396,7 +3502,10 @@ mod tests {
             .await
             .0;
         assert!(first.error.is_none(), "{:?}", first.error);
-        assert!(first.resumed.is_none(), "a new session has nothing to replay");
+        assert!(
+            first.resumed.is_none(),
+            "a new session has nothing to replay"
+        );
         assert_eq!(first.session_states.len(), 1);
         let alpha = &first.session_states[0];
         assert_eq!(alpha.session_id, "alpha");
@@ -3411,12 +3520,17 @@ mod tests {
         assert_eq!(view.pages, layers, "one page per layer");
         assert!(!view.needs_replay);
         assert!(
-            view.bytes_by_tier.keys().all(|t| t != "LocalNvme" && t != "NasVault"),
+            view.bytes_by_tier
+                .keys()
+                .all(|t| t != "LocalNvme" && t != "NasVault"),
             "{:?}",
             view.bytes_by_tier
         );
         let page_bytes = KvPageNames::page_bytes(&state.lock().unwrap().inference_model, 2);
-        assert_eq!(view.bytes_by_tier.values().sum::<u64>(), layers as u64 * page_bytes);
+        assert_eq!(
+            view.bytes_by_tier.values().sum::<u64>(),
+            layers as u64 * page_bytes
+        );
 
         // Idle past the NVMe threshold: the pages sink to the owners' NVMe.
         let now = now_unix_ms();
@@ -3433,7 +3547,12 @@ mod tests {
         assert!(sunk.plan.modelled);
         assert_eq!(sunk.plan.sunk, vec!["alpha".to_string()]);
         assert_eq!(sunk.plan.moves.len(), layers);
-        assert!(sunk.plan.moves.iter().all(|m| m.to == ResidencyTier::LocalNvme));
+        assert!(
+            sunk.plan
+                .moves
+                .iter()
+                .all(|m| m.to == ResidencyTier::LocalNvme)
+        );
         assert!(sunk.sessions[0].needs_replay);
         assert_eq!(sunk.sessions[0].state.tier, ResidencyTier::LocalNvme);
 
@@ -3442,10 +3561,16 @@ mod tests {
             .await
             .0;
         assert!(second.error.is_none(), "{:?}", second.error);
-        let replay = second.resumed.as_ref().expect("a sunk session replays before decoding");
+        let replay = second
+            .resumed
+            .as_ref()
+            .expect("a sunk session replays before decoding");
         assert_eq!(replay.session_id, "alpha");
         assert_eq!(replay.from_tier, ResidencyTier::LocalNvme);
-        assert_eq!(replay.suffix_tokens, 2, "a two-token context replays all of it");
+        assert_eq!(
+            replay.suffix_tokens, 2,
+            "a two-token context replays all of it"
+        );
         assert_eq!(replay.tokens_total, 2);
         assert_eq!(replay.window_tokens, 128);
         assert_eq!(replay.backtrack_tokens, 12);
@@ -3472,7 +3597,13 @@ mod tests {
         )
         .await
         .0;
-        assert!(vaulted.plan.moves.iter().all(|m| m.to == ResidencyTier::NasVault));
+        assert!(
+            vaulted
+                .plan
+                .moves
+                .iter()
+                .all(|m| m.to == ResidencyTier::NasVault)
+        );
         assert_eq!(vaulted.sessions[0].state.tier, ResidencyTier::NasVault);
         let replayed = post_grid_sessions_replay(
             State(state.clone()),
@@ -3495,10 +3626,18 @@ mod tests {
         )
         .await
         .0;
-        assert!(unknown.error.as_deref().is_some_and(|e| e.contains("no session")));
+        assert!(
+            unknown
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("no session"))
+        );
 
         let inventory = get_grid_inventory(State(state.clone())).await.0;
-        assert_eq!(inventory.runs, 4, "two loops, the resume's replay and the explicit one");
+        assert_eq!(
+            inventory.runs, 4,
+            "two loops, the resume's replay and the explicit one"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3531,7 +3670,11 @@ mod tests {
         assert_eq!(sweep.calibration_records_added, 6);
         assert_eq!(sweep.kernels, "reference-synthetic");
         let widths: Vec<u32> = sweep.points.iter().map(|p| p.configuration.rows).collect();
-        assert_eq!(widths, vec![1, 2, 4, 1, 2, 4], "widths ascending within each node set");
+        assert_eq!(
+            widths,
+            vec![1, 2, 4, 1, 2, 4],
+            "widths ascending within each node set"
+        );
         for p in &sweep.points {
             assert_eq!(p.configuration.steps, 2);
             assert!(p.configuration.node_count == 2 || p.configuration.node_count == node_count);
@@ -3591,9 +3734,18 @@ mod tests {
         assert!(spec_sweep.error.is_none(), "{:?}", spec_sweep.error);
         assert_eq!(spec_sweep.points.len(), 1);
         assert!(spec_sweep.ledger_path.is_none());
-        assert_eq!(spec_sweep.calibration_records_added, 0, "speculative points are not calibrations");
+        assert_eq!(
+            spec_sweep.calibration_records_added, 0,
+            "speculative points are not calibrations"
+        );
         let p = &spec_sweep.points[0];
-        assert_eq!(p.configuration.speculative.as_ref().map(|s| s.draft_profile.as_str()), Some("chat"));
+        assert_eq!(
+            p.configuration
+                .speculative
+                .as_ref()
+                .map(|s| s.draft_profile.as_str()),
+            Some("chat")
+        );
         assert!(p.measured.tokens_per_sec_full_acceptance.is_some());
         assert!(p.measured.acceptance_rate.is_some());
         assert!(spec_sweep.markdown.contains("(full acceptance)"));

@@ -44,9 +44,9 @@ pub mod routes;
 
 pub use checkpoints::{TrainingCheckpoint, TrainingCheckpointList, TrainingResumeReport};
 pub use coordinator::{CoordinatorOptions, run_coordinator};
-pub use grid_api::*;
 pub(crate) use docs::DOC_OVERVIEW_MD;
 pub use docs::{DocumentationPage, build_documentation_catalog};
+pub use grid_api::*;
 pub use mcp::{KadmiumMcpManifest, KadmiumMcpServer, McpJsonRpcRequest, McpJsonRpcResponse};
 pub use routes::*;
 
@@ -320,8 +320,7 @@ impl GatewayState {
     }
 
     pub fn save_grid_calibrations(&self) -> Result<(), String> {
-        self.grid_calibrations
-            .save(&Self::grid_calibrations_path())
+        self.grid_calibrations.save(&Self::grid_calibrations_path())
     }
 
     /// Where the per-model usage ledgers live between restarts.
@@ -464,8 +463,7 @@ impl GatewayState {
         };
         let bytes = serde_json::to_vec_pretty(&journal)
             .map_err(|e| format!("Failed to serialize state journal: {e}"))?;
-        std::fs::write(&path, bytes)
-            .map_err(|e| format!("Failed to write state journal: {e}"))?;
+        std::fs::write(&path, bytes).map_err(|e| format!("Failed to write state journal: {e}"))?;
         Ok(path.display().to_string())
     }
 
@@ -727,7 +725,12 @@ impl GatewayState {
     pub fn record_worker_heartbeat(&mut self, req: &WorkerHeartbeatRequest) -> WorkerHeartbeatAck {
         let now_ms = LiveWorkerRegistration::now_unix_ms();
         let mut state_changed = false;
-        self.set_worker_offer(&req.node_id.0, req.offer.clone(), req.free_system_ram_gb, None);
+        self.set_worker_offer(
+            &req.node_id.0,
+            req.offer.clone(),
+            req.free_system_ram_gb,
+            None,
+        );
 
         if let Some(ota_ack) = &req.applied_ota_ack
             && ota_ack.accepted
@@ -1019,9 +1022,8 @@ impl GatewayState {
         )
         .encode_token();
 
-        let join_cmd = format!(
-            "cargo run --release --bin kadmium -- join --coordinator {http_url}"
-        );
+        let join_cmd =
+            format!("cargo run --release --bin kadmium -- join --coordinator {http_url}");
         let workers_vec: Vec<LiveWorkerRegistration> =
             self.live_workers.values().cloned().collect();
 
@@ -1323,12 +1325,8 @@ mod tests {
 
         // Verify live worker registration & heartbeat auto-rebalance
         let probe_node = LiveHardwareProfiler::probe_local_host();
-        let ack = state.register_live_worker(
-            probe_node.clone(),
-            "127.0.0.1:7850".into(),
-            0.35,
-            true,
-        );
+        let ack =
+            state.register_live_worker(probe_node.clone(), "127.0.0.1:7850".into(), 0.35, true);
         assert!(ack.accepted);
         assert!(state.live_only_mode);
         assert_eq!(state.nodes.len(), 1);

@@ -43,7 +43,10 @@ struct PooledCm4TcpConn {
 
 static CM4_TCP_POOL: OnceLock<Mutex<Option<PooledCm4TcpConn>>> = OnceLock::new();
 
-fn send_cm4_json_rpc(addr: &str, request_json: &serde_json::Value) -> Option<(serde_json::Value, f64)> {
+fn send_cm4_json_rpc(
+    addr: &str,
+    request_json: &serde_json::Value,
+) -> Option<(serde_json::Value, f64)> {
     let pool = CM4_TCP_POOL.get_or_init(|| Mutex::new(None));
     let mut guard = pool.lock().ok()?;
     let payload_line = format!("{}\n", serde_json::to_string(request_json).ok()?);
@@ -66,7 +69,8 @@ fn send_cm4_json_rpc(addr: &str, request_json: &serde_json::Value) -> Option<(se
 
         if let Some(conn) = guard.as_mut() {
             let t0 = Instant::now();
-            if conn.stream.write_all(payload_line.as_bytes()).is_ok() && conn.stream.flush().is_ok() {
+            if conn.stream.write_all(payload_line.as_bytes()).is_ok() && conn.stream.flush().is_ok()
+            {
                 let mut line = String::new();
                 if conn.reader.read_line(&mut line).is_ok() && !line.trim().is_empty() {
                     let rtt_ms = ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0;
@@ -102,9 +106,9 @@ impl Cm4CarrierFormFactor {
     /// Automatically detects the CM4 carrier board form factor from `/proc/device-tree/model` and I2C peripherals.
     pub fn detect(board_model: &str, i2c_peripherals: &[String]) -> Self {
         let m = board_model.to_ascii_lowercase();
-        let has_reterminal_hmi = i2c_peripherals.iter().any(|p| {
-            p.contains("ili9881") || p.contains("lis331") || p.contains("ltr303")
-        });
+        let has_reterminal_hmi = i2c_peripherals
+            .iter()
+            .any(|p| p.contains("ili9881") || p.contains("lis331") || p.contains("ltr303"));
         if has_reterminal_hmi || m.contains("reterminal") {
             Self::SeeedReTerminalHmi
         } else if m.contains("turing") {
@@ -114,7 +118,9 @@ impl Cm4CarrierFormFactor {
         } else if m.contains("uconsole") || m.contains("clockwork") {
             Self::ClockworkPiUConsoleCm4
         } else if m.contains("compute module 4 io")
-            || i2c_peripherals.iter().any(|p| p.contains("pcf85063") || p.contains("pcf8563"))
+            || i2c_peripherals
+                .iter()
+                .any(|p| p.contains("pcf85063") || p.contains("pcf8563"))
         {
             Self::OfficialRpiCm4IoBoard
         } else {
@@ -336,28 +342,30 @@ impl ReTerminalCm4LanBridge {
         variants
             .into_iter()
             .enumerate()
-            .map(|(idx, (carrier, ram_gib, freq_mhz, storage_gib, node_id))| {
-                let telem = ReTerminalCm4Telemetry {
-                    temp_c: 36.0,
-                    cpu_freq_mhz: freq_mhz,
-                    ram_total_gib: ram_gib,
-                    i2c_peripherals: if carrier == Cm4CarrierFormFactor::SeeedReTerminalHmi {
-                        ReTerminalCm4Telemetry::default().i2c_peripherals
-                    } else {
-                        vec!["3-0051:pcf85063".into()]
-                    },
-                    emmc_total_gib: storage_gib,
-                    emmc_free_gib: storage_gib * 0.75,
-                };
-                let mut node = Self::build_platform_hardware_node(
-                    &format!("192.168.40.{}", 75 + idx),
-                    &telem,
-                    carrier,
-                );
-                node.id = NodeId(node_id.to_string());
-                node.hostname = format!("{}-{}", node_id, 75 + idx);
-                (carrier, node)
-            })
+            .map(
+                |(idx, (carrier, ram_gib, freq_mhz, storage_gib, node_id))| {
+                    let telem = ReTerminalCm4Telemetry {
+                        temp_c: 36.0,
+                        cpu_freq_mhz: freq_mhz,
+                        ram_total_gib: ram_gib,
+                        i2c_peripherals: if carrier == Cm4CarrierFormFactor::SeeedReTerminalHmi {
+                            ReTerminalCm4Telemetry::default().i2c_peripherals
+                        } else {
+                            vec!["3-0051:pcf85063".into()]
+                        },
+                        emmc_total_gib: storage_gib,
+                        emmc_free_gib: storage_gib * 0.75,
+                    };
+                    let mut node = Self::build_platform_hardware_node(
+                        &format!("192.168.40.{}", 75 + idx),
+                        &telem,
+                        carrier,
+                    );
+                    node.id = NodeId(node_id.to_string());
+                    node.hostname = format!("{}-{}", node_id, 75 + idx);
+                    (carrier, node)
+                },
+            )
             .collect()
     }
 
@@ -402,13 +410,12 @@ impl ReTerminalCm4LanBridge {
             .and_then(|s| s.trim().parse::<f64>().ok())
             .map(|millideg| (millideg / 100.0).round() / 10.0)
             .unwrap_or(38.0);
-        let cpu_freq_mhz = std::fs::read_to_string(
-            "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq",
-        )
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .map(|khz| khz / 1000)
-        .unwrap_or(1500);
+        let cpu_freq_mhz =
+            std::fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .map(|khz| khz / 1000)
+                .unwrap_or(1500);
         let ram_total_gib = crate::LiveHardwareProfiler::probe_system_memory_gb();
 
         Some((
@@ -458,7 +465,8 @@ impl ReTerminalCm4LanBridge {
                 physical_board_online: true,
                 board_model: format!("{} [{}]", board_model, carrier.display_name()),
                 lan_endpoint: addr.clone(),
-                mac_address_oui: "e4:5f:01:3e:99:50 (Raspberry Pi Trading Ltd · BCM2711 CM4)".to_string(),
+                mac_address_oui: "e4:5f:01:3e:99:50 (Raspberry Pi Trading Ltd · BCM2711 CM4)"
+                    .to_string(),
                 soc_architecture: format!(
                     "Broadcom BCM2711 (4x ARM Cortex-A72 @ {:.2} GHz, aarch64 NEON + VideoCore VI V3D · {:.1} GiB LPDDR4)",
                     (telemetry.cpu_freq_mhz as f64) / 1000.0,
@@ -505,7 +513,7 @@ impl ReTerminalCm4LanBridge {
             let carrier = Cm4CarrierFormFactor::detect(&local_board, &local_telem.i2c_peripherals);
             let hw_node = Self::build_platform_hardware_node("127.0.0.1", &local_telem, carrier);
             return ReTerminalCm4ProbeReport {
-                physical_board_online: true,
+                physical_board_online: false,
                 board_model: format!("{} [{}]", local_board, carrier.display_name()),
                 lan_endpoint: "127.0.0.1 (Local Linux ARM64 SBC Host)".to_string(),
                 mac_address_oui: "e4:5f:01:3e:99:50 (ARM64 Linux SBC)".to_string(),
@@ -518,7 +526,7 @@ impl ReTerminalCm4LanBridge {
                 telemetry: local_telem,
                 hardware_node: hw_node,
                 execution_proof: ReTerminalCm4ExecutionProof {
-                    executed_on_physical_silicon: true,
+                    executed_on_physical_silicon: false,
                     endpoint_addr: "127.0.0.1".to_string(),
                     kernel_uname: "Linux Local-ARM64-SBC aarch64".to_string(),
                     lan_round_trip_ms: 0.05,

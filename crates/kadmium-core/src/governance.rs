@@ -91,8 +91,7 @@ impl LiveHardwareProfiler {
         // Micro-benchmark 64KB page-aligned sequential streaming bandwidth in memory/storage
         let nvme_bw_gbps = Self::benchmark_page_aligned_stream_gbps();
 
-        let is_apple_silicon =
-            cfg!(target_os = "macos") || backend == ComputeBackend::MetalUnified;
+        let is_apple_silicon = cfg!(target_os = "macos") || backend == ComputeBackend::MetalUnified;
         let cpu_gpu_lower = format!("{} {}", cpu_name.to_lowercase(), gpu_name.to_lowercase());
         let is_uma_apu = is_apple_silicon
             || is_sbc
@@ -146,11 +145,12 @@ impl LiveHardwareProfiler {
                 };
                 (total_ram_gb, bw, 0.0, 0.0)
             } else if is_uma_apu && !is_sbc {
-                let bw = if cpu_gpu_lower.contains("8060s") || cpu_gpu_lower.contains("ryzen ai max") {
-                    256.0
-                } else {
-                    135.0
-                };
+                let bw =
+                    if cpu_gpu_lower.contains("8060s") || cpu_gpu_lower.contains("ryzen ai max") {
+                        256.0
+                    } else {
+                        135.0
+                    };
                 (total_ram_gb, bw, 0.0, 0.0)
             } else if is_sbc {
                 let sbc_bw = if cpu_gpu_lower.contains("orin") {
@@ -307,10 +307,7 @@ impl LiveHardwareProfiler {
             "/sys/devices/virtual/dmi/id/product_name",
         ] {
             if let Ok(raw) = std::fs::read_to_string(path) {
-                let cleaned = raw
-                    .replace(char::from(0), " ")
-                    .trim()
-                    .to_string();
+                let cleaned = raw.replace(char::from(0), " ").trim().to_string();
                 if !cleaned.is_empty() && !cleaned.eq_ignore_ascii_case("System Product Name") {
                     return Some(cleaned);
                 }
@@ -473,7 +470,10 @@ impl LiveHardwareProfiler {
             ((cpu_threads as f64) * 0.11 * 10.0).round() / 10.0
         } else if lower.contains("bcm2711") || lower.contains("cortex-a72") {
             ((cpu_threads as f64) * 0.06 * 10.0).round() / 10.0
-        } else if lower.contains("bcm2712") || lower.contains("rk3588") || lower.contains("cortex-a76") {
+        } else if lower.contains("bcm2712")
+            || lower.contains("rk3588")
+            || lower.contains("cortex-a76")
+        {
             ((cpu_threads as f64) * 0.09 * 10.0).round() / 10.0
         } else {
             ((cpu_threads as f64) * 0.12 * 10.0).round() / 10.0
@@ -490,10 +490,7 @@ impl LiveHardwareProfiler {
         board_model: &Option<String>,
     ) -> (Option<String>, f64) {
         let cpu_lower = cpu_name.to_lowercase();
-        let board_lower = board_model
-            .as_deref()
-            .unwrap_or("")
-            .to_lowercase();
+        let board_lower = board_model.as_deref().unwrap_or("").to_lowercase();
         let combined = format!("{cpu_lower} {board_lower}");
 
         // 1. Windows MCDM ComputeAccelerator device class ({f01a9d53-3ff6-48d2-9f97-c8a7004be10c})
@@ -686,7 +683,11 @@ impl LiveHardwareProfiler {
                             (18.5, 74.0, 448.0, 15.7)
                         } else if lower.contains("v100") {
                             (125.0, 250.0, 900.0, 15.7)
-                        } else if lower.contains("1080") || lower.contains("1070") || lower.contains("p100") || lower.contains("p40") {
+                        } else if lower.contains("1080")
+                            || lower.contains("1070")
+                            || lower.contains("p100")
+                            || lower.contains("p40")
+                        {
                             (18.0, 72.0, 480.0, 15.7)
                         } else if vram_gb >= 20.0 {
                             (140.0, 560.0, 800.0, 31.5)
@@ -716,11 +717,10 @@ impl LiveHardwareProfiler {
                 && bytes >= 2 * 1024 * 1024 * 1024
             {
                 let vram_gb = ((bytes as f64) / (1024.0 * 1024.0 * 1024.0) * 10.0).round() / 10.0;
-                let vendor = std::fs::read_to_string(format!(
-                    "/sys/class/drm/card{card_idx}/device/vendor"
-                ))
-                .unwrap_or_default()
-                .to_lowercase();
+                let vendor =
+                    std::fs::read_to_string(format!("/sys/class/drm/card{card_idx}/device/vendor"))
+                        .unwrap_or_default()
+                        .to_lowercase();
                 if vendor.contains("8086") {
                     let tflops = if vram_gb >= 12.0 { 52.0 } else { 32.0 };
                     return (
@@ -811,15 +811,7 @@ impl LiveHardwareProfiler {
                         } else {
                             ComputeBackend::VulkanWgpu
                         };
-                        return (
-                            adapter_name,
-                            vram_gb,
-                            384.0,
-                            15.7,
-                            backend,
-                            45.0,
-                            180.0,
-                        );
+                        return (adapter_name, vram_gb, 384.0, 15.7, backend, 45.0, 180.0);
                     }
                 }
             }
@@ -902,7 +894,7 @@ impl LiveHardwareProfiler {
         let buf = vec![0xCDu8; block_bytes];
         let start = std::time::Instant::now();
         let mut acc = 0u64;
-        for chunk in buf.chunks_exact(65_536) {
+        for chunk in buf.as_chunks::<65_536>().0 {
             acc = acc
                 .wrapping_add(chunk[0] as u64)
                 .wrapping_add(chunk[65_535] as u64);

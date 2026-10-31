@@ -723,10 +723,7 @@ mod tests {
         let bare = WorkUnitId::new("L010-experts-node-m4-mac-mini");
         assert_eq!(bare.name(), "L010-experts-node-m4-mac-mini");
         assert_eq!(bare.graph_id(), None);
-        assert_eq!(
-            bare.in_graph("g").0,
-            "g/L010-experts-node-m4-mac-mini"
-        );
+        assert_eq!(bare.in_graph("g").0, "g/L010-experts-node-m4-mac-mini");
         assert_ne!(
             WorkUnitId::qualified("sess-a/step-7", "stage-00"),
             WorkUnitId::qualified("sess-a/step-8", "stage-00"),
