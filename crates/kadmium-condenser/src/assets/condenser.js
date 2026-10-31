@@ -3,6 +3,7 @@
 
   const STORAGE_KEY = 'condenser.agent.tasks.v1';
   const workflow = window.CondenserWorkflow;
+  const nativeFiles = window.__KADMIUM_FILES__;
   const MAX_INTERVIEW_QUESTIONS = 6;
   const INTERVIEW_READY = '[[READY]]';
   const INTERVIEW_QUESTION_INSTRUCTION = 'Conduct a clarifying interview before the final response. Ask exactly ONE concise, high-leverage question about the original task, using the previous Q/A context. Return only that question: no task answer, preamble, or list. If you already have enough context to answer well, return exactly [[READY]].';
@@ -658,10 +659,25 @@
       state.workspace = await api('/api/v1/workspace');
       $('workspace-name').textContent = state.workspace.name || 'Workspace';
       $('workspace-name').title = state.workspace.root || '';
-      await loadFiles('');
+      if (!nativeFiles) await loadFiles('');
+      else state.files.loaded = true;
     } catch (error) {
       $('file-list').replaceChildren(element('p', 'panel-empty error', error.message));
+      if (nativeFiles) setFileOperationStatus(error.message, true);
     }
+  }
+
+  async function pickWorkspaceFile() {
+    const button = $('files-open-native');
+    button.disabled = true;
+    try {
+      if (!state.workspace.root) await loadWorkspace();
+      if (!state.workspace.root) throw new Error('The workspace is not ready. Refresh and try again.');
+      setFileOperationStatus('');
+      const path = await nativeFiles.pick({ kind: 'workspace_file', root: state.workspace.root });
+      if (path !== null) await openFile(path);
+    } catch (error) { setFileOperationStatus(error.message, true); }
+    finally { button.disabled = false; }
   }
 
   async function loadFiles(path) {
@@ -1675,7 +1691,7 @@
 
   function checkpointControls() {
     const busy = state.localModels.busy;
-    ['checkpoint-path', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse'].forEach(id => { $(id).disabled = busy; });
+    ['checkpoint-path', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded'].forEach(id => { $(id).disabled = busy; });
     $('checkpoint-load').disabled = busy || !$('checkpoint-select').value;
     $('checkpoint-use').disabled = busy || state.busy || !state.localModels.loaded;
   }
@@ -1759,6 +1775,20 @@
     $('prompt').focus();
   }
 
+  async function chooseCheckpoint(folder) {
+    if (!nativeFiles) return browseCheckpoints($('checkpoint-path').value.trim());
+    $('checkpoint-browse').disabled = true;
+    $('checkpoint-browse-folder').disabled = true;
+    try {
+      const path = await nativeFiles.pick({ kind: folder ? 'model_folder' : 'model_file', path: $('checkpoint-path').value.trim() || null });
+      if (path !== null && !state.localModels.busy) $('checkpoint-path').value = path;
+    } catch (error) { $('checkpoint-status').textContent = error.message; }
+    finally {
+      $('checkpoint-browse').disabled = state.localModels.busy;
+      $('checkpoint-browse-folder').disabled = state.localModels.busy;
+    }
+  }
+
   async function browseCheckpoints(path) {
     const request = state.localModels.browseRequest = (state.localModels.browseRequest || 0) + 1;
     $('checkpoint-browser').hidden = false;
@@ -1778,7 +1808,7 @@
           if (entry.directory) browseCheckpoints(entry.path);
           else {
             // A SafeTensors file needs its full sibling package, including tokenizer/config.
-            $('checkpoint-path').value = entry.name.endsWith('.safetensors') ? listing.path : entry.path;
+            $('checkpoint-path').value = entry.name.toLowerCase().endsWith('.safetensors') ? listing.path : entry.path;
             $('checkpoint-browser').hidden = true;
           }
         });
@@ -2441,10 +2471,26 @@
     $('settings-local-model').addEventListener('click', openModelLibrary);
     $('checkpoint-form').addEventListener('submit', event => { event.preventDefault(); importCheckpoint(); });
     $('quality-maximum').addEventListener('click', () => { $('max-tokens').value = ''; $('context-window').value = ''; $('compact-history').checked = false; $('provider-timeout').value = ''; $('quality-error').textContent = ''; });
-    $('checkpoint-browse').addEventListener('click', () => browseCheckpoints($('checkpoint-path').value.trim()));
+    $('checkpoint-browse').addEventListener('click', () => chooseCheckpoint(false));
+    $('checkpoint-browse-folder').addEventListener('click', () => chooseCheckpoint(true));
     $('checkpoint-parent').addEventListener('click', () => { if (state.localModels.browse) browseCheckpoints(state.localModels.browse.parent); });
     $('checkpoint-choose-folder').addEventListener('click', () => { if (!state.localModels.busy && state.localModels.browse) { $('checkpoint-path').value = state.localModels.browse.path; $('checkpoint-browser').hidden = true; } });
-    $('checkpoint-browser-close').addEventListener('click', () => { $('checkpoint-browser').hidden = true; });
+    $('checkpoint-browser-close').addEventListener('click', () => { state.localModels.browseRequest = (state.localModels.browseRequest || 0) + 1; $('checkpoint-browser').hidden = true; });
+    if (nativeFiles) {
+      $('checkpoint-embedded').hidden = false;
+      $('checkpoint-embedded').addEventListener('click', () => browseCheckpoints($('checkpoint-path').value.trim()));
+      $('checkpoint-picker-note').textContent = 'Uses your system file dialog. Selecting a SafeTensors file includes its complete model folder.';
+      $('files-open-native').hidden = false;
+      $('files-toggle-tree').hidden = false;
+      $('context-files').classList.add('native-files');
+      $('files-open-native').addEventListener('click', pickWorkspaceFile);
+      $('files-toggle-tree').addEventListener('click', () => {
+        const visible = $('context-files').classList.toggle('show-tree');
+        $('files-toggle-tree').textContent = visible ? 'Hide workspace tree' : 'Show workspace tree';
+        $('files-toggle-tree').setAttribute('aria-expanded', String(visible));
+        if (visible) loadFiles(state.files.path);
+      });
+    }
     $('checkpoint-context').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Context changed. Load again to verify this allocation.'; });
     $('checkpoint-refresh').addEventListener('click', () => refreshCheckpoints());
     $('checkpoint-select').addEventListener('change', () => { state.localModels.loaded = null; $('checkpoint-load-status').textContent = 'Load this checkpoint before using it in a task.'; renderCheckpoint(); });

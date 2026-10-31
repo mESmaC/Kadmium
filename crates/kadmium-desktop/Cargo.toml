@@ -15,9 +15,10 @@ default = []
 # On Linux the native window needs the WebKitGTK 4.1 and GTK 3 development packages, so it
 # is opt-in: `cargo run -p kadmium-desktop --features linux-native`. Without it the app
 # still starts the coordinator and opens the Companion in the default browser.
-linux-native = ["dep:wry", "dep:tao"]
+linux-native = ["dep:wry", "dep:tao", "kadmium-native/linux-native"]
 
 [dependencies]
+kadmium-native.workspace = true
 kadmium-gateway.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
