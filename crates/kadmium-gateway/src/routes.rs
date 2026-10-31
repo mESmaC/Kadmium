@@ -266,6 +266,14 @@ pub struct OtaUpdatePushRequest {
 
 /// Builds the Axum router serving both the Unified Dashboard and all Backend REST/AI Gateway APIs.
 pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
+    let condenser =
+        kadmium_condenser::server::build_router(Default::default()).unwrap_or_else(|error| {
+            let message = format!("Condenser could not start: {error}");
+            Router::new().fallback(move || {
+                let message = message.clone();
+                async move { (axum::http::StatusCode::SERVICE_UNAVAILABLE, message) }
+            })
+        });
     Router::new()
         .merge(crate::diloco_api::router())
         .route("/", get(serve_dashboard))
@@ -528,6 +536,46 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/messages", post(anthropic_messages))
         .with_state(state)
+        .route(
+            "/condenser",
+            get(|| async { axum::response::Redirect::permanent("/condenser/") }),
+        )
+        .nest(
+            "/condenser/",
+            condenser.layer(axum::middleware::from_fn(local_condenser_only)),
+        )
+}
+
+// The coordinator listens on the LAN, unlike standalone Condenser. Host alone cannot
+// establish locality: check the actual transport peer before exposing filesystem/tools.
+async fn local_condenser_only(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let local = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .is_some_and(|peer| peer.0.ip().is_loopback());
+    let same_origin = request.headers().get(header::ORIGIN).is_none_or(|origin| {
+        let expected = request
+            .headers()
+            .get(header::HOST)
+            .and_then(|h| h.to_str().ok())
+            .map(|host| format!("http://{host}"));
+        origin
+            .to_str()
+            .ok()
+            .zip(expected.as_deref())
+            .is_some_and(|(origin, expected)| origin == expected)
+    });
+    if !local || !same_origin {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "Open Condenser on the coordinator computer using http://127.0.0.1:<port>/condenser/",
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 async fn serve_dashboard() -> Html<&'static str> {

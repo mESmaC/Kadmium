@@ -101,8 +101,8 @@ struct ProviderArgs {
     /// Environment variable containing the API key.
     #[arg(long, value_name = "NAME")]
     api_key_env: Option<String>,
-    /// End-to-end provider request timeout in seconds.
-    #[arg(long, default_value_t = 300)]
+    /// End-to-end provider request timeout in seconds; 0 means no limit.
+    #[arg(long, default_value_t = 0)]
     timeout_secs: u64,
 }
 
@@ -156,6 +156,9 @@ struct ChatArgs {
     top_k: Option<u32>,
     #[arg(long)]
     max_tokens: Option<u32>,
+    /// Ollama context/input window. Omit to use the model's full declared context.
+    #[arg(long)]
+    context_window: Option<u32>,
     #[arg(long)]
     seed: Option<u64>,
     /// MCL4-COE / DeepSeek-V4.1 cognitive mode: uta, coe, dream_rl, or ncm.
@@ -505,6 +508,8 @@ async fn run_chat(args: ChatArgs, roots: Vec<PathBuf>) -> Result<()> {
                 max_steps: args.max_steps,
                 max_calls_per_step: 16,
                 sampling: SamplingParams {
+                    context_window: args.context_window,
+                    compact_history: false,
                     temperature: args.temperature,
                     top_p: args.top_p,
                     top_k: args.top_k,

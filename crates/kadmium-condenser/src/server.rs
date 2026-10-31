@@ -83,6 +83,20 @@ pub async fn serve(options: ServerOptions) -> Result<()> {
 pub async fn bind(
     options: ServerOptions,
 ) -> Result<(SocketAddr, impl std::future::Future<Output = Result<()>>)> {
+    let port = options.port;
+    let app = build_router(options)?;
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
+    let address = listener.local_addr()?;
+    Ok((address, async move {
+        axum::serve(listener, app)
+            .await
+            .map_err(CondenserError::from)
+    }))
+}
+
+/// The same workspace can be mounted by Kadmium without launching a second process.
+/// Local filesystem and inference APIs retain their loopback Host/Origin guard.
+pub fn build_router(options: ServerOptions) -> Result<Router> {
     if options.max_concurrent_turns == 0 {
         return Err(CondenserError::Config(
             "max_concurrent_turns must be at least 1".into(),
@@ -105,14 +119,7 @@ pub async fn bind(
         active_runs: crate::runs::ActiveRuns::default(),
         workspace: crate::workspace::WorkspaceState::from_current_dir()?,
     };
-    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, options.port)).await?;
-    let address = listener.local_addr()?;
-    let app = router(state);
-    Ok((address, async move {
-        axum::serve(listener, app)
-            .await
-            .map_err(CondenserError::from)
-    }))
+    Ok(router(state))
 }
 
 fn router(state: ServerState) -> Router {
@@ -131,6 +138,10 @@ fn router(state: ServerState) -> Router {
         .route("/api/v1/compute/inspect", post(crate::compute::inspect))
         .route("/api/v1/compute/jobs", post(crate::compute::run_job))
         .route("/api/v1/checkpoints", get(crate::local_models::list))
+        .route(
+            "/api/v1/checkpoints/browse",
+            post(crate::local_models::browse),
+        )
         .route(
             "/api/v1/checkpoints/import",
             post(crate::local_models::import),
@@ -392,7 +403,12 @@ async fn models(
     Json(request): Json<ModelsRequest>,
 ) -> Result<Json<Vec<ModelInfo>>, ApiError> {
     let provider_cfg = request.provider;
-    let timeout = provider_cfg.timeout_secs;
+    // Catalog browsing remains bounded; this is separate from generation limits.
+    let timeout = if provider_cfg.timeout_secs == 0 {
+        30
+    } else {
+        provider_cfg.timeout_secs
+    };
     let kind = provider_cfg.kind;
     let provider = ProviderFactory::build_with_client(provider_cfg, state.client)?;
     let models = tokio::time::timeout(

@@ -738,6 +738,29 @@ impl InferenceProvider for Mcl4CoeProvider {
         self.config.validate()?;
         request.sampling.validate()?;
 
+        super::reject_context_override(request, self.config.kind.label())?;
+        let mut resolved = request.clone();
+        if resolved.sampling.max_tokens.is_none() {
+            let response = self
+                .authorize(
+                    self.client
+                        .get(super::versioned_endpoint(self.config.base_url(), "models")),
+                )
+                .send()
+                .await
+                .map_err(|e| CondenserError::provider(self.config.kind.label(), e.to_string()))?;
+            let catalog: Value = super::decode_json(self.config.kind, response).await?;
+            let model = catalog["data"]
+                .as_array()
+                .and_then(|models| models.iter().find(|m| m["id"] == request.model))
+                .unwrap_or(&Value::Null);
+            resolved.sampling.max_tokens = Some(super::require_output_maximum(
+                model,
+                self.config.kind.label(),
+            )?);
+        }
+        let request = &resolved;
+
         let include_knobs = request.sampling.mcl4_coe.is_some();
         let knobs = request
             .sampling
@@ -745,12 +768,16 @@ impl InferenceProvider for Mcl4CoeProvider {
             .clone()
             .unwrap_or_else(|| default_knobs_for_model(&request.model));
 
-        // Apply `dsh-compaction-basic` + DeepSeek-V4.1 multi-turn thought stripping and old tool pruning
-        let (compacted_messages, _) = compact_messages_with_tool_pruning(
-            &request.messages,
-            knobs.strip_prior_thoughts_in_multiturn,
-            knobs.prune_old_tool_results_chars,
-        );
+        let compacted_messages = if request.sampling.compact_history {
+            compact_messages_with_tool_pruning(
+                &request.messages,
+                knobs.strip_prior_thoughts_in_multiturn,
+                knobs.prune_old_tool_results_chars,
+            )
+            .0
+        } else {
+            request.messages.clone()
+        };
 
         let unsupported_native = unsupported_native_sampling_option(request);
         if is_native_mcl4_v7_model(&request.model)
@@ -833,6 +860,8 @@ mod tests {
     fn openai_body_forwards_all_supported_sampling_controls() {
         let mut request = request("deepseek-v4.1-flash");
         request.sampling = SamplingParams {
+            context_window: None,
+            compact_history: false,
             temperature: Some(0.25),
             top_p: Some(0.8),
             top_k: Some(40),

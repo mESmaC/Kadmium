@@ -58,6 +58,11 @@ jobs:
       - name: Test Condenser checkpoint and compute workflows
         working-directory: .
         run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs
+      - name: Build embedded model setup fixture
+        run: cargo build -p kadmium-gateway --example control_room_fixture --locked
+      - name: Test model setup from both Kadmium interfaces
+        working-directory: .
+        run: node --test crates/kadmium-gateway/tests/model_setup.test.cjs
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

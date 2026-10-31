@@ -380,8 +380,8 @@ impl Harness {
             } else {
                 (None, None)
             };
-            let provider_wait = tokio::time::timeout(
-                std::time::Duration::from_secs(self.config.timeout_secs),
+            let provider_wait = crate::provider::with_timeout(
+                self.config.timeout_secs,
                 self.provider.complete_stream(&request, token_tx),
             );
             let wait_res = controlled_wait(&control, provider_wait).await;

@@ -5,20 +5,23 @@ When `kadmium launch` or `kadmium serve` is running, [`kadmium-gateway`](../crat
 1. **Reference compute diagnostics with OpenAI/Anthropic-shaped responses** (`/v1/...`)
 2. **Cluster Control Plane & Desktop Companion REST API** (`/api/v1/...`)
 
-Condenser runs separately on loopback port `7856`. Its [inference workspace guide](guides/condenser-workspace.md) covers provider routing, compute inspection, task history and run cancellation. Kadmium's read-only `GET /api/v1/inference/workspace?model_id=<catalog-id>` returns fleet and placement context for that workspace without loading a model or changing cluster selection.
+Condenser is included at `/condenser/` in Kadmium and can also run separately on loopback port `7856`. Embedded APIs use `/condenser/api/v1/...` and require a loopback transport peer and same-origin requests. Its [inference workspace guide](guides/condenser-workspace.md) covers provider routing, maximum-quality defaults, compute inspection, task history and run cancellation. Kadmium's read-only `GET /api/v1/inference/workspace?model_id=<catalog-id>` returns fleet and placement context without loading a model or changing cluster selection.
 
 ## Condenser checkpoints and compute jobs
 
-These routes run on Condenser's loopback server, with its existing Host/Origin guard:
+These routes run on standalone Condenser's loopback server, with its Host/Origin guard, or under `/condenser` in Kadmium:
 
 | Method and path | Contract |
 | --- | --- |
 | `GET /api/v1/checkpoints` | Returns `{directory, checkpoints}` from the local package library. Listing is not an integrity check. |
 | `POST /api/v1/checkpoints/import` | `{source_path}` returns a checkpoint summary after lossless normalization and atomic publication. |
-| `POST /api/v1/checkpoints/load` | `{checkpoint_id, base_url}` verifies the package, imports preserved source files into loopback Ollama without requesting quantization, checks tensor metadata and preloads the declared context. Returns `{checkpoint, provider, tensor_metadata_verified, execution}`. |
+| `POST /api/v1/checkpoints/browse` | `{path?}` lists model files and folders on the host (up to 500 entries), with the directory, parent and a truncation indicator. |
+| `POST /api/v1/checkpoints/load` | `{checkpoint_id, base_url, context_length?}` verifies the package, imports preserved source files into loopback Ollama without quantization, checks tensor metadata and preloads the declared context or an explicitly smaller allocation. Returns `{checkpoint, provider, context_length, tensor_metadata_verified, execution}`. |
 | `POST /api/v1/compute/jobs` | `{base_url, api_key?, job}` proxies a job to the coordinator below with a 75-second timeout. Credentials are request-scoped; redirects are disabled. |
 
 Only one import/load runs per server. A load response does not change a task's route; the user explicitly chooses **Use in this task**. KTB banks are storage artifacts, and the external backend's arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for exact formats and failure behavior.
+
+Chat sampling accepts `context_window` (Ollama only), `max_tokens`, and `compact_history` (MCL4 opt-in). Omitted context/output values resolve maximums; missing required metadata produces an error instead of a guessed output cap. `provider.timeout_secs: 0` (default) removes the generation timeout. Catalog discovery remains bounded independently. Context and output share the model's total window; other providers' context allocation is configured on their server.
 
 ## Live worker jobs
 
@@ -44,7 +47,7 @@ At least two online `TrustedCore` TCP workers without outstanding approval requi
 
 `POST /api/v1/storage/pool-bucket/object` requires positive data/parity shard counts whose checked sum is at most 256 (defaults: 8 + 2). Invalid counts return structured HTTP 400 errors before shared state is changed. Entries record metadata and planned placement, not uploaded object bytes. Live storage reports use `report_kind: "live_placement_estimate"`, `durability_verified: false`, and a `protection_status` explaining unverified protection or insufficient distinct holders. Configured anchors have zero verified coverage until byte synchronization and independent failure domains can be verified. Synthetic recovery exercises remain separate in the benchmark reports (`report_kind: "synthetic_benchmark"`).
 
-The coordinator restores model plans, imports, object/anchor metadata, training progress, checkpoint step and runtime version before serving requests. CLI and desktop coordinators store `cluster_state.json` (live) and `cluster_state.demo.json` (demo) separately, so demo saves cannot overwrite live progress. The journal directory is `%LOCALAPPDATA%\Kadmium\state` on Windows, `~/Library/Application Support/Kadmium` on macOS, and `$XDG_STATE_HOME/kadmium` (or `~/.local/state/kadmium`) on Linux. Set `KADMIUM_STATE_DIR` to an absolute writable directory to use a separate workspace. Without that override, the first launch migrates a journal found under `target/kadmium-state` in the working directory, leaving the original file intact. Launch once from the old working directory when upgrading. Other model/checkpoint and diagnostic artifact paths are unchanged.
+The coordinator restores model plans, imports, object/anchor metadata, training progress, checkpoint step and runtime version before serving requests. CLI and desktop coordinators store `cluster_state.json` (live) and `cluster_state.demo.json` (demo) separately, so demo saves cannot overwrite live progress. The journal directory is `%LOCALAPPDATA%\Kadmium\state` on Windows, `~/Library/Application Support/Kadmium` on macOS, and `$XDG_STATE_HOME/kadmium` (or `~/.local/state/kadmium`) on Linux. Set `KADMIUM_STATE_DIR` to an absolute writable directory to use a separate workspace. Without that override, the first launch migrates a journal found under `target/kadmium-state` in the working directory, leaving the original file intact. Launch once from the old working directory when upgrading. Normalized model packages now use the shared per-user directory documented in the local checkpoint guide. Training checkpoint and diagnostic artifact paths are unchanged.
 
 Missing journals start a fresh workspace; corrupt JSON or unsupported schema versions stop startup with an error and preserve the original file for recovery. Unsupported legacy custom imports are skipped with a warning, without deleting their model files. Supported imports and unrelated state still restore. A selected custom model falls back to the startup model plan, and training progress tied to that unsupported model is not restored. New custom IDs remain rejected. Journal replacement writes and syncs a unique temporary file first. Restored plans and imports do not establish that weights are resident or workers are running. Versionless journals from earlier releases are accepted as schema version 1; progress with missing provenance is never treated as live training.
 

@@ -205,6 +205,8 @@ cargo run --bin kadmium -- desktop
 ```
 Opens the Companion with an embedded or existing local coordinator. Windows/macOS use native WebViews. Linux opens the browser by default; for a native window, install WebKitGTK 4.1/GTK 3 development packages and build `kadmium-desktop` with `--features linux-native`.
 
+In either the Companion or browser Control Room, choose **Models → Prepare a local model** to browse GGUF/SafeTensors, normalize lossless KTB shards, load in local Ollama, and use the model in a task. **Launch Condenser** opens the included workspace at `/condenser/` without a separate process. Context and output default to model maximums, with user overrides in **Provider settings**. See [local checkpoints](docs/guides/local-checkpoints.md) for storage locations and backend requirements.
+
 ### 3. Join Additional Machines
 On the worker, use the coordinator's reachable LAN/VPN address:
 ```bash

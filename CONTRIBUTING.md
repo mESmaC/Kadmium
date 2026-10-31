@@ -54,6 +54,15 @@ node --test crates/kadmium-condenser/tests/local_compute.test.cjs
 
 The test starts a disposable Condenser library, imports a tiny checkpoint, and checks explicit routing, backend failures and desktop/mobile layout. Screenshots go to `target/checkpoint-smoke`.
 
+For the embedded model setup workflow from both Kadmium interfaces:
+
+```sh
+cargo build -p kadmium-gateway --example control_room_fixture --locked
+node --test crates/kadmium-gateway/tests/model_setup.test.cjs
+```
+
+This uses the same Playwright installation and a disposable model library. Rust integration tests also check maximum provider limits, context overrides, and local-only access to the mounted workspace.
+
 The separate Control Room navigation and request-recovery regressions use a router fixture. From the repository root:
 
 ```bash

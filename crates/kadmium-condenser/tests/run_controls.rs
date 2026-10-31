@@ -46,7 +46,8 @@ async fn cancellation_returns_one_final_report_and_releases_run_identity() {
         "run_id": "cancel-me",
         "provider": { "kind": "openai", "model": "test-model", "base_url": provider },
         "messages": [{"role": "user", "content": "Keep this prompt"}],
-        "max_run_seconds": 10
+        "max_run_seconds": 10,
+        "sampling": {"max_tokens": 8192}
     });
     let response = client
         .post(format!("http://{address}/api/v1/chat/stream"))
@@ -146,7 +147,7 @@ async fn both_chat_endpoints_enforce_tool_selection_before_inference() {
             let payload = json!({
                 "provider": {"kind":"openai", "model":"test", "base_url":provider},
                 "messages":[{"role":"user","content":"hello"}],
-                "enable_tools":enabled, "allowed_tools":allowed
+                "enable_tools":enabled, "allowed_tools":allowed, "sampling":{"max_tokens":8192}
             });
             let path = if streaming { "chat/stream" } else { "chat" };
             let response = client

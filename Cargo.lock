@@ -1589,6 +1589,7 @@ name = "kadmium-gateway"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "kadmium-condenser",
  "kadmium-core",
  "kadmium-data",
  "kadmium-grid",

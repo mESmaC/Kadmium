@@ -54,6 +54,8 @@
   };
 
   const $ = (id) => document.getElementById(id);
+  // Relative assets and requests work both standalone and mounted at /condenser/.
+  const apiPath = (path) => new URL(path.replace(/^\//, ''), document.baseURI).pathname;
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -68,7 +70,7 @@
   }
 
   async function api(path, options) {
-    const response = await fetch(path, options);
+    const response = await fetch(apiPath(path), options);
     const text = await response.text();
     let body = {};
     if (text) {
@@ -102,6 +104,7 @@
       allowed_tools: [],
       interview: false,
       max_steps: 8,
+      timeout_secs: 0,
       max_run_seconds: null,
       max_output_tokens: null,
       max_tool_calls: null,
@@ -1461,6 +1464,10 @@
     $('model').value = session.config.model;
     $('temperature').value = session.config.sampling.temperature === undefined ? '' : session.config.sampling.temperature;
     $('max-tokens').value = session.config.sampling.max_tokens === undefined ? '' : session.config.sampling.max_tokens;
+    $('context-window').value = session.config.sampling.context_window === undefined ? '' : session.config.sampling.context_window;
+    $('compact-history').checked = session.config.sampling.compact_history === true;
+    $('quality-error').textContent = '';
+    $('provider-timeout').value = session.config.timeout_secs || '';
     const mcl4 = session.config.sampling.mcl4_coe || {};
     if ($('mcl4-mode')) $('mcl4-mode').value = mcl4.mode || 'uta';
     if ($('mcl4-effort')) $('mcl4-effort').value = mcl4.reasoning_effort || 'high';
@@ -1473,15 +1480,24 @@
   function saveSettings() {
     const session = currentSession();
     if (!session) return;
+    for (const id of ['max-tokens', 'context-window', 'temperature', 'provider-timeout']) {
+      if (!$(id).checkValidity()) { $('quality-error').textContent = 'Enter a valid ' + (id === 'max-tokens' ? 'output token limit' : id.replace('-', ' ')) + ', or leave it blank for the default.'; $(id).reportValidity(); return; }
+    }
+    if ($('provider').value !== 'ollama' && $('context-window').value !== '') {
+      $('quality-error').textContent = 'Context allocation is an Ollama option. Clear it for this provider and configure context on its server.'; return;
+    }
     const kind = $('provider').value;
     const config = session.config;
     if (config.kind !== kind || config.base_url !== $('base-url').value.trim() || config.model !== $('model').value.trim()) delete config.checkpoint_id;
     config.kind = kind;
     config.base_url = $('base-url').value.trim();
     config.model = $('model').value.trim();
+    config.timeout_secs = $('provider-timeout').value === '' ? 0 : Number($('provider-timeout').value);
     config.sampling = {};
     if ($('temperature').value !== '') config.sampling.temperature = Number($('temperature').value);
     if ($('max-tokens').value !== '') config.sampling.max_tokens = Number($('max-tokens').value);
+    if ($('context-window').value !== '') config.sampling.context_window = Number($('context-window').value);
+    if (kind === 'mcl4-coe') config.sampling.compact_history = $('compact-history').checked;
     if (kind === 'mcl4-coe' || (config.model && config.model.toLowerCase().includes('v4.1'))) {
       const mcl4 = {
         mode: $('mcl4-mode') ? $('mcl4-mode').value : 'uta',
@@ -1513,7 +1529,7 @@
       model: $('model').value.trim(),
       base_url: $('base-url').value.trim(),
       api_key: $('api-key').value || null,
-      timeout_secs: 300
+      timeout_secs: 30
     };
   }
 
@@ -1546,11 +1562,16 @@
     closeLayer('settings');
     setView('harness');
     setContextPanel('compute');
+    state.contextWide = true;
+    state.contextWidth = state.expandedContextWidth;
+    document.body.classList.add('context-wide');
+    applyPaneWidths();
+    $('checkpoint-path').focus();
   }
 
   function checkpointControls() {
     const busy = state.localModels.busy;
-    ['checkpoint-path', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend'].forEach(id => { $(id).disabled = busy; });
+    ['checkpoint-path', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse'].forEach(id => { $(id).disabled = busy; });
     $('checkpoint-load').disabled = busy || !$('checkpoint-select').value;
     $('checkpoint-use').disabled = busy || state.busy || !state.localModels.loaded;
   }
@@ -1560,7 +1581,7 @@
     const facts = $('checkpoint-facts');
     facts.replaceChildren();
     if (selected) {
-      const pairs = [['Format', selected.source_format], ['Architecture', selected.architecture || 'Unknown'], ['Tensors', selected.tensor_count], ['Source bytes', selected.source_bytes.toLocaleString()], ['KTB bytes', selected.bank_bytes.toLocaleString()], ['Source types', selected.dtypes.join(', ')], ['Context tokens', selected.context_length || 'Not declared'], ['Checkpoint', selected.id]];
+      const pairs = [['Format', selected.source_format], ['Architecture', selected.architecture || 'Unknown'], ['Tensors', selected.tensor_count], ['Normalized shards', selected.bank_count], ['Source bytes', selected.source_bytes.toLocaleString()], ['KTB bytes', selected.bank_bytes.toLocaleString()], ['Source types', selected.dtypes.join(', ')], ['Maximum context tokens', selected.context_length || 'Not declared'], ['Checkpoint', selected.id], ['Shard folder', state.localModels.directory + '/' + selected.id + '/banks']];
       pairs.forEach(([key, value]) => { const row = element('div'); row.append(element('dt', '', key), element('dd', 'code-sm', value)); facts.append(row); });
     }
     $('checkpoint-warnings').textContent = selected ? selected.warnings.join(' ') : '';
@@ -1572,8 +1593,10 @@
     try {
       const list = await api('/api/v1/checkpoints');
       if (request !== state.localModels.request) return;
-      const selected = wanted || $('checkpoint-select').value;
+      const selected = wanted || $('checkpoint-select').value || (currentSession() && currentSession().config.checkpoint_id);
       state.localModels.items = list.checkpoints;
+      $('checkpoint-directory').textContent = list.directory;
+      state.localModels.directory = list.directory;
       $('checkpoint-select').replaceChildren(new Option('Select a checkpoint', ''));
       list.checkpoints.forEach(item => $('checkpoint-select').append(new Option(item.name + ' · ' + item.id.slice(0, 12), item.id)));
       $('checkpoint-select').value = selected;
@@ -1599,13 +1622,14 @@
 
   async function loadCheckpoint() {
     if (state.localModels.busy || !$('checkpoint-select').value) return;
+    if (!$('checkpoint-context').reportValidity()) return;
     state.localModels.busy = true;
     state.localModels.loaded = null;
     checkpointControls();
-    $('checkpoint-load-status').textContent = 'Verifying package, uploading local blobs, checking tensor metadata, and loading the original context size. No smaller model or precision is selected on failure.';
+    $('checkpoint-load-status').textContent = 'Verifying package, uploading local blobs, checking tensor metadata, and loading the requested context (maximum by default). No smaller model or precision is selected on failure.';
     try {
-      state.localModels.loaded = await postJson('/api/v1/checkpoints/load', { checkpoint_id: $('checkpoint-select').value, base_url: $('checkpoint-backend').value.trim() });
-      $('checkpoint-load-status').textContent = 'Loaded. Tensor metadata matches. Choose Use in this task to change its provider. ' + state.localModels.loaded.execution;
+      state.localModels.loaded = await postJson('/api/v1/checkpoints/load', { checkpoint_id: $('checkpoint-select').value, base_url: $('checkpoint-backend').value.trim(), context_length: $('checkpoint-context').value === '' ? null : Number($('checkpoint-context').value) });
+      $('checkpoint-load-status').textContent = 'Loaded at ' + state.localModels.loaded.context_length + ' context tokens. Tensor metadata matches. Choose Use in this task to change its provider. ' + state.localModels.loaded.execution;
     } catch (error) { $('checkpoint-load-status').textContent = error.message; }
     finally { state.localModels.busy = false; checkpointControls(); }
   }
@@ -1619,6 +1643,9 @@
     session.config.base_url = loaded.provider.base_url;
     session.config.checkpoint_id = loaded.checkpoint.id;
     delete session.config.sampling.mcl4_coe;
+    delete session.config.sampling.compact_history;
+    delete session.config.sampling.context_window;
+    if (loaded.context_length < loaded.checkpoint.context_length) session.config.sampling.context_window = loaded.context_length;
     session.lastError = null;
     session.status = 'ready';
     session.updatedAt = Date.now();
@@ -1626,6 +1653,36 @@
     renderAll();
     $('checkpoint-load-status').textContent = 'This task now uses ' + loaded.checkpoint.name + ' through local Ollama. Enter a prompt to run inference.';
     $('prompt').focus();
+  }
+
+  async function browseCheckpoints(path) {
+    const request = state.localModels.browseRequest = (state.localModels.browseRequest || 0) + 1;
+    $('checkpoint-browser').hidden = false;
+    $('checkpoint-files').textContent = 'Reading model folders…';
+    try {
+      const listing = await postJson('/api/v1/checkpoints/browse', { path: path || null });
+      if (request !== state.localModels.browseRequest) return;
+      state.localModels.browse = listing;
+      $('checkpoint-browser-path').textContent = listing.path;
+      $('checkpoint-parent').disabled = !listing.parent;
+      $('checkpoint-files').replaceChildren();
+      listing.entries.forEach(entry => {
+        const button = element('button', 'text-btn checkpoint-file', (entry.directory ? 'Folder: ' : 'Model: ') + entry.name);
+        button.type = 'button';
+        button.addEventListener('click', () => {
+          if (state.localModels.busy) return;
+          if (entry.directory) browseCheckpoints(entry.path);
+          else {
+            // A SafeTensors file needs its full sibling package, including tokenizer/config.
+            $('checkpoint-path').value = entry.name.endsWith('.safetensors') ? listing.path : entry.path;
+            $('checkpoint-browser').hidden = true;
+          }
+        });
+        $('checkpoint-files').append(button);
+      });
+      if (!listing.entries.length) $('checkpoint-files').textContent = 'No model files or subfolders here. You can still select this folder.';
+      if (listing.truncated) $('checkpoint-files').append(element('p', 'caption', 'Showing the first 500 entries. Enter a more specific path to find other files.'));
+    } catch (error) { if (request === state.localModels.browseRequest) $('checkpoint-files').textContent = error.message; }
   }
 
   function resetJobInputs() {
@@ -1766,7 +1823,7 @@
 
   async function cancelAcceptedRun(run) {
     try {
-      const response = await fetch('/api/v1/runs/' + encodeURIComponent(run.id) + '/cancel', { method: 'POST' });
+      const response = await fetch(apiPath('/api/v1/runs/' + encodeURIComponent(run.id) + '/cancel'), { method: 'POST' });
       // A completed run may win the race; its final stream report still decides the outcome.
       if (!response.ok && response.status !== 404) throw new Error('Could not stop the run (HTTP ' + response.status + ').');
     } catch (error) {
@@ -1989,7 +2046,7 @@
       model: config.model,
       base_url: config.base_url,
       api_key: state.credentials[workflow.credentialKey(config.kind, config.base_url)] || null,
-      timeout_secs: 300
+      timeout_secs: config.timeout_secs || 0
     };
     const requestPayload = {
       run_id: uid(),
@@ -2038,7 +2095,7 @@
       return liveMessage;
     };
 
-    const streamResp = await fetch('/api/v1/chat/stream', {
+    const streamResp = await fetch(apiPath('/api/v1/chat/stream'), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(requestPayload)
@@ -2277,6 +2334,12 @@
     $('open-model-library').addEventListener('click', openModelLibrary);
     $('settings-local-model').addEventListener('click', openModelLibrary);
     $('checkpoint-form').addEventListener('submit', event => { event.preventDefault(); importCheckpoint(); });
+    $('quality-maximum').addEventListener('click', () => { $('max-tokens').value = ''; $('context-window').value = ''; $('compact-history').checked = false; $('provider-timeout').value = ''; $('quality-error').textContent = ''; });
+    $('checkpoint-browse').addEventListener('click', () => browseCheckpoints($('checkpoint-path').value.trim()));
+    $('checkpoint-parent').addEventListener('click', () => { if (state.localModels.browse) browseCheckpoints(state.localModels.browse.parent); });
+    $('checkpoint-choose-folder').addEventListener('click', () => { if (!state.localModels.busy && state.localModels.browse) { $('checkpoint-path').value = state.localModels.browse.path; $('checkpoint-browser').hidden = true; } });
+    $('checkpoint-browser-close').addEventListener('click', () => { $('checkpoint-browser').hidden = true; });
+    $('checkpoint-context').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Context changed. Load again to verify this allocation.'; });
     $('checkpoint-refresh').addEventListener('click', () => refreshCheckpoints());
     $('checkpoint-select').addEventListener('change', () => { state.localModels.loaded = null; $('checkpoint-load-status').textContent = 'Load this checkpoint before using it in a task.'; renderCheckpoint(); });
     $('checkpoint-backend').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Endpoint changed. Load the checkpoint at this endpoint before using it.'; });
@@ -2480,7 +2543,7 @@
       const files = state.files;
       if (!files.selected || !files.dirty || files.saving) return;
       const payload = JSON.stringify({ path: files.selected, content: $('file-editor').value });
-      navigator.sendBeacon('/api/v1/files/write', new Blob([payload], { type: 'application/json' }));
+      navigator.sendBeacon(apiPath('/api/v1/files/write'), new Blob([payload], { type: 'application/json' }));
     });
 
     $('terminal-form').addEventListener('submit', (event) => { event.preventDefault(); executeTerminal(); });
@@ -2547,6 +2610,13 @@
     await loadProviders();
     loadSessions();
     renderAll();
+    if (location.pathname.startsWith('/condenser/')) {
+      $('return-kadmium').hidden = false;
+      $('return-kadmium').href = window.__KADMIUM_DESKTOP__ ? '/companion#models' : '/#/models';
+      $('compute-url').value = location.origin;
+    }
+    if (location.hash === '#models') openModelLibrary();
+    window.addEventListener('hashchange', () => { if (location.hash === '#models') openModelLibrary(); });
     await Promise.all([loadPlugins(), loadSystem()]);
   }
 

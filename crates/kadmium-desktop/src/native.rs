@@ -190,15 +190,21 @@ fn watch_coordinator(port: u16, source: CoordinatorSource, proxy: EventLoopProxy
     }
 }
 
-/// Only the Companion (and the built-in splash) render inside the window; everything else,
+/// The Companion, Condenser, and built-in splash render inside the window; everything else,
 /// including the Control Room, opens in the default browser.
 fn stays_in_window(port: u16, url: &str) -> bool {
     if url.starts_with("about:") || url.starts_with("data:") {
         return true;
     }
-    let companion = launch::companion_url(port);
-    url.strip_prefix(companion.as_str())
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['?', '#', '/']))
+    [
+        launch::companion_url(port),
+        format!("{}/condenser", launch::origin(port)),
+    ]
+    .iter()
+    .any(|base| {
+        url.strip_prefix(base.as_str())
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(['?', '#', '/']))
+    })
 }
 
 /// Handles `window.ipc.postMessage` calls made through `window.__KADMIUM_DESKTOP__`.
@@ -299,8 +305,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_companion_stays_in_the_window() {
+    fn companion_and_condenser_stay_in_the_window() {
         assert!(stays_in_window(7848, "about:blank"));
+        assert!(stays_in_window(
+            7848,
+            "http://127.0.0.1:7848/condenser/#models"
+        ));
+        assert!(!stays_in_window(
+            7848,
+            "http://127.0.0.1:7848/condenser-other"
+        ));
+        assert!(!stays_in_window(7848, "http://127.0.0.1:9999/condenser/"));
         assert!(stays_in_window(7848, "http://127.0.0.1:7848/companion"));
         assert!(stays_in_window(
             7848,

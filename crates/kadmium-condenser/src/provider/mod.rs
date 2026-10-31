@@ -13,6 +13,50 @@ mod mcl4_coe;
 mod ollama;
 mod openai;
 
+/// Only advertised limits are trusted. Missing metadata must not become a hidden small cap.
+pub(crate) fn maximum_output(model: &serde_json::Value) -> Option<u32> {
+    [
+        model.get("max_output_tokens"),
+        model.get("max_tokens"),
+        model.pointer("/capabilities/max_tokens"),
+        model.pointer("/limits/max_output_tokens"),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|value| {
+        value
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .filter(|v| *v > 0)
+    })
+}
+
+pub(crate) fn require_output_maximum(model: &serde_json::Value, provider: &str) -> Result<u32> {
+    maximum_output(model).ok_or_else(|| CondenserError::Config(format!(
+        "{provider} did not advertise a maximum output token count for this model. Set Output tokens in Provider settings to the model's documented maximum (or your preferred limit). No small default was substituted."
+    )))
+}
+
+pub(crate) fn reject_context_override(request: &ChatRequest, provider: &str) -> Result<()> {
+    if request.sampling.context_window.is_some() {
+        return Err(CondenserError::Config(format!(
+            "{provider} does not expose a context allocation option through this API. Clear Context / input window and configure context on the provider. Condenser sends the full input."
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) async fn with_timeout<T>(
+    seconds: u64,
+    future: impl std::future::Future<Output = T>,
+) -> std::result::Result<T, tokio::time::error::Elapsed> {
+    if seconds == 0 {
+        Ok(future.await)
+    } else {
+        tokio::time::timeout(Duration::from_secs(seconds), future).await
+    }
+}
+
 static NEXT_SYNTHETIC_TOOL_CALL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Providers are allowed to omit tool-call IDs. Condenser supplies a
@@ -96,8 +140,13 @@ impl ProviderFactory {
 
     pub fn build(config: ProviderConfig) -> Result<Arc<dyn InferenceProvider>> {
         config.validate_connection()?;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs))
+        let builder = reqwest::Client::builder();
+        let builder = if config.timeout_secs == 0 {
+            builder
+        } else {
+            builder.timeout(Duration::from_secs(config.timeout_secs))
+        };
+        let client = builder
             .tcp_nodelay(true)
             .pool_max_idle_per_host(32)
             .pool_idle_timeout(Duration::from_secs(90))

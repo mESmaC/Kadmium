@@ -52,7 +52,26 @@ impl InferenceProvider for OllamaProvider {
 
     async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse> {
         self.config.validate()?;
-        let body = request_body(request)?;
+        let shown = self
+            .authorize(
+                self.client
+                    .post(endpoint(self.config.base_url(), "api/show"))
+                    .json(&json!({"model":request.model})),
+            )
+            .send()
+            .await
+            .map_err(|e| CondenserError::provider("Ollama", e.to_string()))?;
+        let shown: Value = decode_json(ProviderKind::Ollama, shown).await?;
+        let maximum = native_context(&shown)?;
+        let mut resolved = request.clone();
+        let context = request.sampling.context_window.unwrap_or(maximum);
+        if context > maximum {
+            return Err(CondenserError::Config(format!(
+                "Requested context {context} exceeds model maximum {maximum}"
+            )));
+        }
+        resolved.sampling.context_window = Some(context);
+        let body = request_body(&resolved)?;
         let url = endpoint(self.config.base_url(), "api/chat");
         let response = self
             .authorize(self.client.post(url).json(&body))
@@ -62,6 +81,16 @@ impl InferenceProvider for OllamaProvider {
         let value: Value = decode_json(ProviderKind::Ollama, response).await?;
         parse_chat(value, &request.model)
     }
+}
+
+fn native_context(shown: &Value) -> Result<u32> {
+    let info = &shown["model_info"];
+    let architecture = info["general.architecture"].as_str().unwrap_or("");
+    info[format!("{architecture}.context_length")].as_u64()
+        .or_else(|| info["context_length"].as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0 && *value <= i32::MAX as u32)
+        .ok_or_else(|| CondenserError::Config("Ollama did not report the model's native context length; refusing to use a smaller backend default".into()))
 }
 
 fn request_body(request: &ChatRequest) -> Result<Value> {
@@ -77,8 +106,12 @@ fn request_body(request: &ChatRequest) -> Result<Value> {
     if let Some(value) = sampling.top_k {
         options.insert("top_k".into(), json!(value));
     }
-    if let Some(value) = sampling.max_tokens {
-        options.insert("num_predict".into(), json!(value));
+    options.insert(
+        "num_predict".into(),
+        sampling.max_tokens.map_or(json!(-1), |value| json!(value)),
+    );
+    if let Some(value) = sampling.context_window {
+        options.insert("num_ctx".into(), json!(value));
     }
     if let Some(value) = sampling.seed {
         options.insert("seed".into(), json!(value));
@@ -90,6 +123,8 @@ fn request_body(request: &ChatRequest) -> Result<Value> {
         "model": request.model,
         "messages": request.messages.iter().map(wire_message).collect::<Vec<_>>(),
         "stream": false,
+        "truncate": false,
+        "shift": false,
         "tools": request.tools.iter().map(|tool| json!({
             "type": "function",
             "function": {

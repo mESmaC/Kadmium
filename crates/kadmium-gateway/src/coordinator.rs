@@ -523,7 +523,10 @@ pub async fn run_coordinator(options: CoordinatorOptions) -> Result<(), String> 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("could not bind the coordinator on {addr}: {e}"))?;
-    axum::serve(listener, app)
-        .await
-        .map_err(|e| format!("coordinator stopped: {e}"))
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(|e| format!("coordinator stopped: {e}"))
 }

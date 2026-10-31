@@ -1652,7 +1652,8 @@ mod tests {
 
         let comp_html = http_get("/companion");
         assert!(comp_html.contains("Boards and bridges"));
-        assert!(comp_html.contains("Import local weights"));
+        assert!(comp_html.contains("Advanced: reference bank import"));
+        assert!(comp_html.contains("KadmiumWorkspace.ModelSetup"));
         assert!(comp_html.contains("/api/v1/platforms/attach"));
         assert!(comp_html.contains("__KADMIUM_DESKTOP__"));
 

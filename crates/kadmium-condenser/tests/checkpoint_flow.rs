@@ -22,6 +22,7 @@ struct Backend {
     shorten_context: Arc<AtomicBool>,
     model: Arc<Mutex<String>>,
     loads: Arc<AtomicUsize>,
+    context: Arc<AtomicUsize>,
 }
 
 #[tokio::test]
@@ -53,23 +54,26 @@ async fn import_verify_load_and_chat_rejects_backend_precision_changes() {
         }))
         .route("/prefix/api/create",post(|State(state):State<Backend>,Json(body):Json<Value>|async move{
             assert!(body.get("quantize").is_none()); assert!(body.get("from").is_none());
-            assert_eq!(body["parameters"],json!({"num_ctx":8192}));
+            state.context.store(body["parameters"]["num_ctx"].as_u64().unwrap() as usize, Ordering::Relaxed);
             assert_eq!(body["files"].as_object().unwrap().len(),3);
             *state.model.lock().unwrap()=body["model"].as_str().unwrap().into();
             Json(json!({"status":"success"}))
         }))
         .route("/prefix/api/show",post(|State(state):State<Backend>|async move{
-            Json(json!({"tensors":[{"name":"model.weight","shape":[2],"type":if state.corrupt.load(Ordering::Relaxed){"F16"}else{"F32"}}]}))
+            Json(json!({"model_info":{"general.architecture":"llama","llama.context_length":8192},"tensors":[{"name":"model.weight","shape":[2],"type":if state.corrupt.load(Ordering::Relaxed){"F16"}else{"F32"}}]}))
         }))
         .route("/prefix/api/generate",post(|State(state):State<Backend>,Json(body):Json<Value>|async move{
-            assert_eq!(body["options"]["num_ctx"],8192);state.loads.fetch_add(1,Ordering::Relaxed);
+            assert_eq!(body["options"]["num_ctx"],state.context.load(Ordering::Relaxed));state.loads.fetch_add(1,Ordering::Relaxed);
             if state.fail_preload.load(Ordering::Relaxed) { Json(json!({"error":"model does not fit"})) } else { Json(json!({"done":true})) }
         }))
         .route("/prefix/api/ps",get(|State(state):State<Backend>|async move{
-            Json(json!({"models":[{"name":*state.model.lock().unwrap(),"context_length":if state.shorten_context.load(Ordering::Relaxed){4096}else{8192}}]}))
+            Json(json!({"models":[{"name":*state.model.lock().unwrap(),"context_length":if state.shorten_context.load(Ordering::Relaxed){4096}else{state.context.load(Ordering::Relaxed)}}]}))
         }))
         .route("/prefix/api/chat",post(|Json(body):Json<Value>|async move{
             assert!(body["model"].as_str().unwrap().starts_with("kadmium-"));
+            assert_eq!(body["options"]["num_ctx"],8192);
+            assert_eq!(body["options"]["num_predict"],-1);
+            assert_eq!(body["truncate"],false);
             Json(json!({"model":body["model"],"message":{"role":"assistant","content":"Checkpoint answer"},"done":true,"eval_count":2,"prompt_eval_count":3}))
         })).with_state(backend.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -156,7 +160,7 @@ async fn import_verify_load_and_chat_rejects_backend_precision_changes() {
             .text()
             .await
             .unwrap()
-            .contains("full declared context length")
+            .contains("requested context length")
     );
     let remote = client
         .post(format!("{base}/api/v1/checkpoints/load"))
@@ -165,6 +169,26 @@ async fn import_verify_load_and_chat_rejects_backend_precision_changes() {
         .await
         .unwrap();
     assert_eq!(remote.status(), 400);
+    backend.shorten_context.store(false, Ordering::Relaxed);
+    let lowered = client
+        .post(format!("{base}/api/v1/checkpoints/load"))
+        .json(&json!({"checkpoint_id":id,"base_url":upstream,"context_length":4096}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(lowered.status(), 200);
+    assert_eq!(
+        lowered.json::<Value>().await.unwrap()["context_length"],
+        4096
+    );
+    assert_eq!(backend.context.load(Ordering::Relaxed), 4096);
+    let invalid = client
+        .post(format!("{base}/api/v1/checkpoints/load"))
+        .json(&json!({"checkpoint_id":id,"base_url":upstream,"context_length":8193}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), 400);
     let forbidden = client
         .post(format!("{base}/api/v1/checkpoints/import"))
         .header("origin", "https://example.com")

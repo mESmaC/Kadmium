@@ -5,8 +5,8 @@
 //! already running on the chosen port the window attaches to it; otherwise the app starts
 //! one in-process and stops it when the window closes.
 //!
-//! The window only ever shows the Companion. The Control Room, the docs and every other
-//! page open in the default browser, so the desktop app and the browser never look alike.
+//! The window shows the Companion and its embedded Condenser workspace. The Control Room,
+//! docs and external pages open in the default browser.
 
 // Release builds on Windows are GUI apps: no console window behind the app window.
 // Debug builds keep the console so `cargo run -p kadmium-desktop` shows coordinator logs.

@@ -1,6 +1,6 @@
 # Condenser inference workspace
 
-Condenser connects conversations and tool runs to inference providers while keeping Kadmium's compute plans within reach. Start the loopback workspace with:
+Condenser connects conversations and tool runs to inference providers while keeping Kadmium's compute plans within reach. Open **Models → Launch Condenser** in Kadmium's Control Room or desktop Companion. **Prepare a local model** opens GGUF/SafeTensors setup. Condenser is included at `/condenser/` and stays inside the desktop window. A separate launch is optional:
 
 ```sh
 cargo run -p kadmium-condenser -- serve --port 7856
@@ -64,6 +64,14 @@ cargo run -p kadmium-condenser -- chat "Inspect the project" --provider ollama -
 ```
 
 Those names must exist in the local plugin registry; they are examples, not built-in tools.
+
+## Maximum-quality defaults
+
+**Provider settings → Quality & token limits** defaults to full model context/input, maximum output and no generation timeout. Explicitly lower **Context / input window** for Ollama, **Output tokens per response**, or **Request timeout** when needed. **Reset to maximum** clears these overrides; Apply saves them per task. Forks inherit them and queued prompts retain settings captured at submission. Existing explicit user limits remain intact. Input and output share a context budget, so both cannot occupy the entire window simultaneously.
+
+Ollama resolves native context from model metadata on every request, disables prompt truncation and uses unlimited-until-stop generation. Other providers receive the complete conversation; context allocation is configured on their servers. Anthropic resolves its advertised output maximum from model metadata; OpenAI-compatible and MCL4 endpoints resolve it from their model catalog. If required metadata is absent, generation stops and asks for the model's documented output limit. Condenser never substitutes 1,024 tokens or another guessed cap. Hosted APIs that do not publish limits therefore need an explicit output setting.
+
+MCL4 history compaction and old tool-result pruning are off by default and require **Allow history compaction**. Temperature remains the provider default because higher temperature does not mean higher quality. Run-level budgets remain separate explicit controls. Allocation and precision failures do not substitute another model or quantize weights. Backend numerical precision and tokenization remain backend responsibilities.
 
 ## API contracts
 

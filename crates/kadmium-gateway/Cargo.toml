@@ -13,6 +13,7 @@ kadmium-runtime.workspace = true
 kadmium-rl.workspace = true
 kadmium-network.workspace = true
 kadmium-grid.workspace = true
+kadmium-condenser = { path = "../kadmium-condenser" }
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true

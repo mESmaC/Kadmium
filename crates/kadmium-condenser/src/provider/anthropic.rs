@@ -61,7 +61,26 @@ impl InferenceProvider for AnthropicProvider {
 
     async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse> {
         self.config.validate()?;
-        let body = request_body(request)?;
+        super::reject_context_override(request, "Anthropic")?;
+        let mut resolved = request.clone();
+        if resolved.sampling.max_tokens.is_none() {
+            let mut url =
+                reqwest::Url::parse(&versioned_endpoint(self.config.base_url(), "models/"))
+                    .map_err(|e| CondenserError::Config(e.to_string()))?;
+            url.path_segments_mut()
+                .map_err(|_| CondenserError::Config("Invalid model metadata URL".into()))?
+                .pop_if_empty()
+                .push(&request.model);
+            let response = self
+                .authorize(self.client.get(url))
+                .send()
+                .await
+                .map_err(|e| CondenserError::provider("Anthropic", e.to_string()))?;
+            let model: Value = decode_json(ProviderKind::Anthropic, response).await?;
+            resolved.sampling.max_tokens =
+                Some(super::require_output_maximum(&model, "Anthropic")?);
+        }
+        let body = request_body(&resolved)?;
         let url = versioned_endpoint(self.config.base_url(), "messages");
         let response = self
             .authorize(self.client.post(url).json(&body))
@@ -97,7 +116,7 @@ fn request_body(request: &ChatRequest) -> Result<Value> {
     let mut body = json!({
         "model": request.model,
         "messages": messages,
-        "max_tokens": request.sampling.max_tokens.unwrap_or(1024)
+        "max_tokens": request.sampling.max_tokens.ok_or_else(|| CondenserError::Config("Resolve the model's maximum output tokens before generation".into()))?
     });
     let object = body.as_object_mut().expect("request object");
     if !system.is_empty() {
@@ -281,15 +300,17 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_requires_max_tokens_but_not_a_client_default_elsewhere() {
+    fn anthropic_requires_resolved_output_limit() {
         let request = ChatRequest {
             model: "claude-test".into(),
             messages: vec![Message::user("hello")],
             sampling: SamplingParams::default(),
             tools: Vec::new(),
         };
-        let body = request_body(&request).unwrap();
-        assert_eq!(body["max_tokens"], 1024);
+        assert!(request_body(&request).is_err());
+        let mut request = request;
+        request.sampling.max_tokens = Some(64000);
+        assert_eq!(request_body(&request).unwrap()["max_tokens"], 64000);
     }
 
     #[test]
@@ -297,7 +318,10 @@ mod tests {
         let request = ChatRequest {
             model: "claude-test".into(),
             messages: vec![Message::user("hello")],
-            sampling: SamplingParams::default(),
+            sampling: SamplingParams {
+                max_tokens: Some(64000),
+                ..Default::default()
+            },
             tools: vec![ToolDefinition {
                 name: "example__echo".into(),
                 description: "Echo text".into(),

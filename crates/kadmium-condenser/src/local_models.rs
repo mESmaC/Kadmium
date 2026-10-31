@@ -20,6 +20,7 @@ pub(crate) struct ImportRequest {
 pub(crate) struct LoadRequest {
     checkpoint_id: String,
     base_url: String,
+    context_length: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -28,6 +29,39 @@ pub struct LoadedCheckpoint {
     pub provider: ProviderConfig,
     pub tensor_metadata_verified: bool,
     pub execution: &'static str,
+    pub context_length: u32,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct BrowseRequest {
+    path: Option<PathBuf>,
+}
+
+/// Host-side picker: browsers cannot expose local absolute paths through file inputs.
+pub(crate) async fn browse(
+    Json(request): Json<BrowseRequest>,
+) -> std::result::Result<Json<Value>, ApiError> {
+    let listing = tokio::task::spawn_blocking(move || -> Result<Value> {
+        let mut path = request.path.filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
+                .map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")));
+        if path.is_file() { path.pop(); }
+        let path = std::fs::canonicalize(path)?;
+        let mut entries = Vec::new();
+        let mut truncated = false;
+        for entry in std::fs::read_dir(&path)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            let candidate = entry.path();
+            if kind.is_dir() || (kind.is_file() && candidate.extension().is_some_and(|ext| ext == "gguf" || ext == "safetensors")) {
+                if entries.len() == 500 { truncated = true; break; }
+                entries.push(json!({"name":entry.file_name().to_string_lossy(), "path":candidate, "directory":kind.is_dir()}));
+            }
+        }
+        entries.sort_by_key(|entry| (!entry["directory"].as_bool().unwrap_or(false), entry["name"].as_str().unwrap_or("").to_lowercase()));
+        Ok(json!({"path":path,"parent":path.parent(),"entries":entries,"truncated":truncated}))
+    }).await.map_err(|e| CondenserError::Config(e.to_string()))??;
+    Ok(Json(listing))
 }
 
 pub(crate) async fn list(
@@ -76,10 +110,11 @@ pub(crate) async fn load(
             CondenserError::Config("A checkpoint import or load is already running".into())
         })?;
     Ok(Json(
-        load_ollama(
+        load_ollama_with_context(
             &state.model_library,
             &request.checkpoint_id,
             &request.base_url,
+            request.context_length,
         )
         .await?,
     ))
@@ -129,6 +164,15 @@ pub async fn load_ollama(
     id: &str,
     base: &str,
 ) -> Result<LoadedCheckpoint> {
+    load_ollama_with_context(library, id, base, None).await
+}
+
+pub async fn load_ollama_with_context(
+    library: &CheckpointLibrary,
+    id: &str,
+    base: &str,
+    context_length: Option<u32>,
+) -> Result<LoadedCheckpoint> {
     let base = local_url(base)?;
     let owned = library.clone();
     let wanted = id.to_string();
@@ -138,6 +182,12 @@ pub async fn load_ollama(
         .map_err(CondenserError::Config)?;
     if manifest.context_length == 0 || manifest.context_length > i32::MAX as u64 {
         return Err(CondenserError::Config("Checkpoint lacks a supported native context length; refusing to choose a smaller context automatically".into()));
+    }
+    let context_length = context_length.unwrap_or(manifest.context_length as u32);
+    if context_length == 0 || u64::from(context_length) > manifest.context_length {
+        return Err(CondenserError::Config(
+            "Context must be between 1 and the checkpoint's declared maximum".into(),
+        ));
     }
     let client = reqwest::Client::builder()
         .no_proxy()
@@ -195,7 +245,7 @@ pub async fn load_ollama(
         .post(endpoint(&base, "create"))
         .json(&json!({
             "model":model, "files":files, "stream":false,
-            "parameters":{"num_ctx":manifest.context_length}
+            "parameters":{"num_ctx":context_length}
         }))
         .send()
         .await
@@ -218,9 +268,14 @@ pub async fn load_ollama(
     let shown: Value = decode_json(ProviderKind::Ollama, response).await?;
     verify_backend_tensors(&manifest, &shown)?;
     // Empty generate preloads the actual model. A create success alone does not prove it fits.
-    let response = client.post(endpoint(&base, "generate")).json(&json!({
-        "model":model,"stream":false,"keep_alive":"5m","options":{"num_ctx":manifest.context_length}
-    })).send().await.map_err(backend_error)?;
+    let response = client
+        .post(endpoint(&base, "generate"))
+        .json(&json!({
+            "model":model,"stream":false,"keep_alive":"5m","options":{"num_ctx":context_length}
+        }))
+        .send()
+        .await
+        .map_err(backend_error)?;
     let loaded: Value = decode_json(ProviderKind::Ollama, response).await?;
     if loaded["done"] != true || loaded.get("error").is_some() {
         return Err(backend_error("backend did not confirm model loading"));
@@ -236,12 +291,12 @@ pub async fn load_ollama(
             (entry["name"] == model || entry["model"] == model)
                 && entry["context_length"]
                     .as_u64()
-                    .is_some_and(|length| length >= manifest.context_length)
+                    .is_some_and(|length| length >= u64::from(context_length))
         })
     });
     if !full_context {
         return Err(backend_error(
-            "backend did not confirm the loaded model at its full declared context length",
+            "backend did not confirm the loaded model at the requested context length",
         ));
     }
     let mut provider = ProviderConfig::new(ProviderKind::Ollama);
@@ -251,6 +306,7 @@ pub async fn load_ollama(
         checkpoint: manifest.summary(),
         provider,
         tensor_metadata_verified: true,
+        context_length,
         execution: "Local Ollama using preserved source files; KTB banks are storage artifacts. Backend arithmetic and KV precision are not RepOps-certified.",
     })
 }
