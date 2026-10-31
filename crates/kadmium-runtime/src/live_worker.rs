@@ -2111,6 +2111,8 @@ pub struct LiveNodeWorkerServer {
     pub accepted_connections: Arc<AtomicU64>,
     /// Register model sources after spawning to serve local and remote expert loads.
     pub expert_loader: ExpertLoader,
+    /// Bounds expert loads in flight across every connection, bridged ones included.
+    pub expert_load_slots: Arc<tokio::sync::Semaphore>,
     /// Executors for generic grid work units; register more after spawning to extend the worker.
     pub executors: ExecutorRegistry,
     pub served_work_units: Arc<AtomicU64>,
@@ -2180,7 +2182,7 @@ impl LiveNodeWorkerServer {
             served_training_steps: Arc::clone(&trn_counter),
             served_fts3_pages: Arc::clone(&fts_counter),
             expert_loader: expert_loader.clone(),
-            expert_load_slots,
+            expert_load_slots: Arc::clone(&expert_load_slots),
             executors: executors.clone(),
             served_work_units: Arc::clone(&work_counter),
             peer_addr: local_addr,
@@ -2210,6 +2212,7 @@ impl LiveNodeWorkerServer {
             served_fts3_pages: fts_counter,
             accepted_connections: accepted_counter,
             expert_loader,
+            expert_load_slots,
             executors,
             served_work_units: work_counter,
         })
@@ -2240,6 +2243,8 @@ impl LiveNodeWorkerServer {
             served_forward_stages: Arc::clone(&self.served_forward_stages),
             served_training_steps: Arc::clone(&self.served_training_steps),
             served_fts3_pages: Arc::clone(&self.served_fts3_pages),
+            expert_loader: self.expert_loader.clone(),
+            expert_load_slots: Arc::clone(&self.expert_load_slots),
             executors: self.executors.clone(),
             served_work_units: Arc::clone(&self.served_work_units),
             peer_addr: local_addr,
