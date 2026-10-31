@@ -532,7 +532,15 @@ impl DecentralizedStoragePoolEngine {
         let m = parity_shards_m;
         let size_gb = (logical_size_gb.max(0.01) * 100.0).round() / 100.0;
         let phys_gb = ((size_gb * ((k + m) as f64 / (k as f64))) * 100.0).round() / 100.0;
-        let superblocks = ((size_gb * 1024.0) / 64.0).ceil().max(1.0) as usize;
+        let block_count = (size_gb * 16.0).ceil().max(1.0);
+        // Keep block and shard counts exactly representable on every supported platform.
+        if !size_gb.is_finite()
+            || !phys_gb.is_finite()
+            || block_count > (u32::MAX as usize / total_shards) as f64
+        {
+            return Err("logical_size_gb exceeds the supported block/shard count".into());
+        }
+        let superblocks = block_count as usize;
 
         let merkle = merkle_root_fnv64.unwrap_or_else(|| {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;

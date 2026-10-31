@@ -6,7 +6,9 @@ use kadmium_data::{
 fn malformed_ktb_headers_and_tensor_ranges_never_unwind() {
     let mut packer = KtbBankPacker::new("test");
     packer.add_tensor_bank("tensor", 0, None, TensorEncoding::Bf16, vec![1, 2, 3, 4]);
-    let valid = packer.pack_to_bytes();
+    let valid = packer
+        .pack_to_bytes()
+        .expect("bounded reference KTB fixture");
     let reader = KtbBankReader::from_slice(&valid).unwrap();
     assert_eq!(
         reader
@@ -102,5 +104,89 @@ fn live_storage_never_claims_synthetic_recovery_or_implicit_copies() {
         benchmark
             .erasure_coding_verification
             .exact_bit_identical_recovery
+    );
+}
+
+#[test]
+fn crafted_import_lengths_and_truncated_descriptors_return_errors() {
+    use kadmium_data::{
+        GgmlTypeCode, GgufToKtbTranscoder as Gguf, SafetensorsToKtbTranscoder as Safe,
+    };
+    let valid = Gguf::build_gguf_v3_bytes(&[("blk.0.weight", GgmlTypeCode::F16, 2, &[1, 2, 3, 4])]);
+    assert!(Gguf::transcode_shard_to_ktb("test", &valid, 0, 0).is_ok());
+    // All truncations before the aligned data section, including inside each descriptor field.
+    for len in 0..96 {
+        assert!(
+            Gguf::transcode_shard_to_ktb("test", &valid[..len], 0, 0).is_err(),
+            "length {len}"
+        );
+    }
+    for count in [1u64 << 50, u64::MAX] {
+        let mut raw = valid[..40].to_vec();
+        raw[8..16].copy_from_slice(&count.to_le_bytes());
+        assert!(Gguf::transcode_shard_to_ktb("test", &raw, 0, 0).is_err());
+    }
+    for (offset, field) in [
+        (24, u64::MAX.to_le_bytes().to_vec()),
+        (44, u32::MAX.to_le_bytes().to_vec()),
+        (60, u64::MAX.to_le_bytes().to_vec()),
+    ] {
+        let mut raw = valid.clone();
+        raw[offset..offset + field.len()].copy_from_slice(&field);
+        assert!(Gguf::transcode_shard_to_ktb("test", &raw, 0, 0).is_err());
+    }
+    let mut raw = vec![0; 40];
+    raw[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+    assert!(Safe::transcode_shard_to_ktb("test", &raw, 0, 0).is_err());
+    for offsets in [[0, u64::MAX], [u64::MAX, u64::MAX], [4, 2]] {
+        let header = serde_json::to_vec(&serde_json::json!({"weight":{
+            "dtype":"F16", "shape":[2], "data_offsets":offsets
+        }}))
+        .unwrap();
+        let mut raw = (header.len() as u64).to_le_bytes().to_vec();
+        raw.extend(header);
+        raw.extend([1, 2, 3, 4]);
+        assert!(Safe::transcode_shard_to_ktb("test", &raw, 0, 0).is_err());
+    }
+}
+
+#[test]
+fn oversized_ktb_directory_is_a_recoverable_error() {
+    let mut packer = KtbBankPacker::new("test");
+    for i in 0..800 {
+        packer.add_tensor_bank(
+            format!("model.layers.0.mlp.experts.{i}.weight"),
+            0,
+            Some(i),
+            TensorEncoding::Bf16,
+            vec![1, 2],
+        );
+    }
+    assert!(
+        packer
+            .pack_to_bytes()
+            .unwrap_err()
+            .contains("directory exceeds")
+    );
+}
+
+#[test]
+fn overflowing_storage_sizes_and_unknown_architectures_are_rejected() {
+    for size in [1e307, f64::MAX, f64::INFINITY, f64::NAN, 1e12] {
+        assert!(
+            Storage::create_bucket_object("test", "test", "test", size, 8, 2, None, &[]).is_err()
+        );
+    }
+    assert!(
+        kadmium_data::LocalModelDiskImporter::import_or_transcode_to_disk(
+            "my-tiny-model",
+            None,
+            None,
+            0,
+            0,
+            None
+        )
+        .unwrap_err()
+        .contains("Unsupported model ID")
     );
 }

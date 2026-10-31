@@ -209,6 +209,11 @@ pub struct GatewayState {
 pub struct PersistentClusterStateJournal {
     #[serde(default = "journal_version")]
     pub schema_version: u32,
+    #[serde(default)]
+    pub user_selected_model: bool,
+    /// Missing provenance is legacy demo/unknown, never trusted as live training.
+    #[serde(default)]
+    pub live_only_mode: bool,
     pub epoch: u64,
     pub inference_model_id: String,
     pub training_model_id: String,
@@ -462,6 +467,8 @@ impl GatewayState {
             .map_err(|e| format!("Failed to create state directory: {e}"))?;
         let journal = PersistentClusterStateJournal {
             schema_version: journal_version(),
+            user_selected_model: self.user_selected_model,
+            live_only_mode: self.live_only_mode,
             epoch: self.epoch,
             inference_model_id: self.inference_model.id.clone(),
             training_model_id: self.training_model.id.clone(),
@@ -477,25 +484,50 @@ impl GatewayState {
         };
         let bytes = serde_json::to_vec_pretty(&journal)
             .map_err(|e| format!("Failed to serialize state journal: {e}"))?;
-        let temp = path.with_extension("json.tmp");
-        {
+        static TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let (temp, mut file) = loop {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let temp = path.with_extension(format!("json.{}.{sequence}.tmp", std::process::id()));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+            {
+                Ok(file) => break (temp, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(format!("Cannot create journal temporary file: {e}")),
+            }
+        };
+        let result = (|| -> Result<(), String> {
             use std::io::Write;
-            let mut file = std::fs::File::create(&temp).map_err(|e| e.to_string())?;
             file.write_all(&bytes)
                 .and_then(|()| file.sync_all())
                 .map_err(|e| e.to_string())?;
+            drop(file);
+            std::fs::rename(&temp, path)
+                .map_err(|e| format!("Failed to replace state journal: {e}"))?;
+            #[cfg(unix)]
+            std::fs::File::open(dir)
+                .and_then(|file| file.sync_all())
+                .map_err(|e| format!("Journal replaced but directory sync failed: {e}"))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temp);
         }
-        std::fs::rename(&temp, path)
-            .map_err(|e| format!("Failed to replace state journal: {e}"))?;
+        result?;
         Ok(path.display().to_string())
     }
 
     pub fn resolve_model(&self, id: &str) -> Option<ModelSpec> {
+        // Imports currently carry supported preset architectures only. Never revive
+        // legacy manifests that renamed the fallback DeepSeek profile to an unknown ID.
+        let supported = ModelSpec::try_from_id(id)?;
         self.imported_models
             .iter()
             .find(|m| m.model_id == id)
             .map(|m| m.derived_model_spec.clone())
-            .or_else(|| ModelSpec::try_from_id(id))
+            .or(Some(supported))
     }
 
     /// Missing journals mean a fresh workspace. Corrupt or incompatible ones abort startup.
@@ -516,7 +548,7 @@ impl GatewayState {
                 ));
             }
         };
-        let journal: PersistentClusterStateJournal =
+        let mut journal: PersistentClusterStateJournal =
             serde_json::from_slice(&bytes).map_err(|e| {
                 format!(
                     "Cannot restore cluster journal {}: {e}; original file preserved",
@@ -528,6 +560,15 @@ impl GatewayState {
                 "Unsupported cluster journal version {}; original file preserved",
                 journal.schema_version
             ));
+        }
+        for manifest in &mut journal.imported_models {
+            manifest.derived_model_spec =
+                ModelSpec::try_from_id(&manifest.model_id).ok_or_else(|| {
+                    format!(
+                        "Unsupported saved import {:?}; original journal preserved",
+                        manifest.model_id
+                    )
+                })?;
         }
         let resolve = |id: &str| {
             journal
@@ -543,23 +584,31 @@ impl GatewayState {
         let inference = resolve(&journal.inference_model_id)?;
         let training = resolve(&journal.training_model_id)?;
         for object in &journal.bucket_objects {
-            kadmium_data::DecentralizedStoragePoolEngine::validate_shard_counts(
+            kadmium_data::DecentralizedStoragePoolEngine::create_bucket_object(
+                &object.object_uri,
+                &object.display_name,
+                &object.object_kind,
+                object.logical_size_gb,
                 object.data_shards_k,
                 object.parity_shards_m,
+                None,
+                &[],
             )?;
         }
         self.epoch = journal.epoch;
         self.inference_model = inference;
         self.training_model = training;
-        self.user_selected_model = true;
+        self.user_selected_model = journal.user_selected_model;
         // Restoring a plan/import is not loading resident weights or reconnecting workers.
         self.active_model_loaded = false;
-        self.training_step_counter = journal.training_step_counter;
-        self.last_training_loss = journal.last_training_loss;
-        self.training_loss_history = journal.training_loss_history;
+        if self.live_only_mode == journal.live_only_mode {
+            self.training_step_counter = journal.training_step_counter;
+            self.last_training_loss = journal.last_training_loss;
+            self.training_loss_history = journal.training_loss_history;
+            self.last_checkpoint_step = journal.last_checkpoint_step;
+        }
         self.active_cluster_version = journal.active_cluster_version;
         self.active_ktb_merkle_root_fnv64 = journal.active_ktb_merkle_root_fnv64;
-        self.last_checkpoint_step = journal.last_checkpoint_step;
         self.imported_models = journal.imported_models;
         self.bucket_objects = journal.bucket_objects;
         self.bucket_anchors = journal.bucket_anchors;

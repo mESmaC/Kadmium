@@ -423,21 +423,33 @@
   }
 
   /* ---------- data layer: one cache, many subscribers, light polling ---------- */
-  const cache = {}, listeners = {}, inflight = {}, apiErrors = {}, retryTimers = {};
+  const cache = {}, listeners = {}, inflight = {}, apiErrors = {}, retryTimers = {}, retryState = {};
   const errorSubs = new Set();
   function publishErrors() { errorSubs.forEach(fn => fn(Object.assign({}, apiErrors))); }
   let connUp = true, connFails = 0; const connSubs = new Set();
   function markConn(ok) { connFails = ok ? 0 : connFails + 1; const next = ok ? true : (connFails >= 2 ? false : connUp); if (next !== connUp) { connUp = next; connSubs.forEach(fn => fn(next)); } }
   function useConn() { const [up, setUp] = useState(connUp); useEffect(() => { connSubs.add(setUp); return () => { connSubs.delete(setUp); }; }, []); return up; }
-  function load(path) {
+  function load(path, manual = false) {
     if (inflight[path]) return inflight[path];
+    if (manual) delete retryState[path];
+    const retry = retryState[path] || (retryState[path] = { attempts: 0, permanent: false });
     clearTimeout(retryTimers[path]);
-    inflight[path] = fetch(path).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-      .then(d => { delete apiErrors[path]; publishErrors(); markConn(true); cache[path] = d; (listeners[path] || []).forEach(fn => fn(d)); return d; })
-      .catch(e => { markConn(false); apiErrors[path] = e.message || 'Request failed'; publishErrors(); return cache[path] || null; })
+    let reachedServer = false;
+    inflight[path] = fetch(path).then(r => {
+      reachedServer = true; markConn(true);
+      if (!r.ok) {
+        retry.permanent = r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429;
+        throw new Error('HTTP ' + r.status);
+      }
+      return r.json();
+    })
+      .then(d => { delete apiErrors[path]; delete retryState[path]; publishErrors(); cache[path] = d; (listeners[path] || []).forEach(fn => fn(d)); return d; })
+      .catch(e => { if (!reachedServer) markConn(false); apiErrors[path] = e.message || 'Request failed'; publishErrors(); return cache[path] || null; })
       .finally(() => {
         delete inflight[path];
-        if (apiErrors[path] && (listeners[path] || []).length) retryTimers[path] = setTimeout(() => load(path), 3000);
+        if (apiErrors[path] && !retry.permanent && retry.attempts < 3 && (listeners[path] || []).length) {
+          retryTimers[path] = setTimeout(() => load(path), 3000 * 2 ** retry.attempts++);
+        }
       });
     return inflight[path];
   }
@@ -448,10 +460,10 @@
       const fn = d => setData(d);
       (listeners[path] = listeners[path] || []).push(fn);
       setData(cache[path] || null);
-      if (!cache[path] || apiErrors[path]) load(path);
+      if (!cache[path] || apiErrors[path]) load(path, true);
       publishErrors();
-      const t = pollMs ? setInterval(() => { if (!document.hidden) load(path); }, pollMs) : null;
-      return () => { listeners[path] = (listeners[path] || []).filter(f => f !== fn); if (t) clearInterval(t); if (!listeners[path].length) { clearTimeout(retryTimers[path]); delete apiErrors[path]; publishErrors(); } };
+      const t = pollMs ? setInterval(() => { if (!document.hidden && !apiErrors[path]) load(path); }, pollMs) : null;
+      return () => { listeners[path] = (listeners[path] || []).filter(f => f !== fn); if (t) clearInterval(t); if (!listeners[path].length) { clearTimeout(retryTimers[path]); delete apiErrors[path]; delete retryState[path]; publishErrors(); } };
     }, [path, pollMs]);
     return data;
   }
@@ -461,10 +473,10 @@
     const paths = Object.keys(errors).filter(path => (listeners[path] || []).length);
     if (!paths.length) return null;
     return h('div', { className: 'cr-banner', role: 'alert' },
-      h('span', null, 'Some panels could not load. Retrying automatically. ', paths.map(path => path + ': ' + errors[path]).join('; ')),
-      h(K.Button, { size: 'sm', onClick: () => paths.forEach(load) }, 'Retry failed panels'));
+      h('span', null, 'Some panels could not load. Temporary failures retry up to three times; use Retry to try again. ', paths.map(path => path + ': ' + errors[path]).join('; ')),
+      h(K.Button, { size: 'sm', onClick: () => paths.forEach(path => load(path, true)) }, 'Retry failed panels'));
   }
-  function refresh(paths) { return Promise.all((paths || Object.keys(cache)).map(load)); }
+  function refresh(paths) { return Promise.all((paths || Object.keys(cache)).map(path => load(path, true))); }
   const CLUSTER_PATHS = ['/api/v1/cluster/overview', '/api/v1/cluster/workers', '/api/v1/update/status', '/api/v1/companion/status'];
   function post(path, body, opts) {
     opts = opts || {};

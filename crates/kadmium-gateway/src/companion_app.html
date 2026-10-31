@@ -728,7 +728,7 @@
     const { status, overview, workers, probe } = core;
     if (page === 'home') return probe ? probe.local_node.hostname + ' · ' + (DEVICE[probe.local_node.device_kind] || words(probe.local_node.device_kind)) : 'Probing this machine…';
     if (page === 'cluster') return workers ? plural(workers.total_cluster_nodes, 'machine') + ' · ' + workers.live_worker_count + ' connected · leader ' + (status ? status.active_coordinator_leader : '…') : '…';
-    if (page === 'models') return overview ? (overview.active_model_loaded ? overview.inference_plan.model_id + ' is loaded' : 'No model loaded') : '…';
+    if (page === 'models') return overview ? (overview.active_model_loaded ? overview.inference_plan.model_id + ' is planned' : 'No model selected') : '…';
     if (page === 'earn') return 'Supply Grid · lease this machine’s idle time';
     if (page === 'tools') return 'Test the cluster from this machine';
     return 'Connection, appearance and versions';
@@ -785,12 +785,12 @@
             : 'Auto-yield is off'))),
       h('div', { className: 'cp-tiles' },
         Tile('Cluster', plural(workers ? workers.total_cluster_nodes : status.active_cluster_nodes, 'machine'), workers ? workers.live_worker_count + ' connected live' : 'leader ' + status.active_coordinator_leader),
-        Tile('Model', loaded ? inf.model_id : 'None loaded', loaded ? inf.total_layers + ' layers · ' + gb(inf.total_model_weight_gb) : 'Pick one on the Models page', loaded ? 'mono' : 'muted'),
+        Tile('Model', loaded ? inf.model_id : 'None selected', loaded ? inf.total_layers + ' layers · ' + gb(inf.total_model_weight_gb) : 'Pick one on the Models page', loaded ? 'mono' : 'muted'),
         Tile(T('toks', 'Speed'), isNum(tps) ? fixed(tps, 1) + ' tok/s' : '—', isNum(tps) ? plural(overview.executed_inference_requests, 'request') + ' served' : 'No requests served yet', 'mono'),
         Tile('Cloud spend', usd(status.current_hourly_cloud_burn_usd) + ' / hr', cloud ? 'cap ' + usd(cloud.max_hourly_spend_cap_usd) + ' / hr' : 'Self-hosted, no cloud costs', 'mono')),
       h('section', { className: 'cp-next', 'aria-label': 'Next steps' },
         NextStep('cluster', 'cluster', 'Add a machine', 'Join another computer with one command.'),
-        NextStep('models', 'models', loaded ? 'Change the model' : 'Run a model', loaded ? inf.model_id + ' is running; pick another any time.' : 'Pick a model and load it across your machines.'),
+        NextStep('models', 'models', loaded ? 'Change the model' : 'Plan a model', loaded ? inf.model_id + ' is selected for planning; pick another any time.' : 'Pick a model to estimate placement across your machines.'),
         NextStep('earn', 'earn', 'Earn from idle time', 'Rent this machine to verified jobs while you’re away.')),
       h('div', { className: 'cp-grid2' },
         h(MachineCard, { node }),
@@ -826,7 +826,7 @@
     const holds = loaded && mine && mine.layer_count > 0;
     const tiers = (mine && mine.tiered_memory) || {};
     const aux = ((mine && mine.auxiliary_tasks) || []).map(words);
-    return h(Card, { title: 'Its share of the work', sub: loaded ? inf.model_id : undefined, tools: StateBadge(holds ? 'resident' : 'idle') },
+    return h(Card, { title: 'Its share of the work', sub: loaded ? inf.model_id : undefined, tools: StateBadge(holds ? 'planned' : 'idle') },
       holds ? h(F, null,
         KV([
           [T('layers', 'Layers'), 'L' + mine.start_layer + '–L' + mine.end_layer + ' · ' + mine.layer_count + ' of ' + inf.total_layers, true],
@@ -840,7 +840,7 @@
           m.nvme_cache_gb ? h(K.Meter, { label: 'NVMe', value: tiers.cold_nvme_stream_gb || 0, max: m.nvme_cache_gb, unit: 'GB' }) : null))
         : Empty(!takesLayers(node)
           ? 'This machine runs as ' + roleWords(node) + ', so it coordinates, drafts and verifies for the cluster instead of holding model layers.' + (aux.length ? ' Right now it runs: ' + aux.join(', ') + '.' : '')
-          : !loaded ? 'No model is loaded, so this machine holds no layers yet. Load one and the planner gives it a slice sized to its memory.'
+          : !loaded ? 'No model is selected. Select one to estimate a slice sized to its memory.'
             : (inf.assignments || []).some(a => a.layer_count > 0)
               ? 'The planner placed the layers of ' + inf.model_id + ' on faster machines.' + (aux.length ? ' This one still runs: ' + aux.join(', ') + '.' : '')
               : 'No machine holds layers of ' + inf.model_id + ' yet.',
@@ -964,8 +964,8 @@
     const fit = w => w <= capacity ? h(K.Badge, { tone: 'ok' }, 'fits in memory') : w <= capacity + nvme ? h(K.Badge, { tone: 'warn' }, 'streams from NVMe') : h(K.Badge, { tone: 'danger' }, 'needs more machines');
     const refresh = CORE.concat(['/v1/models']);
     const loadModel = id => run('load:' + id, () => postJSON('/api/v1/cluster/model', { inference_model_id: id }).then(d => { publish('/api/v1/cluster/overview', d); return d; }),
-      d => { const n = (d.inference_plan.assignments || []).filter(a => a.layer_count > 0).length; return n ? 'Loaded ' + id + ' across ' + plural(n, 'machine') : 'Loaded ' + id + ', but no machine has the fast memory to hold its layers yet'; }, refresh);
-    const unload = () => run('unload', () => postJSON('/api/v1/cluster/model', { unload: true }).then(d => { publish('/api/v1/cluster/overview', d); return d; }), 'Unloaded ' + inf.model_id, refresh);
+      d => { const n = (d.inference_plan.assignments || []).filter(a => a.layer_count > 0).length; return n ? 'Planned ' + id + ' across ' + plural(n, 'machine') : 'Selected ' + id + ', but no machine has enough fast memory for the plan'; }, refresh);
+    const unload = () => run('unload', () => postJSON('/api/v1/cluster/model', { unload: true }).then(d => { publish('/api/v1/cluster/overview', d); return d; }), 'Cleared selection for ' + inf.model_id, refresh);
     const holders = (inf.assignments || []).filter(a => a.layer_count > 0);
     const importModel = () => run('import', () => postJSON('/api/v1/models/import', {
       model_id: imp.model_id.trim(),
@@ -976,10 +976,10 @@
     }).then(d => { setImported(d); return d; }), d => 'Compiled ' + d.compiled_ktb_path, CORE);
     const banks = overview.imported_models || [];
     return h(F, null,
-      h(Card, { title: loaded ? 'Running now' : 'No model loaded', sub: loaded ? inf.model_display_name : undefined,
-        tools: loaded ? h(K.Button, { size: 'sm', variant: 'ghost', disabled: busy === 'unload', onClick: unload }, 'Unload') : null },
+      h(Card, { title: loaded ? 'Current placement plan' : 'No model selected', sub: loaded ? inf.model_display_name : undefined,
+        tools: loaded ? h(K.Button, { size: 'sm', variant: 'ghost', disabled: busy === 'unload', onClick: unload }, 'Clear selection') : null },
       loaded && !holders.length ? h(F, null,
-        Note('warn', 'No machine in this cluster has the fast memory to hold layers of ' + inf.model_id + ', so requests cannot run yet. Add a machine with a GPU or unified memory, or load a smaller model.'),
+        Note('warn', 'No machine in this cluster has the fast memory to hold layers of ' + inf.model_id + ', so the plan has no assigned layers. Add a machine with a GPU or unified memory, or plan a smaller model.'),
         (inf.assignments || []).some(a => (a.auxiliary_tasks || []).length) ? KV((inf.assignments || []).filter(a => (a.auxiliary_tasks || []).length).map(a => [a.hostname, a.auxiliary_tasks.map(words).join(', ')])) : null)
       : loaded ? h(F, null,
         h(K.ShardRail, { pitch: 72, nodes: (inf.assignments || []).map(a => ({ id: a.node_id, name: shortHost(a.hostname), share: Math.max(0, (a.compute_share_pct || 0) / 100), placement: a.device_kind === 'CloudBurstGpu' ? 'cloud' : 'local' })), label: 'Shard plan for ' + inf.model_id }),
@@ -999,10 +999,11 @@
         }),
         h('p', { className: 'cp-help' }, inf.total_layers + ' layers · ' + gb(inf.total_model_weight_gb) + ' of weights · planner estimate ' + fixed(inf.estimated_throughput, 1) + ' ' + inf.throughput_unit + ' · epoch ' + inf.epoch))
         : workers.length ? Empty('Nothing is resident on your machines. The planner suggests ' + inf.model_id + ' (' + gb(inf.total_model_weight_gb) + ') for the ' + gb(capacity) + ' of memory on machines that take layers.',
-          h(K.Button, { variant: 'primary', disabled: busy === 'load:' + inf.model_id, onClick: () => loadModel(inf.model_id) }, 'Load ' + inf.model_id))
+          h(K.Button, { variant: 'primary', disabled: busy === 'load:' + inf.model_id, onClick: () => loadModel(inf.model_id) }, 'Plan ' + inf.model_id))
         : Empty('None of your machines takes model layers yet. Machines with a GPU or unified memory join as compute workers; ' + (nodes.length === 1 ? 'this one runs as ' + roleWords(nodes[0]) + '.' : 'these run as utility workers.'),
           h(K.Button, { variant: 'primary', onClick: () => go('cluster') }, 'Add a machine'))),
-      h(Card, { title: 'Choose a model', sub: 'Load one and Kadmium splits it across your machines', flush: true,
+      Note('info', 'Model selection creates a placement plan. The pipeline pass uses reference compute; it does not generate answers from imported weights.'),
+      h(Card, { title: 'Choose a model', sub: 'Select a model to estimate placement; this does not load resident weights', flush: true,
         foot: services.length ? h('span', null, 'Embedding and vision models served through the API: ', services.map((m, i) => h(F, { key: m.id }, i ? ', ' : '', h('code', null, m.id)))) : null },
         catalog ? Table({
         wide: true,
@@ -1014,9 +1015,9 @@
             { label: 'Layers', num: true, render: m => (m.kadmium_fabric ? m.kadmium_fabric.total_layers : '—') },
             { label: 'Weights', num: true, render: m => (m.kadmium_fabric ? gb(m.kadmium_fabric.weight_gb) : '—') },
             { label: 'Fit', className: 'nowrap', render: m => fit(m.kadmium_fabric.weight_gb || 0) },
-            { label: '', sr: 'Load', num: true, render: m => (m.kadmium_fabric && m.kadmium_fabric.active_loaded && loaded)
-              ? (holders.length ? StateBadge('resident') : h(K.Badge, { tone: 'neutral' }, 'loaded'))
-              : h(K.Button, { size: 'sm', disabled: busy === 'load:' + m.id, onClick: () => loadModel(m.id) }, 'Load') }
+            { label: '', sr: 'Plan', num: true, render: m => (m.kadmium_fabric && m.kadmium_fabric.active_loaded && loaded)
+              ? StateBadge('planned')
+              : h(K.Button, { size: 'sm', disabled: busy === 'load:' + m.id, onClick: () => loadModel(m.id) }, 'Plan') }
           ]
         }) : Loading('Reading the model library…')),
       h('div', { className: 'cp-grid2' },
@@ -1030,6 +1031,7 @@
           h('div', { className: 'cp-row end' }, h(K.Button, { disabled: busy === 'import' || !imp.model_id.trim() || !imp.source_path.trim(), onClick: importModel }, busy === 'import' ? 'Compiling…' : 'Compile .ktb bank')),
           imported ? KV([
             ['Bank', h('code', null, imported.compiled_ktb_path)],
+            ['Source', imported.synthetic_fixture ? 'Synthetic reference fixture' : 'Imported file'],
             ['Size', bytes(imported.ktb_size_bytes) + ' · ' + plural(imported.ktb_page_count, 'page') + ' of 64 KiB', true],
             ['Tensors', String(imported.parsed_tensor_count) + ' from ' + words(imported.source_format), true],
             [T('merkle', 'Merkle root'), hex48(imported.merkle_root_fnv64), true],
@@ -1041,7 +1043,7 @@
             rowKey: (b, i) => b.compiled_ktb_path + i,
             empty: 'No .ktb files compiled on this coordinator yet.',
             cols: [
-              { label: 'File', render: b => h(F, null, h('span', { className: 'name mono' }, b.model_id), h('span', { className: 'sub' }, 'L' + b.start_layer + '–L' + b.end_layer + ' · ' + words(b.source_format))) },
+              { label: 'File', render: b => h(F, null, h('span', { className: 'name mono' }, b.model_id), h('span', { className: 'sub' }, 'L' + b.start_layer + '–L' + b.end_layer + ' · ' + (b.synthetic_fixture ? 'synthetic reference fixture' : words(b.source_format)))) },
               { label: 'Size', num: true, render: b => bytes(b.ktb_size_bytes) },
               { label: 'Pages', num: true, render: b => String(b.ktb_page_count) }
             ]
@@ -1164,12 +1166,12 @@
           h('div', { className: 'cp-row' },
             h(K.Button, { variant: 'primary', icon: Icon('play', 16), disabled: busy === 'pass' || !prompt.trim(), onClick: () => run('pass', () => postJSON('/api/v1/pipeline/live', { prompt: prompt.trim(), max_tokens: 32 }).then(d => { setPass(d); return d; }),
               d => (d.live_hops || []).length ? 'Answered across ' + plural(d.live_hops.length, 'machine') : 'Nothing ran', CORE) }, busy === 'pass' ? 'Sending…' : 'Send'),
-            loaded ? null : h('span', { className: 'cp-help' }, 'Load a model first so the pass has layers to run.')),
+            loaded ? null : h('span', { className: 'cp-help' }, 'Select a model first so the reference pass has planned layers.')),
           pass ? h(F, null,
             (pass.live_hops || []).length ? h('pre', { className: 'cp-output' }, pass.generated_response)
               : Note('warn', loaded
-                ? 'No pipeline stages ran: no machine holds layers of ' + overview.inference_plan.model_id + '. Add a machine with a GPU or unified memory, or load a smaller model.'
-                : 'No pipeline stages ran because no model is loaded. Load one on the Models page, then run the pass again.'),
+                ? 'No pipeline stages ran: no machine holds layers of ' + overview.inference_plan.model_id + '. Add a machine with a GPU or unified memory, or plan a smaller model.'
+                : 'No reference stages ran because no model is selected. Select one on the Models page, then run the pass again.'),
             KV([
               ['Stages', String((pass.live_hops || []).length), true],
               ['Latency', (pass.live_hops || []).length ? ms(pass.total_pipeline_latency_ms) : '—', true],

@@ -194,6 +194,6 @@ impl HfByteRangeSlicer {
                 safetensors_bytes[start..end_excl].to_vec(),
             );
         }
-        Ok(packer.pack_to_bytes())
+        packer.pack_to_bytes()
     }
 }

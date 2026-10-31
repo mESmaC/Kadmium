@@ -88,6 +88,64 @@ test('Control Room mobile navigation, recovery, and honest diagnostic status', {
         await context.close();
       }
     }
+    // Permanent HTTP errors stay manual; temporary failures back off and stop.
+    for (const status of [404, 503]) {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      const panel = await context.newPage(); let attempts = 0;
+      await panel.clock.install();
+      const endpoint = '/api/v1/training/schedule';
+      await panel.route('**' + endpoint, route => {
+        attempts++;
+        return route.fulfill({ status, contentType: 'application/json', body: '{"error":"unavailable"}' });
+      });
+      await panel.goto(base + '/dashboard#/training');
+      await panel.getByRole('button', { name: 'Retry failed panels' }).waitFor();
+      if (status === 503) {
+        for (const delay of [3000, 6000, 12000]) {
+          const response = panel.waitForResponse(r => r.url().endsWith(endpoint));
+          await panel.clock.fastForward(delay);
+          await response;
+          await panel.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+        }
+      }
+      await panel.clock.fastForward(120000);
+      assert.equal(attempts, status === 404 ? 1 : 4, 'automatic retry budget');
+      assert.doesNotMatch(await panel.locator('body').innerText(), /reconnecting/);
+      await panel.unroute('**' + endpoint);
+      await panel.getByRole('button', { name: 'Retry failed panels' }).click();
+      await panel.waitForFunction(() => !document.body.innerText.includes('Some panels could not load'));
+      await context.close();
+    }
+    // Force an actual journal replacement failure in the isolated fixture process.
+    const journal = path.join(cwd, 'target/kadmium-state/cluster_state.json');
+    const savedJournal = fs.readFileSync(journal);
+    const journalFiles = fs.readdirSync(path.dirname(journal));
+    fs.renameSync(journal, journal + '.backup');
+    fs.mkdirSync(journal);
+    const before = await (await page.request.get(base + '/api/v1/cluster/overview')).json();
+    for (const [endpoint, data] of [
+      ['/api/v1/cluster/model', { inference_model_id: 'qwen2.5-coder-32b-instruct' }],
+      ['/api/v1/models/import', { model_id: 'qwen2.5-coder-32b-instruct', demo_fixture: true }],
+      ['/api/v1/storage/pool-bucket/object', { object_uri: 'failure-test', logical_size_gb: 1 }],
+      ['/api/v1/storage/pool-bucket/anchor', { anchor_uri: 'nas://failure-test' }],
+    ]) {
+      const response = await page.request.post(base + endpoint, { data });
+      assert.equal(response.status(), 500, endpoint + ': ' + await response.text());
+      const after = await (await page.request.get(base + '/api/v1/cluster/overview')).json();
+      assert.equal(after.epoch, before.epoch);
+      assert.equal(after.inference_plan.model_id, before.inference_plan.model_id);
+      assert.deepEqual(after.imported_models, before.imported_models);
+    }
+    fs.rmdirSync(journal);
+    fs.renameSync(journal + '.backup', journal);
+    assert.deepEqual(fs.readFileSync(journal), savedJournal);
+    assert.deepEqual(fs.readdirSync(path.dirname(journal)), journalFiles);
+    const companion = await browser.newPage();
+    companion.on('pageerror', e => errors.push(e.message));
+    await companion.goto(base + '/companion#/models');
+    await companion.getByText(/Model selection creates a placement plan/).waitFor();
+    assert.doesNotMatch(await companion.locator('body').innerText(), /Running now|No model loaded|Load one and Kadmium/);
+    await companion.close();
     assert.deepEqual(errors, []);
   } finally {
     if (browser) await browser.close();

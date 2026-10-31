@@ -215,12 +215,36 @@ async fn missing_and_corrupt_imports_return_errors_without_state_changes() {
         std::fs::write(&path, bytes).unwrap();
         paths.push(path);
     }
+    let mut huge_count = vec![0u8; 40];
+    huge_count[..4].copy_from_slice(b"GGUF");
+    huge_count[4..8].copy_from_slice(&3u32.to_le_bytes());
+    huge_count[8..16].copy_from_slice(&(1u64 << 50).to_le_bytes());
+    let mut huge_header = vec![0u8; 40];
+    huge_header[..8].copy_from_slice(&u64::MAX.to_le_bytes());
+    let names: Vec<_> = (0..800)
+        .map(|i| format!("model.layers.0.experts.{i}.weight"))
+        .collect();
+    let tensors: Vec<_> = names
+        .iter()
+        .map(|name| (name.as_str(), "BF16", vec![1], &[1u8, 2][..]))
+        .collect();
+    let large_directory =
+        kadmium_data::SafetensorsToKtbTranscoder::build_safetensors_bytes(&tensors);
+    for (name, bytes) in [
+        ("huge-count.gguf", huge_count),
+        ("huge-header.safetensors", huge_header),
+        ("large-directory.safetensors", large_directory),
+    ] {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        paths.push(path);
+    }
     for path in paths {
         let (status, body) = request(
             &app,
             "POST",
             "/api/v1/models/import",
-            json!({"model_id":"audit-corrupt","source_path":path,"start_layer":0,"end_layer":0}),
+            json!({"model_id":"llama-3.2-3b-instruct","source_path":path,"start_layer":0,"end_layer":0}),
         )
         .await;
         assert_eq!(status, 400, "{body}");
@@ -273,6 +297,8 @@ fn journal_reconstruction_preserves_objects_imports_anchors_and_progress() {
     assert!(!manifest.synthetic_fixture);
     let mut first = GatewayState::new();
     assert!(!first.load_persistent_state_from(&path).unwrap());
+    first.set_live_only_mode(true);
+    first.user_selected_model = true;
     first.inference_model = ModelSpec::llama_3_2_3b_instruct();
     first.training_step_counter = 42;
     first.imported_models.push(manifest);
@@ -306,5 +332,80 @@ fn journal_reconstruction_preserves_objects_imports_anchors_and_progress() {
         assert!(state.imported_models.is_empty());
         assert_eq!(std::fs::read(&path).unwrap(), bad);
     }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn overflowing_sizes_preserve_journal_and_restart_state() {
+    let (app, state) = gateway();
+    let dir = temp_dir("overflow");
+    let path = dir.join("cluster_state.json");
+    state
+        .lock()
+        .unwrap()
+        .save_persistent_state_to(&path)
+        .unwrap();
+    let saved = std::fs::read(&path).unwrap();
+    for size in [1e307, 1e100, 1e12] {
+        let (status, body) = request(
+            &app,
+            "POST",
+            "/api/v1/storage/pool-bucket/object",
+            json!({"logical_size_gb":size,"data_shards_k":8,"parity_shards_m":2}),
+        )
+        .await;
+        assert_eq!(status, 400, "{body}");
+        assert!(state.lock().unwrap().bucket_objects.is_empty());
+        state
+            .lock()
+            .unwrap()
+            .save_persistent_state_to(&path)
+            .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+    }
+    let mut restarted = GatewayState::new();
+    assert!(restarted.load_persistent_state_from(&path).unwrap());
+    assert!(restarted.bucket_objects.is_empty());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn journals_preserve_selection_and_separate_live_from_demo_progress() {
+    let dir = temp_dir("provenance");
+    let path = dir.join("cluster_state.json");
+    for selected in [false, true] {
+        let mut demo = GatewayState::new();
+        demo.user_selected_model = selected;
+        demo.save_persistent_state_to(&path).unwrap();
+        for legacy in [false, true] {
+            if legacy {
+                let mut value: Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                value.as_object_mut().unwrap().remove("live_only_mode");
+                value.as_object_mut().unwrap().remove("user_selected_model");
+                std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+            let mut live = GatewayState::new();
+            live.set_live_only_mode(true);
+            live.load_persistent_state_from(&path).unwrap();
+            assert_eq!(live.user_selected_model, selected && !legacy);
+            assert_eq!(live.training_step_counter, 0);
+            assert_eq!(live.last_checkpoint_step, 0);
+            assert!(live.training_loss_history.is_empty());
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn journal_write_failure_preserves_original_and_cleans_temporary_file() {
+    let dir = temp_dir("write-failure");
+    let path = dir.join("cluster_state.json");
+    // A directory at the destination forces replacement to fail on every OS.
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(path.join("original"), b"preserve").unwrap();
+    assert!(GatewayState::new().save_persistent_state_to(&path).is_err());
+    assert_eq!(std::fs::read(path.join("original")).unwrap(), b"preserve");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
     std::fs::remove_dir_all(dir).unwrap();
 }

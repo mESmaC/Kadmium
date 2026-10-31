@@ -64,6 +64,11 @@ impl LocalModelDiskImporter {
         if start_layer > end_layer {
             return Err("start_layer must not exceed end_layer".into());
         }
+        let derived_model_spec = ModelSpec::try_from_id(model_id).ok_or_else(|| {
+            format!(
+                "Unsupported model ID {model_id:?}; custom architecture metadata is not supported"
+            )
+        })?;
         let out_dir = output_dir
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("target/kadmium-ktb"));
@@ -200,7 +205,7 @@ impl LocalModelDiskImporter {
                     TensorEncoding::Exl3QtpTrellis,
                     vec![0xC3u8; 16_384],
                 );
-                packer.pack_to_bytes()
+                packer.pack_to_bytes()?
             }
             ImportedModelSourceFormat::SafetensorsBinary => {
                 SafetensorsToKtbTranscoder::transcode_shard_to_ktb(
@@ -245,11 +250,7 @@ impl LocalModelDiskImporter {
             end_layer,
             merkle_root_fnv64: merkle.root_hash,
             zero_copy_alignment_verified: alignment_ok,
-            derived_model_spec: {
-                let mut spec = ModelSpec::from_id(model_id);
-                spec.id = model_id.to_string();
-                spec
-            },
+            derived_model_spec,
         })
     }
 }

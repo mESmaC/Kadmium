@@ -678,6 +678,15 @@ fn invalid_request(message: impl Into<String>) -> ApiError {
     )
 }
 
+fn persistence_error(message: String) -> ApiError {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({
+            "error": {"type": "persistence_error", "message": format!("Could not save state: {message}. Check disk access before retrying.")}
+        })),
+    )
+}
+
 async fn post_cluster_model(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ModelSwapRequest>,
@@ -696,6 +705,16 @@ async fn post_cluster_model(
         .map(resolve)
         .transpose()?;
     let training = req.training_model_id.as_deref().map(resolve).transpose()?;
+    let previous = (
+        guard.inference_model.clone(),
+        guard.training_model.clone(),
+        guard.active_model_loaded,
+        guard.user_selected_model,
+        guard.epoch,
+        guard.executed_inference_requests,
+        guard.last_measured_tokens_per_sec,
+        guard.last_measured_pipeline_latency_ms,
+    );
     if req.unload == Some(true) || req.inference_model_id.as_deref() == Some("none") {
         guard.active_model_loaded = false;
         guard.user_selected_model = false;
@@ -715,6 +734,20 @@ async fn post_cluster_model(
     }
     guard.epoch += 1;
     guard.recompute_plans();
+    if let Err(error) = guard.save_persistent_state() {
+        (
+            guard.inference_model,
+            guard.training_model,
+            guard.active_model_loaded,
+            guard.user_selected_model,
+            guard.epoch,
+            guard.executed_inference_requests,
+            guard.last_measured_tokens_per_sec,
+            guard.last_measured_pipeline_latency_ms,
+        ) = previous;
+        guard.recompute_plans();
+        return Err(persistence_error(error));
+    }
     Ok(Json(guard.snapshot()))
 }
 
@@ -1284,7 +1317,7 @@ async fn post_fts3_live_stream(
 
 async fn post_export_training_checkpoint(
     State(state): State<Arc<Mutex<GatewayState>>>,
-) -> Json<KtbCheckpointExportReport> {
+) -> Result<Json<KtbCheckpointExportReport>, ApiError> {
     let (model_id, step_idx) = {
         let guard = state.lock().expect("gateway state lock");
         (guard.training_model.id.clone(), guard.training_step_counter)
@@ -1309,6 +1342,11 @@ async fn post_export_training_checkpoint(
     {
         let mut guard = state.lock().expect("gateway state lock");
         if report.zero_copy_verified {
+            let previous = (
+                guard.last_checkpoint_step,
+                guard.active_ktb_merkle_root_fnv64,
+                guard.bucket_objects.clone(),
+            );
             guard.last_checkpoint_step = report.step_index;
             guard.active_ktb_merkle_root_fnv64 = report.merkle_root_fnv64;
             let ckpt_uri = format!("kdm://pool-bucket/checkpoints/{}.ktb", report.checkpoint_id);
@@ -1330,12 +1368,21 @@ async fn post_export_training_checkpoint(
                 .bucket_objects
                 .retain(|o| o.object_uri != obj.object_uri);
             guard.bucket_objects.push(obj);
-            let _ = guard.save_persistent_state();
+            if let Err(error) = guard.save_persistent_state() {
+                (
+                    guard.last_checkpoint_step,
+                    guard.active_ktb_merkle_root_fnv64,
+                    guard.bucket_objects,
+                ) = previous;
+                return Err(persistence_error(format!(
+                    "Checkpoint file was exported, but its journal update failed: {error}"
+                )));
+            }
         }
         guard.last_checkpoint_report = Some(report.clone());
     }
 
-    Json(report)
+    Ok(Json(report))
 }
 
 async fn get_pipeline_execution(
@@ -2327,6 +2374,14 @@ async fn post_import_local_model(
 
     {
         let mut guard = state.lock().expect("gateway state lock");
+        let previous = (
+            guard.active_ktb_merkle_root_fnv64,
+            guard.imported_models.clone(),
+            guard.inference_model.clone(),
+            guard.active_model_loaded,
+            guard.user_selected_model,
+            guard.epoch,
+        );
         guard.active_ktb_merkle_root_fnv64 = manifest.merkle_root_fnv64;
         guard
             .imported_models
@@ -2337,7 +2392,18 @@ async fn post_import_local_model(
         guard.user_selected_model = true;
         guard.epoch += 1;
         guard.recompute_plans();
-        let _ = guard.save_persistent_state();
+        if let Err(error) = guard.save_persistent_state() {
+            (
+                guard.active_ktb_merkle_root_fnv64,
+                guard.imported_models,
+                guard.inference_model,
+                guard.active_model_loaded,
+                guard.user_selected_model,
+                guard.epoch,
+            ) = previous;
+            guard.recompute_plans();
+            return Err(persistence_error(error));
+        }
     }
 
     Ok(Json(manifest))
@@ -2473,6 +2539,7 @@ async fn post_storage_pool_bucket_object(
     .map_err(invalid_request)?;
     let (nodes, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
+        let previous = guard.bucket_objects.clone();
         if let Some(del_uri) = req.delete_uri.as_deref() {
             guard.bucket_objects.retain(|o| o.object_uri != del_uri);
         } else {
@@ -2533,7 +2600,10 @@ async fn post_storage_pool_bucket_object(
                 .retain(|o| o.object_uri != entry.object_uri);
             guard.bucket_objects.push(entry);
         }
-        let _ = guard.save_persistent_state();
+        if let Err(error) = guard.save_persistent_state() {
+            guard.bucket_objects = previous;
+            return Err(persistence_error(error));
+        }
         (
             guard.nodes.clone(),
             guard.imported_models.clone(),
@@ -2555,9 +2625,10 @@ async fn post_storage_pool_bucket_object(
 async fn post_storage_pool_bucket_anchor(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<StorageBucketAnchorRequest>,
-) -> Json<DecentralizedStoragePoolReport> {
+) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
     let (nodes, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
+        let previous = guard.bucket_anchors.clone();
         let kind = match req.anchor_kind.as_deref() {
             Some("LocalNasZfsVault") | Some("nas") => BucketGroundingAnchorKind::LocalNasZfsVault,
             Some("CloudObjectBucketS3R2") | Some("s3") | Some("r2") => {
@@ -2597,7 +2668,10 @@ async fn post_storage_pool_bucket_anchor(
         };
         guard.bucket_anchors.retain(|a| a.anchor_uri != uri);
         guard.bucket_anchors.push(anchor);
-        let _ = guard.save_persistent_state();
+        if let Err(error) = guard.save_persistent_state() {
+            guard.bucket_anchors = previous;
+            return Err(persistence_error(error));
+        }
         (
             guard.nodes.clone(),
             guard.imported_models.clone(),
@@ -2606,14 +2680,14 @@ async fn post_storage_pool_bucket_anchor(
         )
     };
 
-    Json(
+    Ok(Json(
         DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
             &nodes,
             &imported_models,
             &bucket_objects,
             &bucket_anchors,
         ),
-    )
+    ))
 }
 
 async fn get_hierarchical_pool_scale_report() -> Json<HierarchicalPoolBenchmarkReport> {

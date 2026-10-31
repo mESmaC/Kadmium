@@ -34,6 +34,7 @@ use kadmium_core::{
     PoliteState,
 };
 use serde::{Deserialize, Serialize};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::process::Command;
 
 /// Physical & protocol tier of a USB-C direct interconnect link.
@@ -552,26 +553,26 @@ impl UsbCDirectInterconnectScanner {
 
         #[cfg(target_os = "macos")]
         {
-            if let Ok(output) = Command::new("ifconfig").arg("bridge0").output() {
-                if output.status.success() {
-                    out.push(UsbCInterfaceDescriptor {
-                        interface_id: "macos-tb-bridge0-live".into(),
-                        interface_name: "macOS Thunderbolt Bridge (bridge0)".into(),
-                        os_driver_stack: "macOS AppleThunderboltIP".into(),
-                        tier: UsbCInterconnectTier::Usb4Thunderbolt4_30To40Gbps,
-                        data_role: UsbCDataRole::HostToHostSymmetricP2p,
-                        link_local_ipv4: "169.254.78.10".into(),
-                        link_local_ipv6: "fe80::7848:tb:10".into(),
-                        peer_link_local_addr: Some("169.254.78.11:7848".into()),
-                        negotiated_mtu_bytes: 65_536,
-                        parallel_dma_streams: 6,
-                        rated_phy_gbps: 40.0,
-                        effective_goodput_gbps: 32.4,
-                        rtt_latency_ms: 0.10,
-                        supports_tensor_parallel_allreduce: true,
-                        live_detected_on_host: true,
-                    });
-                }
+            if let Ok(output) = Command::new("ifconfig").arg("bridge0").output()
+                && output.status.success()
+            {
+                out.push(UsbCInterfaceDescriptor {
+                    interface_id: "macos-tb-bridge0-live".into(),
+                    interface_name: "macOS Thunderbolt Bridge (bridge0)".into(),
+                    os_driver_stack: "macOS AppleThunderboltIP".into(),
+                    tier: UsbCInterconnectTier::Usb4Thunderbolt4_30To40Gbps,
+                    data_role: UsbCDataRole::HostToHostSymmetricP2p,
+                    link_local_ipv4: "169.254.78.10".into(),
+                    link_local_ipv6: "fe80::7848:tb:10".into(),
+                    peer_link_local_addr: Some("169.254.78.11:7848".into()),
+                    negotiated_mtu_bytes: 65_536,
+                    parallel_dma_streams: 6,
+                    rated_phy_gbps: 40.0,
+                    effective_goodput_gbps: 32.4,
+                    rtt_latency_ms: 0.10,
+                    supports_tensor_parallel_allreduce: true,
+                    live_detected_on_host: true,
+                });
             }
         }
 
