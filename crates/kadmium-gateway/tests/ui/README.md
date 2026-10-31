@@ -17,3 +17,10 @@ JavaScript-disabled reading, local setup and documentation links, responsive lay
 mobile navigation, keyboard focus, theme persistence and clipboard failure recovery.
 Page screenshots are written to `test-results/marketing-*.png`. Run just these checks
 with `npm test -- --grep 'marketing:'`.
+
+For the standalone kadmium.ai export, run `npm run test:website`. This runs the
+same marketing checks against static files without starting the Rust gateway.
+Coverage also checks the product/quality/cloud boundaries, public documentation
+destinations, shared-asset copies, export errors and the absence of local API
+requests. See [Public website](../../../../docs/website.md) for build and hosting
+instructions.

@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kadmium — Local AI, with a plan to put it to work</title>
-  <meta name="description" content="Explore Kadmium for local AI workflows and a proposed hands-on team pilot: one workload, a repeatable setup, and a clear decision. Self-hosting today; managed cloud on the roadmap.">
+  <title>Kadmium — Your hardware. Your models. Your workspace.</title>
+  <meta name="description" content="Meet Kadmium: Control Room for your compute, Companion for your desktop, and Condenser for local or hosted inference providers. Start self-hosted. Kadmium Cloud remains planned.">
+  <link rel="canonical" href="https://kadmium.ai/">
   <meta name="theme-color" content="#0f1114">
   <link rel="icon" href="/assets/Logos/kadmium-favicon.svg">
   <link rel="stylesheet" href="/tokens.css">
@@ -46,8 +47,6 @@
     .button:hover { background: var(--graphite-2); }
     .button.local { background: var(--cadmium); border-color: var(--cadmium-edge); color: var(--on-cadmium); }
     .button.local:hover { background: var(--cadmium-hover); }
-    .button.service { background: var(--ink); border-color: var(--ink); color: var(--graphite-0); }
-    .button.service:hover { background: var(--ink-muted); border-color: var(--ink-muted); }
     .small { font-size: 13px; line-height: 1.6; color: var(--ink-muted); }
     .hero { padding-block: 88px 64px; display: grid; grid-template-columns: 1.15fr 1fr; gap: 70px; align-items: center; }
     .hero h1 span { color: var(--cadmium-text); }
@@ -79,17 +78,15 @@
     .section-head { display: flex; gap: 48px; justify-content: space-between; align-items: end; margin-bottom: 36px; }
     .section-head h2 { max-width: 18ch; margin-bottom: 0; }
     .section-head > p { max-width: 49ch; margin-bottom: 0; color: var(--ink-muted); }
-    .offers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-    .offer { display: flex; flex-direction: column; padding: 28px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--graphite-1); }
-    .offer.featured { border-color: var(--ink-muted); background: linear-gradient(160deg, var(--graphite-3), var(--graphite-1) 65%); }
-    .offer .tag { align-self: flex-start; margin-bottom: 28px; }
-    .price { font-family: var(--font-mono); font-size: 36px; line-height: 1.2; letter-spacing: -.04em; margin: 8px 0; }
-    .offer p:not(.price), .offer li { color: var(--ink-muted); font-size: 14px; }
-    .offer ul { padding-left: 18px; margin: 4px 0 28px; }
-    .offer li { padding-left: 3px; margin-block: 10px; }
-    .offer .button { margin-top: auto; }
-    .offer .period { min-height: 45px; }
-    .offer-note { margin: 20px 0 0; font-size: 13px; color: var(--ink-muted); max-width: 95ch; }
+    .products { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .product { display: flex; flex-direction: column; padding: 28px; border: 1px solid var(--line-strong); border-radius: var(--radius-md); background: var(--graphite-1); }
+    .product.featured { border-color: var(--cadmium-edge); background: linear-gradient(160deg, var(--graphite-3), var(--graphite-1) 65%); }
+    .product .tag { align-self: flex-start; margin-bottom: 28px; }
+    .product p, .product li { color: var(--ink-muted); font-size: 14px; }
+    .product ul { padding-left: 18px; margin: 4px 0 28px; }
+    .product li { padding-left: 3px; margin-block: 10px; }
+    .product .button { margin-top: auto; }
+    .product-note { margin: 20px 0 0; font-size: 13px; color: var(--ink-muted); max-width: 95ch; }
     .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; counter-reset: steps; margin: 40px 0 0; padding: 0; list-style: none; }
     .steps li { border-top: 1px solid var(--line-strong); padding-top: 20px; counter-increment: steps; }
     .steps li::before { content: '0' counter(steps); display: block; color: var(--ink-muted); font-family: var(--font-mono); font-size: 13px; margin-bottom: 24px; }
@@ -127,7 +124,7 @@
       .signature { display: none; }
       .nav, .nav-links { gap: 18px; }
       .hero { gap: 32px; }
-      .offer { padding: 22px; }
+      .product { padding: 22px; }
       .local-layout, .roadmap { gap: 36px; }
     }
     @media (max-width: 760px) {
@@ -142,8 +139,7 @@
       .section { padding-block: 56px; }
       .section-head { display: block; }
       .section-head h2 { margin-bottom: 20px; }
-      .offers, .local-layout, .roadmap, .contact { grid-template-columns: 1fr; }
-      .offer .period { min-height: 0; }
+      .products, .local-layout, .roadmap, .contact { grid-template-columns: 1fr; }
       .steps { gap: 24px; grid-template-columns: 1fr; }
       .steps li::before { margin-bottom: 12px; }
       .strip div { padding: 20px 14px; }
@@ -169,9 +165,9 @@
   <a class="skip" href="#main">Skip to content</a>
   <header class="header">
     <nav class="wrap nav" aria-label="Main navigation">
-      <a class="brand" href="/site" aria-label="Kadmium home"><img id="wordmark" src="/assets/Logos/kadmium-wordmark-dark.svg" alt="Kadmium" width="155" height="20"><span class="signature">Cd–48</span></a>
+      <a class="brand" href="#main" aria-label="Kadmium home"><img id="wordmark" src="/assets/Logos/kadmium-wordmark-dark.svg" alt="Kadmium" width="155" height="20"><span class="signature">Cd–48</span></a>
       <div class="nav-links" id="navigation">
-        <a href="#services">Services</a><a href="#local">Self-host</a><a href="#cloud">Cloud roadmap</a><a href="/docs">Docs</a><a href="#contact">Discuss a pilot ↗</a>
+        <a href="#product">Product</a><a href="#local">Self-host</a><a href="#quality">Model quality</a><a href="#cloud">Cloud roadmap</a><a href="https://github.com/mESmaC/Kadmium/blob/main/docs/README.md">Docs ↗</a>
       </div>
       <button class="icon-button" id="theme" type="button" aria-label="Switch to light theme" hidden><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg></button>
       <button class="icon-button menu-button" id="menu" type="button" aria-controls="navigation" aria-expanded="true" hidden>Menu</button>
@@ -182,59 +178,65 @@
       <section class="hero" aria-labelledby="hero-title">
         <div>
           <p class="eyebrow">Local-first AI · Built around your hardware</p>
-          <h1 id="hero-title">Your machines.<br>Your workload.<br><span>A clearer path.</span></h1>
-          <p class="lede">Put the hardware you already own to work. Explore Kadmium locally, or discuss a hands-on team pilot to turn one AI workflow into a repeatable setup.</p>
-          <div class="actions"><a class="button local" href="#local">Start with your hardware <span aria-hidden="true">&nbsp;↗</span></a><a class="button" href="#services">Explore team services</a></div>
-          <p class="small">Self-hostable today. Paid services proposed for scoped evaluation.<br>Managed cloud compute is not yet available.</p>
+          <h1 id="hero-title">Your hardware.<br>Your models.<br><span>Your workspace.</span></h1>
+          <p class="lede">Inspect your machines in Control Room. Manage your local setup with Companion. Work with a configured local or hosted model provider in Condenser.</p>
+          <div class="actions"><a class="button local" href="#local">Start with your hardware <span aria-hidden="true">&nbsp;↗</span></a><a class="button" href="#product">Explore the workspace</a></div>
+          <p class="small">Open source. Self-hosted. No Kadmium cloud account required.<br>Managed cloud compute is not yet available.</p>
         </div>
         <figure class="fabric">
-          <div class="fabric-title label"><span>The Kadmium approach</span><span>Cd–48 / 01</span></div>
+          <div class="fabric-title label"><span>One local setup</span><span>Cd–48 / 01</span></div>
           <div class="fabric-body">
             <div class="rod-field" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
             <div class="fabric-row"><div><strong>Your hardware</strong><span>Workstations · Macs · local servers</span></div><b class="tag local">YOU OPERATE</b></div>
-            <div class="fabric-row"><div><strong>A repeatable workflow</strong><span>Condenser · configured model provider</span></div><b class="tag">EVALUATE</b></div>
-            <div class="fabric-row"><div><strong>Help putting it to work</strong><span>Scoped setup · runbook · review</span></div><b class="tag">PROPOSED</b></div>
+            <div class="fabric-row"><div><strong>Control Room + Companion</strong><span>Inspect nodes · review plans · configure models</span></div><b class="tag local">LOCAL</b></div>
+            <div class="fabric-row"><div><strong>Condenser</strong><span>Tasks · conversations · your chosen provider</span></div><b class="tag local">LOCAL APP</b></div>
             <div class="fabric-row"><div><strong>Kadmium Cloud</strong><span>Managed capacity · burst · failover</span></div><b class="tag cloud">PLANNED</b></div>
           </div>
           <figcaption>Product map, not a live cluster or performance measurement.</figcaption>
         </figure>
       </section>
-      <div class="strip" aria-label="Product principles"><div><strong>Start with one useful task</strong><span>A workload and a baseline you can check.</span></div><div><strong>Know where the work runs</strong><span>Review the provider and data destination.</span></div><div><strong>Keep a way forward</strong><span>Document the setup, limits and rollback.</span></div></div>
-      <section class="section" id="services" aria-labelledby="services-title">
-        <div class="section-head"><div><p class="eyebrow neutral">01 / Software & services</p><h2 id="services-title">Local software.<br>Hands-on support.</h2></div><p>For small AI engineering teams with a recurring evaluation or development task. Start with a supported configuration, agree on a result, and measure whether the setup earns its keep.</p></div>
-        <div class="offers" id="pricing">
-          <article class="offer"><span class="tag local">SELF-HOSTED PROJECT</span><h3>Community</h3><p class="price">$0</p><p class="period">Software fee · your infrastructure</p><p>Explore the local tools on machines you control, without a Kadmium cloud account.</p><ul><li>Condenser with your configured provider</li><li>Control Room and worker planning</li><li>Source, guides and reference workloads</li><li>You handle hosting and maintenance</li></ul><a class="button local" href="#local">Get started locally</a></article>
-          <article class="offer featured"><span class="tag">PROPOSED · SCOPED ENGAGEMENT</span><h3>Founding team pilot</h3><p class="price">$1,500</p><p class="period">Proposed one-time fee · two weeks</p><p>One workload, one supported setup, and a practical answer about what to do next.</p><ul><li>Up to 12 delivery hours</li><li>Baseline and provider configuration</li><li>Reproducibility report and runbook</li><li>Go / no-go recommendation</li></ul><a class="button service" href="#contact">Discuss your workload</a></article>
-          <article class="offer"><span class="tag">PROPOSED · AFTER A PILOT</span><h3>Team operations</h3><p class="price">$299</p><p class="period">Proposed monthly fee · cancel monthly</p><p>Ongoing help for an approved deployment with a demonstrated recurring need.</p><ul><li>Monthly cost and reliability review</li><li>Maintenance guidance</li><li>Up to one support hour per month</li><li>Additional work scoped separately</li></ul><a class="button" href="#contact">Discuss ongoing support</a></article>
+      <div class="strip" aria-label="Product principles"><div><strong>Your hardware first</strong><span>Start with the machines you control.</span></div><div><strong>Your provider, explicitly</strong><span>Know where prompts and files go.</span></div><div><strong>Quality is not a preset</strong><span>Review the maximum-quality contract.</span></div></div>
+      <section class="section" id="product" aria-labelledby="product-title">
+        <div class="section-head"><div><p class="eyebrow neutral">01 / The local product</p><h2 id="product-title">Three interfaces.<br>One Kadmium setup.</h2></div><p>The public website introduces the same tools you run locally. It is not a hosted Control Room, a remote Condenser session, or a cloud account portal.</p></div>
+        <div class="products">
+          <article class="product"><span class="tag local">BROWSER WORKSPACE</span><h3>Control Room</h3><p>See your compute setup before you decide where work belongs.</p><ul><li>Inspect nodes and hardware profiles</li><li>Browse models and prepare local checkpoints</li><li>Review placement plans and reference workloads</li><li>Launch your local Condenser workspace</li></ul><a class="button" href="https://github.com/mESmaC/Kadmium/blob/main/docs/getting-started.md">Explore Control Room ↗</a></article>
+          <article class="product"><span class="tag local">DESKTOP COMPANION</span><h3>Companion</h3><p>A native desktop window for your local Kadmium setup.</p><ul><li>Review your machine and cluster</li><li>Prepare models from the desktop</li><li>Open Condenser inside the app</li><li>Keep self-hosting separate from cloud proposals</li></ul><a class="button" href="https://github.com/mESmaC/Kadmium/blob/main/docs/getting-started.md#open-the-desktop-app">Explore Companion ↗</a></article>
+          <article class="product featured"><span class="tag local">INFERENCE WORKSPACE</span><h3>Condenser</h3><p>Bring a task to the model and provider you choose.</p><ul><li>Conversations and agent-tool runs</li><li>Workspace files and terminal tools</li><li>Local Ollama or configured hosted providers</li><li>Per-task provider and quality settings</li></ul><a class="button local" href="https://github.com/mESmaC/Kadmium/blob/main/docs/guides/condenser-workspace.md">Explore Condenser ↗</a></article>
         </div>
-        <p class="offer-note">Paid prices are proposals for discussion, not generally available plans or a checkout. Delivery requires an agreed scope, supported execution path, approved data, acceptance criteria and available support capacity. Compute, provider charges and hardware are separate. No bundled credits, on-call coverage or service SLA.</p>
+        <p class="product-note">Hardware classification and a placement plan are not proof of native execution support. Reference workloads, configured-provider inference and future distributed model serving are different execution paths. Check the guides for your backend.</p>
       </section>
       <section class="section" id="how" aria-labelledby="process-title">
-        <p class="eyebrow neutral">02 / A bounded first step</p><h2 id="process-title">A useful result before a bigger commitment.</h2>
-        <ol class="steps"><li><h3>Bring the real constraint.</h3><p>Choose a recurring task, identify permitted hardware, and agree on a quality bar. Start with public or synthetic data and a baseline from your existing workflow.</p></li><li><h3>Build a repeatable setup.</h3><p>Evaluate one supported configuration. Record the model provider, data route, operator steps, costs and limits so the result can be checked.</p></li><li><h3>Make an informed call.</h3><p>Leave with a report, a runbook and a go/no-go recommendation. The right outcome may be a simpler tool, a different machine, or no further work.</p></li></ol>
+        <p class="eyebrow neutral">02 / From machine to task</p><h2 id="process-title">Inspect. Configure. Run.</h2>
+        <ol class="steps"><li><h3>Inspect your hardware.</h3><p>Start the coordinator and open Control Room on the host machine. Review hardware and reachable workers before choosing a workload.</p></li><li><h3>Choose your model.</h3><p>Prepare a supported local checkpoint with a separately installed Ollama backend, or configure your hosted provider. Review the destination before sending data.</p></li><li><h3>Open Condenser.</h3><p>Launch it from Models in Control Room or Companion. Choose the task’s provider and model, then work in your local workspace. Provider charges, if any, are separate.</p></li></ol>
       </section>
       <section class="section local-layout" id="local" aria-labelledby="local-title">
-        <div><p class="eyebrow">03 / Your hardware, your operation</p><h2 id="local-title">Start local.<br>Keep the setup in your hands.</h2><p class="lede">Build from source and explore the Control Room. For model answers, use Condenser with a configured provider, including a separately installed local Ollama backend.</p><ul class="checklist"><li>Inspect hardware and plan work across reachable machines.</li><li>Normalize supported GGUF or SafeTensors checkpoints while preserving their source bytes.</li><li>Explicitly load a supported checkpoint in Ollama and choose it for your task.</li></ul><div class="actions"><a class="button local" href="/docs#getting-started">Read the setup guide</a><a href="https://github.com/mESmaC/Kadmium">Browse the source ↗</a></div><p class="small">You provide hardware, power, storage and administration. Model compatibility and backend support vary; check the guides for your configuration.</p></div>
+        <div><p class="eyebrow">03 / Your hardware, your operation</p><h2 id="local-title">Start local.<br>Keep the setup in your hands.</h2><p class="lede">Build from source and explore Control Room. For model answers, use Condenser with a configured provider, including a separately installed local Ollama backend.</p><ul class="checklist"><li>Inspect hardware and plan work across reachable machines.</li><li>Prepare supported GGUF or SafeTensors checkpoints.</li><li>Explicitly load a supported checkpoint in Ollama and choose it for your task.</li></ul><div class="actions"><a class="button local" href="https://github.com/mESmaC/Kadmium/blob/main/docs/getting-started.md">Read the setup guide ↗</a><a href="https://github.com/mESmaC/Kadmium">Browse the source ↗</a></div><p class="small">You provide hardware, power, storage and administration. Model compatibility and backend support vary; check the guides for your configuration.</p></div>
         <div><div class="terminal"><div class="terminal-head"><span class="label neutral">From a source checkout</span><button class="button" type="button" id="copy" hidden>Copy commands</button></div><pre tabindex="0" aria-label="Local setup commands"><code id="commands">git clone https://github.com/mESmaC/Kadmium.git
 cd Kadmium
 cargo run --locked -p kadmium-cli -- probe
-cargo run --locked -p kadmium-cli -- serve --port 7848</code></pre><p class="terminal-note small">Install Rust via rustup first; the repository selects its pinned toolchain. Then open <code>http://127.0.0.1:7848</code> on the host machine.</p></div><span id="copy-status" class="copy-status small" role="status"></span><p class="small">The gateway’s <code>/v1</code> model routes return diagnostics. For generation, follow the <a href="/docs#local-checkpoints">local checkpoint guide</a> or configure a provider in <a href="/docs#condenser-workspace">Condenser</a>. Native multi-device model execution remains development work.</p></div>
+cargo run --locked -p kadmium-cli -- serve --port 7848</code></pre><p class="terminal-note small">Install Rust via rustup first; the repository selects its pinned toolchain. Then open <code>http://127.0.0.1:7848</code> on the host machine, not on this website.</p></div><span id="copy-status" class="copy-status small" role="status"></span><p class="small">The gateway’s <code>/v1</code> model routes return diagnostics. For generation, follow the <a href="https://github.com/mESmaC/Kadmium/blob/main/docs/guides/local-checkpoints.md">local checkpoint guide</a> or configure a provider in <a href="https://github.com/mESmaC/Kadmium/blob/main/docs/guides/condenser-workspace.md">Condenser</a>. Native multi-device model execution remains development work.</p></div>
+      </section>
+      <section class="section roadmap" id="quality" aria-labelledby="quality-title">
+        <div><p class="eyebrow">04 / The model-quality contract</p><h2 id="quality-title">Keep the model<br>you chose.</h2><p class="lede">Speed and memory pressure are not permission to lower model quality. The website follows the local product’s contract, not a separate cloud quality tier.</p><a href="https://github.com/mESmaC/Kadmium/blob/main/docs/guides/condenser-workspace.md#maximum-quality-defaults">Read the quality settings ↗</a></div>
+        <ul class="roadmap-list"><li><h3>Maximum means maximum</h3><p>Use the model and backend’s supported context and output maximums, not a guessed token cap. Leave quality overrides blank for maximum; missing required provider metadata needs an explicit error.</p></li><li><h3>No hidden shortcuts</h3><p>Do not silently truncate prompts, compact history, quantize weights or switch models or backends to make a request fit. A failure must stay visible to you.</p></li><li><h3>Your limits, your decision</h3><p>If you choose a lower limit, the control must state what you lose. Input beyond your chosen window is rejected, not truncated; a chosen output limit stops responses. Reset to maximum clears your overrides.</p></li></ul>
       </section>
       <section class="section roadmap" id="cloud" aria-labelledby="cloud-title">
-        <div><p class="eyebrow cloud-text">04 / Kadmium Cloud · Roadmap</p><h2 id="cloud-title">More capacity.<br>When it is ready.</h2><p class="lede">The longer-term direction is optional managed compute alongside your local machines. These capabilities are planned or simulated today, not services you can purchase.</p><a href="/docs#subclusters-and-cloud-shield" class="cloud-text">Read the current cloud boundaries ↗</a></div>
+        <div><p class="eyebrow cloud-text">05 / Kadmium Cloud · Roadmap</p><h2 id="cloud-title">An optional extension.<br>Not a different product.</h2><p class="lede">The target is managed capacity alongside your local setup, not a replacement for self-hosting or a reason to reduce model quality. These capabilities are planned or simulated today, not services you can purchase.</p><a href="https://github.com/mESmaC/Kadmium/blob/main/docs/guides/subclusters-and-cloud-shield.md" class="cloud-text">Read the current cloud boundaries ↗</a></div>
         <ul class="roadmap-list"><li><h3>Burst capacity <span class="tag cloud">PLANNED</span></h3><p>Rented compute for workloads that need more room. Live procurement, billing and spend enforcement must be established before a managed offering.</p></li><li><h3>CloudShield <span class="tag cloud">SIMULATED</span></h3><p>A future failover path when local capacity goes away. Current scenarios do not establish production continuity or a failover guarantee.</p></li><li id="supply"><h3>Supply Grid hosting <span class="tag cloud">PLANNED</span></h3><p>A proposed market for permitted spare compute. Paid leases and host payouts are not live; there is no earnings estimate or income guarantee.</p></li></ul>
       </section>
-      <section class="section" id="faq" aria-labelledby="faq-title"><div class="faq"><p class="eyebrow neutral">05 / Before you begin</p><h2 id="faq-title">A few things to know.</h2>
-        <details><summary>What can I run today?</summary><p>The project includes a local control plane, planners, TCP workers and reference workloads. Condenser can run tasks through configured providers and use supported local checkpoints through Ollama. Production native multi-device model serving is still integration work. See the <a href="/docs#api-reference">API contract</a> for execution boundaries.</p></details>
-        <details><summary>What would I be paying Kadmium for?</summary><p>The proposed pilot pays for agreed setup and evaluation deliverables: one workload, a reproducibility report and a runbook. Proposed ongoing support covers an approved deployment within a defined scope. Neither includes rented compute, provider credits or unlimited support. Availability and terms must be agreed before work starts.</p></details>
+      <section class="section" id="faq" aria-labelledby="faq-title"><div class="faq"><p class="eyebrow neutral">06 / Before you begin</p><h2 id="faq-title">A few things to know.</h2>
+        <details><summary>What can I run today?</summary><p>The project includes a local control plane, planners, TCP workers and reference workloads. Condenser can run tasks through configured providers and use supported local checkpoints through Ollama. Production native multi-device model serving is still integration work. See the <a href="https://github.com/mESmaC/Kadmium/blob/main/docs/api-reference.md">API contract</a> for execution boundaries.</p></details>
+        <details><summary>Can I run my local workspace on this website?</summary><p>No. Run Control Room, Companion and Condenser on your own machine. This website does not connect to your local coordinator, read your files, or provide a hosted inference session. Use the access link printed by your coordinator or open Condenser from your local app.</p></details>
+        <details><summary>Is a hosted provider the same as Kadmium Cloud?</summary><p>No. A provider you configure in Condenser is a separate service with its own endpoint, account and charges. Kadmium Cloud’s managed capacity, failover and host marketplace remain planned or simulated. Self-hosting does not require a Kadmium cloud subscription.</p></details>
+        <details><summary>What would I be paying Kadmium for?</summary><p>Paid setup pilots and ongoing support are proposals, not generally available plans or a checkout. Scope, acceptance criteria, terms and support capacity must be agreed before work starts. Compute, provider charges and hardware are separate. See the <a href="https://github.com/mESmaC/Kadmium/blob/main/docs/BUSINESS_PLAN_AND_STANCE.md">commercial proposal</a> for context.</p></details>
         <details><summary>Does self-hosting keep all my data local?</summary><p>That depends on the provider and endpoints you configure. A remote provider receives the data sent to it. Review the full data route, model rights and machine permissions before use; self-hosting alone is not a zero-egress or compliance guarantee.</p></details>
         <details><summary>Can I earn money by hosting a node?</summary><p>There is no live paid Supply Grid in this repository. Local workers can participate in supported compute workflows, but adding a machine does not create a paid lease or payout. Any future host offering will need terms that account for power, networking, availability and demand.</p></details>
         <details><summary>Is this ready for production-critical or regulated workloads?</summary><p>Those workloads are outside the proposed first pilot. Start with a non-sensitive evaluation and a named technical owner. Production SLAs and regulated deployments require separately demonstrated controls, support and contracts.</p></details>
       </div></section>
-      <section class="contact" id="contact" aria-labelledby="contact-title"><div><p class="eyebrow neutral">Make the next step concrete</p><h2 id="contact-title">Bring one workload.<br>Let’s scope the rest.</h2><p class="muted">A useful first conversation starts with the task and the machines, not a subscription.</p></div><div><ul><li>The evaluation or development task you repeat.</li><li>Your hardware, operating systems and current provider.</li><li>The result you need and how you measure it.</li><li>A technical owner and a two-week evaluation window.</li></ul><a class="button" href="mailto:hello@kadmium.ai?subject=Kadmium%20team%20pilot%20inquiry">Email about a pilot ↗</a><p class="small" style="margin: 16px 0 0">hello@kadmium.ai · Opens your email app. Please leave out credentials and sensitive workload data. An inquiry does not reserve capacity or create a paid commitment.</p></div></section>
+      <section class="contact" id="contact" aria-labelledby="contact-title"><div><p class="eyebrow neutral">Start with the local product</p><h2 id="contact-title">Bring your setup.<br>Keep the scope clear.</h2><p class="muted">Use the source and guides to start independently. If you want to discuss a proposed team pilot, bring one workload and the hardware you control.</p></div><div><ul><li>The evaluation or development task you repeat.</li><li>Your hardware, operating systems and current provider.</li><li>The result you need and how you measure it.</li><li>A technical owner and an evaluation scope.</li></ul><a class="button" href="mailto:hello@kadmium.ai?subject=Kadmium%20team%20pilot%20inquiry">Discuss a team pilot ↗</a><p class="small" style="margin: 16px 0 0">hello@kadmium.ai · Opens your email app. Please leave out credentials and sensitive workload data. An inquiry does not reserve capacity or create a paid commitment.</p></div></section>
     </div>
   </main>
-  <footer class="footer"><div class="wrap"><p class="small">Kadmium · Cd–48<br>Local experimentation. Deliberate next steps.</p><a href="/docs">Documentation</a><a href="https://github.com/mESmaC/Kadmium">GitHub</a><a href="https://github.com/mESmaC/Kadmium/blob/main/docs/BUSINESS_PLAN_AND_STANCE.md">Commercial proposal</a><a href="#cloud">Service status & roadmap</a></div></footer>
+  <footer class="footer"><div class="wrap"><p class="small">Kadmium · Cd–48<br>Your hardware. Your models. Your workspace.</p><a href="https://github.com/mESmaC/Kadmium/blob/main/docs/README.md">Documentation ↗</a><a href="https://github.com/mESmaC/Kadmium">GitHub ↗</a><a href="#quality">Model-quality contract</a><a href="#cloud">Cloud status & roadmap</a></div></footer>
   <script>
     (() => {
       const themeButton = document.getElementById('theme');
