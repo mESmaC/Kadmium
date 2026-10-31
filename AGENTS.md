@@ -195,6 +195,12 @@ This is required for every task that changes the repository, not only large ones
    - If `main` moves and the PR conflicts, merge or rebase onto `main`, resolve conflicts preserving both sides' intent, and re-run checks.
    - Do not merge your own PR. Merging is the reviewer's decision. Stop monitoring only when the PR is merged or the reviewer closes it.
 7. **After merge,** if the change introduced a follow-up that you could not finish, open an issue describing it with the same honesty rules as section 2.
+8. **Then remove your worktree.** Once the PR is merged and any follow-up issue is filed, delete the worktree you created or were assigned for the task, so finished checkouts do not pile up. Before you remove it:
+   - Confirm it is yours. Never remove the main checkout (the first entry of `git worktree list`) or a worktree that another session is using.
+   - Confirm nothing would be lost. `git status --porcelain` must print nothing, and `git fetch origin pull/<N>/head && git log --oneline FETCH_HEAD..HEAD` must print nothing, where `<N>` is the merged PR. A commit pushed after the merge is not in `main`. Open a new PR for it and keep the worktree until that PR merges.
+   - Remove it from the main checkout, not from inside the worktree: `git -C <main checkout> worktree remove <path>`, then `git -C <main checkout> branch -D <branch>`. Use `-D` because a squash merge leaves the branch unmerged in git's view. Leave the remote branch to the reviewer. On Windows the directory can stay behind, empty, while a shell still uses it as its working directory. That is harmless.
+   - If the reviewer closes the PR without merging, keep the worktree and say so in your final report. Do not delete unmerged work.
+   - Remove scratch worktrees you created to review or test another PR when that review is finished, after the same checks.
 
 Agents operating in a harness that provides PR linking or watching tools should use them so the session is notified of review activity; otherwise poll the PR at a sensible cadence until it is merged.
 
@@ -207,6 +213,7 @@ Agents operating in a harness that provides PR linking or watching tools should 
 - Commit to `main`, force-push over reviewed commits, merge your own PR, or open a PR against `main` that carries another open PR's commits.
 - Weaken, skip or delete a test to get green, especially `quality_defaults.rs`, checkpoint integrity tests, digest comparisons and bridge resume tests.
 - Reformat files you did not otherwise change.
+- Remove a worktree that has uncommitted changes, holds commits that are not in `main` or a merged PR, or belongs to another session.
 - Add `unwrap` or unchecked indexing on network, file or provider data.
 - Widen a listener, relax same-origin or loopback checks, or log secrets.
 - Add emoji, exclamation marks, marketing adjectives, or the reactor metaphor beyond the one tagline.
