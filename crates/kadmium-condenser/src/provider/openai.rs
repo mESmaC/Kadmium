@@ -77,7 +77,7 @@ impl InferenceProvider for OpenAiProvider {
             .map_err(|error| {
                 CondenserError::provider(self.config.kind.label(), error.to_string())
             })?;
-        let value: Value = decode_json(self.config.kind, response).await?;
+        let value: Value = super::decode_generation_json(self.config.kind, response).await?;
         parse_chat(value, &request.model)
     }
 }

@@ -87,7 +87,7 @@ impl InferenceProvider for AnthropicProvider {
             .send()
             .await
             .map_err(|error| CondenserError::provider("Anthropic", error.to_string()))?;
-        let value: Value = decode_json(ProviderKind::Anthropic, response).await?;
+        let value: Value = super::decode_generation_json(ProviderKind::Anthropic, response).await?;
         parse_chat(value, &request.model)
     }
 }

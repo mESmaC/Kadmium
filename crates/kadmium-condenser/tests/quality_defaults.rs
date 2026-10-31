@@ -121,3 +121,75 @@ async fn missing_maximum_never_submits_a_small_default() {
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn successful_generations_are_not_rejected_by_the_metadata_byte_cap() {
+    let full = "x".repeat(16 * 1024 * 1024 + 1);
+    let output = full.clone();
+    let app = Router::new().route("/v1/chat/completions",post(move || {
+        let output = output.clone();
+        async move { Json(json!({"model":"model","choices":[{"message":{"role":"assistant","content":output},"finish_reason":"stop"}]})) }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut config = ProviderConfig::new(ProviderKind::OpenAi);
+    config.model = "model".into();
+    config.base_url = Some(format!("http://{}", listener.local_addr().unwrap()));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let request = ChatRequest {
+        model: "model".into(),
+        messages: vec![Message::user("Full output")],
+        sampling: SamplingParams {
+            max_tokens: Some(8_000_000),
+            ..Default::default()
+        },
+        tools: vec![],
+    };
+    let result = ProviderFactory::build(config)
+        .unwrap()
+        .complete(&request)
+        .await
+        .unwrap();
+    assert_eq!(result.message.content, full);
+    server.abort();
+}
+
+#[tokio::test]
+async fn both_chat_transports_preserve_input_beyond_two_mib() {
+    use kadmium_condenser::server::{ServerOptions, bind};
+    let full = "Long context 🦀 ".repeat(200_000);
+    let expected = full.clone();
+    let app = Router::new().route("/v1/chat/completions",post(move |Json(body):Json<Value>| {
+        let expected = expected.clone();
+        async move {
+            assert_eq!(body["messages"].as_array().unwrap().last().unwrap()["content"],expected);
+            Json(json!({"model":"model","choices":[{"message":{"role":"assistant","content":"all input received"},"finish_reason":"stop"}]}))
+        }
+    })).layer(axum::extract::DefaultBodyLimit::disable());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let (address, server) = bind(ServerOptions {
+        port: 0,
+        plugin_roots: vec![],
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let server = tokio::spawn(server);
+    let client = reqwest::Client::new();
+    for path in ["chat", "chat/stream"] {
+        let response = client.post(format!("http://{address}/api/v1/{path}"))
+            .json(&json!({"provider":{"kind":"openai","model":"model","base_url":base},"messages":[{"role":"user","content":full}],"sampling":{"max_tokens":100}}))
+            .send().await.unwrap();
+        assert!(response.status().is_success(), "{}", response.status());
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("all input received")
+        );
+    }
+    upstream.abort();
+    server.abort();
+}

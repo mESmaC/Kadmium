@@ -197,6 +197,23 @@ pub(crate) fn versioned_endpoint(base: &str, path: &str) -> String {
 
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
+/// Generation is governed by model/user token limits, not the metadata byte cap.
+/// Keep failed-response bodies bounded without truncating successful completions.
+pub(crate) async fn decode_generation_json<T: DeserializeOwned>(
+    kind: ProviderKind,
+    response: reqwest::Response,
+) -> Result<T> {
+    if !response.status().is_success() {
+        return decode_json(kind, response).await;
+    }
+    response.json().await.map_err(|error| {
+        CondenserError::provider(
+            kind.label(),
+            format!("could not decode provider generation: {error}"),
+        )
+    })
+}
+
 pub(crate) async fn decode_json<T: DeserializeOwned>(
     kind: ProviderKind,
     mut response: reqwest::Response,

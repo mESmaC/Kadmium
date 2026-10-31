@@ -148,6 +148,8 @@ Ollama resolves native context from model metadata on every request, disables pr
 
 MCL4 history compaction and old tool-result pruning are off by default and require **Allow history compaction**. Temperature remains the provider default because higher temperature does not mean higher quality. Run-level budgets remain separate explicit controls. Allocation and precision failures do not substitute another model or quantize weights. Backend numerical precision and tokenization remain backend responsibilities.
 
+Chat HTTP bodies bypass the framework's generic 2 MiB request limit, and successful generation responses bypass the 16 MiB metadata-response cap. The complete conversation and response can therefore use the model's supported limits, subject to available host memory and upstream server/proxy configuration. Explicit user token/run limits remain effective; metadata, plugin, file and fetch limits are separate from model generation.
+
 ## API contracts
 
 Kadmium exposes `GET /api/v1/inference/workspace?model_id=<catalog-id>`. Omitting `model_id` previews the coordinator's current model. Unknown IDs return HTTP 400 instead of selecting a fallback. The version 1 response includes `epoch`, `fleet_mode`, `generation_supported`, `selected_model_id`, `online_workers`, `catalog`, `nodes`, `plan`, `assigned_layers` and `warnings`. This endpoint is read-only and does not increment the cluster epoch.

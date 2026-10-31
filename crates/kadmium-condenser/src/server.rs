@@ -130,8 +130,14 @@ fn router(state: ServerState) -> Router {
         .route("/api/v1/models", post(models))
         .route("/api/v1/plugins", get(plugins))
         .route("/api/v1/plugins/invoke", post(invoke_plugin))
-        .route("/api/v1/chat", post(chat))
-        .route("/api/v1/chat/stream", post(chat_stream))
+        .route(
+            "/api/v1/chat",
+            post(chat).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/v1/chat/stream",
+            post(chat_stream).layer(axum::extract::DefaultBodyLimit::disable()),
+        )
         .route("/api/v1/dsv41/profile", get(dsv41_profile))
         .route("/api/v1/mcl4/probe-decision", post(mcl4_probe_decision))
         .route("/api/v1/workspace", get(crate::workspace::workspace))
