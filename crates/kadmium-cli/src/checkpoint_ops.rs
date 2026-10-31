@@ -16,6 +16,9 @@ enum CheckpointCommand {
     /// Preserve a complete local checkpoint and pack its tensors into lossless KTB banks.
     Normalize {
         path: PathBuf,
+        /// Existing directory for temporary files (default: the model folder or GGUF parent).
+        #[arg(long)]
+        working_directory: Option<PathBuf>,
         /// Import a checkpoint that was quantized before import (GGUF Q/IQ types, GPTQ, AWQ,
         /// FP8, FP4 and similar). Bytes are kept exactly; precision lost earlier stays lost.
         #[arg(long)]
@@ -32,14 +35,16 @@ pub fn run(args: CheckpointArgs) -> Result<(), String> {
     let value = match args.command {
         CheckpointCommand::Normalize {
             path,
+            working_directory,
             accept_pre_quantized,
         } => serde_json::to_value(
             library
-                .import_with(
+                .import_in(
                     &path,
                     ImportOptions {
                         accept_pre_quantized,
                     },
+                    working_directory.as_deref(),
                 )?
                 .summary(),
         ),

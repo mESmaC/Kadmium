@@ -17,6 +17,8 @@ use std::time::Duration;
 #[derive(Deserialize)]
 pub(crate) struct ImportRequest {
     source_path: PathBuf,
+    /// Empty or absent uses a temporary workspace on the source filesystem.
+    working_directory: Option<PathBuf>,
     /// Operator acceptance of a checkpoint that was quantized before import.
     #[serde(default)]
     accept_pre_quantized: bool,
@@ -112,11 +114,12 @@ pub(crate) async fn import(
     let library = state.model_library.clone();
     let manifest = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        library.import_with(
+        library.import_in(
             &request.source_path,
             ImportOptions {
                 accept_pre_quantized: request.accept_pre_quantized,
             },
+            request.working_directory.as_deref(),
         )
     })
     .await

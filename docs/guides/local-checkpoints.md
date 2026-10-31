@@ -31,6 +31,14 @@ The panel shows the library directory and checkpoint ID. Each package contains `
 
 Each package has a content-derived SHA-256 ID. A completed import becomes visible by directory rename. Failed imports do not publish a partial package. Importing the same intact files returns the existing verified package. Source files are never overwritten. A damaged package is rejected; restore it from backup or normalize the original into another library. Do not edit manifests to bypass verification.
 
+### Temporary workspace and other drives
+
+Normalization works in a temporary `.kadmium-import-*` directory on the checkpoint's filesystem by default: inside a selected model directory, or beside a selected GGUF file. It preserves originals and builds KTB banks there before publishing the completed package to the configured model library. It no longer copies the originals to the library drive before normalization. This remains local execution; distributed checkpoint normalization is not implemented.
+
+Leave **Temporary working directory** blank for this behavior, or enter an existing directory to choose another disk. The CLI accepts `--working-directory <DIR>` and the import API accepts `working_directory`. An unwritable or missing workspace is an explicit error; Kadmium does not silently switch to the system drive. The final library location is still controlled by `KADMIUM_MODEL_LIBRARY` or CLI `--library`.
+
+On one filesystem, publication renames the completed package without another payload copy. Across filesystems, Kadmium copies the completed package into a hidden directory in the destination library, checks each file's length and SHA-256 against the manifest, then publishes it by a destination-local rename. During this copy, both locations need space for the package's originals and banks. Choosing a library on the source filesystem avoids that transfer. Temporary directories are removed on success or a handled error; a process crash can leave a hidden workspace behind. Remove one only after confirming its import is no longer running. Normalization still preserves a separate copy of the originals, and Ollama can retain another copy.
+
 ## Pre-quantized checkpoints
 
 Kadmium never quantizes weights. Many published checkpoints are already quantized, though, and you can import one as long as you say so. Normalization treats a source as pre-quantized when:
@@ -52,6 +60,7 @@ Loading keeps the same precision check. Ollama must report every tensor with the
 
 ```sh
 cargo run -p kadmium-cli -- checkpoint normalize /models/model.gguf
+cargo run --locked -p kadmium-cli -- checkpoint normalize /models/model.gguf --working-directory /scratch --library /models/kadmium
 cargo run -p kadmium-cli -- checkpoint normalize /models/model-Q4_K_M.gguf --accept-pre-quantized
 cargo run -p kadmium-cli -- checkpoint list
 cargo run -p kadmium-cli -- checkpoint verify CHECKPOINT_ID
@@ -68,7 +77,7 @@ Condenser's loopback Host/Origin guard protects these endpoints. When embedded, 
 | Method and path | Request / response |
 | --- | --- |
 | `GET /api/v1/checkpoints` | `{directory, checkpoints}`. Listing reads manifests; it is not a new integrity check. |
-| `POST /api/v1/checkpoints/import` | `{source_path, accept_pre_quantized?}` → checkpoint summary, including `pre_quantized` when you accepted a pre-quantized source. `accept_pre_quantized` defaults to `false`, which refuses pre-quantized sources. |
+| `POST /api/v1/checkpoints/import` | `{source_path, working_directory?, accept_pre_quantized?}` → checkpoint summary, including `pre_quantized` when you accepted a pre-quantized source. `accept_pre_quantized` defaults to `false`, which refuses pre-quantized sources. |
 | `POST /api/v1/checkpoints/browse` | `{path?}` → host directory, parent and up to 500 model/folder entries. |
 | `POST /api/v1/checkpoints/load` | `{checkpoint_id, base_url, context_length?}` → `{checkpoint, provider, context_length, tensor_metadata_verified, execution}` after verification and preload. |
 
