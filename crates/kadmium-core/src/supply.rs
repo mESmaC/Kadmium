@@ -306,7 +306,8 @@ impl SupplySettlementEngine {
 
             // 3. Verified WASI RL Sandbox & DeMo aggregator throughput ($0.14 per 1,000 fuel-metered rollouts)
             let wasi_rollouts_per_hr = (node.cpu_threads as f64) * 32.0 * lease_frac;
-            let comp_val = (wasi_rollouts_per_hr / 1000.0) * SUPPLY_GRID_WASI_CLEARING_USD_PER_1K_ROLLOUTS
+            let comp_val = (wasi_rollouts_per_hr / 1000.0)
+                * SUPPLY_GRID_WASI_CLEARING_USD_PER_1K_ROLLOUTS
                 + (node.fp16_tflops * 0.00018 * lease_frac);
 
             // 4. Merkle-verified .ktb P2P shard seeding ($0.008 / GiB served)
@@ -325,12 +326,9 @@ impl SupplySettlementEngine {
             };
 
             // Anchor the gross buyer clearing rate to delivered work units, capped by the R4 wholesale GPU index
-            let gross_buyer_active_hr = ((token_work_usd_hr
-                + bw_residency_usd_hr
-                + comp_val
-                + storage_val)
-                * net_factor)
-                .clamp(0.018, WHOLESALE_MEDIAN_RTX4090_USD_HR);
+            let gross_buyer_active_hr =
+                ((token_work_usd_hr + bw_residency_usd_hr + comp_val + storage_val) * net_factor)
+                    .clamp(0.018, WHOLESALE_MEDIAN_RTX4090_USD_HR);
 
             let buyer_effective_usd_per_1m_tokens = if delivered_tokens_per_hr > 0 {
                 ((gross_buyer_active_hr / (delivered_tokens_per_hr as f64 / 1_000_000.0)) * 100.0)
@@ -454,11 +452,14 @@ impl SupplySettlementEngine {
                 && eff_bw_gbps >= 100.0
             {
                 if policy.workload_mask.allow_middle_layer_inference {
-                    eligible_workloads
-                        .push("Batch middle-layer activations (Layers 1..N-2, zero plaintext egress)".into());
+                    eligible_workloads.push(
+                        "Batch middle-layer activations (Layers 1..N-2, zero plaintext egress)"
+                            .into(),
+                    );
                 }
                 if policy.workload_mask.allow_diloco_demo_training {
-                    eligible_workloads.push("DiLoCo + DeMo (10x-85x DCT) outer-step training island".into());
+                    eligible_workloads
+                        .push("DiLoCo + DeMo (10x-85x DCT) outer-step training island".into());
                 }
             }
             if policy.workload_mask.allow_wasi_rl_sandboxes {
@@ -517,11 +518,9 @@ impl SupplySettlementEngine {
                 / 100.0;
 
         let retail_l40s_indexed = indexed_retail_burst_usd_hr(WHOLESALE_VERIFIED_L40S_USD_HR);
-        let equivalent_l40s_burst_hours_per_month = ((total_projected_monthly_cloud_credits_usd
-            / retail_l40s_indexed)
-            * 10.0)
-            .round()
-            / 10.0;
+        let equivalent_l40s_burst_hours_per_month =
+            ((total_projected_monthly_cloud_credits_usd / retail_l40s_indexed) * 10.0).round()
+                / 10.0;
 
         // Honest Credit Redemption Liability Math (R4 §6.3):
         // Credits are NOT free; each issued credit dollar carries an expected redemption rate (70% within
@@ -680,7 +679,10 @@ mod tests {
             snap.company_sustainability.numbers_date_stamp,
             CANONICAL_NUMBERS_DATE_STAMP
         );
-        assert!(snap.company_sustainability.zero_unfunded_subsidy_invariant_verified);
+        assert!(
+            snap.company_sustainability
+                .zero_unfunded_subsidy_invariant_verified
+        );
         assert!(
             snap.company_sustainability.gross_monthly_buyer_billings_usd
                 > snap.total_projected_monthly_usd
@@ -688,8 +690,12 @@ mod tests {
         assert!(snap.company_sustainability.blended_company_gross_margin_pct >= 25.0);
         assert!(
             (snap.company_sustainability.host_compute_share_pct
-                + snap.company_sustainability.headcount_and_infra_cost_plus_pct
-                + snap.company_sustainability.community_stem_and_small_biz_grant_pct
+                + snap
+                    .company_sustainability
+                    .headcount_and_infra_cost_plus_pct
+                + snap
+                    .company_sustainability
+                    .community_stem_and_small_biz_grant_pct
                 - 100.0)
                 .abs()
                 < 1e-6

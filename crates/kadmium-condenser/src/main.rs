@@ -30,6 +30,10 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "CLI arguments are parsed once at startup; keep clap's command data inline."
+)]
 enum Commands {
     /// Open the Condenser native UI (default command).
     Ui(UiArgs),

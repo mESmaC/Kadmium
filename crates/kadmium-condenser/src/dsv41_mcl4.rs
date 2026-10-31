@@ -574,7 +574,7 @@ pub fn discover_local_dsv41_shards_and_checkpoints() -> Dsv41DualNvmeShardInvent
             }
         }
     }
-    checkpoints.sort_by(|a, b| b.step.cmp(&a.step));
+    checkpoints.sort_by_key(|checkpoint| std::cmp::Reverse(checkpoint.step));
     let latest_checkpoint = checkpoints.first().cloned();
 
     Dsv41DualNvmeShardInventory {
@@ -875,10 +875,10 @@ fn extract_quoted_attr(header: &str, attr_name: &str) -> Option<String> {
             let after_name = search[idx + attr_name.len()..].trim_start();
             if let Some(after_eq) = after_name.strip_prefix('=') {
                 let after_eq = after_eq.trim_start();
-                if let Some(after_quote) = after_eq.strip_prefix('"') {
-                    if let Some(end_q) = after_quote.find('"') {
-                        return Some(after_quote[..end_q].to_string());
-                    }
+                if let Some(after_quote) = after_eq.strip_prefix('"')
+                    && let Some(end_q) = after_quote.find('"')
+                {
+                    return Some(after_quote[..end_q].to_string());
                 }
             }
         }
@@ -906,18 +906,18 @@ pub fn sinkhorn_knopp_4x4(logits: &[[f32; 4]; 4], iters: usize) -> [[f32; 4]; 4]
 
     let steps = iters.max(1);
     for _ in 0..steps {
-        for r in 0..4 {
-            let row_sum = p[r][0] + p[r][1] + p[r][2] + p[r][3] + 1e-12;
+        for row in &mut p {
+            let row_sum = row[0] + row[1] + row[2] + row[3] + 1e-12;
             let inv = 1.0 / row_sum;
-            for c in 0..4 {
-                p[r][c] *= inv;
+            for value in row {
+                *value *= inv;
             }
         }
-        for c in 0..4 {
+        for (c, _) in logits[0].iter().enumerate() {
             let col_sum = p[0][c] + p[1][c] + p[2][c] + p[3][c] + 1e-12;
             let inv = 1.0 / col_sum;
-            for r in 0..4 {
-                p[r][c] *= inv;
+            for row in &mut p {
+                row[c] *= inv;
             }
         }
     }
@@ -1031,6 +1031,10 @@ pub struct Dsv41RouteDecision {
 /// - Supports `MCL4-COE` `dense_subset_k`, `combine_dense_and_sparse`, and
 ///   `recurrent_coverage_penalty` (Tabu routing penalty)
 /// - Normalizes raw `sqrtsoftplus` weights across selected experts and multiplies by `route_scale` (`1.5`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Parameters mirror the native MoE router contract."
+)]
 pub fn dsv41_route_top6_noaux_tc(
     raw_logits: &[f32],
     e_score_bias: &[f32],
@@ -1289,7 +1293,7 @@ pub fn mla_context_budget(
 
     let sliding = total_seq_tokens.min(win);
     let older_tokens = total_seq_tokens.saturating_sub(sliding);
-    let pooled_candidates = (older_tokens + ratio - 1) / ratio;
+    let pooled_candidates = older_tokens.div_ceil(ratio);
     let compressed = pooled_candidates.min(topk);
     let active_attended = sliding + compressed;
 
@@ -1694,14 +1698,13 @@ pub fn segment_reasoning_and_answer(
             answer_part = clean.to_string();
         }
 
-        if thought_part.is_none() {
-            if let Some(exp) = cleaned_explicit
+        if thought_part.is_none()
+            && let Some(exp) = cleaned_explicit
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-            {
-                thought_part = Some(exp.to_string());
-            }
+        {
+            thought_part = Some(exp.to_string());
         }
 
         let eq = thought_part
@@ -1896,9 +1899,7 @@ pub fn verify_thought_equations(thought: &str) -> EquationVerification {
 }
 
 fn parse_leading_number(s: &str) -> Option<f64> {
-    let trimmed = s
-        .trim()
-        .trim_end_matches(|c: char| c == '.' || c == ',' || c == ';');
+    let trimmed = s.trim().trim_end_matches(['.', ',', ';']);
     let mut end = 0usize;
     for (idx, ch) in trimmed.char_indices() {
         if ch.is_ascii_digit() || ch == '.' || (idx == 0 && (ch == '-' || ch == '+')) {
@@ -1994,7 +1995,7 @@ pub fn compact_messages_with_tool_pruning(
                 if saved > 0 {
                     stats.messages_compacted += 1;
                     stats.chars_stripped += saved;
-                    stats.approx_tokens_saved += (saved + 3) / 4;
+                    stats.approx_tokens_saved += saved.div_ceil(4);
                 }
             }
         } else if max_old_tool_chars > 0
@@ -2023,7 +2024,7 @@ pub fn compact_messages_with_tool_pruning(
             if saved > 0 {
                 stats.tool_results_pruned += 1;
                 stats.chars_stripped += saved;
-                stats.approx_tokens_saved += (saved + 3) / 4;
+                stats.approx_tokens_saved += saved.div_ceil(4);
             }
         }
         out.push(cloned);
@@ -2335,11 +2336,11 @@ mod tests {
             [0.0, 0.6, 0.2, -0.1],
         ];
         let p = sinkhorn_knopp_4x4(&logits, 20);
-        for r in 0..4 {
-            let row_sum: f32 = p[r].iter().sum();
+        for (r, row) in p.iter().enumerate() {
+            let row_sum: f32 = row.iter().sum();
             assert!((row_sum - 1.0).abs() < 1e-5, "row {r} sum = {row_sum}");
         }
-        for c in 0..4 {
+        for (c, _) in p[0].iter().enumerate() {
             let col_sum = p[0][c] + p[1][c] + p[2][c] + p[3][c];
             assert!((col_sum - 1.0).abs() < 1e-5, "col {c} sum = {col_sum}");
         }

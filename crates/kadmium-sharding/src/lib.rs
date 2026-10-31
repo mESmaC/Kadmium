@@ -540,8 +540,6 @@ pub mod verification;
 
 pub use arbitrage::*;
 pub use calibration::*;
-pub use usage::*;
-pub use verification::*;
 pub use cloud_shield_watcher::*;
 pub use deep_ep::*;
 pub use expert_balance::*;
@@ -552,6 +550,8 @@ pub use optimizer::*;
 pub use slices::*;
 pub use spot_provisioner::*;
 pub use sweep::*;
+pub use usage::*;
+pub use verification::*;
 
 #[cfg(test)]
 mod tests {

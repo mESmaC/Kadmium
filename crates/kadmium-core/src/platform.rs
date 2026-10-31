@@ -181,7 +181,10 @@ impl OperatingSystemFamily {
             || lower.contains("nuttx")
         {
             Self::RtSmartRtos
-        } else if lower.contains("horizon") || lower.contains("atmosphere") || lower.contains("deko3d") {
+        } else if lower.contains("horizon")
+            || lower.contains("atmosphere")
+            || lower.contains("deko3d")
+        {
             Self::HorizonOsL4t
         } else if lower.contains("android")
             || lower.contains("termux")
@@ -460,28 +463,56 @@ impl SiliconFamily {
             Self::AppleSiliconMSeries => "Apple Silicon M-Series (M1/M2/M3/M4 Base/Pro/Max/Ultra)",
             Self::AppleSiliconASeries => "Apple Silicon A-Series (A15–A18 Pro Metal + ANE)",
             Self::NvidiaBlackwell => "NVIDIA Blackwell (RTX 50-Series / B200 / GB200)",
-            Self::NvidiaHopperAda => "NVIDIA Hopper & Ada Lovelace (RTX 40-Series / L40S / H100 / H200)",
+            Self::NvidiaHopperAda => {
+                "NVIDIA Hopper & Ada Lovelace (RTX 40-Series / L40S / H100 / H200)"
+            }
             Self::NvidiaAmpereTuring => "NVIDIA Ampere & Turing (RTX 30/20-Series / A100 / A6000)",
-            Self::NvidiaPascalVoltaMaxwell => "NVIDIA Volta / Pascal / Maxwell (V100 / GTX 10/900-Series)",
-            Self::NvidiaTegraOrinXavier => "NVIDIA Jetson Tegra Orin / Xavier / TX2 (T234 / T194 / T186 UMA)",
+            Self::NvidiaPascalVoltaMaxwell => {
+                "NVIDIA Volta / Pascal / Maxwell (V100 / GTX 10/900-Series)"
+            }
+            Self::NvidiaTegraOrinXavier => {
+                "NVIDIA Jetson Tegra Orin / Xavier / TX2 (T234 / T194 / T186 UMA)"
+            }
             Self::NvidiaTegraX1 => "NVIDIA Tegra X1 / X1+ (T210 / T214 Maxwell sm_53 UMA)",
             Self::AmdRdnaDiscrete => "AMD Radeon RDNA 2 / 3 / 4 Discrete GPU (ROCm HIP / Vulkan)",
-            Self::AmdCdnaInstinct => "AMD Instinct CDNA / CDNA 2 / CDNA 3 (MI100 / MI250X / MI300X)",
-            Self::AmdRyzenAiUmaApu => "AMD Ryzen AI APU (Strix Halo / Strix Point / Phoenix UMA + XDNA NPU)",
+            Self::AmdCdnaInstinct => {
+                "AMD Instinct CDNA / CDNA 2 / CDNA 3 (MI100 / MI250X / MI300X)"
+            }
+            Self::AmdRyzenAiUmaApu => {
+                "AMD Ryzen AI APU (Strix Halo / Strix Point / Phoenix UMA + XDNA NPU)"
+            }
             Self::AmdZenCpuServerDesktop => "AMD Ryzen / Threadripper / EPYC (Zen AVX2 / AVX-512)",
-            Self::IntelArcXeDiscrete => "Intel Arc Alchemist / Battlemage / Data Center Max (Xe XMX)",
+            Self::IntelArcXeDiscrete => {
+                "Intel Arc Alchemist / Battlemage / Data Center Max (Xe XMX)"
+            }
             Self::IntelCoreUltraAiBoost => "Intel Core Ultra (Series 1 & 2) + AI Boost NPU",
             Self::IntelCoreXeonAvx => "Intel Core / Xeon Scalable (AVX2 / AVX-512 / AMX)",
-            Self::QualcommSnapdragonX => "Qualcomm Snapdragon X Elite / Plus (Oryon + 45 TOPS Hexagon)",
-            Self::QualcommSnapdragonMobile => "Qualcomm Snapdragon 8-Series (Kryo/Oryon + Adreno + Hexagon)",
-            Self::BroadcomVideoCoreArm => "Broadcom BCM2711 / BCM2712 (Cortex-A72/A76 NEON + VideoCore VI/VII)",
-            Self::RockchipArmNpu => "Rockchip RK3588 / RK3576 / RK3568 (Cortex-A76/A55 + 6 TOPS RKNPU2)",
+            Self::QualcommSnapdragonX => {
+                "Qualcomm Snapdragon X Elite / Plus (Oryon + 45 TOPS Hexagon)"
+            }
+            Self::QualcommSnapdragonMobile => {
+                "Qualcomm Snapdragon 8-Series (Kryo/Oryon + Adreno + Hexagon)"
+            }
+            Self::BroadcomVideoCoreArm => {
+                "Broadcom BCM2711 / BCM2712 (Cortex-A72/A76 NEON + VideoCore VI/VII)"
+            }
+            Self::RockchipArmNpu => {
+                "Rockchip RK3588 / RK3576 / RK3568 (Cortex-A76/A55 + 6 TOPS RKNPU2)"
+            }
             Self::MediaTekDimensityArm => "MediaTek Dimensity / Genio (ARMv9 + Immortalis + APU)",
             Self::GoogleTensorArm => "Google Tensor G1–G4 (ARMv9 + Mali + EdgeTPU)",
-            Self::AmpereNeoverseArmServer => "ARM Neoverse Server (Ampere Altra / AWS Graviton / Grace)",
-            Self::CanaanKendryteRiscV => "Canaan Kendryte K230 / K230D / K510 (XuanTie C908 RVV 1.0 + KPU)",
-            Self::SpacemiTRiscV => "SpacemiT K1 / M1 Octa-Core RISC-V (RVA22 + RVV 1.0 + 2 TOPS NPU)",
-            Self::THeadXuantieRiscV => "T-Head XuanTie C910 / C920 RISC-V (TH1520 / SG2042 RV64GCV)",
+            Self::AmpereNeoverseArmServer => {
+                "ARM Neoverse Server (Ampere Altra / AWS Graviton / Grace)"
+            }
+            Self::CanaanKendryteRiscV => {
+                "Canaan Kendryte K230 / K230D / K510 (XuanTie C908 RVV 1.0 + KPU)"
+            }
+            Self::SpacemiTRiscV => {
+                "SpacemiT K1 / M1 Octa-Core RISC-V (RVA22 + RVV 1.0 + 2 TOPS NPU)"
+            }
+            Self::THeadXuantieRiscV => {
+                "T-Head XuanTie C910 / C920 RISC-V (TH1520 / SG2042 RV64GCV)"
+            }
             Self::StarFiveRiscV => "StarFive JH7110 / JH8100 RISC-V (SiFive U74 RV64GC)",
             Self::GenericMultiCore => "Generic Multi-Core CPU / Vulkan Accelerator",
         }
@@ -501,9 +532,9 @@ impl SiliconFamily {
                 ComputeBackend::Rocm
             }
             Self::IntelArcXeDiscrete => ComputeBackend::VulkanWgpu,
-            Self::AmdZenCpuServerDesktop
-            | Self::IntelCoreUltraAiBoost
-            | Self::IntelCoreXeonAvx => ComputeBackend::CpuAvx512OrAvx2,
+            Self::AmdZenCpuServerDesktop | Self::IntelCoreUltraAiBoost | Self::IntelCoreXeonAvx => {
+                ComputeBackend::CpuAvx512OrAvx2
+            }
             Self::QualcommSnapdragonX
             | Self::QualcommSnapdragonMobile
             | Self::BroadcomVideoCoreArm
@@ -631,9 +662,9 @@ impl SiliconFamily {
                 "Desktops & Workstations (Radeon RX 7900 XTX / 7800 XT / RX 9070 XT / RX 6800 XT / Radeon PRO W7900)",
                 "Gaming Laptops (Radeon RX 7900M / 7700S / 6800M)",
             ],
-            Self::AmdCdnaInstinct => &[
-                "Datacenter & Cloud Nodes (AMD Instinct MI300X / MI325X / MI250X / MI210)",
-            ],
+            Self::AmdCdnaInstinct => {
+                &["Datacenter & Cloud Nodes (AMD Instinct MI300X / MI325X / MI250X / MI210)"]
+            }
             Self::AmdRyzenAiUmaApu => &[
                 "Strix Halo Mini-PCs & Workstations (Ryzen AI Max+ 395 w/ 64–128GB UMA + Radeon 8060S)",
                 "Strix Point / Phoenix Laptops & Mini-PCs (Ryzen AI 9 HX 370 / 7840U / 8845HS)",
@@ -673,12 +704,10 @@ impl SiliconFamily {
                 "Radxa ROCK 5B / 5C & Khadas Edge2",
                 "Turing RK1 Cluster Blade & FriendlyElec NanoPC-T6",
             ],
-            Self::MediaTekDimensityArm => &[
-                "Dimensity 9300/9400 Android Phones & MediaTek Genio 1200 SBCs",
-            ],
-            Self::GoogleTensorArm => &[
-                "Google Pixel 6 / 7 / 8 / 9 Pro Smartphones & Pixel Tablet",
-            ],
+            Self::MediaTekDimensityArm => {
+                &["Dimensity 9300/9400 Android Phones & MediaTek Genio 1200 SBCs"]
+            }
+            Self::GoogleTensorArm => &["Google Pixel 6 / 7 / 8 / 9 Pro Smartphones & Pixel Tablet"],
             Self::AmpereNeoverseArmServer => &[
                 "Ampere Altra / AmpereOne Rack Servers & Workstation Towers",
                 "AWS Graviton3 / Graviton4 & NVIDIA Grace CPU Nodes",
@@ -698,12 +727,10 @@ impl SiliconFamily {
                 "Sipeed LicheePi 4A & BeagleV-Ahead (TH1520 Quad C910)",
                 "Milk-V Pioneer 64-Core SG2042 RISC-V Workstation",
             ],
-            Self::StarFiveRiscV => &[
-                "StarFive VisionFive 2, Milk-V Mars & Pine64 Star64 (JH7110)",
-            ],
-            Self::GenericMultiCore => &[
-                "Any x86_64, AArch64, or RISC-V64 Desktop, Laptop, Server, or Virtual Machine",
-            ],
+            Self::StarFiveRiscV => &["StarFive VisionFive 2, Milk-V Mars & Pine64 Star64 (JH7110)"],
+            Self::GenericMultiCore => {
+                &["Any x86_64, AArch64, or RISC-V64 Desktop, Laptop, Server, or Virtual Machine"]
+            }
         }
     }
 
@@ -746,16 +773,12 @@ impl SiliconFamily {
                 OperatingSystemFamily::FreeBsd,
                 OperatingSystemFamily::MacOsDarwin,
             ],
-            Self::QualcommSnapdragonX => &[
-                OperatingSystemFamily::Windows,
-                OperatingSystemFamily::Linux,
-            ],
-            Self::QualcommSnapdragonMobile
-            | Self::MediaTekDimensityArm
-            | Self::GoogleTensorArm => &[
-                OperatingSystemFamily::Android,
-                OperatingSystemFamily::Linux,
-            ],
+            Self::QualcommSnapdragonX => {
+                &[OperatingSystemFamily::Windows, OperatingSystemFamily::Linux]
+            }
+            Self::QualcommSnapdragonMobile | Self::MediaTekDimensityArm | Self::GoogleTensorArm => {
+                &[OperatingSystemFamily::Android, OperatingSystemFamily::Linux]
+            }
             Self::BroadcomVideoCoreArm | Self::RockchipArmNpu => &[
                 OperatingSystemFamily::Linux,
                 OperatingSystemFamily::FreeBsd,
@@ -866,7 +889,11 @@ impl PlatformDetector {
         {
             return SiliconFamily::THeadXuantieRiscV;
         }
-        if combined.contains("jh7110") || combined.contains("jh8100") || combined.contains("visionfive") || combined.contains("starfive") {
+        if combined.contains("jh7110")
+            || combined.contains("jh8100")
+            || combined.contains("visionfive")
+            || combined.contains("starfive")
+        {
             return SiliconFamily::StarFiveRiscV;
         }
 
@@ -931,7 +958,8 @@ impl PlatformDetector {
             || combined.contains("a40")
             || combined.contains("a10g")
             || combined.contains("tesla t4")
-            || (combined.contains("nvidia") && (combined.contains("ampere") || combined.contains("turing")))
+            || (combined.contains("nvidia")
+                && (combined.contains("ampere") || combined.contains("turing")))
         {
             return SiliconFamily::NvidiaAmpereTuring;
         }
@@ -1027,10 +1055,16 @@ impl PlatformDetector {
         {
             return SiliconFamily::QualcommSnapdragonMobile;
         }
-        if combined.contains("dimensity") || combined.contains("mediatek") || combined.contains("genio") {
+        if combined.contains("dimensity")
+            || combined.contains("mediatek")
+            || combined.contains("genio")
+        {
             return SiliconFamily::MediaTekDimensityArm;
         }
-        if combined.contains("tensor g") || combined.contains("edgetpu") || combined.contains("pixel") {
+        if combined.contains("tensor g")
+            || combined.contains("edgetpu")
+            || combined.contains("pixel")
+        {
             return SiliconFamily::GoogleTensorArm;
         }
         if combined.contains("ampere altra")
@@ -1046,7 +1080,10 @@ impl PlatformDetector {
         if combined.contains("core ultra") || combined.contains("ai boost") {
             return SiliconFamily::IntelCoreUltraAiBoost;
         }
-        if combined.contains("ryzen") || combined.contains("epyc") || combined.contains("threadripper") {
+        if combined.contains("ryzen")
+            || combined.contains("epyc")
+            || combined.contains("threadripper")
+        {
             return SiliconFamily::AmdZenCpuServerDesktop;
         }
         if combined.contains("intel") || combined.contains("core i") || combined.contains("xeon") {
@@ -1089,7 +1126,8 @@ impl PlatformDetector {
         {
             return OperatingSystemFamily::Android;
         }
-        if combined.contains("k230") || combined.contains("canmv") || combined.contains("rt-smart") {
+        if combined.contains("k230") || combined.contains("canmv") || combined.contains("rt-smart")
+        {
             return OperatingSystemFamily::RtSmartRtos;
         }
         if combined.contains("switch") && combined.contains("horizon") {

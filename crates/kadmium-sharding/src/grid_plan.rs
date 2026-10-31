@@ -565,7 +565,14 @@ impl ExpertPlacementPlanner {
         popularity: Option<&ExpertPopularity>,
         workload: WorkloadKind,
     ) -> ExpertPlacementPlan {
-        Self::plan_with_offers(model, nodes, strategy, popularity, workload, &BTreeMap::new())
+        Self::plan_with_offers(
+            model,
+            nodes,
+            strategy,
+            popularity,
+            workload,
+            &BTreeMap::new(),
+        )
     }
 
     /// The planner proper: places the model against each node's offer (the node's default offer
@@ -580,7 +587,9 @@ impl ExpertPlacementPlanner {
         offers: &BTreeMap<NodeId, ResourceOffer>,
     ) -> ExpertPlacementPlan {
         let segments = LinkSegments::derive(nodes);
-        Self::plan_with_offers_segmented(model, nodes, strategy, popularity, workload, offers, &segments)
+        Self::plan_with_offers_segmented(
+            model, nodes, strategy, popularity, workload, offers, &segments,
+        )
     }
 
     /// [`ExpertPlacementPlanner::plan_with_offers`] with the link segments the balancer packs
@@ -1109,8 +1118,7 @@ impl OllamaSingleBoxBaseline {
         let q4km_total_gb = spec_total_gb * q4km_scale;
         let q4km_active_gb = (bf16_trunk_gb + bf16_active_experts_gb) * q4km_scale;
         // Reserve `q8_0` KV cache (`34/64` of FP16 KV) + 0.5 GiB GGML compute buffer in fast memory
-        let kv_q8_gb =
-            (layers * model.kv_cache_per_layer_gb * (34.0 / 64.0)).min(2.0);
+        let kv_q8_gb = (layers * model.kv_cache_per_layer_gb * (34.0 / 64.0)).min(2.0);
         let graph_scratch_gb = 0.5;
 
         let round2 = |v: f64| (v * 100.0).round() / 100.0;
@@ -1118,9 +1126,8 @@ impl OllamaSingleBoxBaseline {
 
         for node in nodes {
             let budget = NodeBudget::from_node(node);
-            let fast_cap_gb = ((budget.fast_left as f64) / GIB - kv_q8_gb - graph_scratch_gb)
-                .max(0.0);
-            let warm_cap_gb = (budget.warm_left as f64) / GIB;
+            let fast_cap_gb = (budget.fast_left / GIB - kv_q8_gb - graph_scratch_gb).max(0.0);
+            let warm_cap_gb = budget.warm_left / GIB;
 
             let fast_res_gb = q4km_total_gb.min(fast_cap_gb);
             let rem_after_fast = (q4km_total_gb - fast_res_gb).max(0.0);
@@ -1353,7 +1360,8 @@ impl StrategyCostModel {
                 })
                 .map(|r| r.preferred_tier)
                 .unwrap_or(ResidencyTier::SystemRam);
-            let trunk_bw = self.effective_bw_gbps(&range.owner, owner_budget, trunk_tier, eta) * 1e9;
+            let trunk_bw =
+                self.effective_bw_gbps(&range.owner, owner_budget, trunk_tier, eta) * 1e9;
             let trunk_ms = range.bytes as f64 / trunk_bw * 1000.0;
             weight_ms += trunk_ms;
             *per_node_ms.entry(range.owner.clone()).or_default() += trunk_ms;
@@ -1566,14 +1574,8 @@ impl StrategyCostModel {
         let chain = self.estimate(model, &chain_plan, nodes, popularity);
         let ep = self.estimate(model, &ep_plan, nodes, popularity);
         let balance = self.balance_summary(model, &ep_plan, nodes, popularity);
-        let deep_ep = DeepEpStepAccount::estimate(
-            model,
-            &ep_plan,
-            nodes,
-            popularity,
-            &ep,
-            &segments,
-        );
+        let deep_ep =
+            DeepEpStepAccount::estimate(model, &ep_plan, nodes, popularity, &ep, &segments);
 
         let dense = !model.is_moe || model.experts_per_layer == 0;
         let chosen = if dense || chain.ms_per_token <= ep.ms_per_token {
@@ -1898,7 +1900,9 @@ impl StepGraphBuilder {
     ) -> WorkGraph {
         let graph_id = Self::graph_id(session_id, epoch);
         let input = Self::prompt_ref(&graph_id);
-        Self::decode_step_from(model, placement, nodes, epoch, session_id, rows, serving, &input)
+        Self::decode_step_from(
+            model, placement, nodes, epoch, session_id, rows, serving, &input,
+        )
     }
 
     /// [`StepGraphBuilder::decode_step_served`] with the step's first unit reading `input`
@@ -1965,35 +1969,35 @@ impl StepGraphBuilder {
                     let unit_id =
                         WorkUnitId::qualified(&graph_id, &format!("stage-{stage_index:02}"));
                     let mut unit = WorkUnit::new(unit_id, AppKind::StageForward)
-                            .with_params_json(&StageForwardParams {
-                                model_id: model.id.clone(),
-                                epoch,
-                                session_id: session_id.to_string(),
-                                stage_index,
-                                start_layer: range.start_layer,
-                                end_layer: range.end_layer,
-                                rows,
-                                q_star_ratio: range.q_star_ratio,
-                                experts_per_layer: model.experts_per_layer,
-                                active_experts_per_token: model.active_experts_per_token,
-                            })
-                            .expect("params serialize")
-                            .with_placement(Self::placement_for(
-                                &range.owner,
-                                vec![trunk.clone()],
-                                boundary,
-                            ))
-                            .with_cost(Self::cost(
-                                bytes,
-                                bw_of(&range.owner, tier),
-                                if stage_index == 0 {
-                                    0.0
-                                } else {
-                                    hop_of(&range.owner)
-                                },
-                                rows,
-                            ))
-                            .with_redundancy(RedundancyPolicy::trusted());
+                        .with_params_json(&StageForwardParams {
+                            model_id: model.id.clone(),
+                            epoch,
+                            session_id: session_id.to_string(),
+                            stage_index,
+                            start_layer: range.start_layer,
+                            end_layer: range.end_layer,
+                            rows,
+                            q_star_ratio: range.q_star_ratio,
+                            experts_per_layer: model.experts_per_layer,
+                            active_experts_per_token: model.active_experts_per_token,
+                        })
+                        .expect("params serialize")
+                        .with_placement(Self::placement_for(
+                            &range.owner,
+                            vec![trunk.clone()],
+                            boundary,
+                        ))
+                        .with_cost(Self::cost(
+                            bytes,
+                            bw_of(&range.owner, tier),
+                            if stage_index == 0 {
+                                0.0
+                            } else {
+                                hop_of(&range.owner)
+                            },
+                            rows,
+                        ))
+                        .with_redundancy(RedundancyPolicy::trusted());
                     unit.inputs = vec![trunk, previous_activation];
                     units.push(unit);
                 }
@@ -2064,8 +2068,7 @@ impl StepGraphBuilder {
                         let layer_slices: Vec<ExpertSliceParams> = holders
                             .iter()
                             .map(|holder| {
-                                let mut resident =
-                                    by_node.get(holder).cloned().unwrap_or_default();
+                                let mut resident = by_node.get(holder).cloned().unwrap_or_default();
                                 resident.sort_unstable();
                                 let mut row_shares =
                                     shares.get(holder).cloned().unwrap_or_default();
@@ -2168,11 +2171,8 @@ impl StepGraphBuilder {
                                 .with_redundancy(RedundancyPolicy::trusted());
                             leaf.inputs = {
                                 let mut inputs = refs;
-                                inputs.push(Self::holder_dispatch_ref(
-                                    &graph_id,
-                                    &trunk_id,
-                                    holder,
-                                ));
+                                inputs
+                                    .push(Self::holder_dispatch_ref(&graph_id, &trunk_id, holder));
                                 inputs
                             };
                             graph.add_unit(leaf);
@@ -2279,7 +2279,10 @@ mod tests {
             ExecutionStrategy::ExpertParallel,
             Some(&heat),
         );
-        assert!(placement.replicated_experts > 0, "the toy mesh has room for replicas");
+        assert!(
+            placement.replicated_experts > 0,
+            "the toy mesh has room for replicas"
+        );
         let replicated = placement
             .experts
             .iter()
@@ -2289,9 +2292,8 @@ mod tests {
 
         // Unmeasured holders: the primary serves. Measured: the cheaper copy serves.
         assert!(placement.serving_assignment(|_| None).is_empty());
-        let serving = placement.serving_assignment(|node| {
-            Some(if *node == replica { 1.0 } else { 50.0 })
-        });
+        let serving =
+            placement.serving_assignment(|node| Some(if *node == replica { 1.0 } else { 50.0 }));
         assert_eq!(
             serving.get(&(replicated.layer, replicated.expert)),
             Some(&replica)
@@ -2402,7 +2404,8 @@ mod tests {
     fn offers_bound_the_plan_and_the_fit_report_names_what_is_missing() {
         let nodes = cluster();
         let model = toy_moe();
-        let plan = ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
+        let plan =
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::PipelineChain, None);
         assert!(plan.fit.fits, "{:?}", plan.fit.shortfalls);
         assert_eq!(plan.fit.per_node.len(), plan.fast_memory_used_gb.len());
         assert!(
@@ -2450,7 +2453,13 @@ mod tests {
         assert!(!starved.fit.shortfalls.is_empty());
         assert!(starved.fit.shortfalls[0].contains("cannot hold trunk"));
         assert!(starved.fit.per_node.iter().all(|n| n.requires_approval));
-        assert!(starved.fit.per_node.iter().all(|n| n.fast_offered_gb == 0.0));
+        assert!(
+            starved
+                .fit
+                .per_node
+                .iter()
+                .all(|n| n.fast_offered_gb == 0.0)
+        );
         assert!(starved.fit.summary().starts_with("does not fit"));
         assert_eq!(
             starved.digest(),
@@ -2518,14 +2527,21 @@ mod tests {
         );
         // Copies land in free fast memory and are counted against it.
         for change in &balance.changes {
-            let fit = hot.fit.per_node.iter().find(|f| f.node == change.node).unwrap();
+            let fit = hot
+                .fit
+                .per_node
+                .iter()
+                .find(|f| f.node == change.node)
+                .unwrap();
             assert!(fit.fast_used_gb <= fit.fast_offered_gb + 1e-6);
         }
 
         // The cost model reports the busiest node before and after, and the even split only
         // pays for a batch wider than one row.
         let cost = StrategyCostModel::default();
-        let one_row = cost.balance_summary(&model, &hot, &nodes, Some(&pop)).unwrap();
+        let one_row = cost
+            .balance_summary(&model, &hot, &nodes, Some(&pop))
+            .unwrap();
         assert!(one_row.modelled);
         assert_eq!(one_row.rows, 1);
         assert!(one_row.busiest_ms_after < one_row.busiest_ms_before);
@@ -2567,7 +2583,12 @@ mod tests {
                 .filter(|p| p.serves(replicated.expert, row))
                 .map(|p| &p.holder)
                 .collect();
-            assert_eq!(serving.len(), 1, "row {row} of expert {:?}", replicated.expert);
+            assert_eq!(
+                serving.len(),
+                1,
+                "row {row} of expert {:?}",
+                replicated.expert
+            );
         }
         let share = slices
             .iter()
@@ -2637,19 +2658,15 @@ mod tests {
         assert!(choice.measured_chain.is_some());
 
         // Both measured: the faster shape wins whatever the model said.
-        let changed = choice.apply_measurements(
-            Some(record(&chain_plan, 9.0)),
-            Some(record(&ep_plan, 3.0)),
-        );
+        let changed =
+            choice.apply_measurements(Some(record(&chain_plan, 9.0)), Some(record(&ep_plan, 3.0)));
         assert_eq!(choice.chosen, ExecutionStrategy::ExpertParallel);
         assert_eq!(changed, modelled != ExecutionStrategy::ExpertParallel);
         assert_eq!(choice.decided_by, DECIDED_BY_MEASURED);
         assert!(choice.rationale.starts_with("measured 9.00 ms/token"));
 
-        let changed = choice.apply_measurements(
-            Some(record(&chain_plan, 2.0)),
-            Some(record(&ep_plan, 3.0)),
-        );
+        let changed =
+            choice.apply_measurements(Some(record(&chain_plan, 2.0)), Some(record(&ep_plan, 3.0)));
         assert!(changed);
         assert_eq!(choice.chosen, ExecutionStrategy::PipelineChain);
 
@@ -2661,8 +2678,7 @@ mod tests {
         assert_eq!(choice.chosen, ExecutionStrategy::PipelineChain);
 
         // A measured streaming rate replaces the nominal RAM bandwidth in the estimate.
-        let slow_ram = StrategyCostModel::default()
-            .with_measured_stream(nodes[0].id.clone(), 2.0);
+        let slow_ram = StrategyCostModel::default().with_measured_stream(nodes[0].id.clone(), 2.0);
         let nominal = cost.estimate(&model, &chain_plan, &nodes, None);
         let measured = slow_ram.estimate(&model, &chain_plan, &nodes, None);
         assert!(measured.modelled);
@@ -2791,7 +2807,10 @@ mod tests {
 
         let ready = graph.ready();
         assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].id, WorkUnitId::qualified("sess-b/step-1", "L000-trunk"));
+        assert_eq!(
+            ready[0].id,
+            WorkUnitId::qualified("sess-b/step-1", "L000-trunk")
+        );
         assert_eq!(ready[0].id.name(), "L000-trunk");
         assert!(ready[0].placement.boundary_layer_access);
         let levels = graph.wavefronts().unwrap();
@@ -3103,7 +3122,10 @@ mod phase5_tests {
         let levels = graph.wavefronts().unwrap();
         assert_eq!(levels.len(), 2);
         assert_eq!(levels[0].len(), stages);
-        assert_eq!(levels[1], vec![WorkUnitId::qualified("lab/train-17", "demo-reduce")]);
+        assert_eq!(
+            levels[1],
+            vec![WorkUnitId::qualified("lab/train-17", "demo-reduce")]
+        );
         let reduce = graph.unit(&"demo-reduce".into()).unwrap();
         assert_eq!(reduce.inputs.len(), stages);
         assert!(
@@ -3144,7 +3166,8 @@ mod phase5_tests {
     }
 
     #[test]
-    fn ollama_single_box_q4km_baseline_discloses_when_single_node_vram_ddr5_wins_and_when_mesh_wins() {
+    fn ollama_single_box_q4km_baseline_discloses_when_single_node_vram_ddr5_wins_and_when_mesh_wins()
+     {
         let nodes = sample_personal_cluster();
         let cost = StrategyCostModel::default();
 

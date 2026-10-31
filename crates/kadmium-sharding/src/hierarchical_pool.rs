@@ -147,7 +147,8 @@ impl HierarchicalPoolPlanner {
 
         // 3. Determine Zig-Zag Ring Context Parallelism degree (D_CP):
         let rem_after_ep = n / (d_pp * d_ep_raid).max(1);
-        let d_cp = if workload == WorkloadKind::DistributedTraining && rem_after_ep >= 2 && n >= 32 {
+        let d_cp = if workload == WorkloadKind::DistributedTraining && rem_after_ep >= 2 && n >= 32
+        {
             2
         } else {
             1
@@ -240,11 +241,10 @@ impl HierarchicalPoolPlanner {
 
         // For Federated DiLoCo + DeMo Training:
         // Logarithmic tree sync keeps scaling efficiency > 89% even at 100,000 nodes!
-        let scaling_eff_pct = (99.2 - (metrics.tree_depth_hops.saturating_sub(1) as f64) * 2.6)
-            .clamp(88.5, 99.2);
+        let scaling_eff_pct =
+            (99.2 - (metrics.tree_depth_hops.saturating_sub(1) as f64) * 2.6).clamp(88.5, 99.2);
         let per_cell_train_tok_s = 38_500.0; // Boosted w/ Varlen Packing + FWHT-FP8 + ZB-H1 + GaLore-Muon
-        let agg_train_tok_s =
-            (cells as f64) * per_cell_train_tok_s * (scaling_eff_pct / 100.0);
+        let agg_train_tok_s = (cells as f64) * per_cell_train_tok_s * (scaling_eff_pct / 100.0);
         let aggregators = cells.div_ceil(16).max(1);
 
         PoolScaleTierProfile {

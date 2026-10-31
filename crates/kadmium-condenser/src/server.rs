@@ -182,9 +182,7 @@ fn loopback_headers(headers: &HeaderMap) -> bool {
         .is_some_and(|uri| {
             uri.scheme_str()
                 .is_some_and(|scheme| scheme.eq_ignore_ascii_case("http"))
-                && uri
-                    .path_and_query()
-                    .map_or(true, |path| path.as_str() == "/")
+                && uri.path_and_query().is_none_or(|path| path.as_str() == "/")
                 && uri.authority().is_some_and(|authority| {
                     !authority.as_str().contains('@') && loopback_authority(authority)
                 })

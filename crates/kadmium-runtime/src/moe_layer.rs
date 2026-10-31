@@ -51,7 +51,7 @@ impl LayerReference {
                 .find(|e| e.tensor_name == "layer.rmsnorm.gamma")
             && let Ok(raw_slice) = reader.get_verified_tensor_slice(entry)
         {
-            for chunk in raw_slice.chunks_exact(4).take(dim) {
+            for chunk in raw_slice.as_chunks::<4>().0.iter().take(dim) {
                 gamma.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
         }
@@ -385,7 +385,9 @@ impl TokenBatchF32 {
             ));
         }
         let data = body
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         Ok(Self { rows, dim, data })
@@ -471,7 +473,9 @@ impl ExpertPartialsBatch {
             let row = u32_at(at);
             let expert = u32_at(at + 4);
             let data = bytes[at + 8..at + entry_len]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect();
             partials.push(ExpertPartial { row, expert, data });
@@ -526,7 +530,9 @@ impl DispatchPrecision {
             0 => Ok(Self::ExactF32),
             1 => Ok(Self::LowLatencyFp8F32Scale),
             2 => Ok(Self::LowLatencyFp8Ue8m0),
-            other => Err(format!("HolderDispatchBatch: unknown precision tag {other}")),
+            other => Err(format!(
+                "HolderDispatchBatch: unknown precision tag {other}"
+            )),
         }
     }
 }
@@ -598,26 +604,22 @@ impl HolderDispatchBatch {
 
         let row_data = match precision {
             DispatchPrecision::ExactF32 => raw_rows,
-            DispatchPrecision::LowLatencyFp8F32Scale => {
-                PerTokenBlockQuantized::quantize(
-                    &raw_rows,
-                    included_rows.len(),
-                    dim,
-                    DEFAULT_SUBBLOCK_SIZE,
-                    ScaleFormat::ExactF32,
-                )
-                .dequantize()
-            }
-            DispatchPrecision::LowLatencyFp8Ue8m0 => {
-                PerTokenBlockQuantized::quantize(
-                    &raw_rows,
-                    included_rows.len(),
-                    dim,
-                    DEFAULT_SUBBLOCK_SIZE,
-                    ScaleFormat::Ue8m0PowerOfTwo,
-                )
-                .dequantize()
-            }
+            DispatchPrecision::LowLatencyFp8F32Scale => PerTokenBlockQuantized::quantize(
+                &raw_rows,
+                included_rows.len(),
+                dim,
+                DEFAULT_SUBBLOCK_SIZE,
+                ScaleFormat::ExactF32,
+            )
+            .dequantize(),
+            DispatchPrecision::LowLatencyFp8Ue8m0 => PerTokenBlockQuantized::quantize(
+                &raw_rows,
+                included_rows.len(),
+                dim,
+                DEFAULT_SUBBLOCK_SIZE,
+                ScaleFormat::Ue8m0PowerOfTwo,
+            )
+            .dequantize(),
         };
 
         Self {
@@ -772,7 +774,9 @@ impl HolderDispatchBatch {
                         body.len()
                     ));
                 }
-                body.chunks_exact(4)
+                body.as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect()
             }
@@ -784,7 +788,9 @@ impl HolderDispatchBatch {
                     return Err("HolderDispatchBatch: truncated FP8+f32 payload".to_string());
                 }
                 let scales: Vec<f32> = body[..scale_bytes]
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
                 let codes: Vec<i8> = body[scale_bytes..].iter().map(|&b| b as i8).collect();
@@ -967,7 +973,9 @@ impl LowLatencyCombineBatch {
         }
         let scales: Vec<f32> = match format {
             ScaleFormat::ExactF32 => body[..scale_bytes]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
             ScaleFormat::Ue8m0PowerOfTwo => body[..scale_bytes]

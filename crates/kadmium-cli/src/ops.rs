@@ -13,15 +13,14 @@ use kadmium_data::{
 };
 use kadmium_gateway::{GatewayState, KadmiumMcpServer, McpJsonRpcRequest, OtaUpdatePushRequest};
 use kadmium_network::{
-    ClusterStateCrdt, DEFAULT_LAN_DISCOVERY_UDP_PORT, JoinTicket, LanCoordinatorDiscovery,
-    LanDiscoveryBeacon, MeshHttpClient, WorkerHeartbeatAck, WorkerHeartbeatRequest,
-    WorkerRegisterRequest, WorkerRegistrationAck, FleetUpdatePushSummary, UpdatePayloadKind,
-    UpdateTargetScope, WorkerUpdatePushAck,
+    ClusterStateCrdt, DEFAULT_LAN_DISCOVERY_UDP_PORT, FleetUpdatePushSummary, JoinTicket,
+    LanCoordinatorDiscovery, LanDiscoveryBeacon, MeshHttpClient, UpdatePayloadKind,
+    UpdateTargetScope, WorkerHeartbeatAck, WorkerHeartbeatRequest, WorkerRegisterRequest,
+    WorkerRegistrationAck, WorkerUpdatePushAck,
 };
 use kadmium_runtime::{
-    ColibriNvmeDoubleBuffer, DeMoDctCompressor, LiveNodeWorkerServer, Q4KBlockTensor,
-    VerdeVerificationEngine, DistributedLanExecutor, LocalFleetSpawner,
-    apply_ota_update_manifest_local,
+    ColibriNvmeDoubleBuffer, DeMoDctCompressor, DistributedLanExecutor, LiveNodeWorkerServer,
+    LocalFleetSpawner, Q4KBlockTensor, VerdeVerificationEngine, apply_ota_update_manifest_local,
 };
 use kadmium_sharding::{HybridCloudArbitragePlanner, ShardPlanner};
 
@@ -674,7 +673,10 @@ pub struct JoinOfferArgs {
 impl JoinOfferArgs {
     /// The owner's offer for the probed node, or `None` when nothing was overridden so the
     /// coordinator uses the node's default offer.
-    pub fn into_offer(self, node: &kadmium_core::HardwareNode) -> Option<kadmium_core::ResourceOffer> {
+    pub fn into_offer(
+        self,
+        node: &kadmium_core::HardwareNode,
+    ) -> Option<kadmium_core::ResourceOffer> {
         if self.fast_gb.is_none()
             && self.ram_gb.is_none()
             && self.nvme_gb.is_none()
@@ -712,15 +714,18 @@ pub async fn run_calibrate(coordinator: &str, strategy: Option<&str>, steps: u32
     println!(
         "===================================================================================="
     );
-    println!(" Kadmium (Cd-48) — Grid Calibration ({} step(s), {} row(s) per step)", req.steps.unwrap_or(8), req.rows.unwrap_or(1));
+    println!(
+        " Kadmium (Cd-48) — Grid Calibration ({} step(s), {} row(s) per step)",
+        req.steps.unwrap_or(8),
+        req.rows.unwrap_or(1)
+    );
     println!(
         "===================================================================================="
     );
-    match MeshHttpClient::post_json::<kadmium_gateway::GridCalibrateRequest, kadmium_gateway::GridCalibrateResponse>(
-        coordinator,
-        "/api/v1/grid/calibrate",
-        &req,
-    )
+    match MeshHttpClient::post_json::<
+        kadmium_gateway::GridCalibrateRequest,
+        kadmium_gateway::GridCalibrateResponse,
+    >(coordinator, "/api/v1/grid/calibrate", &req)
     .await
     {
         Ok(resp) => {
@@ -738,7 +743,10 @@ pub async fn run_calibrate(coordinator: &str, strategy: Option<&str>, steps: u32
                     record.binding.rows
                 );
                 for (node, ms) in &record.per_node_exec_ms {
-                    println!("  * Compute on {:<16} {ms:>8.2} ms per step (worker clock)", node);
+                    println!(
+                        "  * Compute on {:<16} {ms:>8.2} ms per step (worker clock)",
+                        node
+                    );
                 }
             }
             println!(
@@ -746,7 +754,10 @@ pub async fn run_calibrate(coordinator: &str, strategy: Option<&str>, steps: u32
                 resp.applies_to_plan_in_force, resp.decided_by
             );
             println!("  * Why:                    {}", resp.rationale);
-            println!("  * Wall:                   {:.1} ms for {} step(s)", resp.wall_ms, resp.steps_run);
+            println!(
+                "  * Wall:                   {:.1} ms for {} step(s)",
+                resp.wall_ms, resp.steps_run
+            );
         }
         Err(e) => println!(
             "  * No coordinator answered at {coordinator}: {e}. Start one with `kadmium serve` first."
@@ -782,14 +793,10 @@ pub async fn run_join(
     let local_lan_ip = LiveHardwareProfiler::probe_local_lan_ip();
 
     // Spawn local TCP WireFrame worker server on 0.0.0.0:<worker_port> (auto-incrementing if busy):
-    let worker_server = LiveNodeWorkerServer::spawn_auto_port(
-        "0.0.0.0",
-        worker_port,
-        local_node.clone(),
-        true,
-    )
-    .await
-    .expect("Failed to bind local TCP WireFrame worker listener");
+    let worker_server =
+        LiveNodeWorkerServer::spawn_auto_port("0.0.0.0", worker_port, local_node.clone(), true)
+            .await
+            .expect("Failed to bind local TCP WireFrame worker listener");
     let bound_port = worker_server.local_addr.port();
     let worker_tcp_addr = format!("{local_lan_ip}:{bound_port}");
 
@@ -820,7 +827,10 @@ pub async fn run_join(
     let token = discovered_ticket.unwrap_or_else(|| {
         JoinTicket::generate(
             local_node.id.clone(),
-            vec![format!("{local_lan_ip}:7848"), "relay.kadmium.ai:4433".into()],
+            vec![
+                format!("{local_lan_ip}:7848"),
+                "relay.kadmium.ai:4433".into(),
+            ],
             Some("slice-01-prod-deploy".into()),
             NodeTrustTier::TrustedCore,
         )
@@ -938,9 +948,7 @@ pub async fn run_join(
             );
 
             if once {
-                println!(
-                    "  [--once] Registration verified. Worker exiting (--once specified)."
-                );
+                println!("  [--once] Registration verified. Worker exiting (--once specified).");
                 return;
             }
 
@@ -1457,7 +1465,12 @@ pub async fn run_update(
     println!("{}", "-".repeat(122));
     println!(
         "{:<24} {:<16} {:<38} {:<18} {:<18} {:>8}",
-        "HOSTNAME", "VERSION TRANSITION", "DELIVERY CHANNEL", "MAC SIGNATURE", "REPOPS SELF-TEST", "LATENCY"
+        "HOSTNAME",
+        "VERSION TRANSITION",
+        "DELIVERY CHANNEL",
+        "MAC SIGNATURE",
+        "REPOPS SELF-TEST",
+        "LATENCY"
     );
     println!("{}", "-".repeat(122));
     for r in &summary.node_receipts {

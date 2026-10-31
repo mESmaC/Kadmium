@@ -19,9 +19,7 @@ use crate::{
     SparseDctPacket, SpeculativeDraftVerificationReport, StageExecutionTrace,
     VerdeVerificationEngine, WorkDispatchPayload, WorkResultPayload, execute_dispatch, repops,
 };
-use kadmium_core::{
-    HardwareNode, NodeId, NodeRole, PoliteState, sample_personal_cluster,
-};
+use kadmium_core::{HardwareNode, NodeId, NodeRole, PoliteState, sample_personal_cluster};
 use kadmium_data::{
     Fts3PagePatchEngine, KTB_PAGE_ALIGNMENT_BYTES, KtbBankPacker, KtbBankReader, KtbMerkleTree,
     MerkleInclusionProof, TensorEncoding, compute_fnv1a64_checksum,
@@ -690,8 +688,8 @@ pub fn execute_stage_layers_with_ktb_routed_hooked(
         ));
     }
 
-    let q_boundary =
-        last_boundary.unwrap_or_else(|| BlockwiseInt8Tensor::quantize(&hidden, LAYER_BOUNDARY_BLOCK));
+    let q_boundary = last_boundary
+        .unwrap_or_else(|| BlockwiseInt8Tensor::quantize(&hidden, LAYER_BOUNDARY_BLOCK));
     if layer_digests.is_empty() {
         // A hardware bridge returns the stage's last boundary only: one commitment for the
         // whole range, which a Verde bisection treats as a single layer.
@@ -850,8 +848,8 @@ pub fn execute_stage_training_local(
     let decomp = DeMoDctCompressor::decompress_packet(&dct_packet);
     let repops_digest = stage_training_payload_digest(req.start_layer, req.end_layer, &decomp);
 
-    let compute_exec_ms = cm4_hw_ms
-        .unwrap_or_else(|| (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0);
+    let compute_exec_ms =
+        cm4_hw_ms.unwrap_or_else(|| (t0.elapsed().as_secs_f64() * 1000.0 * 100.0).round() / 100.0);
 
     LiveStageTrainingResponse {
         node_id: node_id.to_string(),
@@ -1068,9 +1066,7 @@ pub fn apply_ota_update_manifest_local(
     }
 
     // Run deterministic Verde RepOps canary self-test on the worker after staging the update
-    let self_test_vec: Vec<f64> = (0..32)
-        .map(|i| ((i as f64) * 0.09 + 0.15).sin())
-        .collect();
+    let self_test_vec: Vec<f64> = (0..32).map(|i| ((i as f64) * 0.09 + 0.15).sin()).collect();
     let repops_sum = VerdeVerificationEngine::repops_pairwise_tree_sum(&self_test_vec);
     let mut repops_digest = fnv1a_f64_digest(0, 1, repops_sum);
     let mut k230_sd_note = String::new();
@@ -1089,7 +1085,7 @@ pub fn apply_ota_update_manifest_local(
                 &manifest.update_id,
                 &manifest.target_version,
                 manifest.expected_ktb_merkle_root_fnv64,
-                manifest.artifact_size_bytes as usize,
+                manifest.artifact_size_bytes,
             )
         {
             repops_digest = hw_digest;
@@ -1110,7 +1106,7 @@ pub fn apply_ota_update_manifest_local(
                 &manifest.update_id,
                 &manifest.target_version,
                 manifest.expected_ktb_merkle_root_fnv64,
-                manifest.artifact_size_bytes as usize,
+                manifest.artifact_size_bytes,
             )
         {
             repops_digest = hw_digest;
@@ -1131,7 +1127,7 @@ pub fn apply_ota_update_manifest_local(
                 &manifest.update_id,
                 &manifest.target_version,
                 manifest.expected_ktb_merkle_root_fnv64,
-                manifest.artifact_size_bytes as usize,
+                manifest.artifact_size_bytes,
             )
         {
             repops_digest = hw_digest;
@@ -2409,7 +2405,8 @@ impl DistributedLanExecutor {
 
         let (ktb_bytes, merkle_root) = build_initial_resident_ktb_bank(model_id, step_index);
         let reader = KtbBankReader::from_slice(&ktb_bytes)?;
-        let header_checksum = compute_fnv1a64_checksum(&ktb_bytes[0..KTB_PAGE_ALIGNMENT_BYTES as usize]);
+        let header_checksum =
+            compute_fnv1a64_checksum(&ktb_bytes[0..KTB_PAGE_ALIGNMENT_BYTES as usize]);
         let slice_count = reader.header.entries.len();
         let zero_copy_ok = reader
             .header
@@ -2537,53 +2534,41 @@ impl DistributedLanExecutor {
                 run_speculative_draft: false,
             };
 
-            let (resp, wire_ms, transport_mode, tcp_addr) =
-                if let Some(worker) = live_workers.get(&assign.node_id.0).filter(|w| w.online) {
-                    match Self::send_stage_forward_tcp(&worker.worker_tcp_addr, &req).await {
-                        Ok((r, rtt_ms)) => (
-                            r,
-                            rtt_ms,
-                            format!("Live TCP WireFrame ({})", worker.network_channel),
-                            Some(worker.worker_tcp_addr.clone()),
-                        ),
-                        Err(_) => {
-                            let r = execute_stage_kernels_local(
-                                &assign.node_id.0,
-                                &assign.hostname,
-                                &req,
-                            );
-                            let lat = r.compute_exec_ms;
-                            (
-                                r,
-                                lat,
-                                "SkipPipe Automatic Failover".to_string(),
-                                None,
-                            )
-                        }
-                    }
-                } else if live_workers
-                    .get(&assign.node_id.0)
-                    .map(|w| !w.online)
-                    .unwrap_or(false)
-                {
-                    let r = execute_stage_kernels_local(&assign.node_id.0, &assign.hostname, &req);
-                    let lat = r.compute_exec_ms;
-                    (
+            let (resp, wire_ms, transport_mode, tcp_addr) = if let Some(worker) =
+                live_workers.get(&assign.node_id.0).filter(|w| w.online)
+            {
+                match Self::send_stage_forward_tcp(&worker.worker_tcp_addr, &req).await {
+                    Ok((r, rtt_ms)) => (
                         r,
-                        lat,
-                        "SkipPipe Offline Bypass".to_string(),
-                        None,
-                    )
-                } else {
-                    let r = execute_stage_kernels_local(&assign.node_id.0, &assign.hostname, &req);
-                    let sim_lat = (((assign.layer_count as f64) * 1.15
-                        + (r.cold_nvme_expert_fetches as f64) * 0.85
-                        + 0.45)
-                        * 100.0)
-                        .round()
-                        / 100.0;
-                    (r, sim_lat, "Simulated Archetype Stage".to_string(), None)
-                };
+                        rtt_ms,
+                        format!("Live TCP WireFrame ({})", worker.network_channel),
+                        Some(worker.worker_tcp_addr.clone()),
+                    ),
+                    Err(_) => {
+                        let r =
+                            execute_stage_kernels_local(&assign.node_id.0, &assign.hostname, &req);
+                        let lat = r.compute_exec_ms;
+                        (r, lat, "SkipPipe Automatic Failover".to_string(), None)
+                    }
+                }
+            } else if live_workers
+                .get(&assign.node_id.0)
+                .map(|w| !w.online)
+                .unwrap_or(false)
+            {
+                let r = execute_stage_kernels_local(&assign.node_id.0, &assign.hostname, &req);
+                let lat = r.compute_exec_ms;
+                (r, lat, "SkipPipe Offline Bypass".to_string(), None)
+            } else {
+                let r = execute_stage_kernels_local(&assign.node_id.0, &assign.hostname, &req);
+                let sim_lat = (((assign.layer_count as f64) * 1.15
+                    + (r.cold_nvme_expert_fetches as f64) * 0.85
+                    + 0.45)
+                    * 100.0)
+                    .round()
+                    / 100.0;
+                (r, sim_lat, "Simulated Archetype Stage".to_string(), None)
+            };
 
             current_boundary = resp.boundary_output.clone();
             total_latency_ms += wire_ms;
@@ -2678,7 +2663,7 @@ impl DistributedLanExecutor {
             .map(|i| (((i as u64 + step_index) as f32) * 0.11).cos() * 0.6)
             .collect();
         let target_signal: Vec<f32> = (0..d_out)
-            .map(|j| (((j as usize * 3 + 1) as f32) * 0.17).sin() * 0.5)
+            .map(|j| (((j * 3 + 1) as f32) * 0.17).sin() * 0.5)
             .collect();
 
         let q_in = BlockwiseInt8Tensor::quantize(&input_signal, 16);
@@ -2712,31 +2697,28 @@ impl DistributedLanExecutor {
                 target_signal: q_target.clone(),
             };
 
-            let (resp, wire_ms, transport_mode, tcp_addr) =
-                if let Some(worker) = live_workers.get(&assign.node_id.0).filter(|w| w.online) {
-                    match Self::send_stage_training_tcp(&worker.worker_tcp_addr, &req).await {
-                        Ok((r, rtt_ms)) => (
-                            r,
-                            rtt_ms,
-                            format!("Live TCP WireFrame (DeMo DCT · {})", worker.network_channel),
-                            Some(worker.worker_tcp_addr.clone()),
-                        ),
-                        Err(_) => {
-                            let r = execute_stage_training_local(
-                                &assign.node_id.0,
-                                &assign.hostname,
-                                &req,
-                            );
-                            let lat = r.compute_exec_ms;
-                            (r, lat, "SkipPipe Fallback".to_string(), None)
-                        }
+            let (resp, wire_ms, transport_mode, tcp_addr) = if let Some(worker) =
+                live_workers.get(&assign.node_id.0).filter(|w| w.online)
+            {
+                match Self::send_stage_training_tcp(&worker.worker_tcp_addr, &req).await {
+                    Ok((r, rtt_ms)) => (
+                        r,
+                        rtt_ms,
+                        format!("Live TCP WireFrame (DeMo DCT · {})", worker.network_channel),
+                        Some(worker.worker_tcp_addr.clone()),
+                    ),
+                    Err(_) => {
+                        let r =
+                            execute_stage_training_local(&assign.node_id.0, &assign.hostname, &req);
+                        let lat = r.compute_exec_ms;
+                        (r, lat, "SkipPipe Fallback".to_string(), None)
                     }
-                } else {
-                    let r =
-                        execute_stage_training_local(&assign.node_id.0, &assign.hostname, &req);
-                    let lat = r.compute_exec_ms + 0.85;
-                    (r, lat, "Simulated Archetype Stage".to_string(), None)
-                };
+                }
+            } else {
+                let r = execute_stage_training_local(&assign.node_id.0, &assign.hostname, &req);
+                let lat = r.compute_exec_ms + 0.85;
+                (r, lat, "Simulated Archetype Stage".to_string(), None)
+            };
 
             stage_summaries.push((
                 start_l,
@@ -2747,7 +2729,8 @@ impl DistributedLanExecutor {
             ));
 
             let decompressed = DeMoDctCompressor::decompress_packet(&resp.demo_dct_packet);
-            all_stages_repops_verified &= stage_training_payload_verified(&req, &resp, &decompressed);
+            all_stages_repops_verified &=
+                stage_training_payload_verified(&req, &resp, &decompressed);
             ordered_stage_gradients.push((start_l, end_l, decompressed));
 
             stage_traces.push(LiveTrainingStageTrace {
@@ -2847,10 +2830,7 @@ impl DistributedLanExecutor {
         let audit_id = format!("verde-audit-e{epoch}-L{total_l}");
         let initial_activation = vec![0.42, -0.18, 0.77, 0.31, -0.54, 0.63, 0.12, -0.29];
 
-        let target_worker = live_workers
-            .values()
-            .find(|w| w.online)
-            .cloned();
+        let target_worker = live_workers.values().find(|w| w.online).cloned();
 
         let (target_node_id, target_hostname, worker_tcp_addr) = match &target_worker {
             Some(w) => (
@@ -2885,8 +2865,11 @@ impl DistributedLanExecutor {
                 inject_fault_at_layer: None,
                 ..worker_req.clone()
             };
-            let referee_resp =
-                execute_verde_layer_challenge_local("referee-node", "coordinator-referee", &referee_req);
+            let referee_resp = execute_verde_layer_challenge_local(
+                "referee-node",
+                "coordinator-referee",
+                &referee_req,
+            );
 
             let (worker_resp, rtt_ms) = if let Some(addr) = &worker_tcp_addr {
                 match Self::send_verde_bisection_tcp(addr, &worker_req).await {
@@ -2932,16 +2915,17 @@ impl DistributedLanExecutor {
             }
         }
 
-        let (bit_exact, disputed_layer, cert_id) = if any_mismatch || inject_fault_at_layer.is_some() {
-            let disputed = inject_fault_at_layer.unwrap_or(low);
-            (
-                false,
-                Some(disputed),
-                Some(format!("fp-cert-cd48-L{disputed:02}")),
-            )
-        } else {
-            (true, None, None)
-        };
+        let (bit_exact, disputed_layer, cert_id) =
+            if any_mismatch || inject_fault_at_layer.is_some() {
+                let disputed = inject_fault_at_layer.unwrap_or(low);
+                (
+                    false,
+                    Some(disputed),
+                    Some(format!("fp-cert-cd48-L{disputed:02}")),
+                )
+            } else {
+                (true, None, None)
+            };
 
         let wall_ms = ((t0.elapsed().as_secs_f64() * 1000.0) * 100.0).round() / 100.0;
 
@@ -3091,7 +3075,11 @@ impl DistributedLanExecutor {
 
             let mut raw_vec: Vec<f32> = (0..dim)
                 .map(|d| {
-                    let b = text.as_bytes().get(d % text.len().max(1)).copied().unwrap_or(65) as f32;
+                    let b = text
+                        .as_bytes()
+                        .get(d % text.len().max(1))
+                        .copied()
+                        .unwrap_or(65) as f32;
                     let phase = ((seed_digest.wrapping_shr((d % 32) as u32) & 0xFF) as f32) * 0.013;
                     ((b * 0.029) + (d as f32) * 0.17 + phase).sin()
                 })
@@ -3149,20 +3137,20 @@ impl DistributedLanExecutor {
             run_speculative_draft: false,
         };
 
-        if let Some(vw) = vision_worker {
-            if let Ok((resp, rtt_ms)) = Self::send_stage_forward_tcp(&vw.worker_tcp_addr, &req).await
-            {
-                return VisionOffloadTelemetry {
-                    vision_encoder_model: "SigLIP-SO400M-14-384".to_string(),
-                    offloaded_to_node_id: vw.node.id.0.clone(),
-                    offloaded_to_hostname: vw.node.hostname.clone(),
-                    vision_backend: format!("{:?} ({})", vw.node.backend, vw.board_or_model),
-                    image_patches_encoded: 729,
-                    visual_tokens_projected: 256,
-                    offload_latency_ms: rtt_ms,
-                    repops_digest_fnv1a: resp.repops_digest_fnv1a,
-                };
-            }
+        if let Some(vw) = vision_worker
+            && let Ok((resp, rtt_ms)) =
+                Self::send_stage_forward_tcp(&vw.worker_tcp_addr, &req).await
+        {
+            return VisionOffloadTelemetry {
+                vision_encoder_model: "SigLIP-SO400M-14-384".to_string(),
+                offloaded_to_node_id: vw.node.id.0.clone(),
+                offloaded_to_hostname: vw.node.hostname.clone(),
+                vision_backend: format!("{:?} ({})", vw.node.backend, vw.board_or_model),
+                image_patches_encoded: 729,
+                visual_tokens_projected: 256,
+                offload_latency_ms: rtt_ms,
+                repops_digest_fnv1a: resp.repops_digest_fnv1a,
+            };
         }
 
         let local_resp = execute_stage_kernels_local("node-m4-mac-mini", "m4-mac-mini-pro", &req);
@@ -3400,7 +3388,9 @@ impl BlockwiseInt8Tensor {
             ));
         }
         let absmax_scales = bytes[INT8_TENSOR_CODEC_HEADER_LEN..scales_end]
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let quantized_data = bytes[scales_end..data_end]
