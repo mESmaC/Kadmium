@@ -4,7 +4,9 @@
 //! mount needs more than a loopback check: a same-host process, another local user or a
 //! Host-rewriting reverse proxy all reach it from a loopback peer. Every request must carry
 //! this launch's secret, which the owner receives out of band (the console banner, a
-//! user-only file, or the desktop window) and redeems once for an HttpOnly cookie.
+//! user-only file, or the desktop window). Opening the access link stores the secret in an
+//! HttpOnly cookie. The link is reusable, not single-use: it stays valid until the
+//! coordinator restarts, so treat it like a password for this launch.
 use axum::{
     Router,
     extract::{ConnectInfo, Query, Request},
@@ -43,7 +45,7 @@ fn access_path(token: &str, next: &str) -> String {
     format!("/condenser/access?token={token}&next={next}")
 }
 
-/// One-time link that stores the access cookie and continues to `next`.
+/// Reusable access link for this launch: stores the access cookie, then continues to `next`.
 pub fn condenser_access_path(next: &str) -> String {
     access_path(condenser_access_token(), next)
 }

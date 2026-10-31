@@ -50,6 +50,9 @@ test('agent controls persist, built-ins are selectable, and request settings mat
     assert.equal(payload.agent.research_required, true);
     assert.match(payload.agent.session_id, /^[\w-]+$/);
     assert.deepEqual(payload.allowed_tools, ['condenser__file_read']);
+    assert.equal(payload.agent.allow_host_commands, false);
+    assert.equal(payload.agent.operating_instructions, true);
+    assert.ok(await page.locator('.tool-choice').filter({ hasText: 'condenser__command · side effects' }).count());
     assert.equal(payload.provider.timeout_secs, 0);
     assert.equal(payload.sampling.max_tokens == null, true);
     assert.equal(payload.sampling.context_window == null, true);

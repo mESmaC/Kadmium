@@ -25,8 +25,14 @@ pub trait ToolExecutor: Send + Sync {
     }
     fn registered_tools(&self) -> Result<(Vec<RegisteredTool>, Vec<PluginDiagnostic>)>;
     async fn execute(&self, tool: &RegisteredTool, arguments: Value) -> Result<ToolResult>;
-    fn instructions(&self) -> Option<String> {
+    /// System context added for the selected tools. Merged into the caller's leading
+    /// system message and recorded in the report, never hidden from the transcript.
+    fn instructions(&self, _tools: &[RegisteredTool]) -> Option<String> {
         None
+    }
+    /// Tools that must be named in `allowed_tools`; an omitted list never includes them.
+    fn requires_explicit_selection(&self, _tool: &RegisteredTool) -> bool {
+        false
     }
     fn validate_tools(&self, _tools: &[RegisteredTool]) -> Result<()> {
         Ok(())
@@ -176,6 +182,9 @@ pub struct HarnessReport {
     pub status: RunStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Operating rules Condenser sent as system context for this run, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 #[derive(Default)]
@@ -332,6 +341,16 @@ impl Harness {
         } else {
             (Vec::new(), Vec::new())
         };
+        let mut withheld = Vec::new();
+        if options.enable_tools && options.allowed_tools.is_none() {
+            tools.retain(|tool| {
+                let explicit = self.executor.requires_explicit_selection(tool);
+                if explicit {
+                    withheld.push(tool.qualified_name.clone());
+                }
+                !explicit
+            });
+        }
         if options.enable_tools
             && let Some(allowed) = &options.allowed_tools
         {
@@ -362,6 +381,13 @@ impl Harness {
             .into_iter()
             .map(|diagnostic| format!("{}: {}", diagnostic.path.display(), diagnostic.message))
             .collect::<Vec<_>>();
+        if !withheld.is_empty() {
+            diagnostics.push(format!(
+                "Not enabled without an explicit allowed_tools entry (side effects): {}",
+                withheld.join(", ")
+            ));
+        }
+        let instructions = self.executor.instructions(&tools);
         let mut steps = Vec::new();
         let mut usage = Usage::default();
         let mut model = self.config.model.clone();
@@ -382,6 +408,7 @@ impl Harness {
                         status,
                         Some(error),
                         &events,
+                        &instructions,
                     )
                     .await;
             }
@@ -397,14 +424,21 @@ impl Harness {
                         RunStatus::BudgetExceeded,
                         Some(error),
                         &events,
+                        &instructions,
                     )
                     .await;
             }
 
             emit(&events, HarnessEvent::ModelStarted { step: index + 1 });
             let mut request_messages = messages.clone();
-            if let Some(instructions) = self.executor.instructions() {
-                request_messages.insert(0, Message::system(instructions));
+            if let Some(instructions) = &instructions {
+                // One leading system message keeps single-system chat templates valid.
+                match request_messages.first_mut() {
+                    Some(first) if first.role == crate::types::Role::System => {
+                        first.content = format!("{instructions}\n\n{}", first.content);
+                    }
+                    _ => request_messages.insert(0, Message::system(instructions.clone())),
+                }
             }
             let request = ChatRequest {
                 model: self.config.model.clone(),
@@ -453,6 +487,7 @@ impl Harness {
                             RunStatus::Failed,
                             Some(error.to_string()),
                             &events,
+                            &instructions,
                         )
                         .await;
                 }
@@ -475,6 +510,7 @@ impl Harness {
                             RunStatus::Failed,
                             Some(error.to_string()),
                             &events,
+                            &instructions,
                         )
                         .await;
                 }
@@ -490,6 +526,7 @@ impl Harness {
                             status,
                             Some(error),
                             &events,
+                            &instructions,
                         )
                         .await;
                 }
@@ -555,6 +592,7 @@ impl Harness {
                         RunStatus::BudgetExceeded,
                         Some(error),
                         &events,
+                        &instructions,
                     )
                     .await;
             }
@@ -580,6 +618,7 @@ impl Harness {
                         status,
                         Some(error),
                         &events,
+                        &instructions,
                     )
                     .await;
             }
@@ -602,6 +641,7 @@ impl Harness {
                         status,
                         error,
                         &events,
+                        &instructions,
                     )
                     .await;
             }
@@ -632,6 +672,7 @@ impl Harness {
                         RunStatus::BudgetExceeded,
                         Some(error),
                         &events,
+                        &instructions,
                     )
                     .await;
             }
@@ -670,6 +711,7 @@ impl Harness {
                             status,
                             Some(error),
                             &events,
+                            &instructions,
                         )
                         .await;
                 }
@@ -703,6 +745,7 @@ impl Harness {
                             RunStatus::BudgetExceeded,
                             Some(error),
                             &events,
+                            &instructions,
                         )
                         .await;
                 }
@@ -842,6 +885,7 @@ impl Harness {
                                 status,
                                 Some(error),
                                 &events,
+                                &instructions,
                             )
                             .await;
                     }
@@ -873,6 +917,7 @@ impl Harness {
                         RunStatus::StepLimit,
                         None,
                         &events,
+                        &instructions,
                     )
                     .await;
             }
@@ -893,6 +938,7 @@ impl Harness {
         status: RunStatus,
         error: Option<String>,
         events: &Option<mpsc::Sender<HarnessEvent>>,
+        instructions: &Option<String>,
     ) -> Result<HarnessReport> {
         let mut report = HarnessReport {
             provider: self.config.kind,
@@ -904,6 +950,7 @@ impl Harness {
             diagnostics,
             status,
             error,
+            instructions: instructions.clone(),
         };
         if let Err(error) = self.executor.finish_report(&report).await {
             report

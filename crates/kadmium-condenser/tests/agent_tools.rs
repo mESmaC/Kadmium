@@ -47,6 +47,8 @@ impl Fixture {
                 AgentConfig {
                     session_id: session.map(str::to_owned),
                     research_required: research,
+                    allow_host_commands: true,
+                    ..Default::default()
                 },
                 profiles,
             )
@@ -652,4 +654,237 @@ async fn research_requirement_stays_with_the_parent_unless_the_profile_requests_
     // An explicit child requirement is enforced on the child's own tool selection.
     assert!(report.steps[1].tool_executions[0].result.is_error);
     server.abort();
+}
+
+fn configured(fixture: &Fixture, config: AgentConfig) -> Arc<AgentTools> {
+    Arc::new(
+        AgentTools::new(
+            PluginManager::new(vec![]),
+            fixture.root.join("workspace"),
+            fixture.root.join("memory"),
+            config,
+            BTreeMap::new(),
+        )
+        .unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn side_effecting_built_ins_need_explicit_names_and_commands_need_consent() {
+    let fixture = Fixture::new();
+    let (agent, seen) = harness(
+        fixture.tools(None, false, BTreeMap::new()),
+        vec![Message::assistant("done")],
+    );
+    let report = agent
+        .run(
+            vec![Message::user("Use whatever you have")],
+            HarnessOptions {
+                enable_tools: true,
+                allowed_tools: None,
+                ..HarnessOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    let offered = seen.lock().unwrap()[0]
+        .tools
+        .iter()
+        .map(|t| t.name.clone())
+        .collect::<Vec<_>>();
+    assert!(offered.contains(&"condenser__file_read".to_owned()));
+    for name in kadmium_condenser::agent::EXPLICIT_TOOLS {
+        assert!(
+            !offered.contains(&name.to_owned()),
+            "{name} offered implicitly"
+        );
+    }
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("condenser__command")),
+        "{:?}",
+        report.diagnostics
+    );
+
+    let (agent, seen) = harness(configured(&fixture, AgentConfig::default()), vec![]);
+    let error = agent
+        .run(vec![Message::user("Run tests")], options(&["command"]))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("allow_host_commands"), "{error}");
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn operating_rules_are_merged_recorded_and_optional() {
+    let fixture = Fixture::new();
+    let (agent, seen) = harness(
+        fixture.tools(None, false, BTreeMap::new()),
+        vec![Message::assistant("a"), Message::assistant("b")],
+    );
+    let history = vec![Message::system("Owner rules"), Message::user("hi")];
+    let report = agent
+        .run(history.clone(), options(&["file_read"]))
+        .await
+        .unwrap();
+    let sent = seen.lock().unwrap()[0].messages.clone();
+    assert_eq!(sent.len(), 2, "one leading system message");
+    assert!(sent[0].content.starts_with("Condenser operating rules"));
+    assert!(sent[0].content.ends_with("Owner rules"));
+    let rules = report.instructions.clone().unwrap();
+    assert!(sent[0].content.starts_with(&rules));
+    assert_eq!(report.messages[0].content, "Owner rules");
+
+    let report = agent.run(history.clone(), options(&[])).await.unwrap();
+    assert!(report.instructions.is_none());
+    assert_eq!(seen.lock().unwrap()[1].messages[0].content, "Owner rules");
+
+    let (agent, seen) = harness(
+        configured(
+            &fixture,
+            AgentConfig {
+                operating_instructions: false,
+                ..Default::default()
+            },
+        ),
+        vec![Message::assistant("c")],
+    );
+    let report = agent.run(history, options(&["file_read"])).await.unwrap();
+    assert!(report.instructions.is_none());
+    assert_eq!(seen.lock().unwrap()[0].messages[0].content, "Owner rules");
+}
+
+#[tokio::test]
+async fn command_output_is_pageable_and_the_deadline_is_owner_set() {
+    let fixture = Fixture::new();
+    let full = "x".repeat(40_000);
+    std::fs::write(fixture.root.join("workspace/big.txt"), &full).unwrap();
+    let print = if cfg!(windows) {
+        "type big.txt"
+    } else {
+        "cat big.txt"
+    };
+    let tools = fixture.tools(None, false, BTreeMap::new());
+    let result = invoke(&tools, "command", json!({ "command": print })).await;
+    assert_eq!(result["stdout"]["total_characters"], 40_000);
+    assert!(result["stdout"]["next_offset"].is_number());
+    let mut transcript = String::new();
+    let mut offset = Some(0);
+    while let Some(next) = offset {
+        let read = invoke(
+            &tools,
+            "memory_read",
+            json!({"id": result["record_id"], "offset": next}),
+        )
+        .await;
+        transcript.push_str(read["page"]["content"].as_str().unwrap());
+        offset = read["page"]["next_offset"].as_u64();
+    }
+    assert!(transcript.contains(&full));
+
+    let tools = configured(
+        &fixture,
+        AgentConfig {
+            allow_host_commands: true,
+            command_timeout_secs: Some(1),
+            ..Default::default()
+        },
+    );
+    let (catalog, _) = tools.registered_tools().unwrap();
+    let command = catalog
+        .iter()
+        .find(|t| t.unqualified_name() == "command")
+        .unwrap();
+    let wait = if cfg!(windows) {
+        "ping -n 5 127.0.0.1 >nul"
+    } else {
+        "sleep 4"
+    };
+    let result = tools
+        .execute(command, json!({ "command": wait }))
+        .await
+        .unwrap();
+    assert!(result.is_error);
+    let value: Value = serde_json::from_str(&result.content).unwrap();
+    assert_eq!(value["timed_out"], true);
+    assert_eq!(value["timeout_secs"], 1);
+}
+
+#[tokio::test]
+async fn chat_records_hold_one_turn_and_the_quota_refuses_explicitly() {
+    let fixture = Fixture::new();
+    let tools = fixture.tools(Some("turns"), false, BTreeMap::new());
+    let (agent, _) = harness(
+        tools.clone(),
+        vec![Message::assistant("first"), Message::assistant("second")],
+    );
+    agent
+        .run(vec![Message::user("one")], HarnessOptions::default())
+        .await
+        .unwrap();
+    agent
+        .run(
+            vec![
+                Message::user("one"),
+                Message::assistant("first"),
+                Message::user("two"),
+            ],
+            HarnessOptions::default(),
+        )
+        .await
+        .unwrap();
+    let listed = invoke(&tools, "memory_search", json!({"query": ""})).await;
+    assert_eq!(listed["total"], 2);
+    let latest = invoke(
+        &tools,
+        "memory_read",
+        json!({"id": listed["matches"][0]["id"]}),
+    )
+    .await;
+    let report: Value = serde_json::from_str(latest["page"]["content"].as_str().unwrap()).unwrap();
+    let contents = report["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["content"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(contents, ["two", "second"]);
+    // Search is served from one merged index file per workspace store.
+    assert!(
+        fixture
+            .root
+            .join("memory")
+            .read_dir()
+            .unwrap()
+            .any(|store| store.unwrap().path().join("index.jsonl").is_file())
+    );
+
+    let limited = Arc::new(
+        AgentTools::new(
+            PluginManager::new(vec![]),
+            fixture.root.join("workspace"),
+            fixture.root.join("memory"),
+            AgentConfig {
+                session_id: Some("full".into()),
+                ..Default::default()
+            },
+            BTreeMap::new(),
+        )
+        .unwrap()
+        .with_memory_quota(Some(16)),
+    );
+    let (catalog, _) = limited.registered_tools().unwrap();
+    let notes = catalog
+        .iter()
+        .find(|t| t.unqualified_name() == "notes_write")
+        .unwrap();
+    let error = limited
+        .execute(notes, json!({"title": "t", "content": "c"}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("quota"), "{error}");
 }

@@ -111,6 +111,9 @@
       system_prompt: '',
       research_required: false,
       memory_enabled: false,
+      allow_host_commands: false,
+      command_timeout_secs: null,
+      operating_instructions: true,
       sampling: {}
     };
   }
@@ -128,6 +131,9 @@
     config.system_prompt = typeof config.system_prompt === 'string' ? config.system_prompt : '';
     config.research_required = config.research_required === true;
     config.memory_enabled = config.memory_enabled === true;
+    config.allow_host_commands = config.allow_host_commands === true;
+    config.operating_instructions = config.operating_instructions !== false;
+    config.command_timeout_secs = Number.isInteger(config.command_timeout_secs) ? config.command_timeout_secs : null;
     config.sampling = config.sampling && typeof config.sampling === 'object' ? config.sampling : {};
     config.sampling = JSON.parse(JSON.stringify(config.sampling));
     delete config.api_key;
@@ -315,8 +321,15 @@
     return state.plugins.flatMap(plugin => plugin.manifest.tools.map(tool => plugin.manifest.id + '__' + tool.name));
   }
 
+  // Side-effecting built-ins are never part of "all"; each must be checked by name.
+  const EXPLICIT_TOOLS = new Set(['condenser__command', 'condenser__file_edit', 'condenser__web_fetch', 'condenser__delegate']);
+
+  function implicitToolNames() {
+    return toolNames().filter(name => !EXPLICIT_TOOLS.has(name));
+  }
+
   function selectedToolNames(config) {
-    return config.allowed_tools === null ? toolNames() : config.allowed_tools;
+    return config.allowed_tools === null ? implicitToolNames() : config.allowed_tools;
   }
 
   function captureConfig(config) {
@@ -1160,6 +1173,7 @@
     runbook.replaceChildren();
     const events = [];
     session.runs.forEach((run, runIndex) => {
+      if (run.instructions) events.push({ type: 'instructions', runIndex, detail: run.instructions });
       if (run.error) events.push({ type: run.status === 'cancelled' ? 'cancelled' : 'error', runIndex, detail: run.error });
       if (run.partial_output) events.push({ type: 'partial', runIndex, detail: run.partial_output });
       (run.steps || []).forEach((step) => {
@@ -1185,6 +1199,9 @@
       } else if (event.type === 'tool') {
         name = 'Tool · ' + event.execution.tool_name;
         detail = Number(event.execution.duration_ms).toFixed(1) + ' ms' + (event.execution.result.is_error ? ' · error' : ' · complete');
+      } else if (event.type === 'instructions') {
+        name = 'Operating rules sent R' + (event.runIndex + 1);
+        detail = event.detail;
       } else {
         name = event.type === 'cancelled' ? 'Run stopped' : event.type === 'partial' ? 'Partial response (not replayed)' : 'Turn failed';
         detail = event.detail;
@@ -1215,6 +1232,10 @@
     if (document.activeElement !== $('system-prompt')) $('system-prompt').value = session.config.system_prompt;
     $('research-required').checked = session.config.research_required;
     $('memory-enabled').checked = session.config.memory_enabled;
+    $('allow-host-commands').checked = session.config.allow_host_commands;
+    $('operating-instructions').checked = session.config.operating_instructions;
+    if (document.activeElement !== $('command-timeout')) $('command-timeout').value = session.config.command_timeout_secs == null ? '' : session.config.command_timeout_secs;
+    $('command-timeout').disabled = state.busy;
   }
 
   function renderTask() {
@@ -1302,7 +1323,7 @@
         updateTaskConfig();
         renderTask();
       });
-      row.append(input, element('span', '', name + (available.includes(name) ? '' : ' · unavailable')));
+      row.append(input, element('span', '', name + (EXPLICIT_TOOLS.has(name) ? ' · side effects' : '') + (available.includes(name) ? '' : ' · unavailable')));
       summary.append(row);
     });
   }
@@ -2056,7 +2077,7 @@
       timeout_secs: config.timeout_secs || 0
     };
     const requestPayload = {
-      agent: { session_id: config.memory_enabled ? session.id : null, research_required: config.research_required },
+      agent: { session_id: config.memory_enabled ? session.id : null, research_required: config.research_required, allow_host_commands: config.allow_host_commands, command_timeout_secs: config.command_timeout_secs, operating_instructions: config.operating_instructions },
       run_id: uid(),
       provider,
       messages,
@@ -2155,7 +2176,7 @@
     target.messages = report.messages.filter((message) => message.role !== 'system');
     const partialOutput = report.status !== 'completed' && liveMessage ? liveMessage.content : null;
     const terminalError = report.status === 'completed' ? null : (report.error || ('Run ended: ' + report.status));
-    target.runs.push({ id: requestPayload.run_id, at: Date.now(), route, config, message_start: messageStart, message_end: target.messages.length, partial_output: partialOutput, steps: report.steps, usage: report.usage, diagnostics: report.diagnostics, status: report.status, error: terminalError });
+    target.runs.push({ id: requestPayload.run_id, at: Date.now(), route, config, message_start: messageStart, message_end: target.messages.length, partial_output: partialOutput, steps: report.steps, usage: report.usage, diagnostics: report.diagnostics, instructions: report.instructions || null, status: report.status, error: terminalError });
     target.status = report.status === 'cancelled' ? 'cancelled' : terminalError ? 'error' : 'complete';
     target.lastError = terminalError;
     target.updatedAt = Date.now();
@@ -2329,7 +2350,8 @@
       $(id).addEventListener('click', () => {
         const session = currentSession();
         if (!session || state.busy) return;
-        session.config.allowed_tools = all ? toolNames() : [];
+        const explicit = selectedToolNames(session.config).filter(name => EXPLICIT_TOOLS.has(name));
+        session.config.allowed_tools = all ? [...new Set([...implicitToolNames(), ...explicit])] : [];
         updateTaskConfig();
         renderTask();
       });
@@ -2360,7 +2382,7 @@
     $('compute-model').addEventListener('change', invalidateCompute);
     $('attach-compute').addEventListener('click', attachCompute);
     $('base-url').addEventListener('input', () => { $('api-key').value = state.credentials[workflow.credentialKey($('provider').value, $('base-url').value)] || ''; });
-    [['run-seconds', 'max_run_seconds'], ['run-output-budget', 'max_output_tokens'], ['run-tool-budget', 'max_tool_calls']].forEach(([id, key]) => {
+    [['run-seconds', 'max_run_seconds'], ['run-output-budget', 'max_output_tokens'], ['run-tool-budget', 'max_tool_calls'], ['command-timeout', 'command_timeout_secs']].forEach(([id, key]) => {
       $(id).addEventListener('change', () => {
         const session = currentSession();
         if (!session || !$(id).reportValidity()) return;
@@ -2412,7 +2434,7 @@
       const session = currentSession();
       if (!session) return;
       session.config.enable_tools = $('enable-tools').checked;
-      if (session.config.allowed_tools === null) session.config.allowed_tools = toolNames();
+      if (session.config.allowed_tools === null) session.config.allowed_tools = implicitToolNames();
       session.updatedAt = Date.now();
       saveSessions();
       renderTask();
@@ -2432,6 +2454,8 @@
       session.config.system_prompt = $('system-prompt').value;
       session.config.research_required = $('research-required').checked;
       session.config.memory_enabled = $('memory-enabled').checked;
+      session.config.allow_host_commands = $('allow-host-commands').checked;
+      session.config.operating_instructions = $('operating-instructions').checked;
       session.updatedAt = Date.now();
       saveSessions();
       renderTask();

@@ -145,9 +145,17 @@ struct ChatArgs {
     /// Optional system prompt prepended to this turn.
     #[arg(long)]
     system: Option<String>,
-    /// Allow the model to call tools from discovered plugins.
+    /// Allow the model to call discovered plugin tools and read-only built-ins. Side-effecting
+    /// built-ins (command, file_edit, web_fetch, delegate) also need --allow-tool.
     #[arg(long)]
     tools: bool,
+    /// Confirm that condenser__command may run shell commands with your account's full
+    /// authority in the current directory. It is not a sandbox.
+    #[arg(long, requires = "tools")]
+    allow_host_commands: bool,
+    /// Deadline for each condenser__command call, in seconds (default 600).
+    #[arg(long, value_name = "SECONDS")]
+    command_timeout_secs: Option<u64>,
     /// Restrict --tools to exact plugin__tool names. Repeat for multiple tools.
     #[arg(long = "allow-tool", requires = "tools")]
     allowed_tools: Vec<String>,
@@ -510,6 +518,9 @@ async fn run_chat(args: ChatArgs, roots: Vec<PathBuf>) -> Result<()> {
         kadmium_condenser::agent::AgentConfig {
             session_id: args.memory_session,
             research_required: args.research_required,
+            allow_host_commands: args.allow_host_commands,
+            command_timeout_secs: args.command_timeout_secs,
+            ..Default::default()
         },
     )?;
     let harness = Harness::from_components(config, provider, std::sync::Arc::new(executor))?;

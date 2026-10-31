@@ -263,6 +263,10 @@
             <textarea id="system-prompt" rows="5" placeholder="Guide the agent’s behavior for this task…"></textarea>
             <label class="caption"><input id="research-required" type="checkbox"> Require a source before completion</label>
             <label class="caption"><input id="memory-enabled" type="checkbox"> Save task memory for workspace recall</label>
+            <label class="caption"><input id="allow-host-commands" type="checkbox"> Allow host commands (condenser__command) for this task</label>
+            <p class="caption muted">Commands run with your account's full authority in the workspace root; this is not a sandbox. With web_fetch also selected, fetched pages can try to steer commands. Side-effecting tools (command, file_edit, web_fetch, delegate) are never included by "all" and must be checked by name.</p>
+            <label class="caption"><input id="operating-instructions" type="checkbox" checked> Send Condenser operating rules with built-in tools</label>
+            <p class="caption muted">The exact rules sent are shown in the runbook for each run. They are not sent when no built-in tool is selected.</p>
             <p class="caption muted">Memory saves full chats, notes and source text on this computer. Selected memory tools can recall other saved tasks in this workspace. Subagent targets are configured in ~/.condenser/subagents.json; discover them with the subagents_list tool.</p>
             <p class="caption muted">Applied to the next model request and saved with this task.</p>
           </section>
@@ -271,6 +275,7 @@
             <div class="field"><label for="run-seconds">Time limit (seconds)</label><input id="run-seconds" type="number" min="1" max="86400" step="1" placeholder="No limit"></div>
             <div class="field"><label for="run-output-budget">Total output tokens</label><input id="run-output-budget" type="number" min="1" step="1" placeholder="No limit"></div>
             <div class="field"><label for="run-tool-budget">Total tool calls</label><input id="run-tool-budget" type="number" min="0" step="1" placeholder="No limit"></div>
+            <div class="field"><label for="command-timeout">Command time limit (seconds)</label><input id="command-timeout" type="number" min="1" max="86400" step="1" placeholder="600"></div>
             <p class="caption muted">Saved per task and applied to the next run. Output limits are checked between model steps.</p>
           </section>
           <section class="inspector-section">

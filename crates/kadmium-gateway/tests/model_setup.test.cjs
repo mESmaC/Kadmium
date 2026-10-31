@@ -21,7 +21,7 @@ test('Control Room and desktop Companion launch the shared preparation flow and 
   });
   let browser;
   try {
-    // The fixture prints this launch's one-time Condenser access link.
+    // The fixture prints this launch's Condenser access link.
     const access = await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.stdout.on('data', chunk => { const match = String(chunk).match(/http:\/\/127\.0\.0\.1:\d+\S*/); if (match) resolve(match[0]); });

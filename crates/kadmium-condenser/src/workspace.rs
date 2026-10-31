@@ -834,14 +834,14 @@ pub(crate) struct TerminalRequest {
 
 #[derive(Serialize)]
 pub(crate) struct TerminalResponse {
-    cwd: String,
-    stdout: String,
-    stderr: String,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
-    exit_code: Option<i32>,
-    duration_ms: u64,
-    timed_out: bool,
+    pub(crate) cwd: String,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) stdout_truncated: bool,
+    pub(crate) stderr_truncated: bool,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) duration_ms: u64,
+    pub(crate) timed_out: bool,
 }
 
 enum StandaloneCd {
@@ -859,6 +859,16 @@ pub(crate) async fn execute_terminal(
 pub(crate) async fn run_terminal(
     root: Arc<PathBuf>,
     request: TerminalRequest,
+) -> Result<Json<TerminalResponse>, ApiError> {
+    run_terminal_with(root, request, TERMINAL_OUTPUT_LIMIT, TERMINAL_TIMEOUT).await
+}
+
+/// The interactive terminal keeps its short limits; agent commands pass owner-set ones.
+pub(crate) async fn run_terminal_with(
+    root: Arc<PathBuf>,
+    request: TerminalRequest,
+    output_limit: usize,
+    timeout: Duration,
 ) -> Result<Json<TerminalResponse>, ApiError> {
     let command = request.command.trim();
     let command_chars = request.command.chars().count();
@@ -915,10 +925,10 @@ pub(crate) async fn run_terminal(
         .ok_or_else(|| std::io::Error::other("terminal stderr was not piped"))?;
     let stdout_capture = SharedCapture::default();
     let stderr_capture = SharedCapture::default();
-    let mut stdout_task = tokio::spawn(read_capped(stdout, stdout_capture.clone()));
-    let mut stderr_task = tokio::spawn(read_capped(stderr, stderr_capture.clone()));
+    let mut stdout_task = tokio::spawn(read_capped(stdout, stdout_capture.clone(), output_limit));
+    let mut stderr_task = tokio::spawn(read_capped(stderr, stderr_capture.clone(), output_limit));
 
-    let (status, timed_out) = match tokio::time::timeout(TERMINAL_TIMEOUT, child.wait()).await {
+    let (status, timed_out) = match tokio::time::timeout(timeout, child.wait()).await {
         Ok(status) => (Some(status?), false),
         Err(_) => {
             kill_process_tree(&mut child).await?;
@@ -1069,7 +1079,7 @@ struct CapturedOutput {
 
 type SharedCapture = Arc<std::sync::Mutex<CapturedOutput>>;
 
-async fn read_capped<R>(mut reader: R, capture: SharedCapture) -> std::io::Result<()>
+async fn read_capped<R>(mut reader: R, capture: SharedCapture, limit: usize) -> std::io::Result<()>
 where
     R: AsyncRead + Unpin,
 {
@@ -1082,11 +1092,11 @@ where
         let mut capture = capture
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let remaining = TERMINAL_OUTPUT_LIMIT.saturating_sub(capture.bytes.len());
+        let remaining = limit.saturating_sub(capture.bytes.len());
         capture
             .bytes
             .extend_from_slice(&buffer[..read.min(remaining)]);
-        if capture.bytes.len() == TERMINAL_OUTPUT_LIMIT || read > remaining {
+        if capture.bytes.len() == limit || read > remaining {
             capture.truncated = true;
         }
     }
