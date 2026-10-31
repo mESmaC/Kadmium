@@ -399,9 +399,10 @@ impl Matchmaker {
         if !minimum.is_finite() || minimum < 0.0 || !scratch.is_finite() || scratch < 0.0 {
             return ineligible("invalid fast memory requirement");
         }
-        if !worker.free_fast_memory_gb.is_finite()
-            || worker.free_fast_memory_gb < minimum.max(scratch)
-        {
+        let required = minimum.max(scratch);
+        let headroom = worker.free_fast_memory_gb;
+        let tolerance = 4.0 * f64::EPSILON * headroom.abs().max(required).max(1.0);
+        if !headroom.is_finite() || required - headroom > tolerance {
             return ineligible("not enough fast memory");
         }
         let availability = worker.availability();
@@ -678,6 +679,7 @@ impl WorkQueue {
         if self.units.contains_key(&unit.id) {
             return Err(GridError::DuplicateUnit(unit.id));
         }
+        Self::validate_memory_requirements(&unit)?;
         let id = unit.id.clone();
         self.units.insert(
             id.clone(),
@@ -694,6 +696,24 @@ impl WorkQueue {
             },
         );
         self.emit(now, SchedulerEvent::Submitted { unit: id });
+        Ok(())
+    }
+
+    fn validate_memory_requirements(unit: &WorkUnit) -> Result<(), GridError> {
+        for (field, value) in [
+            ("min_fast_memory_gb", unit.placement.min_fast_memory_gb),
+            (
+                "scratch_fast_memory_gb",
+                unit.placement.scratch_fast_memory_gb,
+            ),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(GridError::InvalidMemoryRequirement {
+                    unit: unit.id.clone(),
+                    field,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -717,6 +737,9 @@ impl WorkQueue {
     ) -> Result<(), GridError> {
         if let Some(existing) = graph.units().find(|u| self.units.contains_key(&u.id)) {
             return Err(GridError::DuplicateUnit(existing.id.clone()));
+        }
+        for unit in graph.units() {
+            Self::validate_memory_requirements(unit)?;
         }
         let mut external_blocks: BTreeMap<WorkUnitId, BTreeSet<WorkUnitId>> = BTreeMap::new();
         for (unit, prereq) in external {
@@ -884,8 +907,15 @@ impl WorkQueue {
             .filter(|instance| matches!(instance.state, WorkState::Assigned | WorkState::Running))
         {
             if let Some(status) = self.units.get(&instance.unit_id) {
+                let scratch = status.unit.placement.scratch_fast_memory_gb;
                 *reserved.entry(instance.node_id.clone()).or_default() +=
-                    status.unit.placement.scratch_fast_memory_gb;
+                    if scratch.is_finite() && scratch >= 0.0 {
+                        scratch
+                    } else {
+                        f64::INFINITY
+                    };
+            } else {
+                reserved.insert(instance.node_id.clone(), f64::INFINITY);
             }
         }
         reserved
@@ -895,6 +925,33 @@ impl WorkQueue {
         let mut admission = worker.clone();
         admission.free_fast_memory_gb -= reserved.get(worker.id()).copied().unwrap_or(0.0);
         admission
+    }
+
+    /// Ranks workers using outstanding queue scratch, without assigning work.
+    /// Scores describe resource eligibility, not readiness or replica distinctness.
+    pub fn rank_admission(
+        &self,
+        unit_id: &WorkUnitId,
+        workers: &[WorkerProfile],
+        catalog: &ReplicaCatalog,
+        now: u64,
+    ) -> Result<Vec<MatchScore>, GridError> {
+        let status = self
+            .units
+            .get(unit_id)
+            .ok_or_else(|| GridError::UnknownUnit(unit_id.clone()))?;
+        let reserved = self.memory_reservations();
+        let admission: Vec<_> = workers
+            .iter()
+            .map(|worker| Self::admission_worker(worker, &reserved))
+            .collect();
+        Ok(Matchmaker::rank(
+            &status.unit,
+            &admission,
+            catalog,
+            &self.policy,
+            now,
+        ))
     }
 
     /// Pull dispatch: hands the worker the best-matching ready units it can run, at most
@@ -1862,6 +1919,139 @@ mod tests {
             scratch_fast_memory_gb: scratch,
             ..PlacementConstraints::default()
         })
+    }
+
+    #[test]
+    fn invalid_submission_preserves_queue_and_graph_atomicity() {
+        for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for field in ["min_fast_memory_gb", "scratch_fast_memory_gb"] {
+                let mut queue = WorkQueue::new(SchedulerPolicy::default());
+                queue.submit(scratch_unit("existing", 0.1), 0).unwrap();
+                let before = serde_json::to_value(&queue).unwrap();
+                let mut unit = scratch_unit("invalid", 0.0);
+                if field == "min_fast_memory_gb" {
+                    unit.placement.min_fast_memory_gb = invalid;
+                } else {
+                    unit.placement.scratch_fast_memory_gb = invalid;
+                }
+                assert_eq!(
+                    queue.submit(unit.clone(), 1),
+                    Err(GridError::InvalidMemoryRequirement {
+                        unit: unit.id.clone(),
+                        field,
+                    })
+                );
+                assert_eq!(serde_json::to_value(&queue).unwrap(), before);
+                let mut graph = WorkGraph::new("graph");
+                graph.add_unit(scratch_unit("valid", 0.1)).add_unit(unit);
+                graph
+                    .add_dependency(&"invalid".into(), &"valid".into())
+                    .unwrap();
+                for external in [vec![], vec![("valid".into(), "existing".into())]] {
+                    assert_eq!(
+                        queue.submit_graph_after(&graph, &external, 2),
+                        Err(GridError::InvalidMemoryRequirement {
+                            unit: "graph/invalid".into(),
+                            field,
+                        })
+                    );
+                    assert_eq!(serde_json::to_value(&queue).unwrap(), before);
+                }
+                let restored: WorkQueue =
+                    serde_json::from_value(serde_json::to_value(&queue).unwrap()).unwrap();
+                assert_eq!(serde_json::to_value(restored).unwrap(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn corrupt_live_reservations_fail_closed_per_worker() {
+        let catalog = ReplicaCatalog::new();
+        for invalid in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut queue = WorkQueue::new(SchedulerPolicy::default());
+            let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
+            queue.submit(scratch_unit("live", 1.0), 0).unwrap();
+            assert_eq!(queue.dispatch_push(&mut workers, &catalog, 1).len(), 1);
+            queue
+                .units
+                .get_mut(&"live".into())
+                .unwrap()
+                .unit
+                .placement
+                .scratch_fast_memory_gb = invalid;
+            queue.submit(scratch_unit("next", 0.1), 2).unwrap();
+            assert!(queue.dispatch_push(&mut workers, &catalog, 3).is_empty());
+            assert!(
+                queue
+                    .request_work(&mut workers[0], &catalog, 4, 4)
+                    .is_empty()
+            );
+            workers.push(worker("b", NodeTrustTier::TrustedCore));
+            assert_eq!(queue.dispatch_push(&mut workers, &catalog, 5).len(), 1);
+            if invalid.is_finite() {
+                let restored: WorkQueue =
+                    serde_json::from_str(&serde_json::to_string(&queue).unwrap()).unwrap();
+                assert_eq!(
+                    restored.memory_reservations()[workers[0].id()],
+                    f64::INFINITY
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decimal_exact_fit_survives_batches_but_not_real_shortfall() {
+        let catalog = ReplicaCatalog::new();
+        for push in [false, true] {
+            let mut queue = WorkQueue::new(SchedulerPolicy::default());
+            let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
+            workers[0].free_fast_memory_gb = 0.3;
+            for id in ["first", "second", "third"] {
+                queue.submit(scratch_unit(id, 0.1), 0).unwrap();
+                let assigned = if push {
+                    queue.dispatch_push(&mut workers, &catalog, 1)
+                } else {
+                    queue.request_work(&mut workers[0], &catalog, 1, 4)
+                };
+                assert_eq!(assigned.len(), 1);
+            }
+            queue.submit(scratch_unit("fourth", 0.000001), 2).unwrap();
+            assert!(queue.dispatch_push(&mut workers, &catalog, 3).is_empty());
+            assert!(
+                queue
+                    .request_work(&mut workers[0], &catalog, 4, 4)
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn admission_diagnostic_accounts_for_outstanding_scratch() {
+        let catalog = ReplicaCatalog::new();
+        let mut queue = WorkQueue::new(SchedulerPolicy::default());
+        let mut workers = vec![worker("a", NodeTrustTier::TrustedCore)];
+        workers[0].free_fast_memory_gb = 8.0;
+        queue.submit(scratch_unit("live", 5.0), 0).unwrap();
+        queue.dispatch_push(&mut workers, &catalog, 1);
+        queue.submit(scratch_unit("large", 4.0), 2).unwrap();
+        let before = serde_json::to_value(&queue).unwrap();
+        let ranked = queue
+            .rank_admission(&"large".into(), &workers, &catalog, 3)
+            .unwrap();
+        assert_eq!(ranked.len(), 1);
+        assert!(!ranked[0].eligible);
+        assert_eq!(ranked[0].reason, "not enough fast memory");
+        assert_eq!(serde_json::to_value(&queue).unwrap(), before);
+        workers.push(worker("b", NodeTrustTier::TrustedCore));
+        let ranked = queue
+            .rank_admission(&"large".into(), &workers, &catalog, 3)
+            .unwrap();
+        assert!(ranked[0].eligible);
+        assert_eq!(ranked[0].node_id, workers[1].node.id);
+        assert_eq!(
+            queue.rank_admission(&"missing".into(), &workers, &catalog, 3),
+            Err(GridError::UnknownUnit("missing".into()))
+        );
     }
 
     #[test]

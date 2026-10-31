@@ -45,6 +45,11 @@ pub enum GridError {
     UnknownUnit(WorkUnitId),
     #[error("work unit `{0}` already exists")]
     DuplicateUnit(WorkUnitId),
+    #[error("work unit `{unit}` has invalid memory requirement `{field}`")]
+    InvalidMemoryRequirement {
+        unit: WorkUnitId,
+        field: &'static str,
+    },
     #[error("unknown work instance `{0}`")]
     UnknownInstance(InstanceId),
     #[error("adding `{prereq}` as a prerequisite of `{unit}` would create a cycle")]

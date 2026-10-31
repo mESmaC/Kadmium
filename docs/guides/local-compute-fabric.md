@@ -1,186 +1,104 @@
-# Local aggregate compute: review and implementation plan
+# Local aggregate compute: design proposal and admission guide
 
-Review date: 2026-10-31. This document distinguishes implemented admission/transport
-changes from proposed protocol and driver work. It does not claim that LAN machines
-share coherent memory, that aggregate FLOPS predict application speed, or that the
-current reference executors implement arbitrary distributed model training.
+Review date: 2026-10-31. **Design proposal**, except for the coordinator scratch
+admission described below. The canonical target design and acceptance gates live
+in [Architecture section 9.21](../ARCHITECTURE.md#921-local-aggregate-compute-target).
+This guide does not define another protocol, allocator or roadmap.
 
-## What to borrow from scientific grids
+## Patterns from scientific grids
 
-BOINC's locality scheduling selects feasible work and prefers already-resident
-inputs. Its host memory management accounts for competing tasks, not just one task
-in isolation. CERN's WLCG separates data management from bulk transfer execution;
-FTS provides reliable transfers with site-controlled network usage. HTCondor can
-move inputs directly from a URL to the execution point and offers pool-wide
-concurrency limits. These are useful patterns, not interchangeable implementations
-of latency-sensitive model parallelism. See the primary references below.
+BOINC's locality scheduling favors resident inputs after resource feasibility;
+its memory management considers competing tasks. CERN WLCG separates data
+management from transfer execution, with site-controlled FTS transfers. HTCondor
+provides direct URL input transfers and pool-wide concurrency limits. These are
+patterns to adapt, not substitutes for latency-sensitive model parallelism.
 
-For a personal LAN, use three execution classes:
+For a personal LAN, distinguish independent replay/evaluation/preprocessing
+(bounded pull batches and restart), decode/pipeline stages (persistent push and
+measured critical-path latency), and training replicas (coarse local optimizer
+steps and explicit synchronization). Aggregate FLOPS alone do not predict useful
+application throughput; no speedup measurement is claimed here.
 
-- Independent replay, evaluation and preprocessing: bounded pull batches, locality,
-  checkpoint/restart and modest control-plane overhead.
-- Decode and pipeline stages: persistent push channels, measured critical-path
-  latency, explicit activation ownership and small bounded queues.
-- Training replicas: coarse local optimizer steps and explicit synchronization
-  rounds, rather than treating every heterogeneous LAN as a GPU collective fabric.
+## Implemented: coordinator scratch admission
 
-## Evidence and gaps in Kadmium
-
-| Area | Observed implementation | Gap and next action |
-| --- | --- | --- |
-| Admission | `kadmium-grid/src/scheduler.rs` checks slots and a per-unit minimum against a worker's free fast memory. | Several individually fitting units can exceed the same budget. This change adds opt-in exclusive scratch reservations, described below. |
-| RPC cancellation | `kadmium-network/src/peer_channel.rs` demultiplexes replies and times out calls. Previously, dropping a call could retain its pending entry; only delta writes had a cancellation guard. | This change removes pending entries on every exit and poisons both plain and delta channels when a write is abandoned. |
-| Retry semantics | `PeerChannelPool::call_with_connect_timeout` reconnects and resends once after an unhealthy-channel error. | Delivery may already have occurred. A transport request ID is not a durable execution deduplication key. Introduce worker attempt leases and replayable receipts before using this route for non-idempotent mutations. |
-| Data path | `GridDispatcher::dispatch_ready` clones prerequisite activation bytes into each outbound dispatch. Catalog and staging abstractions already exist. | Fan-out can multiply coordinator memory and outgoing bytes. Add immutable output handles, pinned lifetimes and bounded direct worker-to-worker transfers, retaining inline payloads for small messages. |
-| Local memory | `HostMemoryLedger`, `ExpertCache` and delta-store admission already manage parts of the host envelope. | Coordinator scratch admission is not an allocator or device-memory reservation. Extend the existing ledger with execution-scoped leases and distinguish host RAM, pinned staging, resident weights and device scratch. Do not create a competing memory manager. |
-| Lifecycle | `WorkQueue` has retries, deadlines, cancellation, redundancy and serialized state. | Queue state does not prove a remote kernel stopped. Reconcile cancellation/expiry against worker acknowledgements before reclaiming physical resources or replaying side effects. Persist accepted attempts and fence old coordinator epochs. |
-| Capacity modelling | `WorkerProfile` already learns per-application compute cost and hop cost; residency-first routing is configurable. | An application label and in-flight count do not capture tensor shape, kernel concurrency or transfer contention. Bucket measured costs by backend/shape/precision and measure queue wait separately. Retain conservative cold-start fallback. |
-| Isolation | Live compute documentation explicitly restricts listeners to trusted networks. | Before accepting untrusted peers: authenticated identities, negotiated capabilities, bounded messages, per-peer quotas, artifact integrity and executor allowlists. These changes do not make public compute safe. |
-
-Paths in this table are relative to `crates/`. These are static code observations,
-not measured throughput results or a comprehensive security assessment.
-
-## Implemented: exclusive scratch admission
-
-`PlacementConstraints.scratch_fast_memory_gb` is additional exclusive memory for
-each assigned/running instance. It defaults to zero on older serialized work units.
-`min_fast_memory_gb` remains a feasibility floor, not a second allocation. Shared
-resident weights must not be copied into each instance's scratch requirement.
-
-For each worker, push and pull admission use:
+`PlacementConstraints.scratch_fast_memory_gb` defaults to zero for old producers
+and serialized units. **No shipped workload currently supplies a nonzero estimate.**
+It reserves exclusive scratch per `Assigned` or `Running` `WorkInstance`, including
+replicas and earlier push/pull batches. Returned attempts release scratch even
+while quorum validation waits. Reservations rebuild from queue state rather than
+a second mutable reservation table; heartbeat budgets are not rewritten.
 
 ```text
-available = worker.free_fast_memory_gb - sum(live instance scratch on this worker)
-eligible = available >= max(min_fast_memory_gb, scratch_fast_memory_gb)
+admission headroom = reported free fast memory - outstanding queue scratch
+eligible when headroom >= max(min_fast_memory_gb, scratch_fast_memory_gb)
 ```
 
-The scheduler derives reservations from the queue's instance states, including
-replicas and assignments made by earlier push or pull calls. It decrements an
-admission snapshot within each batch without rewriting the worker's reported
-budget. A serialized queue reconstructs reservations without a second mutable
-reservation table. Negative/non-finite requirements and invalid memory telemetry
-are ineligible. A failed/cancelled/returned attempt no longer reserves queue memory.
+For example, a minimum of 4 GiB and scratch of 2 GiB requires 4 GiB headroom and
+reserves 2 GiB, not 6 GiB. Field names retain the repository's `_gb` convention
+for binary GiB. Comparison tolerates four floating-point epsilon units scaled
+by the larger magnitude or 1 GiB, to avoid rejecting decimal exact fits. This is
+roundoff tolerance, not an oversubscription policy.
 
-Example work-unit placement fragment:
+`submit` rejects negative, NaN and infinite minimum/scratch values with
+`GridError::InvalidMemoryRequirement`; graph submission checks all units before
+mutating queue state or emitting events. Matchmaking also rejects malformed
+requirements and nonfinite telemetry. Corrupt live scratch in restored state
+blocks admission on that worker instead of increasing its budget.
 
-```json
-{"min_fast_memory_gb": 4.0, "scratch_fast_memory_gb": 2.0}
-```
+`WorkQueue::rank_admission` exposes ranked `MatchScore` diagnostics, including
+outstanding reservations and an ineligibility reason, without assigning work.
+It reports resource eligibility, not graph readiness or distinct-replica rules.
+Operators must call it; there is no automatic UI warning or starvation prevention.
 
-This requires at least 4 GiB of remaining admission headroom and reserves 2 GiB
-while the instance is live. It does not reserve 6 GiB. `GiB` is binary memory even
-though field names retain the repository's `_gb` convention.
+### Limits before workload integration
 
-Limits: producers must opt in with credible scratch estimates; existing executors
-are not automatically profiled by this patch. All coordinating callers must share
-the same queue for this accounting to be meaningful. The worker budget must exclude
-resident allocations but not already subtract these same queue reservations. This
-is coordinator admission only: remote cancellation/timeouts do not stop kernels,
-and local state transitions do not certify that physical memory has been released.
-Worker-enforced leases are the next prerequisite, not an implemented guarantee.
+- The caller must report headroom **after resident `PlacementFit` allocations**,
+  but before these same queue reservations. This precondition is not enforced:
+  today's offer-based worker budget does not automatically subtract residency.
+  Do not enable scratch producers until the shared authority in
+  [issue #60](https://github.com/mESmaC/Kadmium/issues/60) is integrated.
+- All coordinating callers must use one queue. This is an admission estimate,
+  not a worker allocator, device-memory ticket or physical reclamation guarantee.
+- Cancellation, expiry and failure release queue reservations although the remote
+  kernel may still run. Only worker completion/teardown acknowledgement can make
+  reuse safe. Do not use scheduler state alone to free DMA-visible memory.
+- Conversely, abandoned `Assigned`/`Running` attempts can reserve indefinitely
+  while a worker stays online, including originals whose duplicate validated.
+  There is no safe coordinator-only grace release; worker lease reconciliation
+  must fence execution before reclaiming its ticket.
+- Small units can starve a large high-priority unit by repeatedly using available
+  headroom. Diagnostics expose the shortfall, but aging/headroom protection is
+  still target work. Each dispatch scans historical instances and clones worker
+  profiles, including zero-scratch queues; no dispatch-throughput gain is claimed.
 
-## Implemented: cancellation-safe persistent calls
+## Code evidence and design ownership
 
-A pending-reply guard removes a request's sender when its call future is dropped,
-including cancellation while waiting for the writer or after sending. A second
-guard makes an abandoned write fail the channel for plain frames as well as delta
-frames. Reusing a partially written byte stream can corrupt subsequent messages;
-delta encoding additionally advances per-peer chunk state.
+Static observations, not measured throughput or a comprehensive security audit:
 
-Cancellation before acquiring the writer leaves the channel healthy. Cancellation
-after a full write also leaves it healthy; a late KDM2 reply is ignored by request
-ID without resolving another caller. Dropping a call is not a remote cancellation
-protocol and does not make pool retries exactly-once. Legacy KDMF peers have no
-request IDs; their existing serial fallback does not provide the same late-reply
-isolation. Require negotiated request-ID support for the proposed lease protocol.
+| Area | Current path and remaining gap | Canonical design |
+| --- | --- | --- |
+| Retry | `PeerChannelPool::call_with_connect_timeout` can reconnect and resend after unhealthy-channel errors; request IDs are not durable deduplication keys. Transport cancellation fixes are upstream, not part of this change. | [Transport section 9.3](../ARCHITECTURE.md#93-transport), [local target](../ARCHITECTURE.md#921-local-aggregate-compute-target) |
+| Fan-out | `GridDispatcher::dispatch_ready` clones prerequisite bytes into dispatches; coordinator copies can multiply. | Existing `ReplicaCatalog` / `StagingJob`, [FTS3 section 6.2](../ARCHITECTURE.md#62-third-party-transfer-scheduler-cern-fts3-pattern) |
+| Resource spending | `HostMemoryLedger`, offers and placement exist, but queue scratch does not enforce physical memory ownership. | [Allocation section 9.5](../ARCHITECTURE.md#95-allocation-measured-learned-and-approved), issue #60 |
+| Device I/O | KIP/1 has a host backend, bounded windows and adapter lifetime rules; it is not wired into execution paths and GPU adapters are target only. | [KIP/1 section 9.20](../ARCHITECTURE.md#920-kip1-interdevice-transfer-protocol-kadmium-datainterdevice), [adapter contract](interdevice-protocol.md) |
+| Cost/isolation | Application-level cost samples do not model shape/concurrency contention; live listeners remain trusted-network only. | [Local target](../ARCHITECTURE.md#921-local-aggregate-compute-target) |
 
-## Proposed internal communication contract
+## Reproducible references
 
-Extend the current framed transport rather than replace it with a second bespoke
-socket stack. Proposed messages below are not new supported wire kinds yet:
+Primary design references:
 
-1. **Hello/capabilities:** protocol version range, authenticated worker ID, boot ID,
-   supported executor/precision versions, frame and outstanding-byte ceilings.
-2. **Reserve:** durable `(coordinator_epoch, graph_id, unit_id, attempt_id)`, absolute
-   resource vector, input digests and lease duration. Return either a lease token
-   with admitted resources or `Busy` with bounded retry advice. Keep clocks local
-   for expiry; exchange durations rather than trusting synchronized wall clocks.
-3. **Execute:** lease token, immutable input/output handles and execution deadline.
-   A repeated attempt key returns its existing state or receipt; mismatched payload
-   under the same key is rejected. Persist the acceptance before side effects.
-4. **Renew/status/cancel:** monotonic state sequence and boot/epoch fencing.
-   Cancellation is acknowledged only after safe quiescence; an uninterruptible GPU
-   kernel can report draining. Lost connections leave bounded leases, not permission
-   to assume the operation never ran.
-5. **Result/commit/release:** output checksums, execution version, measured queue,
-   transfer and execution time, plus a durable receipt. Retain output handles until
-   consumers acknowledge them or their leases expire. Fence stale results before
-   advancing graph dependencies.
-
-Use separate bounded budgets for control messages and bulk payloads so staging
-cannot starve heartbeats, cancellation or result acknowledgements. Bound both call
-count and outstanding bytes; advertise credits before accepting bulk work. Hash
-immutable artifacts with a cryptographic digest; existing FNV labels are not a
-malicious-peer integrity guarantee. Do not silently change existing content IDs.
-
-## Driver plan: user space first
-
-The first custom driver should be a Rust resource/transport adapter, not a kernel
-module that promises remote VRAM. Reuse vendor-supported device APIs and the
-existing CPU/CUDA/NPU executor boundaries. A LAN cannot turn independent memory
-controllers into coherent local memory.
-
-- **Host I/O adapter:** bounded asynchronous reads, explicit cancellation, aligned
-  buffer pools and fallbacks to ordinary files. Prototype Windows IOCP/IoRing and
-  Linux io_uring only after capability detection. Borrow InferSSD's separation of
-  placement policy, host admission and I/O ownership rather than copying its code.
-- **Device adapter:** execution-scoped device and pinned-host leases, event-backed
-  completion, finite stream/queue counts and telemetry. Never free DMA-visible
-  memory on RPC timeout; release it on completion or driver-confirmed teardown.
-- **Transport adapter:** baseline TCP first; evaluate shared memory on one host and
-  vendor-supported RDMA only on verified hardware. Keep the same lease/receipt
-  contract and portable fallback. Do not infer RDMA capability from USB-C or USB4
-  connector shape or add modelled link bandwidths as measured throughput.
-- **Optional kernel component:** consider only after profiling identifies a missing
-  user-space capability. Require a narrow ABI, signed installation, least-privilege
-  device access, bounded mappings, suspend/unplug recovery and a separate threat
-  review. No kernel module is implemented by this PR.
-
-## Delivery order and acceptance gates
-
-1. **Admission and channel hygiene (this change):** regression tests for mixed
-   push/pull budgets, exact fit, independent workers, redundancy, returned replicas,
-   expiry, state restore, invalid numbers and cancellation at three transport boundaries.
-2. **Worker leases and durable attempts:** integrate with the existing host ledger;
-   fault-test disconnect after acceptance, coordinator restart, duplicate execution,
-   lease expiry during a kernel and cancellation before resource reclamation.
-3. **Bounded data plane:** direct immutable output transfers, consumer reference
-   tracking, per-link credits, resume/checksum verification and transfer concurrency
-   limits. Test fan-out under a slow reader and memory pressure.
-4. **Measured tuning and adapters:** compare serial, local-threaded and distributed
-   execution on the same inputs. Record end-to-end p50/p95 latency, useful work/s,
-   queue wait, bytes on every hop, peak RAM/VRAM, retry work and owner responsiveness.
-   Sweep task size and concurrency; only enable an optimization where its measured
-   benefit exceeds dispatch, staging and validation overhead. Record hardware,
-   topology and provenance in the benchmark ledger before claiming a speedup.
-
-## References and local review scope
-
-Primary public references, consulted 2026-10-31:
-
-- [BOINC locality scheduling paper](https://boinc.berkeley.edu/boinc_papers/locality/text.php).
-- [BOINC memory management](https://github.com/BOINC/boinc/wiki/Memory-management).
+- [BOINC locality scheduling](https://boinc.berkeley.edu/boinc_papers/locality/text.php)
+  and [memory management](https://github.com/BOINC/boinc/wiki/Memory-management).
 - [CERN WLCG FTS service](https://wlcg-ops.web.cern.ch/fts).
-- [HTCondor file transfer](https://htcondor.readthedocs.io/en/main/users-manual/file-transfer.html).
-- [HTCondor concurrency limits](https://github.com/htcondor/htcondor/blob/main/docs/admin-manual/cm-configuration.rst).
+- [HTCondor file transfer](https://htcondor.readthedocs.io/en/main/users-manual/file-transfer.html)
+  and [concurrency limits](https://github.com/htcondor/htcondor/blob/main/docs/admin-manual/cm-configuration.rst).
 
-Read-only local references supplied by the user:
+Pinned source snapshots inspected read-only (not build dependencies):
 
-- `C:/Users/engin/Desktop/harnesses/boinc/sched/sched_send.cpp`: host disk/resource feasibility.
-- `C:/Users/engin/Desktop/harnesses/fts3/README.md`: independent transfer service and site controls.
-- `C:/Users/engin/Desktop/harnesses/DeepEP/README.md`: specialized device collective and buffer lifecycle, not a portable heterogeneous-LAN replacement.
-- `C:/Users/engin/Desktop/inferssd/docs/architecture.md`: shared host admission, placement feedback and bounded cache/I/O ownership.
-- `C:/Users/engin/Desktop/t3/t3code/packages/contracts/src/orchestrationV2.ts`: typed command identity and sequenced lifecycle patterns, not a tensor transport.
+- [BOINC scheduler, bc8144cb](https://github.com/BOINC/boinc/blob/bc8144cbcb0a03e5b44354984ae0423f9efe2540/sched/sched_send.cpp): host resource feasibility.
+- [FTS3, f19df43c](https://github.com/cern-fts/fts3/blob/f19df43c7db0764e2b6be30916ec406be15a1574/README.md): independent transfer service and site controls.
+- [DeepEP, f6aa38fe](https://github.com/deepseek-ai/DeepEP/blob/f6aa38fe06cd4a0489e7730365d4e0114970a2f3/README.md): specialized device collectives, not a heterogeneous-LAN replacement.
+- [InferSSD, b9cc72d6](https://github.com/mESmaC/inferssd/blob/b9cc72d6ec26944e628dceb0e8bbb4e610900052/docs/architecture.md): host admission and cache/I/O ownership.
+- [T3 contracts, c6ef3b46](https://github.com/pingdotgg/t3code/blob/c6ef3b46ebed34fbefa1706674fe5748254cee18/packages/contracts/src/orchestrationV2.ts): command identity and sequenced lifecycle, not tensor transport.
 
-These local paths record review provenance, not build dependencies. No external
-project's code, hardware performance figures or licensing assumptions were imported.
+No external project code, performance figures or licensing assumptions were imported.

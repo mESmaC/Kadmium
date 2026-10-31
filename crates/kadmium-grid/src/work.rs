@@ -248,6 +248,7 @@ pub struct PlacementConstraints {
     pub min_fast_memory_gb: f64,
     /// Additional exclusive scratch memory per assigned/running instance, in GiB. Resident
     /// inputs are not charged here; the worker's budget must already exclude resident allocations.
+    /// This caller precondition is not enforced; shipped workloads do not yet supply estimates.
     #[serde(default)]
     pub scratch_fast_memory_gb: f64,
     /// Backends that can run the unit's kernels; empty means any.
