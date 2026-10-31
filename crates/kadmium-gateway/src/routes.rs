@@ -539,12 +539,18 @@ async fn serve_companion_app() -> Html<&'static str> {
 }
 
 async fn serve_workspace_css() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], WORKSPACE_CSS)
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        WORKSPACE_CSS,
+    )
 }
 
 async fn serve_workspace_js() -> impl IntoResponse {
     (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
         WORKSPACE_JS,
     )
 }
