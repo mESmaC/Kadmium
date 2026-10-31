@@ -79,7 +79,7 @@ impl PreQuantizedSource {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportOptions {
     /// Import a checkpoint that was quantized before it reached Kadmium. Its bytes are kept
-    /// exactly; precision lost before import cannot be recovered.
+    /// exactly; Kadmium cannot restore detail removed before import.
     #[serde(default)]
     pub accept_pre_quantized: bool,
 }
@@ -289,9 +289,7 @@ impl CheckpointLibrary {
                 manifest.architecture = architecture;
                 manifest.context_length = context;
                 manifest.scaled_context_length = scaled_context;
-                if let Ok(bytes) = serde_json::to_vec_pretty(&manifest) {
-                    let _ = fs::write(dir.join("manifest.json"), bytes);
-                }
+                persist_upgrade(&dir, &mut manifest);
             } else {
                 return Err("Checkpoint manifest does not match its source metadata".into());
             }
@@ -305,9 +303,7 @@ impl CheckpointLibrary {
                     manifest.warnings.push(pre_quantized_warning(quantized));
                 }
                 manifest.pre_quantized = pre_quantized;
-                if let Ok(bytes) = serde_json::to_vec_pretty(&manifest) {
-                    let _ = fs::write(dir.join("manifest.json"), bytes);
-                }
+                persist_upgrade(&dir, &mut manifest);
             } else {
                 return Err("Checkpoint manifest does not match its source precision".into());
             }
@@ -476,9 +472,29 @@ impl CheckpointLibrary {
     }
 }
 
+/// Saves a metadata-only manifest upgrade atomically. Verification already succeeded, so a
+/// read-only or full library keeps the upgrade in memory and says it was not saved.
+fn persist_upgrade(dir: &Path, manifest: &mut CheckpointManifest) {
+    let temporary = dir.join(".manifest.json.upgrade");
+    let saved = serde_json::to_vec_pretty(&*manifest)
+        .map_err(io_error)
+        .and_then(|bytes| {
+            let mut file = File::create(&temporary).map_err(io_error)?;
+            file.write_all(&bytes).map_err(io_error)?;
+            file.sync_all().map_err(io_error)
+        })
+        .and_then(|()| fs::rename(&temporary, dir.join("manifest.json")).map_err(io_error));
+    if let Err(error) = saved {
+        let _ = fs::remove_file(&temporary);
+        manifest.warnings.push(format!(
+            "The upgraded manifest could not be saved ({error}); verification repeats the upgrade until it can."
+        ));
+    }
+}
+
 fn pre_quantized_warning(quantized: &PreQuantizedSource) -> String {
     format!(
-        "You imported a pre-quantized source: {}. Kadmium keeps these bytes exactly; responses reflect the precision this checkpoint had before import.",
+        "You accepted a pre-quantized source: {}. Kadmium keeps these bytes exactly; responses reflect this stored precision.",
         quantized.description()
     )
 }
@@ -486,7 +502,7 @@ fn pre_quantized_warning(quantized: &PreQuantizedSource) -> String {
 fn refuse_unaccepted(found: &Option<PreQuantizedSource>, options: ImportOptions) -> Result<()> {
     match found {
         Some(quantized) if !options.accept_pre_quantized => Err(format!(
-            "This checkpoint is already quantized: {}. Kadmium never quantizes weights, and it imports a pre-quantized source only when you accept its precision for this import. Its bytes are kept exactly, but precision lost before import cannot be recovered. Accept the pre-quantized source to continue, or choose a 16-bit or wider original.",
+            "This checkpoint is stored at a quantized precision: {}. Kadmium never quantizes weights; it imports a quantized source only when you accept that precision for this import, and then copies its bytes exactly. Some models are released at this precision, while others were quantized from a wider original whose removed detail Kadmium cannot restore. Accept this precision to import it.",
             quantized.description()
         )),
         _ => Ok(()),
@@ -535,8 +551,9 @@ fn source_paths(source: &Path) -> Result<Vec<PathBuf>> {
                         | "processor_config.json"
                         | "model.safetensors.index.json"
                         // Quantization parameters that some pre-quantized exports keep
-                        // outside config.json (AutoGPTQ, NVIDIA ModelOpt).
+                        // outside config.json (AutoGPTQ, AutoAWQ, NVIDIA ModelOpt).
                         | "quantize_config.json"
+                        | "quant_config.json"
                         | "hf_quant_config.json"
                 ))
         {

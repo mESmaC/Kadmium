@@ -240,7 +240,7 @@ async fn pre_quantized_import_requires_the_operator_to_accept_it() {
     assert!(!refused.status().is_success());
     let text = refused.text().await.unwrap();
     assert!(
-        text.contains("already quantized") && text.contains("awq 4-bit (I32)"),
+        text.contains("stored at a quantized precision") && text.contains("awq 4-bit (I32)"),
         "{text}"
     );
     let accepted = client

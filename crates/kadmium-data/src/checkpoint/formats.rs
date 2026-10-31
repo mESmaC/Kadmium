@@ -135,7 +135,15 @@ const WIDE_FLOATS: &[&str] = &["F64", "F32", "BF16", "F16"];
 const INTEGERS: &[&str] = &["I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64"];
 /// Name suffixes of weight tensors. An integer weight is quantized storage, unlike
 /// integer buffers such as `position_ids`.
-const WEIGHT_SUFFIXES: &[&str] = &["weight", "qweight", "weight_packed", "qzeros"];
+const WEIGHT_SUFFIXES: &[&str] = &[
+    "weight",
+    "qweight",
+    "qzeros",
+    "weight_packed",
+    "weight_scale",
+    "scales",
+    "g_idx",
+];
 
 fn is_integer_weight(tensor: &CheckpointTensor) -> bool {
     INTEGERS.contains(&tensor.dtype.as_str())
@@ -168,6 +176,18 @@ fn safetensors_pre_quantization(
         declared = declared_quantization(&sidecar).map(|(method, bits)| {
             let method = if method == "declared" {
                 "gptq".into()
+            } else {
+                method
+            };
+            (method, bits)
+        });
+    }
+    if declared.is_none() && has("quant_config.json") {
+        let sidecar: Value = read_json(&dir.join("quant_config.json"))?;
+        // AutoAWQ's sidecar (`w_bit`, `q_group_size`, `zero_point`) names no method.
+        declared = declared_quantization(&sidecar).map(|(method, bits)| {
+            let method = if method == "declared" {
+                "awq".into()
             } else {
                 method
             };
@@ -207,7 +227,8 @@ fn safetensors_pre_quantization(
     }))
 }
 
-/// Reads a Transformers `quantization_config` or AutoGPTQ `quantize_config.json` object.
+/// Reads a Transformers `quantization_config`/`compression_config`, or an AutoGPTQ or
+/// AutoAWQ sidecar object.
 fn declared_quantization(config: &Value) -> Option<(String, Option<u64>)> {
     let object = config.as_object()?;
     let flag = |key: &str| object.get(key).and_then(Value::as_bool) == Some(true);

@@ -149,7 +149,10 @@ fn every_ggml_type_is_copied_exactly_after_the_operator_accepts_quantization() {
     let lib = temp.library();
 
     let refused = lib.import(&path).unwrap_err();
-    assert!(refused.contains("already quantized"), "{refused}");
+    assert!(
+        refused.contains("stored at a quantized precision"),
+        "{refused}"
+    );
     assert!(
         refused.contains("Q8_1") && refused.contains("MXFP4"),
         "{refused}"
@@ -306,6 +309,36 @@ fn declared_and_undeclared_safetensors_quantization_is_detected() {
         );
     }
 
+    // AutoAWQ's sidecar is copied and read; GPTQ's I32 g_idx counts as packed storage.
+    let awq = Scratch::new();
+    awq.safetensors(
+        r#"{"model_type":"llama","max_position_embeddings":4096}"#,
+        &[("model.layers.0.mlp.g_idx", "I32", vec![1], &[0; 4])],
+    );
+    fs::write(
+        awq.source().join("quant_config.json"),
+        br#"{"zero_point":true,"q_group_size":128,"w_bit":4,"version":"GEMM"}"#,
+    )
+    .unwrap();
+    let manifest = awq.library().import_with(&awq.source(), ACCEPT).unwrap();
+    assert_eq!(
+        manifest.pre_quantized.unwrap().description(),
+        "awq 4-bit (I32)"
+    );
+    fs::remove_file(awq.source().join("quant_config.json")).unwrap();
+    let refused = Scratch::new();
+    refused.safetensors(
+        r#"{"model_type":"llama","max_position_embeddings":4096}"#,
+        &[("model.layers.0.mlp.g_idx", "I32", vec![1], &[0; 4])],
+    );
+    assert!(
+        refused
+            .library()
+            .import(&refused.source())
+            .unwrap_err()
+            .contains("undeclared method (I32)")
+    );
+
     // AutoGPTQ's sidecar is copied into the package and read for the method.
     let sidecar = Scratch::new();
     sidecar.safetensors(
@@ -390,6 +423,21 @@ fn legacy_packages_record_their_precision_and_current_ones_cannot_hide_it() {
     assert_eq!(lib.list().unwrap()[0].pre_quantized, None);
     legacy.warnings.retain(|w| !w.contains("pre-quantized"));
     fs::write(&manifest_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+    // A failed save keeps the verified upgrade in memory, says so, and leaves the old file.
+    let blocker = manifest_path.with_file_name(".manifest.json.upgrade");
+    fs::create_dir(&blocker).unwrap();
+    let unsaved = lib.verify(&manifest.id).unwrap();
+    assert_eq!(unsaved.pre_quantized, manifest.pre_quantized);
+    assert!(
+        unsaved
+            .warnings
+            .iter()
+            .any(|w| w.contains("could not be saved"))
+    );
+    assert_eq!(lib.list().unwrap()[0].pre_quantized, None);
+    fs::remove_dir(&blocker).unwrap();
+
     let upgraded = lib.verify(&manifest.id).unwrap();
     assert_eq!(upgraded.schema_version, 3);
     assert_eq!(upgraded.pre_quantized, manifest.pre_quantized);
