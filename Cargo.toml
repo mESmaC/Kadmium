@@ -11,6 +11,7 @@ members = [
     "crates/kadmium-gateway",
     "crates/kadmium-cli",
     "crates/kadmium-desktop",
+    "crates/kadmium-native",
     "crates/kadmium-condenser",
     "crates/kadmium-condenser-app",
     "crates/kadmium-cuda",
@@ -38,6 +39,7 @@ kadmium-rl = { path = "crates/kadmium-rl" }
 kadmium-network = { path = "crates/kadmium-network" }
 kadmium-gateway = { path = "crates/kadmium-gateway" }
 kadmium-condenser = { path = "crates/kadmium-condenser" }
+kadmium-native = { path = "crates/kadmium-native" }
 kadmium-cuda = { path = "crates/kadmium-cuda" }
 kadmium-npu = { path = "crates/kadmium-npu" }
 

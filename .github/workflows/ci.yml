@@ -57,7 +57,7 @@ jobs:
         run: cargo build -p kadmium-condenser-app --locked
       - name: Test Condenser checkpoint and compute workflows
         working-directory: .
-        run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs crates/kadmium-condenser/tests/agent_workflow.test.cjs
+        run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs crates/kadmium-condenser/tests/agent_workflow.test.cjs crates/kadmium-condenser/tests/file_picker.test.cjs
       - name: Build embedded model setup fixture
         run: cargo build -p kadmium-gateway --example control_room_fixture --locked
       - name: Test model setup from both Kadmium interfaces
@@ -125,7 +125,7 @@ jobs:
           cargo build -p kadmium-gateway --example control_room_fixture
           node --test crates/kadmium-gateway/tests/control_room.test.cjs
       - name: Test Condenser stream and task workflows
-        run: node --test crates/kadmium-condenser/tests/workflow.test.cjs
+        run: node --test crates/kadmium-condenser/tests/workflow.test.cjs crates/kadmium-native/tests/bridge.test.cjs
 
       - name: Smoke-test Kadmium CLI & Condenser engines
         run: |

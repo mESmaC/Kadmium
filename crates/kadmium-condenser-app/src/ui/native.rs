@@ -1,12 +1,12 @@
 use super::{EmbeddedServer, UiOptions, open_in_browser, webview_data_dir};
 use tao::dpi::LogicalSize;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use tao::window::{Theme, Window, WindowBuilder};
 use wry::{NewWindowResponse, WebContext, WebView, WebViewBuilder};
 
 pub fn run(options: UiOptions, server: EmbeddedServer) {
-    let event_loop = EventLoopBuilder::<()>::with_user_event().build();
+    let event_loop = EventLoopBuilder::<kadmium_native::PickerRequest>::with_user_event().build();
     let window = match build_window(&event_loop) {
         Ok(window) => window,
         Err(error) => {
@@ -16,7 +16,12 @@ pub fn run(options: UiOptions, server: EmbeddedServer) {
         }
     };
     let mut web_context = WebContext::new(webview_data_dir());
-    let webview = match build_webview(&mut web_context, &window, &server.url) {
+    let webview = match build_webview(
+        &mut web_context,
+        &window,
+        &server.url,
+        event_loop.create_proxy(),
+    ) {
         Ok(webview) => webview,
         Err(error) => {
             eprintln!(
@@ -31,20 +36,20 @@ pub fn run(options: UiOptions, server: EmbeddedServer) {
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         let _ = &web_context;
-        let _ = &webview;
-        if matches!(
-            event,
+        match event {
+            Event::UserEvent(request) => {
+                let _ = webview.evaluate_script(&request.show(&window));
+            }
             Event::WindowEvent {
                 event: WindowEvent::CloseRequested,
                 ..
-            }
-        ) {
-            *control_flow = ControlFlow::Exit;
+            } => *control_flow = ControlFlow::Exit,
+            _ => {}
         }
     });
 }
 
-fn build_window(event_loop: &EventLoop<()>) -> Result<Window, String> {
+fn build_window(event_loop: &EventLoop<kadmium_native::PickerRequest>) -> Result<Window, String> {
     let builder = WindowBuilder::new()
         .with_title("Condenser — Agent Workspace")
         .with_inner_size(LogicalSize::new(1280.0, 820.0))
@@ -71,10 +76,26 @@ fn stays_in_window(origin: &str, next: &str) -> bool {
         && base.port_or_known_default() == url.port_or_known_default()
 }
 
-fn build_webview(context: &mut WebContext, window: &Window, url: &str) -> wry::Result<WebView> {
+fn build_webview(
+    context: &mut WebContext,
+    window: &Window,
+    url: &str,
+    proxy: EventLoopProxy<kadmium_native::PickerRequest>,
+) -> wry::Result<WebView> {
     let origin = url.trim_end_matches('/').to_string();
+    let ipc_origin = origin.clone();
     let builder = WebViewBuilder::new_with_web_context(context)
         .with_url(url)
+        .with_initialization_script(kadmium_native::bridge_script(&origin))
+        .with_ipc_handler(move |request| {
+            if let Some(picker) = kadmium_native::parse_request(
+                &ipc_origin,
+                &request.uri().to_string(),
+                request.body(),
+            ) {
+                let _ = proxy.send_event(picker);
+            }
+        })
         .with_background_color((8, 12, 20, 255))
         .with_devtools(cfg!(debug_assertions))
         .with_navigation_handler(move |next| {
