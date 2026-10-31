@@ -2070,11 +2070,8 @@ pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerF
             .with_request_id(request_id);
             let mut writer = writer.lock().await;
             let write_result = if kind == WireFrameKind::ExpertLoad {
-                match tokio::time::timeout(
-                    EXPERT_LOAD_WRITE_TIMEOUT,
-                    writer.write_frame(&reply),
-                )
-                .await
+                match tokio::time::timeout(EXPERT_LOAD_WRITE_TIMEOUT, writer.write_frame(&reply))
+                    .await
                 {
                     Ok(result) => result,
                     Err(_) => Err("expert reply write timed out".to_string()),
