@@ -1961,7 +1961,7 @@ pub struct GridDecodeApiResponse {
     /// The next step's first dispatch minus this step's last return, over every boundary.
     pub mean_inter_step_gap_ms: f64,
     pub max_inter_step_gap_ms: f64,
-    /// Whether units of two sessions were in flight at the same time.
+    /// Whether units of two sessions were in flight at the same time or alternated in the queue.
     pub interleaved: bool,
     pub modelled_ms_per_token: f64,
     /// The kernels the measured figures ran on: `reference-synthetic` today.

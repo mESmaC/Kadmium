@@ -309,7 +309,7 @@ pub struct DecodeLoopReport {
     pub sessions: Vec<DecodeSessionReport>,
     pub mean_gap_ms: f64,
     pub max_gap_ms: f64,
-    /// Whether units of two sessions were in flight at the same time.
+    /// Whether units of two sessions were in flight at the same time or alternated in the queue.
     pub interleaved: bool,
     pub wall_ms: f64,
     pub tokens: u64,
@@ -531,10 +531,22 @@ fn interleaved(report: &GridRunReport, sessions: &[DecodeSessionPlan]) -> bool {
             .iter()
             .any(|(sb, b0, b1)| sa != sb && a0 < b1 && b0 < a1)
     });
-    let order_interleaved = spans.iter().enumerate().any(|(i, (sa, _, _))| {
-        spans[i + 1..].iter().enumerate().any(|(j, (sb, _, _))| {
-            sa != sb && spans[i + 1 + j + 1..].iter().any(|(sc, _, _)| sc == sa)
-        })
+    // One pass: a session whose run of traces resumes after another session's trace alternated
+    // with it in the queue (some i < j < k with session i == session k != session j).
+    let mut ended = vec![false; sessions.len()];
+    let mut current: Option<usize> = None;
+    let order_interleaved = spans.iter().any(|&(s, _, _)| {
+        if current == Some(s) {
+            return false;
+        }
+        if ended[s] {
+            return true;
+        }
+        if let Some(previous) = current {
+            ended[previous] = true;
+        }
+        current = Some(s);
+        false
     });
     time_overlap || order_interleaved
 }
