@@ -12,17 +12,19 @@ Kadmium exists so that people can run frontier models on hardware they own witho
 
 ### 1.1 What "maximum" means here
 
-| Dimension | Required default | Where it is enforced today |
+| Dimension | Required default | Enforcement anchor |
 | :--- | :--- | :--- |
-| Context / input window | The model's native maximum, read from backend metadata on every request. Ollama receives `num_ctx` equal to the model's declared context length. | `crates/kadmium-condenser/src/provider/ollama.rs` (`native_context`) |
-| Output tokens | The provider's advertised maximum for that model. Ollama receives `num_predict: -1` (generate until stop). | `crates/kadmium-condenser/src/provider/mod.rs` (`maximum_output`, `require_output_maximum`) |
-| Prompt truncation and context shifting | Disabled. Ollama receives `truncate: false` and `shift: false`. The full conversation is sent to every provider. | `ollama.rs` request body; `reject_context_override` for providers without a context option |
+| Context / input window | The model's native maximum, read from backend metadata on every request. Ollama receives `num_ctx` equal to the model's declared context length. A request above the maximum is an error naming both numbers. | `crates/kadmium-condenser/src/provider/ollama.rs` (`native_context`) |
+| Output tokens | The model's maximum. Where the wire protocol lets the request omit an output limit (OpenAI-compatible, MCL4), omit it when none is advertised; omission already means the server's maximum. Where the protocol requires a number (Anthropic `max_tokens`), send the advertised maximum, or fail with an error asking for the documented limit. Ollama receives `num_predict: -1` (generate until stop). | `crates/kadmium-condenser/src/provider/mod.rs` (`maximum_output`, `advertised_output_limit`, `require_output_maximum`) |
+| Prompt truncation and context shifting | Disabled. Ollama receives `truncate: false` and `shift: false` as top-level `/api/chat` request fields, not `options` keys, where Ollama would ignore them. The full conversation is sent to every provider. | `ollama.rs` request body; `reject_context_override` for providers without a context option |
 | Conversation history | Preserved in full. MCL4 history compaction and old tool-result pruning are off and require the explicit `compact_history` opt-in. | `crates/kadmium-condenser/src/types.rs` (`SamplingParams`), `provider/mcl4_coe.rs` |
 | Generation timeout | None (`provider.timeout_secs: 0`). Catalog discovery stays bounded separately. | `provider/mod.rs` (`with_timeout`) |
-| Weight precision | Lossless. Checkpoint normalization copies tensors into `.ktb` banks without casting; loading into Ollama never requests quantization and fails if the backend changes a dtype, name or shape. | `crates/kadmium-data/src/checkpoint.rs`, `crates/kadmium-condenser/src/local_models.rs` |
-| Model and backend selection | Explicit. An allocation, precision or memory failure produces an error. No smaller model, shorter context, different backend or different quantization is chosen on the user's behalf. | `local_models.rs`, `docs/guides/local-checkpoints.md` |
+| Weight precision | Lossless. Checkpoint normalization copies tensors into `.ktb` banks without casting; loading into Ollama never requests quantization and fails if the backend changes a dtype, name or shape. Issue #61 tracks the remaining end-to-end gaps: writing the checkpoint's native context length into the generated Modelfile (`PARAMETER num_ctx`) and rejecting silently pre-quantized sources. | `crates/kadmium-data/src/checkpoint.rs`, `crates/kadmium-condenser/src/local_models.rs` |
+| Model and backend selection | Explicit. An allocation, precision or memory failure is an explicit error. It is never a CPU spill, a silent reload at a smaller context, a smaller model, a different backend or a different quantization chosen on the user's behalf. | `local_models.rs`, `docs/guides/local-checkpoints.md` |
 | Sampling temperature | The provider default. Higher or lower temperature is not a quality lever and must not be changed as one. | `SamplingParams` |
 | Kernel arithmetic | Bit-identical to the RepOps reference math. A native kernel changes speed, never bytes. | `crates/kadmium-cuda/README.md`, `docs/ARCHITECTURE.md` section 9.6 and 9.17 |
+
+Anchor status: the Condenser maximum-quality defaults (`native_context`, `advertised_output_limit`, `require_output_maximum`, `reject_context_override`, `compact_history`, the `quality_defaults.rs` tests and `model_setup.test.cjs`) are delivered by PRs #54 and #64. Until those merge, `main` does not contain them; the contract above still applies, and the anchors name where to look once they land. Update this table when the anchors move.
 
 The regression tests for this contract live in `crates/kadmium-condenser/tests/quality_defaults.rs`. The test named `missing_maximum_never_submits_a_small_default` is the one agents are most tempted to weaken. Do not.
 
@@ -30,7 +32,7 @@ The regression tests for this contract live in `crates/kadmium-condenser/tests/q
 
 Do not do any of the following, in code, defaults, config, fixtures, UI copy or docs, unless the user explicitly asks for it in the task and the tradeoff is surfaced to the operator as described in 1.3:
 
-- Introduce a numeric default for context, input, output, history length, or timeout. A missing provider maximum is an error that asks the operator for the model's documented limit. It is never a substituted `1024`, `4096`, `8192` or "reasonable" number.
+- Introduce a numeric default for context, input, output, history length, or timeout. Where the API lets you omit a limit, omit it; omission is the maximum. Where the API requires a value, use the advertised maximum, or fail with an error asking for the documented limit. Never substitute a guessed `1024`, `4096`, `8192` or "reasonable" number, and never reintroduce a hard error on APIs that accept omission; that error broke api.openai.com, DeepSeek, LM Studio and llama.cpp once already.
 - Enable truncation, sliding-window shifting, prompt compression, summarization of history, tool-result pruning, or any "compaction" by default.
 - Clamp a requested value down silently. If a request exceeds the model's maximum, return an error naming both numbers.
 - Quantize, cast, round, prune, or drop layers, experts or tensors during import, normalization, transfer, caching, or load. Expert caches, prefetch, delta links and coalesced reads must stay bit-identical to the uncached path.
@@ -60,7 +62,7 @@ Run-level budgets (step counts, unit limits, credits) are separate, explicit con
 
 - [ ] Every new default resolves to maximum or to an error. Grep your diff for literal token counts and justify each one.
 - [ ] No new truncation, shift, compaction, quantization, cast or fallback path is reachable without an explicit opt-in field.
-- [ ] `cargo test -p kadmium-condenser --locked` passes, including `quality_defaults.rs`, unchanged. If you had to edit that file, explain why in the PR body.
+- [ ] `cargo test -p kadmium-condenser --locked` passes, including `quality_defaults.rs` once it is on `main`, unchanged. If you had to edit that file, explain why in the PR body.
 - [ ] Any new kernel or cache path has a digest or bitwise comparison against the reference path in its tests.
 - [ ] UI copy and docs for any new or changed limit state the tradeoff and the maximum.
 - [ ] The PR body contains a "Model quality impact" section. "None" is an acceptable answer only when the diff proves it.
@@ -110,7 +112,7 @@ Add a mechanism to the crate that owns it. Do not duplicate a planner, cache, bu
 Key documents:
 
 - `docs/ARCHITECTURE.md` is the design reference. Section 9 covers the grid substrate, RepOps, EPLB, DSpark, KV tiers, DeepGEMM, DeepEP, Ollama kernels, CUDA, NPU and InferSSD.
-- `docs/api-reference.md` and `docs/cli-reference.md` are generated from route handlers and clap definitions respectively. Update them in the same PR as the code.
+- `docs/api-reference.md` and `docs/cli-reference.md` are maintained by hand from the route handlers and clap definitions respectively. Nothing generates them. Update them in the same PR as the code.
 - `docs/guides/condenser-workspace.md` and `docs/guides/local-checkpoints.md` describe the maximum-quality contract from the operator's side.
 - `design-system/1-voice.md` is the copy standard for UI, docs and README prose.
 
@@ -139,7 +141,7 @@ CI runs on Ubuntu, Windows and macOS. Run the matrix-specific extras when your c
 | Condenser checkpoint or distributed compute UI | `cargo build -p kadmium-condenser --locked` then `node --test crates/kadmium-condenser/tests/local_compute.test.cjs` (Playwright) |
 | Control Room or Companion UI | `cd crates/kadmium-gateway/tests/ui && npm ci && npx playwright install --with-deps chromium && npm test` |
 | Control Room navigation or request recovery | `cargo build -p kadmium-gateway --example control_room_fixture --locked` then `node --test crates/kadmium-gateway/tests/control_room.test.cjs` |
-| Model setup from either interface | same fixture build, then `node --test crates/kadmium-gateway/tests/model_setup.test.cjs` |
+| Model setup from either interface | same fixture build, then `node --test crates/kadmium-gateway/tests/model_setup.test.cjs` (arrives with PR #54) |
 | CLI subcommands or Condenser engines | the CI smoke commands: `cargo run --locked --bin kadmium -- probe`, `simulate`, `dream`, `slice --pool-size 100 --slices 5`, `dataflow --model deepseek-v3-671b-moe --batch-tokens 512`, `cloud-shield`; `cargo run --locked --bin kadmium-condenser -- dsv41-profile --json` |
 | Installers | `sh scripts/test_install.sh` or `./scripts/test_installers.ps1 -Executable target/debug/kadmium.exe` |
 | Business or economics inputs | `python scripts/test_business_model.py` and `python scripts/business_model.py --check` (Python 3.12) |
