@@ -161,8 +161,19 @@ pub struct PeerChannel {
     delta: Option<(Arc<DeltaLinkStats>, Arc<DeltaLinkStats>)>,
 }
 
-/// Fails the channel if a delta-encoded frame is dropped before it is fully written: the encoder
-/// already counts its chunks as held by the peer, so the stream cannot continue.
+struct PendingReplyGuard<'a> {
+    shared: &'a ChannelShared,
+    request_id: u64,
+}
+
+impl Drop for PendingReplyGuard<'_> {
+    fn drop(&mut self) {
+        self.shared.pending().remove(&self.request_id);
+    }
+}
+
+/// Fails the channel if a frame is dropped before it is fully written: a partial ordinary frame
+/// corrupts framing just as a partial delta frame corrupts the peer's chunk state.
 struct UnwrittenFrameGuard<'a> {
     shared: &'a ChannelShared,
     armed: bool,
@@ -172,7 +183,7 @@ impl Drop for UnwrittenFrameGuard<'_> {
     fn drop(&mut self) {
         if self.armed {
             self.shared
-                .fail_all("a delta-encoded frame was cancelled before it was written".into());
+                .fail_all("a frame was cancelled before it was fully written".into());
         }
     }
 }
@@ -371,11 +382,14 @@ impl PeerChannel {
             .then(|| ChunkPlan::new(&frame.payload));
         let (tx, rx) = oneshot::channel();
         self.shared.pending().insert(request_id, tx);
+        let _pending = PendingReplyGuard {
+            shared: &self.shared,
+            request_id,
+        };
         let deadline = tokio::time::Instant::now() + timeout;
 
         // Taking the writer is cancel-safe: nothing has touched the socket yet.
         let Ok(mut writer) = tokio::time::timeout_at(deadline, self.writer.lock()).await else {
-            self.shared.pending().remove(&request_id);
             return Err(format!(
                 "timed out after {timeout:?} waiting to write {:?} to {addr}",
                 frame.kind
@@ -384,7 +398,7 @@ impl PeerChannel {
         let encoded = writer.encode(frame, request_id, plan.as_ref());
         let mut unwritten = UnwrittenFrameGuard {
             shared: &self.shared,
-            armed: writer.delta_active(),
+            armed: true,
         };
         // A partially written frame would desynchronize the stream, so a write that fails or
         // times out ends the whole channel rather than just this call.
@@ -416,13 +430,10 @@ impl PeerChannel {
             Ok(Err(_)) => Err(format!(
                 "peer channel to {addr} dropped request {request_id} without a reply"
             )),
-            Err(_) => {
-                self.shared.pending().remove(&request_id);
-                Err(format!(
-                    "timed out after {timeout:?} waiting for the {:?} reply to request {request_id} from {addr}",
-                    frame.kind
-                ))
-            }
+            Err(_) => Err(format!(
+                "timed out after {timeout:?} waiting for the {:?} reply to request {request_id} from {addr}",
+                frame.kind
+            )),
         }
     }
 }
@@ -752,6 +763,114 @@ mod tests {
             accepted,
             reply_order,
         }
+    }
+
+    fn duplex_channel(capacity: usize) -> (Arc<PeerChannel>, tokio::io::DuplexStream) {
+        let (stream, peer) = tokio::io::duplex(capacity);
+        let (reader, writer) = tokio::io::split(stream);
+        let channel = PeerChannel::from_halves(
+            "test",
+            FrameReader::new(BufReader::new(Box::new(reader) as ChannelRead)),
+            FrameWriter::new(Box::new(writer) as ChannelWrite),
+            None,
+        );
+        (channel, peer)
+    }
+
+    async fn poll_pending(future: std::pin::Pin<&mut impl std::future::Future>) {
+        let mut future = future;
+        std::future::poll_fn(|context| {
+            assert!(future.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_waiting_for_writer_releases_pending_without_closing_channel() {
+        let (channel, _peer) = duplex_channel(4096);
+        let writer = channel.writer.lock().await;
+        let mut call = Box::pin(channel.call(
+            WireFrameKind::WorkRequest,
+            0,
+            vec![1],
+            Duration::from_secs(5),
+        ));
+        poll_pending(call.as_mut()).await;
+        assert_eq!(channel.in_flight(), 1);
+        drop(call);
+        assert_eq!(channel.in_flight(), 0);
+        assert!(channel.is_healthy());
+        drop(writer);
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_frame_write_closes_channel() {
+        for delta_enabled in [false, true] {
+            let (channel, _peer) = duplex_channel(1);
+            if delta_enabled {
+                channel
+                    .writer
+                    .lock()
+                    .await
+                    .enable_delta(DeltaEncoder::new(4096));
+            }
+            let mut call = Box::pin(channel.call(
+                WireFrameKind::WorkRequest,
+                0,
+                vec![1; 4096],
+                Duration::from_secs(5),
+            ));
+            poll_pending(call.as_mut()).await;
+            assert_eq!(channel.in_flight(), 1);
+            drop(call);
+            assert!(!channel.is_healthy());
+            assert_eq!(channel.in_flight(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_write_ignores_late_reply_and_preserves_channel() {
+        let (channel, peer) = duplex_channel(4096);
+        let (reader, writer) = tokio::io::split(peer);
+        let mut reader = FrameReader::new(BufReader::new(reader));
+        let mut writer = FrameWriter::new(writer);
+        let mut call = Box::pin(channel.call(
+            WireFrameKind::WorkRequest,
+            0,
+            vec![1],
+            Duration::from_secs(5),
+        ));
+        poll_pending(call.as_mut()).await;
+        let abandoned = reader.read_frame().await.unwrap();
+        drop(call);
+        assert_eq!(channel.in_flight(), 0);
+        assert!(channel.is_healthy());
+        let mut next = Box::pin(channel.call(
+            WireFrameKind::WorkRequest,
+            0,
+            vec![2],
+            Duration::from_secs(5),
+        ));
+        poll_pending(next.as_mut()).await;
+        let current = reader.read_frame().await.unwrap();
+        writer
+            .write_frame(
+                &WireFrame::new(WireFrameKind::WorkResult, 0, vec![1])
+                    .with_request_id(abandoned.request_id),
+            )
+            .await
+            .unwrap();
+        writer
+            .write_frame(
+                &WireFrame::new(WireFrameKind::WorkResult, 0, vec![2])
+                    .with_request_id(current.request_id),
+            )
+            .await
+            .unwrap();
+        assert_eq!(next.await.unwrap().payload, vec![2]);
+        assert_eq!(channel.in_flight(), 0);
+        assert!(channel.is_healthy());
     }
 
     #[tokio::test]

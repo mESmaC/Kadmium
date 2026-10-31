@@ -246,6 +246,10 @@ pub struct PlacementConstraints {
     pub requires_resident: Vec<ContentRef>,
     /// Fast memory (VRAM or unified) the unit needs to run at all, in GiB.
     pub min_fast_memory_gb: f64,
+    /// Additional exclusive scratch memory per assigned/running instance, in GiB. Resident
+    /// inputs are not charged here; the worker's budget must already exclude resident allocations.
+    #[serde(default)]
+    pub scratch_fast_memory_gb: f64,
     /// Backends that can run the unit's kernels; empty means any.
     pub allowed_backends: Vec<ComputeBackend>,
     /// Lowest trust tier allowed to run the unit.
@@ -263,6 +267,7 @@ impl Default for PlacementConstraints {
         Self {
             requires_resident: Vec::new(),
             min_fast_memory_gb: 0.0,
+            scratch_fast_memory_gb: 0.0,
             allowed_backends: Vec::new(),
             min_trust_tier: NodeTrustTier::UntrustedAuditedMiddleLayersOnly,
             boundary_layer_access: false,

@@ -1,5 +1,9 @@
 # Use distributed compute
 
+For scheduler admission details, design gaps and the proposed lease/protocol/driver
+roadmap, see [Local aggregate compute](local-compute-fabric.md). That roadmap does
+not change the supported live workloads described here.
+
 Condenser's **Models & compute** panel connects to a Kadmium coordinator and runs bounded jobs on live TCP workers. Model inference through Ollama and Kadmium grid work are separate routes: connecting workers does not distribute a loaded Ollama model or train an imported checkpoint.
 
 ## Connect your machines
