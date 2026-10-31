@@ -50,7 +50,9 @@ impl Fixture {
                 },
                 profiles,
             )
-            .unwrap(),
+            .unwrap()
+            // Fixture servers listen on loopback; production keeps this off.
+            .allow_private_network(true),
         )
     }
 }
@@ -342,6 +344,7 @@ fn profile(url: String) -> SubagentProfile {
             "condenser__delegate".into(),
         ],
         max_steps: 8,
+        research_required: false,
     }
 }
 
@@ -559,5 +562,94 @@ async fn ephemeral_child_notes_remain_retrievable_by_the_parent() {
     let read = invoke(&tools, "memory_read", json!({"id":note["id"]})).await;
     assert_eq!(read["page"]["content"], "retained-exact-evidence");
     assert!(!fixture.root.join("memory").exists());
+    server.abort();
+}
+
+#[tokio::test]
+async fn web_fetch_refuses_local_and_metadata_addresses_by_default() {
+    let fixture = Fixture::new();
+    let (url, server) = serve(Router::new().route("/", get(|| async { "local secret" }))).await;
+    let tools = AgentTools::new(
+        PluginManager::new(vec![]),
+        fixture.root.join("workspace"),
+        fixture.root.join("memory"),
+        AgentConfig::default(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let (catalog, _) = tools.registered_tools().unwrap();
+    let fetch = catalog
+        .iter()
+        .find(|t| t.unqualified_name() == "web_fetch")
+        .unwrap();
+    for target in [
+        format!("{url}/"),
+        url.replace("127.0.0.1", "localhost"),
+        "http://169.254.169.254/latest/meta-data/".into(),
+        "http://10.0.0.1/".into(),
+        "http://[::1]/".into(),
+        "http://[::ffff:127.0.0.1]/".into(),
+        "http://[fd00::1]/".into(),
+        "http://0.0.0.0/".into(),
+    ] {
+        let error = tools
+            .execute(fetch, json!({ "url": target }))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("refusing"), "{target}: {error}");
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn research_requirement_stays_with_the_parent_unless_the_profile_requests_it() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.root.join("workspace/evidence.txt"), "Verified fact").unwrap();
+    let (url, server) = serve(Router::new().route(
+        "/v1/chat/completions",
+        post(|| async {
+            Json(json!({"model":"user-selected-child","choices":[{"message":{"role":"assistant","content":"Plan drafted"},"finish_reason":"stop"}],"usage":{"completion_tokens":2,"total_tokens":2}}))
+        }),
+    ))
+    .await;
+    let mut planner = profile(url);
+    planner.allowed_tools = vec!["condenser__command".into()];
+    planner.sampling.max_tokens = Some(64);
+    let mut researcher = planner.clone();
+    researcher.research_required = true;
+    let tools = fixture.tools(
+        None,
+        true,
+        BTreeMap::from([
+            ("planner".into(), planner),
+            ("researcher".into(), researcher),
+        ]),
+    );
+    let (agent, _) = harness(
+        tools,
+        vec![
+            call(
+                "delegate",
+                json!({"target":"planner","task":"Draft a plan"}),
+            ),
+            call("delegate", json!({"target":"researcher","task":"Verify"})),
+            call("file_read", json!({"path":"evidence.txt"})),
+            Message::assistant("Verified fact [evidence.txt]"),
+        ],
+    );
+    let report = agent
+        .run(
+            vec![Message::user("Research and plan")],
+            options(&["delegate", "file_read", "command"]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.status, RunStatus::Completed);
+    let planner = &report.steps[0].tool_executions[0].result;
+    assert!(!planner.is_error, "{}", planner.content);
+    assert!(planner.content.contains("Plan drafted"));
+    // An explicit child requirement is enforced on the child's own tool selection.
+    assert!(report.steps[1].tool_executions[0].result.is_error);
     server.abort();
 }

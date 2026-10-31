@@ -57,7 +57,7 @@ pub fn run(args: Args, source: CoordinatorSource) {
         let _ = &web_context;
         match event {
             Event::UserEvent(AppEvent::Ready) => {
-                let _ = webview.load_url(&launch::companion_url(port));
+                let _ = webview.load_url(&launch::companion_entry_url(port));
                 if args.control_room && !opened_control_room {
                     opened_control_room = true;
                     launch::open_in_browser(&launch::control_room_url(port));

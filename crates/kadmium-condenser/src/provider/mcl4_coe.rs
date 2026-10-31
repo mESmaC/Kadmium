@@ -739,27 +739,6 @@ impl InferenceProvider for Mcl4CoeProvider {
         request.sampling.validate()?;
 
         super::reject_context_override(request, self.config.kind.label())?;
-        let mut resolved = request.clone();
-        if resolved.sampling.max_tokens.is_none() {
-            let response = self
-                .authorize(
-                    self.client
-                        .get(super::versioned_endpoint(self.config.base_url(), "models")),
-                )
-                .send()
-                .await
-                .map_err(|e| CondenserError::provider(self.config.kind.label(), e.to_string()))?;
-            let catalog: Value = super::decode_json(self.config.kind, response).await?;
-            let model = catalog["data"]
-                .as_array()
-                .and_then(|models| models.iter().find(|m| m["id"] == request.model))
-                .unwrap_or(&Value::Null);
-            resolved.sampling.max_tokens = Some(super::require_output_maximum(
-                model,
-                self.config.kind.label(),
-            )?);
-        }
-        let request = &resolved;
 
         let include_knobs = request.sampling.mcl4_coe.is_some();
         let knobs = request
@@ -805,8 +784,34 @@ impl InferenceProvider for Mcl4CoeProvider {
             return Ok(resp);
         }
 
-        self.try_openai_compatible_generate(request, &knobs, &compacted_messages)
-            .await
+        // The native daemon has no `/v1/models`; only the OpenAI-compatible fallback
+        // looks up an advertised output limit, and omission keeps the server maximum.
+        let advertised = match request.sampling.max_tokens {
+            Some(_) => None,
+            None => {
+                super::fetch_output_limit(
+                    self.config.kind,
+                    self.authorize(
+                        self.client
+                            .get(super::versioned_endpoint(self.config.base_url(), "models")),
+                    ),
+                    &request.model,
+                )
+                .await
+            }
+        };
+        match advertised {
+            Some(limit) => {
+                let mut resolved = request.clone();
+                resolved.sampling.max_tokens = Some(limit);
+                self.try_openai_compatible_generate(&resolved, &knobs, &compacted_messages)
+                    .await
+            }
+            None => {
+                self.try_openai_compatible_generate(request, &knobs, &compacted_messages)
+                    .await
+            }
+        }
     }
 }
 

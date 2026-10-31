@@ -17,15 +17,17 @@ test('Control Room and desktop Companion launch the shared preparation flow and 
   const length = Buffer.alloc(8); length.writeBigUInt64LE(BigInt(header.length));
   fs.writeFileSync(path.join(source, 'model.safetensors'), Buffer.concat([length, header, Buffer.from([0, 0, 128, 63])]));
   const server = spawn(path.resolve('target/debug/examples/control_room_fixture' + (process.platform === 'win32' ? '.exe' : '')), [], {
-    cwd, windowsHide: true, env: { ...process.env, KADMIUM_MODEL_LIBRARY: path.join(cwd, 'library') }
+    cwd, windowsHide: true, env: { ...process.env, KADMIUM_MODEL_LIBRARY: path.join(cwd, 'library'), KADMIUM_CONDENSER_WORKSPACE: cwd }
   });
   let browser;
   try {
-    const base = await new Promise((resolve, reject) => {
+    // The fixture prints this launch's one-time Condenser access link.
+    const access = await new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.stdout.on('data', chunk => { const match = String(chunk).match(/http:\/\/127\.0\.0\.1:\d+/); if (match) resolve(match[0]); });
+      server.stdout.on('data', chunk => { const match = String(chunk).match(/http:\/\/127\.0\.0\.1:\d+\S*/); if (match) resolve(match[0]); });
       server.once('exit', code => reject(new Error('fixture exited: ' + code)));
     });
+    const base = new URL(access).origin;
     browser = await chromium.launch({ channel: process.env.KADMIUM_TEST_BROWSER || (process.platform === 'win32' ? 'msedge' : undefined), headless: true });
     for (const shell of ['/#/models', '/companion#models']) {
       const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -33,6 +35,9 @@ test('Control Room and desktop Companion launch the shared preparation flow and 
       if (shell.startsWith('/companion')) await page.addInitScript(() => {
         window.__KADMIUM_DESKTOP__ = { platform: 'windows', version: 'test', openExternal() { throw new Error('Condenser should stay in the desktop window'); } };
       });
+      const locked = await page.goto(base + '/condenser/');
+      assert.equal(locked.status(), 401);
+      await page.goto(access);
       await page.goto(base + shell);
       await page.getByRole('link', { name: 'Prepare a local model', exact: true }).click();
       await page.waitForURL('**/condenser/#models');

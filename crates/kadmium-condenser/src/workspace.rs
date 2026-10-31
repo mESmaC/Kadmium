@@ -27,9 +27,12 @@ pub(crate) struct WorkspaceState {
 
 impl WorkspaceState {
     pub(crate) fn from_current_dir() -> Result<Self, CondenserError> {
-        let root = std::env::current_dir()?.canonicalize()?;
+        Self::new(std::env::current_dir()?)
+    }
+
+    pub(crate) fn new(root: PathBuf) -> Result<Self, CondenserError> {
         Ok(Self {
-            root: Arc::new(root),
+            root: Arc::new(root.canonicalize()?),
         })
     }
 }

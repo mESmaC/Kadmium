@@ -79,6 +79,7 @@ async fn providers_use_advertised_maxima_and_keep_explicit_limits() {
 
 #[tokio::test]
 async fn missing_maximum_never_submits_a_small_default() {
+    let requests = Arc::new(Mutex::new(Vec::<Value>::new()));
     let app = Router::new()
         .route(
             "/v1/models",
@@ -91,7 +92,12 @@ async fn missing_maximum_never_submits_a_small_default() {
         .route(
             "/v1/models/unknown",
             get(|| async { Json(json!({"id":"unknown"})) }),
-        );
+        )
+        .route("/v1/chat/completions", post(|State(requests): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+            requests.lock().unwrap().push(body);
+            Json(json!({"model":"unknown","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}))
+        }))
+        .with_state(requests.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -111,13 +117,19 @@ async fn missing_maximum_never_submits_a_small_default() {
             sampling: SamplingParams::default(),
             tools: vec![],
         };
-        let error = ProviderFactory::build(config)
+        let result = ProviderFactory::build(config)
             .unwrap()
             .complete(&request)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("did not"), "{error}");
+            .await;
+        if matches!(kind, ProviderKind::OpenAi | ProviderKind::Mcl4Coe) {
+            // Omitting max_tokens is these APIs' own maximum, so nothing is guessed.
+            result.unwrap();
+            let body = requests.lock().unwrap().last().unwrap().clone();
+            assert!(body.get("max_tokens").is_none(), "{body}");
+        } else {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("did not"), "{error}");
+        }
     }
     server.abort();
 }

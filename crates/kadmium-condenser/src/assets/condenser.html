@@ -189,6 +189,7 @@
             <div class="field"><label for="checkpoint-backend">Local Ollama URL</label><input id="checkpoint-backend" class="code-sm" type="url" value="http://127.0.0.1:11434" spellcheck="false"></div>
             <p class="caption muted">Start Ollama first. Loading uses the preserved source files, checks tensor metadata, and keeps the checkpoint's declared context size. If it cannot load at that size and precision, it reports the failure.</p>
             <div class="field"><label for="checkpoint-context">Context window for loading (tokens)</label><input id="checkpoint-context" type="number" min="1" step="1" placeholder="Maximum from model metadata"></div>
+            <p class="caption muted">Tradeoff: a smaller window lowers KV-cache memory and prefill time, but the model can attend to less prompt, history and output at once, and long-context recall and reasoning degrade.</p>
             <div class="field-inline"><button id="checkpoint-load" class="secondary-btn" disabled>3. Load in Ollama</button><button id="checkpoint-use" class="secondary-btn" disabled>4. Use in this task</button></div>
             <p id="checkpoint-load-status" class="caption muted" role="status">KTB is a storage format. Generation runs in Ollama; backend arithmetic is not RepOps-certified.</p>
           </section>
@@ -352,7 +353,7 @@
       <button id="settings-local-model" class="secondary-btn">Load a local checkpoint</button>
       <details class="sampling-settings" open>
         <summary>Quality &amp; token limits</summary>
-        <p class="caption muted">Blank means maximum: full model input/context and maximum output. Input and output share the model's context window. Original precision is preserved; no automatic history pruning. If a provider cannot report its output maximum, enter its documented limit below.</p>
+        <p class="caption muted">Blank means maximum: full model input/context and maximum output. Input and output share the model's context window. Original precision is preserved; no automatic history pruning. If an OpenAI-compatible server does not advertise an output maximum, Condenser omits the limit so the server's own maximum applies. Anthropic requires a value; enter its documented limit if it is not reported.</p>
         <div class="field-grid">
           <div class="field"><label for="temperature">Temperature</label><input id="temperature" type="number" min="0" step="0.1" placeholder="provider default"></div>
           <div class="field"><label for="max-tokens">Output tokens per response</label><input id="max-tokens" type="number" min="1" max="4294967295" step="1" placeholder="Maximum supported"></div>
@@ -360,13 +361,19 @@
           <div class="field"><label for="provider-timeout">Request timeout (seconds)</label><input id="provider-timeout" type="number" min="1" step="1" placeholder="No limit"></div>
         </div>
           <p class="caption muted">For other providers, context is configured on the server. Condenser sends all input; backend limits still apply. Lower limits only when you choose to. Temperature controls randomness, not model precision.</p>
-          <p class="caption muted">Smaller context can exclude useful information; lower output limits can cut off reasoning or answers. Shorter timeouts and run budgets can leave work incomplete. Memory retrieval adds evidence without shrinking the conversation.</p>
+          <ul class="caption muted">
+            <li><strong>Output tokens:</strong> a lower value caps generation length and can truncate multi-step reasoning or long code and answers mid-response.</li>
+            <li><strong>Context / input window:</strong> a lower value reduces KV memory and prefill time, but shrinks total input + output capacity and degrades long-range recall.</li>
+            <li><strong>Request timeout:</strong> a short timeout bounds waiting, but can abort deep reasoning or large-context prefill before the turn completes.</li>
+          </ul>
+          <p class="caption muted">Run budgets can also leave work incomplete. Memory retrieval adds evidence without shrinking the conversation.</p>
         <button id="quality-maximum" class="text-btn" type="button">Reset to maximum</button>
         <p id="quality-error" class="caption error" role="alert"></p>
       </details>
       <details id="dsv41-mcl4-settings" class="sampling-settings">
         <summary>DeepSeek-V4.1 &amp; MCL4-COE controls</summary>
         <label class="caption"><input id="compact-history" type="checkbox"> Allow history compaction and old tool-result pruning</label>
+        <p class="caption muted">Tradeoff: uses fewer tokens per turn, but strips earlier reasoning traces and truncates older tool outputs that later turns may rely on.</p>
         <div class="field-grid">
           <div class="field">
             <label for="mcl4-mode">COE Mode</label>
@@ -380,9 +387,9 @@
           <div class="field">
             <label for="mcl4-effort">Reasoning effort</label>
             <select id="mcl4-effort">
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
+              <option value="high">High (Maximum reasoning depth)</option>
+              <option value="medium">Medium (Faster, reduced reasoning depth)</option>
+              <option value="low">Low (Fastest, minimal reasoning depth)</option>
             </select>
           </div>
           <div class="field">

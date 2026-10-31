@@ -23,12 +23,50 @@ pub(crate) fn maximum_output(model: &serde_json::Value) -> Option<u32> {
     ]
     .into_iter()
     .flatten()
-    .find_map(|value| {
-        value
-            .as_u64()
-            .and_then(|v| u32::try_from(v).ok())
-            .filter(|v| *v > 0)
-    })
+    .find_map(positive_limit)
+}
+
+fn positive_limit(value: &serde_json::Value) -> Option<u32> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str()?.trim().parse().ok())
+        .and_then(|v| u32::try_from(v).ok())
+        .filter(|v| *v > 0)
+}
+
+/// OpenAI-compatible servers treat an omitted `max_tokens` as their own maximum, so
+/// only an explicitly advertised output limit is sent. Fields that some catalogs use
+/// for the context window (`max_tokens`, `max_model_len`) are never read as one.
+pub(crate) fn advertised_output_limit(catalog: &serde_json::Value, model: &str) -> Option<u32> {
+    let model = catalog["data"]
+        .as_array()?
+        .iter()
+        .find(|m| m["id"] == model)?;
+    [
+        "/max_output_tokens",
+        "/max_completion_tokens",
+        "/top_provider/max_completion_tokens",
+        "/limits/max_output_tokens",
+        "/capabilities/max_output_tokens",
+    ]
+    .into_iter()
+    .filter_map(|pointer| model.pointer(pointer))
+    .find_map(positive_limit)
+}
+
+/// Best-effort `/models` lookup. Missing or unreachable metadata leaves the limit unset,
+/// which these APIs already interpret as the server maximum.
+pub(crate) async fn fetch_output_limit(
+    kind: ProviderKind,
+    request: reqwest::RequestBuilder,
+    model: &str,
+) -> Option<u32> {
+    let response = request.send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let catalog: serde_json::Value = decode_json(kind, response).await.ok()?;
+    advertised_output_limit(&catalog, model)
 }
 
 pub(crate) fn require_output_maximum(model: &serde_json::Value, provider: &str) -> Result<u32> {

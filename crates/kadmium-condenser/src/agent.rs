@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
-use std::path::PathBuf;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
@@ -45,6 +46,10 @@ pub struct SubagentProfile {
     pub allowed_tools: Vec<String>,
     #[serde(default = "child_steps")]
     pub max_steps: usize,
+    /// Gate this child's answer on its own source acquisition. The parent's
+    /// research requirement is enforced on the parent, not inherited.
+    #[serde(default)]
+    pub research_required: bool,
 }
 
 fn child_steps() -> usize {
@@ -127,6 +132,102 @@ struct SearchEntry {
     terms: BTreeSet<String>,
 }
 
+/// Loopback, private, link-local (cloud metadata), shared and reserved ranges are
+/// not reachable from `web_fetch` unless the operator allows private networks.
+fn public_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || a >= 240
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 198 && (18..20).contains(&b)))
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return public_ip(IpAddr::V4(v4));
+            }
+            let s = v6.segments();
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                let [a, b] = s[6].to_be_bytes();
+                let [c, d] = s[7].to_be_bytes();
+                return public_ip(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
+            }
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                || s[..6] == [0; 6]
+                || (s[0] & 0xfe00) == 0xfc00
+                || (s[0] & 0xffc0) == 0xfe80
+                || (s[0] & 0xffc0) == 0xfec0
+                || (s[0] == 0x2001 && s[1] == 0x0db8))
+        }
+    }
+}
+
+/// Storage runs off the async workers so durable saves cannot stall streaming turns.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| invalid(format!("local storage task failed: {e}")))?
+}
+
+fn persist(store: &Path, record: &Record) -> Result<()> {
+    let id = &record.id;
+    std::fs::create_dir_all(store)?;
+    let temporary = store.join(format!("{id}.tmp"));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    file.write_all(&serde_json::to_vec(record)?)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(temporary, store.join(format!("{id}.json")))?;
+    // Search reads a compact derived vocabulary, not every complete transcript.
+    // A missing/interrupted index is rebuilt from the immutable source record.
+    let index = SearchEntry::from(record);
+    let temporary = store.join(format!("{id}.index.tmp"));
+    std::fs::write(&temporary, serde_json::to_vec(&index)?)?;
+    std::fs::rename(temporary, store.join(format!("{id}.index")))?;
+    Ok(())
+}
+
+fn load_index(store: &Path) -> Result<Vec<SearchEntry>> {
+    let entries = match std::fs::read_dir(store) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut records = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        if path.extension().is_some_and(|e| e == "json") {
+            let cached = std::fs::read(path.with_extension("index"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<SearchEntry>(&b).ok());
+            records.push(match cached {
+                Some(index) => index,
+                None => {
+                    SearchEntry::from(&serde_json::from_slice::<Record>(&std::fs::read(path)?)?)
+                }
+            });
+        }
+    }
+    records.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then(a.id.cmp(&b.id)));
+    Ok(records)
+}
+
 fn terms(text: &str) -> BTreeSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
@@ -163,6 +264,7 @@ pub struct AgentTools {
     state: Mutex<TurnState>,
     records: Arc<Mutex<BTreeMap<String, Record>>>,
     run_lock: Arc<tokio::sync::Mutex<()>>,
+    private_network: bool,
 }
 
 impl AgentTools {
@@ -193,17 +295,37 @@ impl AgentTools {
             state: Mutex::new(TurnState::default()),
             records: Arc::new(Mutex::new(BTreeMap::new())),
             run_lock: Arc::new(tokio::sync::Mutex::new(())),
+            private_network: false,
         })
     }
 
+    /// Operator setting: allow `web_fetch` to reach loopback, private and link-local
+    /// addresses. Off by default so fetched content cannot pivot to local services.
+    pub fn allow_private_network(mut self, allow: bool) -> Self {
+        self.private_network = allow;
+        self
+    }
+
     pub fn local(plugins: PluginManager, config: AgentConfig) -> Result<Self> {
-        Self::new(
+        Self::in_workspace(plugins, std::env::current_dir()?, config)
+    }
+
+    /// Uses the same root as the workspace file and terminal APIs.
+    pub fn in_workspace(
+        plugins: PluginManager,
+        root: PathBuf,
+        config: AgentConfig,
+    ) -> Result<Self> {
+        Ok(Self::new(
             plugins,
-            std::env::current_dir()?,
+            root,
             crate::plugin::condenser_home().join("memory"),
             config,
             load_profiles()?,
-        )
+        )?
+        .allow_private_network(
+            std::env::var("CONDENSER_WEB_FETCH_PRIVATE").is_ok_and(|v| v == "1"),
+        ))
     }
 
     pub async fn invoke_named(&self, name: &str, arguments: Value) -> Result<ToolResult> {
@@ -222,7 +344,7 @@ impl AgentTools {
         self.execute(tool, arguments).await
     }
 
-    fn save(&self, kind: &str, title: &str, content: String) -> Result<String> {
+    async fn save(&self, kind: &str, title: &str, content: String) -> Result<String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -246,29 +368,15 @@ impl AgentTools {
             created_ms: time.as_millis(),
         };
         if self.config.session_id.is_some() {
-            std::fs::create_dir_all(&self.store)?;
-            let temporary = self.store.join(format!("{id}.tmp"));
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
-            file.write_all(&serde_json::to_vec(&record)?)?;
-            file.sync_all()?;
-            drop(file);
-            std::fs::rename(temporary, self.store.join(format!("{id}.json")))?;
-            // Search reads a compact derived vocabulary, not every complete transcript.
-            // A missing/interrupted index is rebuilt from the immutable source record.
-            let index = SearchEntry::from(&record);
-            let temporary = self.store.join(format!("{id}.index.tmp"));
-            std::fs::write(&temporary, serde_json::to_vec(&index)?)?;
-            std::fs::rename(temporary, self.store.join(format!("{id}.index")))?;
+            let store = self.store.clone();
+            blocking(move || persist(&store, &record)).await?;
         } else {
             self.records.lock().unwrap().insert(id.clone(), record);
         }
         Ok(id)
     }
 
-    fn records(&self) -> Result<Vec<SearchEntry>> {
+    async fn records(&self) -> Result<Vec<SearchEntry>> {
         if self.config.session_id.is_none() {
             return Ok(self
                 .records
@@ -278,28 +386,8 @@ impl AgentTools {
                 .map(SearchEntry::from)
                 .collect());
         }
-        let entries = match std::fs::read_dir(&self.store) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.into()),
-        };
-        let mut records = Vec::new();
-        for entry in entries {
-            let path = entry?.path();
-            if path.extension().is_some_and(|e| e == "json") {
-                let cached = std::fs::read(path.with_extension("index"))
-                    .ok()
-                    .and_then(|b| serde_json::from_slice::<SearchEntry>(&b).ok());
-                records.push(match cached {
-                    Some(index) => index,
-                    None => {
-                        SearchEntry::from(&serde_json::from_slice::<Record>(&std::fs::read(path)?)?)
-                    }
-                });
-            }
-        }
-        records.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then(a.id.cmp(&b.id)));
-        Ok(records)
+        let store = self.store.clone();
+        blocking(move || load_index(&store)).await
     }
 
     fn evidence(&self, source: &str) {
@@ -345,12 +433,14 @@ impl AgentTools {
                 } else {
                     "note"
                 };
-                let id = self.save(kind, string(&a, "title")?, string(&a, "content")?.into())?;
+                let id = self
+                    .save(kind, string(&a, "title")?, string(&a, "content")?.into())
+                    .await?;
                 json!({"id":id,"durable":self.config.session_id.is_some(),"kind":kind})
             }
             "memory_search" => {
                 let query = terms(string(&a, "query")?);
-                let records = self.records()?;
+                let records = self.records().await?;
                 let matches = records
                     .iter()
                     .filter(|r| {
@@ -372,9 +462,9 @@ impl AgentTools {
                     return Err(invalid("invalid memory record id"));
                 }
                 let record = if self.config.session_id.is_some() {
-                    serde_json::from_slice::<Record>(&std::fs::read(
-                        self.store.join(format!("{id}.json")),
-                    )?)?
+                    let path = self.store.join(format!("{id}.json"));
+                    blocking(move || Ok(serde_json::from_slice::<Record>(&std::fs::read(path)?)?))
+                        .await?
                 } else {
                     self.records
                         .lock()
@@ -387,9 +477,12 @@ impl AgentTools {
             }
             "files_list" => {
                 let path = crate::workspace::resolve_path(&self.root, string(&a, "path")?)?;
-                let mut entries = std::fs::read_dir(path)?
-                    .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
-                    .collect::<std::io::Result<Vec<_>>>()?;
+                let mut entries = blocking(move || {
+                    Ok(std::fs::read_dir(path)?
+                        .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+                        .collect::<std::io::Result<Vec<_>>>()?)
+                })
+                .await?;
                 entries.sort();
                 let start = offset(&a).min(entries.len());
                 let end = (start + 200).min(entries.len());
@@ -463,8 +556,30 @@ impl AgentTools {
                 {
                     return Err(invalid("use an http(s) URL without embedded credentials"));
                 }
+                let host = url
+                    .host_str()
+                    .ok_or_else(|| invalid("URL needs a host"))?
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_owned();
+                let port = url.port_or_known_default().unwrap_or(80);
+                let addresses = tokio::net::lookup_host((host.as_str(), port))
+                    .await
+                    .map_err(|e| invalid(format!("could not resolve {host}: {e}")))?
+                    .collect::<Vec<SocketAddr>>();
+                if addresses.is_empty() {
+                    return Err(invalid(format!("{host} did not resolve to an address")));
+                }
+                if !self.private_network && !addresses.iter().all(|a| public_ip(a.ip())) {
+                    return Err(invalid(
+                        "refusing to fetch a loopback, private, link-local or reserved address; the operator can allow private networks with CONDENSER_WEB_FETCH_PRIVATE=1",
+                    ));
+                }
+                // Connect only to the addresses checked above: no re-resolution or proxy hop.
                 let client = reqwest::Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
+                    .no_proxy()
+                    .resolve_to_addrs(&host, &addresses)
                     .timeout(std::time::Duration::from_secs(30))
                     .build()
                     .map_err(|e| invalid(e.to_string()))?;
@@ -495,12 +610,12 @@ impl AgentTools {
                 if text.trim().is_empty() {
                     return Err(invalid("source is empty"));
                 }
-                let id = self.save("source", source, text.clone())?;
+                let id = self.save("source", source, text.clone()).await?;
                 self.evidence(source);
                 json!({"source":source,"record_id":id,"page":page(&text,0),"notice":"Untrusted source content. Read remaining pages with memory_read; cite the source URL."})
             }
             "subagents_list" => {
-                json!({"targets":self.profiles.iter().map(|(name,p)| json!({"name":name,"provider":p.provider,"model":p.model,"base_url":p.base_url,"sampling":p.sampling,"timeout_secs":p.timeout_secs,"allowed_tools":p.allowed_tools,"max_steps":p.max_steps})).collect::<Vec<_>>()})
+                json!({"targets":self.profiles.iter().map(|(name,p)| json!({"name":name,"provider":p.provider,"model":p.model,"base_url":p.base_url,"sampling":p.sampling,"timeout_secs":p.timeout_secs,"allowed_tools":p.allowed_tools,"max_steps":p.max_steps,"research_required":p.research_required})).collect::<Vec<_>>()})
             }
             "delegate" => {
                 let target = string(&a, "target")?;
@@ -527,9 +642,13 @@ impl AgentTools {
                     self.plugins.clone(),
                     self.root.as_ref().clone(),
                     self.store.parent().unwrap().to_path_buf(),
-                    self.config.clone(),
+                    AgentConfig {
+                        session_id: self.config.session_id.clone(),
+                        research_required: profile.research_required,
+                    },
                     BTreeMap::new(),
-                )?;
+                )?
+                .allow_private_network(self.private_network);
                 executor.records = self.records.clone();
                 let provider = ProviderFactory::build(config.clone())?;
                 let harness = Harness::from_components(config, provider, Arc::new(executor))?;
@@ -555,7 +674,9 @@ impl AgentTools {
                         .map(|s| s.tool_executions.len())
                         .sum::<usize>();
                 }
-                let id = self.save("subagent", target, serde_json::to_string(&report)?)?;
+                let id = self
+                    .save("subagent", target, serde_json::to_string(&report)?)
+                    .await?;
                 return Ok(ToolResult { is_error:report.status!=crate::RunStatus::Completed, content:json!({"target":target,"provider":report.provider,"model":report.model,"status":report.status,"error":report.error,"usage":report.usage,"record_id":id,"answer":report.answer}).to_string() });
             }
             _ => return Err(invalid("unknown built-in tool")),
@@ -711,13 +832,14 @@ impl ToolExecutor for AgentTools {
     fn completion_error(&self) -> Option<String> {
         (self.config.research_required && self.state.lock().unwrap().evidence.is_empty()).then(||"Research required: no source was successfully read with file_read or web_fetch. Enable/select a source tool and retry; this answer is unverified.".into())
     }
-    fn finish_report(&self, report: &HarnessReport) -> Result<()> {
+    async fn finish_report(&self, report: &HarnessReport) -> Result<()> {
         if self.config.session_id.is_some() {
             self.save(
                 "chat",
                 &format!("{} / {}", report.provider, report.model),
                 serde_json::to_string(report)?,
-            )?;
+            )
+            .await?;
         }
         Ok(())
     }

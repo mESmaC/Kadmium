@@ -50,23 +50,15 @@ impl InferenceProvider for OpenAiProvider {
         super::reject_context_override(request, self.config.kind.label())?;
         let mut resolved = request.clone();
         if self.config.kind != ProviderKind::Kadmium && resolved.sampling.max_tokens.is_none() {
-            let response = self
-                .authorize(
+            resolved.sampling.max_tokens = super::fetch_output_limit(
+                self.config.kind,
+                self.authorize(
                     self.client
                         .get(versioned_endpoint(self.config.base_url(), "models")),
-                )
-                .send()
-                .await
-                .map_err(|e| CondenserError::provider(self.config.kind.label(), e.to_string()))?;
-            let catalog: Value = decode_json(self.config.kind, response).await?;
-            let model = catalog["data"]
-                .as_array()
-                .and_then(|models| models.iter().find(|m| m["id"] == request.model))
-                .unwrap_or(&Value::Null);
-            resolved.sampling.max_tokens = Some(super::require_output_maximum(
-                model,
-                self.config.kind.label(),
-            )?);
+                ),
+                &request.model,
+            )
+            .await;
         }
         let body = request_body(&resolved, self.config.kind)?;
         let url = versioned_endpoint(self.config.base_url(), "chat/completions");

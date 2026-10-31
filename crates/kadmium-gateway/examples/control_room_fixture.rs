@@ -4,7 +4,11 @@ use std::sync::{Arc, Mutex};
 #[tokio::main]
 async fn main() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    println!("http://{}", listener.local_addr().unwrap());
+    println!(
+        "http://{}{}",
+        listener.local_addr().unwrap(),
+        kadmium_gateway::condenser_access_path("/")
+    );
     let state = Arc::new(Mutex::new(kadmium_gateway::GatewayState::new()));
     axum::serve(
         listener,

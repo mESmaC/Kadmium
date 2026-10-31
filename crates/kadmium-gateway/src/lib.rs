@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod checkpoints;
+pub mod condenser_mount;
 pub mod coordinator;
 pub mod diloco_api;
 pub mod docs;
@@ -43,6 +44,9 @@ pub mod mcp;
 pub mod routes;
 
 pub use checkpoints::{TrainingCheckpoint, TrainingCheckpointList, TrainingResumeReport};
+pub use condenser_mount::{
+    condenser_access_path, condenser_access_token, condenser_access_url, publish_condenser_access,
+};
 pub use coordinator::{CoordinatorOptions, run_coordinator};
 pub(crate) use docs::DOC_OVERVIEW_MD;
 pub use docs::{DocumentationPage, build_documentation_catalog};

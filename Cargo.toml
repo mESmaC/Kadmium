@@ -36,6 +36,7 @@ kadmium-runtime = { path = "crates/kadmium-runtime" }
 kadmium-rl = { path = "crates/kadmium-rl" }
 kadmium-network = { path = "crates/kadmium-network" }
 kadmium-gateway = { path = "crates/kadmium-gateway" }
+kadmium-condenser = { path = "crates/kadmium-condenser" }
 kadmium-cuda = { path = "crates/kadmium-cuda" }
 kadmium-npu = { path = "crates/kadmium-npu" }
 

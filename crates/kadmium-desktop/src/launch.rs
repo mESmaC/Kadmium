@@ -195,6 +195,12 @@ pub fn companion_url(port: u16) -> String {
     format!("{}/companion", origin(port))
 }
 
+/// Opens the Companion through this launch's Condenser access link, so the embedded
+/// workspace works in the window. Falls back to the plain Companion if none is published.
+pub fn companion_entry_url(port: u16) -> String {
+    kadmium_gateway::condenser_access_url(port, "/companion").unwrap_or_else(|| companion_url(port))
+}
+
 pub fn control_room_url(port: u16) -> String {
     format!("{}/", origin(port))
 }
@@ -280,7 +286,7 @@ pub fn run_in_browser(args: &Args, source: CoordinatorSource) {
                 "Kadmium {version} is answering on {}",
                 companion_url(args.port)
             );
-            open_in_browser(&companion_url(args.port));
+            open_in_browser(&companion_entry_url(args.port));
             if args.control_room {
                 open_in_browser(&control_room_url(args.port));
             }

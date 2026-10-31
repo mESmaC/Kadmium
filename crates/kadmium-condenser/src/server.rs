@@ -40,6 +40,9 @@ pub struct ServerOptions {
     pub plugin_roots: Vec<PathBuf>,
     /// Bounds resident agent turns so local backends are not overwhelmed.
     pub max_concurrent_turns: usize,
+    /// Root for workspace files, the terminal and agent tools. `None` uses the current
+    /// directory (the standalone CLI); embedders should pass an explicit owner-chosen root.
+    pub workspace_root: Option<PathBuf>,
 }
 
 impl Default for ServerOptions {
@@ -51,6 +54,7 @@ impl Default for ServerOptions {
             port: DEFAULT_HTTP_PORT,
             plugin_roots: default_plugin_roots(),
             max_concurrent_turns: 2,
+            workspace_root: None,
         }
     }
 }
@@ -117,7 +121,10 @@ pub fn build_router(options: ServerOptions) -> Result<Router> {
         client,
         turn_permits: Arc::new(tokio::sync::Semaphore::new(options.max_concurrent_turns)),
         active_runs: crate::runs::ActiveRuns::default(),
-        workspace: crate::workspace::WorkspaceState::from_current_dir()?,
+        workspace: match options.workspace_root {
+            Some(root) => crate::workspace::WorkspaceState::new(root)?,
+            None => crate::workspace::WorkspaceState::from_current_dir()?,
+        },
     };
     Ok(router(state))
 }
@@ -452,7 +459,11 @@ async fn invoke_plugin(
 ) -> Result<Json<crate::ToolResult>, ApiError> {
     let manager = PluginManager::new(state.plugin_roots.as_ref().clone());
     if request.plugin_id == "condenser" {
-        let executor = crate::agent::AgentTools::local(manager, request.agent)?;
+        let executor = crate::agent::AgentTools::in_workspace(
+            manager,
+            state.workspace.root.as_ref().clone(),
+            request.agent,
+        )?;
         return Ok(Json(
             executor
                 .invoke_named(&format!("condenser__{}", request.tool), request.arguments)
@@ -549,7 +560,11 @@ async fn chat(
     let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
     let provider_cfg = request.provider;
     let provider = ProviderFactory::build_with_client(provider_cfg.clone(), state.client)?;
-    let executor = crate::agent::AgentTools::local(plugins, request.agent)?;
+    let executor = crate::agent::AgentTools::in_workspace(
+        plugins,
+        state.workspace.root.as_ref().clone(),
+        request.agent,
+    )?;
     let harness = Harness::from_components(provider_cfg, provider, Arc::new(executor))?;
     let report = harness
         .run_with_control(
@@ -627,7 +642,11 @@ async fn chat_stream(
     let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
     let provider_cfg = request.provider;
     let provider = ProviderFactory::build_with_client(provider_cfg.clone(), state.client)?;
-    let executor = crate::agent::AgentTools::local(plugins, request.agent)?;
+    let executor = crate::agent::AgentTools::in_workspace(
+        plugins,
+        state.workspace.root.as_ref().clone(),
+        request.agent,
+    )?;
     let harness = Harness::from_components(provider_cfg, provider, Arc::new(executor))?;
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::harness::HarnessEvent>(1024);
     let options = HarnessOptions {

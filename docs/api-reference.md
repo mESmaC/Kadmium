@@ -5,7 +5,7 @@ When `kadmium launch` or `kadmium serve` is running, [`kadmium-gateway`](../crat
 1. **Reference compute diagnostics with OpenAI/Anthropic-shaped responses** (`/v1/...`)
 2. **Cluster Control Plane & Desktop Companion REST API** (`/api/v1/...`)
 
-Condenser is included at `/condenser/` in Kadmium and can also run separately on loopback port `7856`. Embedded APIs use `/condenser/api/v1/...` and require a loopback transport peer and same-origin requests. Its [inference workspace guide](guides/condenser-workspace.md) covers provider routing, maximum-quality defaults, compute inspection, task history and run cancellation. Kadmium's read-only `GET /api/v1/inference/workspace?model_id=<catalog-id>` returns fleet and placement context without loading a model or changing cluster selection.
+Condenser is included at `/condenser/` in Kadmium and can also run separately on loopback port `7856`. Embedded APIs use `/condenser/api/v1/...`. They require a loopback transport peer, same-origin requests, and this launch's access cookie, which is set by the one-time link `kadmium serve` prints (also saved in `condenser-access-<port>` in the state directory). The embedded workspace root is `condenser-workspace` in the state directory, or `KADMIUM_CONDENSER_WORKSPACE`. Its [inference workspace guide](guides/condenser-workspace.md) covers provider routing, maximum-quality defaults, compute inspection, task history and run cancellation. Kadmium's read-only `GET /api/v1/inference/workspace?model_id=<catalog-id>` returns fleet and placement context without loading a model or changing cluster selection.
 
 ## Condenser checkpoints and compute jobs
 
@@ -23,7 +23,7 @@ These routes run on standalone Condenser's loopback server, with its Host/Origin
 
 Only one import/load runs per server. A load response does not change a task's route; the user explicitly chooses **Use in this task**. KTB banks are storage artifacts, and the external backend's arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for exact formats and failure behavior.
 
-Chat sampling accepts `context_window` (Ollama only), `max_tokens`, and `compact_history` (MCL4 opt-in). Omitted context/output values resolve maximums; missing required metadata produces an error instead of a guessed output cap. `provider.timeout_secs: 0` (default) removes the generation timeout. Catalog discovery remains bounded independently. Context and output share the model's total window; other providers' context allocation is configured on their server.
+Chat sampling accepts `context_window` (Ollama only), `max_tokens`, and `compact_history` (MCL4 opt-in). Omitted context/output values resolve maximums. OpenAI-compatible requests omit `max_tokens` (the server maximum) unless the catalog advertises an explicit output limit. Missing required metadata (Anthropic output, Ollama context) produces an error instead of a guessed cap. `provider.timeout_secs: 0` (default) removes the generation timeout. Catalog discovery remains bounded independently. Context and output share the model's total window; other providers' context allocation is configured on their server.
 
 ## Live worker jobs
 

@@ -46,22 +46,39 @@ pub(crate) async fn browse(
             .unwrap_or_else(|| std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))
                 .map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")));
         if path.is_file() { path.pop(); }
-        let path = std::fs::canonicalize(path)?;
+        let path = user_facing_path(std::fs::canonicalize(path)?);
         let mut entries = Vec::new();
         let mut truncated = false;
-        for entry in std::fs::read_dir(&path)? {
-            let entry = entry?;
-            let kind = entry.file_type()?;
+        // One unreadable entry must not hide the rest of the directory.
+        for entry in std::fs::read_dir(&path)?.flatten() {
             let candidate = entry.path();
-            if kind.is_dir() || (kind.is_file() && candidate.extension().is_some_and(|ext| ext == "gguf" || ext == "safetensors")) {
+            // `metadata` follows symlinks, so linked model folders stay browsable.
+            let Ok(metadata) = std::fs::metadata(&candidate) else { continue };
+            if metadata.is_dir() || (metadata.is_file() && candidate.extension().is_some_and(|ext| ext == "gguf" || ext == "safetensors")) {
                 if entries.len() == 500 { truncated = true; break; }
-                entries.push(json!({"name":entry.file_name().to_string_lossy(), "path":candidate, "directory":kind.is_dir()}));
+                entries.push(json!({"name":entry.file_name().to_string_lossy(), "path":candidate, "directory":metadata.is_dir()}));
             }
         }
         entries.sort_by_key(|entry| (!entry["directory"].as_bool().unwrap_or(false), entry["name"].as_str().unwrap_or("").to_lowercase()));
         Ok(json!({"path":path,"parent":path.parent(),"entries":entries,"truncated":truncated}))
     }).await.map_err(|e| CondenserError::Config(e.to_string()))??;
     Ok(Json(listing))
+}
+
+/// Windows `canonicalize` returns verbatim `\\?\C:\...` paths; show and reuse the
+/// ordinary drive or UNC form, which names the same location.
+fn user_facing_path(path: PathBuf) -> PathBuf {
+    let plain = {
+        let text = path.to_string_lossy();
+        match text.strip_prefix(r"\\?\UNC\") {
+            Some(unc) => Some(format!(r"\\{unc}")),
+            None => text
+                .strip_prefix(r"\\?\")
+                .filter(|rest| rest.as_bytes().get(1) == Some(&b':'))
+                .map(str::to_owned),
+        }
+    };
+    plain.map(PathBuf::from).unwrap_or(path)
 }
 
 pub(crate) async fn list(
@@ -371,4 +388,25 @@ fn verify_backend_tensors(manifest: &CheckpointManifest, shown: &Value) -> Resul
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::user_facing_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn verbatim_windows_prefixes_are_removed_for_display() {
+        for (verbatim, plain) in [
+            (r"\\?\C:\Models\llama", r"C:\Models\llama"),
+            (r"\\?\UNC\nas\models", r"\\nas\models"),
+            (r"\\?\Volume{0}\models", r"\\?\Volume{0}\models"),
+            ("/home/me/models", "/home/me/models"),
+        ] {
+            assert_eq!(
+                user_facing_path(PathBuf::from(verbatim)),
+                PathBuf::from(plain)
+            );
+        }
+    }
 }

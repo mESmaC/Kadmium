@@ -34,7 +34,7 @@ pub trait ToolExecutor: Send + Sync {
     fn completion_error(&self) -> Option<String> {
         None
     }
-    fn finish_report(&self, _report: &HarnessReport) -> Result<()> {
+    async fn finish_report(&self, _report: &HarnessReport) -> Result<()> {
         Ok(())
     }
     fn take_child_usage(&self) -> (Usage, usize) {
@@ -371,30 +371,34 @@ impl Harness {
 
         for index in 0..options.max_steps {
             if let Some((status, error)) = stopped(&control) {
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    status,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        status,
+                        Some(error),
+                        &events,
+                    )
+                    .await;
             }
             if let Some(error) = output_budget_error(&control, usage.output_tokens) {
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    RunStatus::BudgetExceeded,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        RunStatus::BudgetExceeded,
+                        Some(error),
+                        &events,
+                    )
+                    .await;
             }
 
             emit(&events, HarnessEvent::ModelStarted { step: index + 1 });
@@ -438,17 +442,19 @@ impl Harness {
             let mut response = match wait_res {
                 WaitOutcome::Completed(Ok(Ok(response))) => response,
                 WaitOutcome::Completed(Ok(Err(error))) => {
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        RunStatus::Failed,
-                        Some(error.to_string()),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            RunStatus::Failed,
+                            Some(error.to_string()),
+                            &events,
+                        )
+                        .await;
                 }
                 WaitOutcome::Completed(Err(_)) => {
                     let error = CondenserError::provider(
@@ -458,30 +464,34 @@ impl Harness {
                             self.config.timeout_secs
                         ),
                     );
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        RunStatus::Failed,
-                        Some(error.to_string()),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            RunStatus::Failed,
+                            Some(error.to_string()),
+                            &events,
+                        )
+                        .await;
                 }
                 WaitOutcome::Stopped(status, error) => {
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        status,
-                        Some(error),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            status,
+                            Some(error),
+                            &events,
+                        )
+                        .await;
                 }
             };
             let structured_call_count = response.message.tool_calls.len();
@@ -534,17 +544,19 @@ impl Harness {
                     &events,
                 );
                 steps.push(step);
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    RunStatus::BudgetExceeded,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        RunStatus::BudgetExceeded,
+                        Some(error),
+                        &events,
+                    )
+                    .await;
             }
             if let Some((status, error)) = stopped(&control) {
                 record_blocked_calls(
@@ -557,17 +569,19 @@ impl Harness {
                     &events,
                 );
                 steps.push(step);
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    status,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        status,
+                        Some(error),
+                        &events,
+                    )
+                    .await;
             }
             if calls.is_empty() {
                 let error = self.executor.completion_error();
@@ -577,17 +591,19 @@ impl Harness {
                     RunStatus::Completed
                 };
                 steps.push(step);
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    status,
-                    error,
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        status,
+                        error,
+                        &events,
+                    )
+                    .await;
             }
             if calls.len() > options.max_calls_per_step {
                 let error = format!(
@@ -605,17 +621,19 @@ impl Harness {
                     &events,
                 );
                 steps.push(step);
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    RunStatus::BudgetExceeded,
-                    Some(error),
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        RunStatus::BudgetExceeded,
+                        Some(error),
+                        &events,
+                    )
+                    .await;
             }
 
             let doom_warning = detect_tool_doom_loop(&prior_tool_signatures, &calls, 3);
@@ -641,17 +659,19 @@ impl Harness {
                         &events,
                     );
                     steps.push(step);
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        status,
-                        Some(error),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            status,
+                            Some(error),
+                            &events,
+                        )
+                        .await;
                 }
                 if control
                     .max_output_tokens
@@ -672,17 +692,19 @@ impl Harness {
                         &events,
                     );
                     steps.push(step);
-                    return self.finish(
-                        model,
-                        answer,
-                        messages,
-                        steps,
-                        usage,
-                        diagnostics,
-                        RunStatus::BudgetExceeded,
-                        Some(error),
-                        &events,
-                    );
+                    return self
+                        .finish(
+                            model,
+                            answer,
+                            messages,
+                            steps,
+                            usage,
+                            diagnostics,
+                            RunStatus::BudgetExceeded,
+                            Some(error),
+                            &events,
+                        )
+                        .await;
                 }
 
                 let started = Instant::now();
@@ -809,17 +831,19 @@ impl Harness {
                             &events,
                         );
                         steps.push(step);
-                        return self.finish(
-                            model,
-                            answer,
-                            messages,
-                            steps,
-                            usage,
-                            diagnostics,
-                            status,
-                            Some(error),
-                            &events,
-                        );
+                        return self
+                            .finish(
+                                model,
+                                answer,
+                                messages,
+                                steps,
+                                usage,
+                                diagnostics,
+                                status,
+                                Some(error),
+                                &events,
+                            )
+                            .await;
                     }
                 };
                 let (child_usage, child_calls) = self.executor.take_child_usage();
@@ -838,17 +862,19 @@ impl Harness {
             }
             steps.push(step);
             if index + 1 == options.max_steps {
-                return self.finish(
-                    model,
-                    answer,
-                    messages,
-                    steps,
-                    usage,
-                    diagnostics,
-                    RunStatus::StepLimit,
-                    None,
-                    &events,
-                );
+                return self
+                    .finish(
+                        model,
+                        answer,
+                        messages,
+                        steps,
+                        usage,
+                        diagnostics,
+                        RunStatus::StepLimit,
+                        None,
+                        &events,
+                    )
+                    .await;
             }
         }
 
@@ -856,7 +882,7 @@ impl Harness {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn finish(
+    async fn finish(
         &self,
         model: String,
         answer: Message,
@@ -879,7 +905,7 @@ impl Harness {
             status,
             error,
         };
-        if let Err(error) = self.executor.finish_report(&report) {
+        if let Err(error) = self.executor.finish_report(&report).await {
             report
                 .diagnostics
                 .push(format!("Local memory was not saved: {error}"));
