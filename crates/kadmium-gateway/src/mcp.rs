@@ -374,13 +374,21 @@ impl KadmiumMcpServer {
                     .sum();
                 let total_ram: f64 = snap.nodes.iter().map(|n| n.memory.system_ram_gb).sum();
                 let total_tflops: f64 = snap.nodes.iter().map(|n| n.fp16_tflops).sum();
+                let ctx_cap = DistributedPagedKvPlanner::plan_cluster_context_capacity(
+                    &snap.inference_plan,
+                    &state.inference_model,
+                    &snap.nodes,
+                );
                 let summary = format!(
-                    "Kadmium (Cd-48) Epoch {} | {} active nodes | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Leader: {} (Term {}) | Throughput: {:.1} {}",
+                    "Kadmium (Cd-48) Epoch {} | {} active nodes | {:.1} GB VRAM/UMA + {:.1} GB RAM | {:.1} TFLOPS | Context: {}–{} tokens (native {}) | Leader: {} (Term {}) | Throughput: {:.1} {}",
                     snap.inference_plan.epoch,
                     snap.nodes.len(),
                     total_vram,
                     total_ram,
                     total_tflops,
+                    ctx_cap.cluster_in_memory_context_tokens,
+                    ctx_cap.cluster_max_full_attention_context_tokens,
+                    ctx_cap.model_native_context_tokens,
                     snap.coordinator_quorum.active_leader,
                     snap.coordinator_quorum.term,
                     snap.inference_plan.estimated_throughput,
@@ -396,7 +404,8 @@ impl KadmiumMcpServer {
                         "total_ram_gb": total_ram,
                         "total_tflops": total_tflops,
                         "estimated_throughput": snap.inference_plan.estimated_throughput,
-                        "throughput_unit": snap.inference_plan.throughput_unit
+                        "throughput_unit": snap.inference_plan.throughput_unit,
+                        "context_capacity": ctx_cap
                     },
                     "isError": false
                 }))
@@ -419,10 +428,16 @@ impl KadmiumMcpServer {
                     MinMaxStageLatencyOptimizer::optimize_stage_boundaries(&plan, &state.nodes);
                 let paged_kv =
                     DistributedPagedKvPlanner::plan_kv_cache_pages(&plan, &model, &state.nodes);
+                let context_capacity = DistributedPagedKvPlanner::plan_cluster_context_capacity(
+                    &plan,
+                    &model,
+                    &state.nodes,
+                );
                 let payload = json!({
                     "shard_plan": plan,
                     "latency_optimization": latency_opt,
-                    "paged_kv_allocations": paged_kv
+                    "paged_kv_allocations": paged_kv,
+                    "context_capacity": context_capacity
                 });
                 let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
                 Ok(json!({

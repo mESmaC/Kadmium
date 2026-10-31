@@ -750,6 +750,54 @@ impl ModelSpec {
             _ => return None,
         })
     }
+
+    /// Native full-attention maximum context window (in tokens) supported by the model's
+    /// pretrained RoPE / positional embedding configuration without uncalibrated extrapolation.
+    pub fn native_max_context_tokens(&self) -> u32 {
+        match self.id.as_str() {
+            "deepseek-v3-671b-moe"
+            | "deepseek-v3-671b-exl3-2.5bpw"
+            | "deepseek-v3-exl3"
+            | "exl3" => 163_840,
+            "llama-3.2-3b-instruct"
+            | "llama-3.2-3b"
+            | "qwen2.5-coder-7b-instruct"
+            | "qwen2.5-coder-7b"
+            | "qwen2.5-coder-14b-instruct"
+            | "qwen2.5-coder-14b"
+            | "qwen2.5-coder-32b-instruct"
+            | "qwen2.5-coder-32b"
+            | "llama-3-70b-lora"
+            | "llama-3.3-70b-instruct"
+            | "qwen3-235b-moe" => 131_072,
+            _ => 131_072,
+        }
+    }
+
+    /// Per-token, per-layer KV cache footprint in bytes at FP16/BF16 precision
+    /// ($2 \times n_{\text{kv\_heads}} \times d_{\text{head}} \times 2\text{ bytes}$, or MLA
+    /// compressed latent cache for DeepSeek-V3).
+    pub fn fp16_kv_bytes_per_token_per_layer(&self) -> u64 {
+        match self.id.as_str() {
+            // GQA 8 KV heads * 128 head_dim * 2 (K+V) * 2 bytes = 4096 B/token/layer
+            "llama-3.2-3b-instruct"
+            | "llama-3.2-3b"
+            | "qwen2.5-coder-14b-instruct"
+            | "qwen2.5-coder-14b"
+            | "qwen2.5-coder-32b-instruct"
+            | "qwen2.5-coder-32b"
+            | "llama-3-70b-lora"
+            | "llama-3.3-70b-instruct"
+            | "qwen3-235b-moe" => 4_096,
+            // GQA 4 KV heads * 128 head_dim * 2 (K+V) * 2 bytes = 2048 B/token/layer
+            "qwen2.5-coder-7b-instruct" | "qwen2.5-coder-7b" => 2_048,
+            _ => {
+                let bytes =
+                    ((self.kv_cache_per_layer_gb * 1_073_741_824.0) / 32_768.0).round() as u64;
+                bytes.max(512)
+            }
+        }
+    }
 }
 
 /// Builds a representative personal + home lab cluster matching real-world heterogeneous hardware:

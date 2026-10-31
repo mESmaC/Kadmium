@@ -90,6 +90,7 @@ pub async fn bind(
     }
     let client = reqwest::Client::builder()
         .user_agent(concat!("Condenser/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(std::time::Duration::from_secs(30))
         .tcp_nodelay(true)
         .pool_max_idle_per_host(32)
         .pool_idle_timeout(std::time::Duration::from_secs(90))
@@ -570,11 +571,19 @@ async fn chat_stream(
             CondenserError::Config("a harness turn needs at least one message".into()).into(),
         );
     }
-    if !(1..=32).contains(&request.max_steps) {
-        return Err(CondenserError::Config("max_steps must be between 1 and 32".into()).into());
+    if !(1..=crate::harness::MAX_HARNESS_STEPS).contains(&request.max_steps) {
+        return Err(CondenserError::Config(format!(
+            "max_steps must be between 1 and {}",
+            crate::harness::MAX_HARNESS_STEPS
+        ))
+        .into());
     }
-    if request.max_calls_per_step == 0 {
-        return Err(CondenserError::Config("max_calls_per_step must be at least 1".into()).into());
+    if !(1..=crate::harness::MAX_CALLS_PER_STEP).contains(&request.max_calls_per_step) {
+        return Err(CondenserError::Config(format!(
+            "max_calls_per_step must be between 1 and {}",
+            crate::harness::MAX_CALLS_PER_STEP
+        ))
+        .into());
     }
     request.sampling.validate()?;
 

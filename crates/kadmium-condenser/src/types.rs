@@ -138,6 +138,10 @@ pub struct SamplingParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
+    #[serde(default)]
+    pub compact_history: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stop: Vec<String>,
@@ -168,6 +172,11 @@ impl SamplingParams {
         if self.max_tokens == Some(0) {
             return Err(CondenserError::Config(
                 "max_tokens must be at least 1 when supplied".into(),
+            ));
+        }
+        if self.context_window == Some(0) {
+            return Err(CondenserError::Config(
+                "context_window must be at least 1 when supplied".into(),
             ));
         }
         if self.stop.iter().any(|value| value.is_empty()) {

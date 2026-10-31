@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use kadmium_core::{ModelSpec, WorkloadKind};
-use kadmium_sharding::ShardPlanner;
+use kadmium_sharding::{DistributedPagedKvPlanner, ShardPlanner};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -59,6 +59,8 @@ fn snapshot(state: &GatewayState, model_id: Option<&str>) -> Result<Value, Strin
     };
     let plan =
         ShardPlanner::compute_plan(state.epoch, model, WorkloadKind::Inference, &state.nodes);
+    let context_capacity =
+        DistributedPagedKvPlanner::plan_cluster_context_capacity(&plan, model, &state.nodes);
     let assigned_layers: u32 = plan.assignments.iter().map(|node| node.layer_count).sum();
     let mut warnings = vec![
         "Placement and throughput are planner estimates, not a loaded-model or generation readiness check.".to_string(),
@@ -94,6 +96,7 @@ fn snapshot(state: &GatewayState, model_id: Option<&str>) -> Result<Value, Strin
             "registered_online": online_nodes.contains(&node.id),
         })).collect::<Vec<_>>(),
         "plan": plan,
+        "context_capacity": context_capacity,
         "assigned_layers": assigned_layers,
         "warnings": warnings,
     }))
@@ -110,6 +113,16 @@ mod tests {
         let result = snapshot(&state, Some("llama-3.2-3b-instruct")).unwrap();
         assert_eq!(result["plan"]["model_id"], "llama-3.2-3b-instruct");
         assert_eq!(result["assigned_layers"], result["plan"]["total_layers"]);
+        assert_eq!(
+            result["context_capacity"]["model_native_context_tokens"],
+            131_072
+        );
+        assert!(
+            result["context_capacity"]["cluster_max_full_attention_context_tokens"]
+                .as_u64()
+                .unwrap()
+                <= 131_072
+        );
         assert_eq!(result["generation_supported"], false);
         assert_eq!(result["fleet_mode"], "demo_and_live");
         assert_eq!(serde_json::to_value(&state.inference_plan).unwrap(), before);

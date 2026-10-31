@@ -115,7 +115,7 @@
     const base = defaultConfig(kind);
     const config = Object.assign(base, raw || {});
     config.kind = kind;
-    config.max_steps = Math.max(1, Math.min(32, Number(config.max_steps) || 8));
+    config.max_steps = Math.max(1, Math.min(256, Number(config.max_steps) || 8));
     config.enable_tools = Boolean(config.enable_tools);
     // Omitted lists from older tasks retain their original all-tools semantics.
     config.allowed_tools = raw && Array.isArray(raw.allowed_tools) ? [...new Set(raw.allowed_tools.filter(name => typeof name === 'string'))] : null;
@@ -2351,9 +2351,12 @@
     $('step-budget').addEventListener('change', () => {
       const session = currentSession();
       if (!session) return;
-      session.config.max_steps = Math.max(1, Math.min(32, Number($('step-budget').value) || 8));
+      session.config.max_steps = Math.max(1, Math.min(256, Number($('step-budget').value) || 8));
       $('step-budget').value = session.config.max_steps;
       updateTaskConfig();
+      if (session.config.max_steps > 32 && $('composer-status')) {
+        $('composer-status').textContent = 'Long-horizon budget (' + session.config.max_steps + ' steps): higher latency and token usage; default 64-call and 30m guardrails apply unless overridden.';
+      }
     });
     $('save-instructions').addEventListener('click', () => {
       const session = currentSession();
