@@ -8,6 +8,8 @@
 [![License: MIT/Apache-2.0](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-blue.svg)](#license)
 [![Workloads: Inference | Training | RL | Dream-RSI](https://img.shields.io/badge/Workloads-Inference%20%7C%20Training%20%7C%20RL%20%7C%20Dream--RSI-success.svg)](#core-capabilities)
 
+> **Commercial status — 30 October 2026:** The [marketing and business review](docs/MARKETING_BUSINESS_REVIEW_2026-10-30.md) proposes a focused design-partner pilot with product and financial gates. Managed burst, host payouts, regulated-office packages and hardware are not established as live offerings by this repository. Some capability and marketing-page claims still need the [publication-remediation pass](docs/OPERATING_PLAN.md#4-release-and-claim-management); consult the current API/Condenser guides for execution boundaries.
+
 ---
 
 ## 🌍 What is Kadmium?
@@ -240,9 +242,12 @@ cargo test --workspace
 ## 📖 Documentation
 
 - [**`docs/ARCHITECTURE.md`**](docs/ARCHITECTURE.md) — Deep-dive mathematical and systems specification covering capability vectors, $q^*$ bandwidth-adaptive routing, live responsibility shifting, asymmetric 1F1B & Sharded-Island DiLoCo training, `.ktb` tensor banks, and Verde reproducible verification.
-- [**`docs/NUMBERS_2026-10.md`**](docs/NUMBERS_2026-10.md) — Single dated (`2026-10-20`) source-of-truth ledger for wholesale GPU index rates, serverless token benchmarks, EIA electricity tariffs (`$0.182/kWh`), Steam-derived GPU counts, and hardware BOM constants (paired with [`crates/kadmium-core/src/canonical_numbers.rs`](crates/kadmium-core/src/canonical_numbers.rs)).
-- [**`docs/BUSINESS_PLAN_AND_STANCE.md`**](docs/BUSINESS_PLAN_AND_STANCE.md) — Master Business Plan, Output-Delivered Supply Grid Clearing Model, Deferred Revenue & Credit Liability Accounting, Audited Compliance Boundaries, `75 / 20 / 5` Steward-Ownership Charter, and Moral/Ethical Stance.
-- [**`docs/MARKET_RESEARCH_REVIEW_2026-10.md`**](docs/MARKET_RESEARCH_REVIEW_2026-10.md) — R4 Market Research & Fact-Check Review auditing wholesale GPU pricing, serverless token floors, and capability envelopes.
+- [**Historical engineering numbers**](docs/NUMBERS_2026-10.md) — Dated model inputs paired with [`canonical_numbers.rs`](crates/kadmium-core/src/canonical_numbers.rs); not live prices, measured available supply or approved financial policy.
+- [**Marketing and business evidence review**](docs/MARKETING_BUSINESS_REVIEW_2026-10-30.md) — Repository findings, primary-source research, strongest case and objections.
+- [**Business plan and stance**](docs/BUSINESS_PLAN_AND_STANCE.md) — Proposed pilot strategy, economic gates and stewardship commitments.
+- [**Marketing and launch experiments**](docs/MARKET_RESEARCH_AND_LAUNCH_PLAN.md) — Channels, draft copy, budgets and measurement.
+- [**Operating plan**](docs/OPERATING_PLAN.md) and [**reproducible economics**](docs/business/ECONOMICS.md) — Delivery, support, cash controls and calculations.
+- [**Historical R4 research**](docs/MARKET_RESEARCH_REVIEW_2026-10.md) — Earlier technical research; current commercial recommendations supersede it.
 - **Interactive Docs Portal** — Run `cargo run --bin kadmium -- serve` and visit **`http://localhost:7848/docs`**.
 
 ---
