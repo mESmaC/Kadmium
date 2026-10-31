@@ -76,6 +76,8 @@ jobs:
           cache-dependency-path: crates/kadmium-gateway/tests/ui/package-lock.json
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - name: Test public website as standalone static files
+        run: npm run test:website
       - run: npm test
       - name: Build Condenser for checkpoint workflow tests
         run: cargo build -p kadmium-condenser-app --locked
