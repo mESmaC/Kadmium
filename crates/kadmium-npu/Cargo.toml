@@ -1,0 +1,10 @@
+[package]
+name = "kadmium-npu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Portable Rust NPU kernel contracts with an Intel Level Zero graph backend"
+
+[dependencies]
+thiserror.workspace = true
+libloading = "0.8"

@@ -1272,8 +1272,10 @@ mod tests {
 
         // Verify embedded public documentation catalog from `docs/`
         let docs = build_documentation_catalog();
-        assert_eq!(docs.len(), 17);
+        assert_eq!(docs.len(), 19);
         assert!(docs.iter().any(|page| page.slug == "condenser-workspace"));
+        assert!(docs.iter().any(|page| page.slug == "usbc-delta-bridge"));
+        assert!(docs.iter().any(|page| page.slug == "npu-kernels"));
         assert!(docs.iter().any(|page| page.slug == "launch-guide"));
         assert!(docs.iter().any(|page| page.slug == "release-runbook"));
         assert!(docs.iter().any(|page| page.slug == "benchmarks"));

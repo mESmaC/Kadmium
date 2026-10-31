@@ -21,6 +21,9 @@ pub(crate) const DOC_LAUNCH_GUIDE_MD: &str = include_str!("../../../docs/guides/
 pub(crate) const DOC_RELEASE_RUNBOOK_MD: &str = include_str!("../../../docs/guides/release.md");
 pub(crate) const DOC_BENCHMARKS_MD: &str = include_str!("../../../docs/BENCHMARKS_2026-10.md");
 pub(crate) const DOC_CONTRIBUTING_MD: &str = include_str!("../../../CONTRIBUTING.md");
+pub(crate) const DOC_USBC_BRIDGE_MD: &str =
+    include_str!("../../../docs/guides/usbc-delta-bridge.md");
+pub(crate) const DOC_NPU_MD: &str = include_str!("../../../crates/kadmium-npu/README.md");
 pub(crate) const DOC_SPECSHEET_ROADMAP_MD: &str =
     include_str!("../../../docs/SPECSHEET_AND_ROADMAP.md");
 pub(crate) const DOC_ARCHITECTURE_MD: &str = include_str!("../../../docs/ARCHITECTURE.md");
@@ -142,8 +145,24 @@ pub fn build_documentation_catalog() -> Vec<DocumentationPage> {
             title: "Deep Technical Architecture Spec".into(),
             category: "3. Deep Specifications".into(),
             file_path: "docs/ARCHITECTURE.md".into(),
-            summary: "Current mechanisms and explicitly labelled target designs across the 12-crate workspace.".into(),
+            summary: "Current mechanisms and explicitly labelled target designs across the 13-crate workspace.".into(),
             markdown: DOC_ARCHITECTURE_MD.into(),
+        },
+        DocumentationPage {
+            slug: "usbc-delta-bridge".into(),
+            title: "USB-C Delta Bridges".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "docs/guides/usbc-delta-bridge.md".into(),
+            summary: "Multi-lane ordered transport, authenticated resume, unplug behavior, measurements, and security limits.".into(),
+            markdown: DOC_USBC_BRIDGE_MD.into(),
+        },
+        DocumentationPage {
+            slug: "npu-kernels".into(),
+            title: "Intel NPU Kernels".into(),
+            category: "2. Operator & Developer Guides".into(),
+            file_path: "crates/kadmium-npu/README.md".into(),
+            summary: "Level Zero MatMul setup, approximate-FP16 contract, hardware validation, and resource-lifetime limits.".into(),
+            markdown: DOC_NPU_MD.into(),
         },
         DocumentationPage {
             slug: "benchmarks".into(),

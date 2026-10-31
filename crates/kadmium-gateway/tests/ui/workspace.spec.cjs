@@ -144,6 +144,14 @@ test('Docs portal resolves catalog and repository-relative links', async ({ page
   await expect(page.locator('#currentPath')).toHaveText('docs/BENCHMARKS_2026-10.md');
 
   await page.goto('/docs');
+  await body.getByRole('link', { name: 'USB-C delta bridges', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('docs/guides/usbc-delta-bridge.md');
+
+  await page.goto('/docs');
+  await body.getByRole('link', { name: 'Intel NPU kernels', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('crates/kadmium-npu/README.md');
+
+  await page.goto('/docs');
   await body.getByRole('link', { name: 'Contributing', exact: true }).click();
   await expect(page.locator('#currentPath')).toHaveText('CONTRIBUTING.md');
 

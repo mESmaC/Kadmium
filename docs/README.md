@@ -30,6 +30,8 @@ Documents distinguish **implemented reference behavior**, **modelled/simulated o
 | [Subclusters and CloudShield](guides/subclusters-and-cloud-shield.md) | Pool partitioning, local Companion mode state, and fixed cloud/failover scenarios. |
 | [Ecosystem integration planners](guides/integrations-hf-github.md) | HF pull planning, simulated GitHub evaluation, and unimplemented remote connectors. |
 | [Model Context Protocol](guides/mcp-server.md) | Seven tools over isolated stdio or shared HTTP coordinator state. |
+| [USB-C delta bridges](guides/usbc-delta-bridge.md) | Multi-lane ordered transport, authenticated resume, unplug behavior, measurements, and security limits. |
+| [Intel NPU kernels](../crates/kadmium-npu/README.md) | Level Zero MatMul setup, approximate-FP16 contract, hardware validation, and resource-lifetime limits. |
 | [Release runbook](guides/release.md) | Version/tag checks, release artifacts, CI requirements, and installer verification. |
 | [Contributing](../CONTRIBUTING.md) | Formatting, linting, Rust/Node/UI/Python/installer checks, and documentation conventions. |
 
@@ -54,9 +56,9 @@ The commercial plan is a proposal for review. It does not establish managed comp
 flowchart LR
     Clients["Control Room · Companion · MCP\nReference HTTP requests"]
     Control["Axum coordinator\nHardware profiles · Planners · Reference state"]
-    Workers["TCP workers\nKDM2 framing · Synthetic reference kernels"]
+    Workers["TCP workers\nKDM2 · Reference + selected native kernels"]
     Storage["Local .ktb banks\n64 KiB pages · FNV-1a checks"]
-    Target["Planned integrations\nNative backends · Managed cloud · Production models"]
+    Target["Planned integrations\nAdditional native backends · Managed cloud · Production models"]
 
     Clients --> Control
     Control --> Workers

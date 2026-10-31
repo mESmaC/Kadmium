@@ -18,7 +18,7 @@ Nodes are represented with fast accelerator memory, unified memory, system RAM, 
 | ARM/RISC-V SBC | RK3588, CM4, K230 | Utility, replay, and verification planning |
 | Remote peer | Reachable TCP worker | Middle-layer placement according to trust policy |
 
-Only a specific set of CUDA kernels currently has a native device implementation. Other backends primarily use host reference math and platform classification. See the [support and execution boundaries](../SPECSHEET_AND_ROADMAP.md#2-hardware-profiles-and-execution-support).
+Native device execution currently covers a specific set of CUDA kernels and one Intel Level Zero NPU MatMul with explicitly approximate FP16 arithmetic. Other backends primarily use host reference math and platform classification. See the [support and execution boundaries](../SPECSHEET_AND_ROADMAP.md#2-hardware-profiles-and-execution-support) and [NPU crate guide](../../crates/kadmium-npu/README.md).
 
 ## 2. Local `.ktb` ingestion
 

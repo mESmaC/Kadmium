@@ -20,7 +20,7 @@ Roadmap milestones describe code landing, not production readiness. The [API ref
 | :--- | :--- |
 | Identity | Kadmium (`Cd-48`), `kadmium` CLI/crate namespace, `.ktb` tensor banks |
 | Implementation | Rust 2024 edition; Python is used only for repository business/release scripts, not as a CLI runtime dependency |
-| Host workspace | **12 crates**: core, sharding, data, grid, network, runtime, RL, gateway, CLI, desktop, Condenser, and CUDA |
+| Host workspace | **13 crates**: core, sharding, data, grid, network, runtime, RL, gateway, CLI, desktop, Condenser, CUDA, and NPU |
 | CUDA device harness | `crates/kadmium-cuda/device` is excluded from the host workspace and builds separately with `cargo oxide` |
 | Toolchains | Host Rust 1.99.0; CUDA device harness Rust 1.99.1 |
 | Design tokens | `--cadmium` and `--cherenkov` are visual design tokens, not CLI flags |
@@ -33,7 +33,8 @@ Hardware and OS entries in `kadmium-core::platform` are **classification and pla
 | :--- | :--- |
 | Host reference math | Synthetic CPU/reference kernels and deterministic RepOps comparisons |
 | Native CUDA | Six specific kernels in `kadmium-cuda`: `q8k_quantize`, `q4k_q8k_matvec`, `mxfp4_matvec`, `swiglu`, `moe_top_k`, and `row_mask`; see its README for tested hardware/results |
-| Other GPU/CPU targets | Backend labels, reference implementations, and planning profiles; no general native ROCm, Metal, Vulkan, AVX-512, NEON, or NPU model backend |
+| Native Intel NPU | One Level Zero MatMul in `kadmium-npu`, with FP32 I/O and approximate FP16 internal arithmetic. It is not RepOps evidence, a transformer backend, or automatically scheduled. |
+| Other GPU/CPU/NPU targets | Backend labels, reference implementations, and planning profiles; no general native ROCm, Metal, Vulkan, AVX-512, NEON, additional NPU operator, or other-vendor NPU model backend |
 | Model execution | Small reference tensors and fixed diagnostic responses; no integrated pretrained LLM serving |
 | OS governance | Limited live sampling plus policy/state-machine models; native swapchain/foreground integration is not universal |
 | File loading | Whole-file local import and zero-copy slices into loaded byte buffers; mmap/io_uring/IoRing file paths are planned |
@@ -71,7 +72,7 @@ Precise throughput, latency, memory-saving, convergence, failover, and cost figu
 | Ecosystem | HF selective-pull planning, in-memory range assembly, and simulated GitHub evaluation. No live HF/GitHub/OCI/S3/W&B connector. |
 | Cloud and supply | Fixed spot/failover scenarios and local lease-policy quotes. No provider provisioning, paid settlement, managed failover, or enforced cloud spend cap. |
 | Observability | Prometheus/OpenMetrics text and local W&B/OTel-shaped summary JSON; external export is not implied. |
-| USB/interconnect | Interface discovery and topology/scheduling models. Throughput/latency values derived from rated bandwidth are estimates, not DMA benchmarks or unplug/failover guarantees. |
+| USB/interconnect | Scanner throughput/latency figures derived from rated bandwidth are estimates. `UsbCBridge` separately implements ordered multi-lane TCP transport with authenticated resume and unplug recovery; reported Wi-Fi-only results are not USB4 throughput measurements. |
 
 ---
 
@@ -85,12 +86,12 @@ The repository contains the following implemented mechanisms. “Landed” does 
 - **Runtime:** host reference kernels, TCP workers, stateless training previews, small stateful DiLoCo sessions, DeMo compression, RepOps/Verde references, grid work graphs, and synthetic decode/training/RL workloads.
 - **Interfaces:** Control Room, Companion, Condenser, reference `/v1` diagnostics, MCP, CLI planners, and platform-specific probe/bridge commands.
 - **Planning/simulation:** subcluster partitioning, responsibility shifts, spot/failover scenarios, supply/credit calculations, NAT route planning, USB topology, and sample governance catalogs.
-- **Native device work:** six CUDA kernels with a separate parity harness and the hardware/results caveats documented in `crates/kadmium-cuda/README.md`.
+- **Native device work:** six CUDA kernels with a separate parity harness and one Intel Level Zero approximate-FP16 MatMul with its own validation/resource-lifetime contract; see the CUDA and NPU crate guides.
 
 ### Phase 5 — Native backends and real model integration (next)
 
 - [ ] Integrate pretrained model loading and incremental generation; replace fixed `/v1` diagnostics only through an explicit, reviewed backend design.
-- [ ] Add general native CUDA/ROCm/Metal/Vulkan execution beyond reference host buffers and the six current CUDA kernels.
+- [ ] Add general native CUDA/ROCm/Metal/Vulkan/NPU execution beyond reference host buffers, the six current CUDA kernels, and Intel's single MatMul.
 - [ ] Implement persistent model/optimizer state and integrated pipeline-sharded training; validate convergence separately from compression ratios.
 - [ ] Implement actual mmap/io_uring/IoRing paths where supported and measure them on committed hardware configurations.
 - [ ] Replace modelled interconnect and OS-yield outputs with measured execution and native platform hooks.

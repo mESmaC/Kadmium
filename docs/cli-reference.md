@@ -231,6 +231,8 @@ kadmium pull gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt
 
 The optional URI defaults to `hf://deepseek-ai/DeepSeek-V3@main`. See the [integration guide](guides/integrations-hf-github.md).
 
+Set `KADMIUM_USBC_BRIDGE_BIND` (for example `0.0.0.0:7871`) on a joining worker to also accept [USB-C delta bridge](guides/usbc-delta-bridge.md) sessions. A coordinator can then use a `kdbr://` address with one lane per path; lane failover preserves the delta-link stores. This is separate from join-ticket authentication, which remains unimplemented.
+
 ### `kadmium mcp`
 
 Starts an isolated stdio MCP server with a fresh in-process gateway state, or prints its seven-tool manifest. It does not attach to a running coordinator or read `KADMIUM_COORDINATOR_URL`; use `POST /mcp` for shared coordinator state.

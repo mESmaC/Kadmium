@@ -256,6 +256,29 @@ The `mxfp4_matvec` reduction shape, not memory alone, bounds the current kernel.
 
 ---
 
+## Run 6 — USB-C delta-bridge unplug behavior (reported 2026-10-30)
+
+### 6.1 Configuration and provenance
+
+- **Harness:** `cargo run --release -p kadmium-network --example usbc_bridge_bench -- serve 0.0.0.0:7880` on the worker and `cargo run --release -p kadmium-network --example usbc_bridge_bench -- run <host>:7880 kdbr://...:7881,...:7881` on the coordinator.
+- **Configuration:** Wi-Fi to an M4 Mac mini, 12 steps per scenario, three runs. Both bridge lanes used the same Wi-Fi path; **no USB-C cable connected the machines**. Before step 4 the plain channel was closed/redialed and bridge lane 0 disabled. Payload XXH64 values matched.
+- **Provenance limitation:** peer hardware details, exact checkout, and raw logs are not recorded in the guide. Byte/time values are **Measured as reported**; ratios are **Derived as reported**.
+
+### 6.2 Reported unplug results
+
+| Scenario | Bytes after loss, plain → bridge | Time after loss, plain → bridge | Derived comparison |
+| :--- | :--- | :--- | :--- |
+| Decode step with fresh 28 KiB activations and unchanged 4 MiB context | 4.33 MiB → 0.35 MiB | 317–337 ms → 151–159 ms | 12.5× fewer bytes; 2.0–2.2× faster |
+| Re-sent 16 MiB weights with changing header | 16.33 MiB → 0.37 MiB | 845–920 ms → 283–348 ms | 44× fewer bytes; 2.7–3.0× faster |
+
+The loss occurred between calls, so this scenario did not retransmit in-flight data. Unit tests separately cover mid-transfer unplug and delta-store preservation. These are path-loss results on Wi-Fi, not USB4 throughput results.
+
+### 6.3 Separate loopback throughput report
+
+The guide also reports Windows loopback rates of 2–6 Gbit/s on one lane and 18–24 Gbit/s on four lanes, versus 8–27 Gbit/s for a raw TCP socket. These are **Measured as reported** with no recorded date, exact checkout, raw samples, or detailed host configuration. They are loopback TCP results and must not be presented as USB4 cable throughput.
+
+---
+
 ## How to add a run
 
 Copy the Run 1 structure and fill every field; leave nothing implied.

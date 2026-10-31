@@ -40,8 +40,8 @@ Phase labels describe code milestones, not release or model-serving readiness. G
 | Phase | Milestone | Status | Scope |
 | :--- | :--- | :--- | :--- |
 | **Phases 1–2** | **Core planners, `.ktb`, TCP workers & reference runtimes** | ✅ **Reference mechanisms landed** | $q^*$ and shard planning, FNV-1a Merkle/checksum verification, constrained local transcoders, synthetic inference/training, small stateful DiLoCo sessions, DeMo, RepOps/Verde, and grid work graphs. |
-| **Phases 3–4** | **Control Room, Companion & platform/interconnect models** | 🟢 **Current development** | Web/native interfaces, MCP, LAN discovery/pairing references, hardware classification, USB topology/scheduling models, and platform probes. Remote connectors and cloud outputs are plans or simulations. |
-| **Phase 5** | **Native backends & real model integration** | 🔜 **Next** | General native GPU dispatch beyond the six CUDA kernels, actual mmap/io_uring file paths, persistent model/optimizer state, and measured native OS/interconnect behavior. |
+| **Phases 3–4** | **Control Room, Companion & platform/interconnect work** | 🟢 **Current development** | Web/native interfaces, MCP, LAN discovery/pairing references, hardware classification, USB topology models, multi-lane delta bridges, and platform probes. Remote connectors and cloud outputs are plans or simulations. |
+| **Phase 5** | **Native backends & real model integration** | 🔜 **Next** | General native GPU/NPU dispatch beyond the specific CUDA kernels and Intel MatMul, actual mmap/io_uring file paths, persistent model/optimizer state, and measured native OS/interconnect behavior. |
 | **Phase 6** | **Managed CloudShield, Supply Grid & Public Registry** | 🗓️ **Planned** | Authenticated multi-tenancy, real provider procurement, production failover, financial settlement, managed WAN traversal, and public registry services. |
 
 ---
@@ -50,21 +50,24 @@ Phase labels describe code milestones, not release or model-serving readiness. G
 
 The Platform Abstraction Layer (`kadmium-core::platform`) classifies 26 silicon families and 8 OS families for discovery and planning. **Classification is not automatic execution support.** A profile does not prove a native backend, precision path, NPU integration, mmap loader, or OS hook exists for that device.
 
-Current execution falls into three categories:
+Current execution falls into four categories:
 
 1. **Host reference math:** synthetic tensors and deterministic reference kernels used by the planner, gateway, and tests.
 2. **Native CUDA:** six specific kernels with a separate device parity harness; see [`kadmium-cuda`](crates/kadmium-cuda/README.md) for exact kernels and measured hardware caveats.
-3. **Planned native backends:** general ROCm, Metal, Vulkan, NPU, and large-model GPU execution remain future integration work.
+3. **Native Intel NPU:** one Level Zero MatMul kernel with FP32 I/O and explicitly approximate FP16 arithmetic, outside RepOps verification and automatic scheduling; see [`kadmium-npu`](crates/kadmium-npu/README.md).
+4. **Planned native backends:** general ROCm, Metal, Vulkan, additional NPU operators/vendors, and large-model GPU execution remain future integration work.
 
 The host CI matrix covers Windows, macOS, and Linux. Other OS/platform profiles and bridge commands must not be read as equally validated support. Actual `.ktb` import currently reads a whole local file; zero-copy slices into loaded buffers are implemented, while mmap/io_uring/IoRing file loading is planned.
 
 ---
 
-## ⚡ USB-C / USB4 / Thunderbolt Planning (`kadmium-network`)
+## ⚡ USB-C / USB4 / Thunderbolt Interconnects (`kadmium-network`)
 
 [`usbc_interconnect.rs`](crates/kadmium-network/src/usbc_interconnect.rs) models host-to-host USB4/Thunderbolt, dual-role USB-NCM gadget, and low-speed sidecar topologies. [`MultiPathInterfaceStriper`](crates/kadmium-network/src/raid_striper.rs) computes chunk schedules across configured interfaces.
 
-Displayed figures such as 27.6 Gbps goodput, ~79 µs transfer time, and sub-150 ms drain are **derived from rated link bandwidth and scenario inputs**. The functions do not perform corresponding DMA I/O, cable auto-configuration, live unplug failover, or zero-dropped-token migration. Treat them as modelled estimates until committed hardware benchmarks demonstrate otherwise. Workers still require reachable, configured network interfaces.
+Displayed scanner figures such as 27.6 Gbps goodput, ~79 µs transfer time, and sub-150 ms drain are **derived from rated link bandwidth and scenario inputs**. Those planning functions do not perform corresponding DMA I/O, cable auto-configuration, or model-state migration. Workers still require reachable, configured network interfaces.
+
+[`UsbCBridge`](crates/kadmium-network/src/usbc_bridge.rs) is a separate implemented transport: it carries one ordered stream over multiple TCP lanes, retransmits unacknowledged segments when a lane fails, and resumes authenticated sessions while preserving delta-link stores. Reported Wi-Fi-only unplug tests measured 12.5× fewer post-loss bytes and 2.0–2.2× faster decode-step completion than redialing; no USB cable connected the test machines, so these are not USB4 throughput results. See the [bridge guide and limits](docs/guides/usbc-delta-bridge.md) and [benchmark ledger](docs/BENCHMARKS_2026-10.md).
 
 ---
 
@@ -153,7 +156,7 @@ flowchart TB
 
 ## 📦 Workspace Structure
 
-Kadmium is organized as a modular **12-crate Pure Rust** Cargo workspace. The CUDA device harness under `crates/kadmium-cuda/device` is separately excluded. The `kadmium-grid` crate is the generic distributed-compute substrate underneath the AI workloads: work units with a BOINC-style lifecycle, work graphs, a replica catalog with placement rules, a locality-aware scheduler with quorum validation, and a credit ledger. Inference steps, training steps, Dream-RSI replay batches and Verde audits are work graphs scheduled on it; a pipeline is a chain graph and expert parallelism is a fan-out graph, and the two produce identical bytes.
+Kadmium is organized as a modular **13-crate Pure Rust** Cargo workspace. The CUDA device harness under `crates/kadmium-cuda/device` is separately excluded. The `kadmium-grid` crate is the generic distributed-compute substrate underneath the AI workloads: work units with a BOINC-style lifecycle, work graphs, a replica catalog with placement rules, a locality-aware scheduler with quorum validation, and a credit ledger. Inference steps, training steps, Dream-RSI replay batches and Verde audits are work graphs scheduled on it; a pipeline is a chain graph and expert parallelism is a fan-out graph, and the two produce identical bytes.
 
 ```text
 kadmium/
@@ -173,7 +176,8 @@ kadmium/
     ├── kadmium-cli/            # Single-binary `kadmium` CLI (serve, join, desktop, probe, plan, bench, import, exl3)
     ├── kadmium-desktop/        # Native Desktop Companion window (WebView2 / WKWebView / WebKitGTK)
     ├── kadmium-condenser/      # Kadmium Power Plant inference harness: native UI + CLI, provider adapters, bounded tool turns, process plugins
-    └── kadmium-cuda/           # Pure-Rust CUDA kernels (NVIDIA cuda-oxide), bit-identical to the RepOps reference; GPU harness in device/
+    ├── kadmium-cuda/           # Pure-Rust CUDA kernels (NVIDIA cuda-oxide), bit-identical to the RepOps reference; GPU harness in device/
+    └── kadmium-npu/            # Vendor-neutral NPU traits and Intel Level Zero approximate-FP16 MatMul
 ```
 
 ---

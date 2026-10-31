@@ -2007,20 +2007,53 @@ fn unhandled_frame_reply(kind: WireFrameKind, epoch: u32) -> WireFrame {
 /// delta-encoded under the writer lock, in the order they are written.
 pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerFrameContext) {
     let _ = stream.set_nodelay(true);
-    let delta_config = DeltaLinkConfig::from_env();
     let (read_half, write_half) = stream.into_split();
+    // Either way the socket drops here, which ends the connection.
+    let _ = serve_worker_stream(read_half, write_half, ctx).await;
+}
+
+/// The next frame, or `None` when the peer ended the stream cleanly between frames.
+async fn next_worker_frame<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut FrameReader<tokio::io::BufReader<R>>,
+) -> Result<Option<WireFrame>, String> {
+    use tokio::io::AsyncBufReadExt;
+    let at_end = reader
+        .get_mut()
+        .fill_buf()
+        .await
+        .map_err(|e| e.to_string())?
+        .is_empty();
+    if at_end {
+        return Ok(None);
+    }
+    reader.read_frame().await.map(Some)
+}
+
+/// [`serve_worker_connection`] over any ordered byte stream, such as the two halves of a
+/// [`kadmium_network::UsbCBridge`] session striped over USB-C and Wi-Fi lanes.
+///
+/// Returns `true` when the peer ended the stream cleanly between frames, and `false` when the
+/// stream broke: a read or write failed, a frame was malformed, or a write timed out and may have
+/// been partial. A broken stream must not be reused, so a caller holding a bridge closes it.
+pub async fn serve_worker_stream<R, W>(read_half: R, write_half: W, ctx: WorkerFrameContext) -> bool
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let delta_config = DeltaLinkConfig::from_env();
     let mut reader = FrameReader::new(tokio::io::BufReader::new(read_half));
     let writer = Arc::new(tokio::sync::Mutex::new(FrameWriter::new(write_half)));
     let connection_failed = Arc::new(tokio::sync::Notify::new());
     loop {
         let frame = tokio::select! {
-            result = reader.read_frame() => match result {
-                Ok(frame) => frame,
-                // EOF, reset, a malformed header, or a delta frame that cannot be rebuilt.
-                Err(_) => break,
+            result = next_worker_frame(&mut reader) => match result {
+                Ok(Some(frame)) => frame,
+                Ok(None) => return true,
+                // A reset, a truncated or malformed frame, or a delta frame that cannot be rebuilt.
+                Err(_) => return false,
             },
             // A timed-out or failed write may be partial; never reuse this byte stream.
-            _ = connection_failed.notified() => break,
+            _ = connection_failed.notified() => return false,
         };
         if frame.kind == WireFrameKind::DeltaHello {
             let mut w = writer.lock().await;
@@ -2031,7 +2064,7 @@ pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerF
                     store_bytes >> 20
                 ),
                 Ok(_) => {}
-                Err(_) => break,
+                Err(_) => return false,
             }
             continue;
         }
@@ -2101,6 +2134,8 @@ pub struct LiveNodeWorkerServer {
     pub accepted_connections: Arc<AtomicU64>,
     /// Register model sources after spawning to serve local and remote expert loads.
     pub expert_loader: ExpertLoader,
+    /// Bounds expert loads in flight across every connection, bridged ones included.
+    pub expert_load_slots: Arc<tokio::sync::Semaphore>,
     /// Executors for generic grid work units; register more after spawning to extend the worker.
     pub executors: ExecutorRegistry,
     pub served_work_units: Arc<AtomicU64>,
@@ -2170,7 +2205,7 @@ impl LiveNodeWorkerServer {
             served_training_steps: Arc::clone(&trn_counter),
             served_fts3_pages: Arc::clone(&fts_counter),
             expert_loader: expert_loader.clone(),
-            expert_load_slots,
+            expert_load_slots: Arc::clone(&expert_load_slots),
             executors: executors.clone(),
             served_work_units: Arc::clone(&work_counter),
             peer_addr: local_addr,
@@ -2200,9 +2235,80 @@ impl LiveNodeWorkerServer {
             served_fts3_pages: fts_counter,
             accepted_connections: accepted_counter,
             expert_loader,
+            expert_load_slots,
             executors,
             served_work_units: work_counter,
         })
+    }
+}
+
+impl LiveNodeWorkerServer {
+    /// Also accepts [`kadmium_network::UsbCBridge`] sessions on `bind` (for example
+    /// `0.0.0.0:7871`), serving each exactly like a TCP connection. A coordinator then reaches
+    /// this worker at `kdbr://<usb4-link-local>:7871@27.6,<wifi-addr>:7871@1.2`, and its frames
+    /// keep flowing, without resetting the delta link, when the USB-C cable is pulled.
+    ///
+    /// Returns the bound address and a handle to the accept loop. Aborting the handle stops the
+    /// listener: no new sessions start, and open sessions keep their live lanes but can no longer
+    /// resume a lane that drops.
+    pub async fn spawn_usbc_bridge_listener(
+        &self,
+        bind: &str,
+        log_console: bool,
+    ) -> Result<(SocketAddr, tokio::task::AbortHandle), String> {
+        let mut listener = kadmium_network::UsbCBridgeListener::bind(
+            bind,
+            kadmium_network::BridgeListenerConfig::default(),
+        )
+        .await?;
+        let local_addr = listener.local_addr();
+        let ctx_template = WorkerFrameContext {
+            node: Arc::clone(&self.node),
+            installed_version: Arc::clone(&self.installed_version),
+            ktb_merkle_root_fnv64: Arc::clone(&self.ktb_merkle_root_fnv64),
+            resident_ktb_bank: Arc::clone(&self.resident_ktb_bank),
+            served_forward_stages: Arc::clone(&self.served_forward_stages),
+            served_training_steps: Arc::clone(&self.served_training_steps),
+            served_fts3_pages: Arc::clone(&self.served_fts3_pages),
+            expert_loader: self.expert_loader.clone(),
+            expert_load_slots: Arc::clone(&self.expert_load_slots),
+            executors: self.executors.clone(),
+            served_work_units: Arc::clone(&self.served_work_units),
+            peer_addr: local_addr,
+            log_console,
+        };
+        let accepted = Arc::clone(&self.accepted_connections);
+        let accept_loop = tokio::spawn(async move {
+            while let Some(session) = listener.accept().await {
+                accepted.fetch_add(1, Ordering::Relaxed);
+                let ctx = WorkerFrameContext {
+                    peer_addr: session.peer.parse().unwrap_or(local_addr),
+                    ..ctx_template.clone()
+                };
+                if ctx.log_console {
+                    println!(
+                        "  [USB-C BRIDGE] Peer {} opened bridge session {:032x}",
+                        session.peer,
+                        session.bridge.session_id()
+                    );
+                }
+                let kadmium_network::BridgeSession {
+                    bridge,
+                    reader,
+                    writer,
+                    ..
+                } = session;
+                tokio::spawn(async move {
+                    // A clean end lets the session finish once the last replies are delivered.
+                    // Otherwise close it now: dropping the halves would end the stream normally
+                    // and leave the peer waiting on the rest of a partial frame.
+                    if !serve_worker_stream(reader, writer, ctx).await {
+                        bridge.close();
+                    }
+                });
+            }
+        });
+        Ok((local_addr, accept_loop.abort_handle()))
     }
 }
 
@@ -3702,5 +3808,80 @@ impl TokenBatchInt8 {
             ));
         }
         Ok(Self { rows, dim, tensor })
+    }
+}
+
+#[cfg(test)]
+mod usbc_bridge_tests {
+    use super::*;
+    use kadmium_core::sample_personal_cluster;
+
+    /// A coordinator reaches a worker over a two-lane bridge address through the shared channel
+    /// pool, and keeps reaching it after the faster lane is unplugged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_channel_pool_reaches_a_worker_over_a_bridge_and_survives_an_unplug() {
+        let node = sample_personal_cluster()[0].clone();
+        let worker = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, node.clone(), false)
+            .await
+            .expect("spawn worker");
+        let (bridge_addr, _bridge_listener) = worker
+            .spawn_usbc_bridge_listener("127.0.0.1:0", false)
+            .await
+            .expect("spawn bridge listener");
+        let addr = format!("kdbr://{bridge_addr}@27.6,{bridge_addr}@1.2");
+
+        let (pong, _) = DistributedLanExecutor::ping_worker_tcp(&addr, 1)
+            .await
+            .expect("ping over the bridge");
+        assert_eq!(pong.node.id, node.id);
+
+        let channel = DistributedLanExecutor::channel_pool()
+            .get_or_connect(&addr)
+            .await
+            .unwrap();
+        let bridge = channel.bridge().expect("pooled channel is bridged").clone();
+        assert!(bridge.wait_for_lanes(2, Duration::from_secs(5)).await);
+        bridge.set_lane_enabled(0, false).unwrap();
+        for epoch in 2..5 {
+            DistributedLanExecutor::ping_worker_tcp(&addr, epoch)
+                .await
+                .expect("ping after the unplug");
+        }
+        assert!(channel.is_healthy());
+        assert!(bridge.snapshot().lanes[1].bytes_sent > 0);
+        assert_eq!(worker.accepted_connections.load(Ordering::Relaxed), 1);
+    }
+
+    /// A worker whose bridged stream breaks closes the session instead of leaving it open and
+    /// heartbeating while the peer waits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_broken_bridged_stream_closes_the_session() {
+        use tokio::io::AsyncWriteExt;
+        let node = sample_personal_cluster()[0].clone();
+        let worker = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, node, false)
+            .await
+            .expect("spawn worker");
+        let (bridge_addr, listener) = worker
+            .spawn_usbc_bridge_listener("127.0.0.1:0", false)
+            .await
+            .expect("spawn bridge listener");
+        let config = kadmium_network::BridgeConfig::parse_addr(&format!("kdbr://{bridge_addr}"))
+            .unwrap()
+            .unwrap();
+        let mut session = kadmium_network::UsbCBridge::connect(config)
+            .await
+            .expect("bridge to the worker");
+        // Not a WireFrame: the worker's read fails mid-stream.
+        session.writer.write_all(b"XXXXnot-a-frame").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while session.bridge.is_open() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the worker closes the broken session");
+        let reason = session.bridge.snapshot().close_reason.unwrap();
+        assert!(reason.contains("cannot be resumed"), "{reason}");
+        listener.abort();
     }
 }

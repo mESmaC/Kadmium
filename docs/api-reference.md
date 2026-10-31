@@ -332,6 +332,9 @@ Runs [`HardwareKernelDispatcher::run_cluster_kernel_benchmark`](../crates/kadmiu
 ### `GET /api/v1/network/nat`
 Returns [`NatTraversalCoordinator`](../crates/kadmium-network/src/nat_traversal.rs) route-planning output and a loopback UDP self-test result. STUN/DERP addresses are descriptor strings; this endpoint does not establish a managed QUIC, DERP, or TURN connection.
 
+### `GET` or `POST /api/v1/network/usbc`
+Returns [`UsbCHostDiscoveryReport`](../crates/kadmium-network/src/usbc_interconnect.rs) from the current host/node profiles. `/api/v1/network/usbc-interconnect` is an alias. Scanner ratings and `delta_bridge_plan` values are modelled estimates, not cable benchmarks. Actual multi-lane sessions use `kdbr://` addresses and `KADMIUM_USBC_BRIDGE_BIND`; see the [USB-C delta bridge guide](guides/usbc-delta-bridge.md) for transport behavior and security limits.
+
 ### `GET /api/v1/companion/pairing`
 Returns sample/discovered `KDMD` LAN pairing candidates and an `OsSwapchainHysteresisEngine` policy timeline. The timeline is not proof that native swapchain, thermal, or battery hooks are active on every platform.
 

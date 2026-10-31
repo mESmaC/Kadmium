@@ -6,6 +6,8 @@ Install `rustup` and use the repository-pinned Rust 1.99.0 toolchain; `rust-tool
 
 Linux native-WebView development additionally requires WebKitGTK 4.1 and GTK 3 development packages. On Debian/Ubuntu CI these are `libwebkit2gtk-4.1-dev` and `libgtk-3-dev`. The excluded CUDA device harness has separate Rust/CUDA requirements; see `crates/kadmium-cuda/README.md`.
 
+Ordinary Intel NPU host tests run with the workspace. The opt-in hardware suite requires a supported Intel NPU/driver and is run explicitly with `cargo test --locked -p kadmium-npu --test intel_hardware -- --ignored`; see `crates/kadmium-npu/README.md` for its arithmetic and platform limitations.
+
 ## Rust checks
 
 Run the relevant checks for your change. The full host-workspace sequence is:

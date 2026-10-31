@@ -136,7 +136,7 @@ impl KadmiumMcpServer {
         }
     }
 
-    /// Lists all 6 MCP tools exposed by Kadmium (`Cd-48`).
+    /// Lists all 7 MCP tools exposed by Kadmium (`Cd-48`).
     pub fn list_tools() -> Vec<McpToolDescriptor> {
         vec![
             McpToolDescriptor {
