@@ -28,10 +28,9 @@ async fn main() {
     let mut gateway_state = kadmium_gateway::GatewayState::new();
     gateway_state.coordinator_lan_ip = "127.0.0.1".to_string();
     gateway_state.coordinator_http_port = bound_addr.port();
-    gateway_state.persistent_state_dir = std::env::temp_dir().join(format!(
-        "kadmium-control-room-fixture-{}",
-        std::process::id()
-    ));
+    if let Ok(state_dir) = std::env::var("KADMIUM_STATE_DIR") {
+        gateway_state.persistent_state_dir = std::path::PathBuf::from(state_dir);
+    }
 
     let state = Arc::new(Mutex::new(gateway_state));
     axum::serve(listener, kadmium_gateway::build_router(state))

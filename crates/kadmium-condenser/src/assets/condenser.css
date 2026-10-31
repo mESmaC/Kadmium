@@ -582,7 +582,7 @@ body.context-wide #context-files.has-preview #close-file-preview { visibility: h
   .budget-control { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0s !important; animation-iteration-count: 1 !important; transition: none !important; }
   .activity-label { background: none; color: var(--glow); }
   .streaming-text::after { display: none; }
 }
