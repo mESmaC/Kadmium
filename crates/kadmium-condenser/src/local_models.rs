@@ -5,7 +5,9 @@ use crate::provider::decode_json;
 use crate::server::{ApiError, ServerState};
 use crate::{CondenserError, ProviderConfig, ProviderKind, Result};
 use axum::{Json, extract::State};
-use kadmium_data::checkpoint::{CheckpointLibrary, CheckpointManifest, CheckpointSummary};
+use kadmium_data::checkpoint::{
+    CheckpointLibrary, CheckpointManifest, CheckpointSummary, ImportOptions, ggml_type_name,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -15,6 +17,9 @@ use std::time::Duration;
 #[derive(Deserialize)]
 pub(crate) struct ImportRequest {
     source_path: PathBuf,
+    /// Operator acceptance of a checkpoint that was quantized before import.
+    #[serde(default)]
+    accept_pre_quantized: bool,
 }
 #[derive(Deserialize)]
 pub(crate) struct LoadRequest {
@@ -107,7 +112,12 @@ pub(crate) async fn import(
     let library = state.model_library.clone();
     let manifest = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        library.import(&request.source_path)
+        library.import_with(
+            &request.source_path,
+            ImportOptions {
+                accept_pre_quantized: request.accept_pre_quantized,
+            },
+        )
     })
     .await
     .map_err(|e| CondenserError::Config(e.to_string()))?
@@ -372,22 +382,9 @@ fn verify_backend_tensors(manifest: &CheckpointManifest, shown: &Value) -> Resul
             .ok_or_else(|| backend_error(format!("backend omitted or renamed {}", t.name)))?;
         let dtype = found["type"].as_str().unwrap_or("").to_ascii_uppercase();
         let expected = match t.encoding {
-            kadmium_data::TensorEncoding::Ggml(code) => match code {
-                2 => "Q4_0",
-                3 => "Q4_1",
-                6 => "Q5_0",
-                7 => "Q5_1",
-                8 => "Q8_0",
-                9 => "Q8_1",
-                10 => "Q2_K",
-                11 => "Q3_K",
-                12 => "Q4_K",
-                13 => "Q5_K",
-                14 => "Q6_K",
-                15 => "Q8_K",
-                _ => "unsupported",
+            kadmium_data::TensorEncoding::Ggml(code) => {
+                ggml_type_name(code).unwrap_or("unsupported").to_string()
             }
-            .to_string(),
             kadmium_data::TensorEncoding::Fp32 => "F32".into(),
             kadmium_data::TensorEncoding::Fp16 => "F16".into(),
             kadmium_data::TensorEncoding::Bf16 => "BF16".into(),
@@ -414,8 +411,54 @@ fn verify_backend_tensors(manifest: &CheckpointManifest, shown: &Value) -> Resul
 
 #[cfg(test)]
 mod tests {
-    use super::user_facing_path;
+    use super::{user_facing_path, verify_backend_tensors};
+    use kadmium_data::TensorEncoding;
+    use kadmium_data::checkpoint::{CheckpointManifest, CheckpointTensor};
+    use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn backend_must_report_each_ggml_type_by_its_ggml_name() {
+        let tensor = |name: &str, code: u32| CheckpointTensor {
+            name: name.into(),
+            dtype: format!("GGML_{code}"),
+            shape: vec![256],
+            encoding: TensorEncoding::Ggml(code),
+            source: "model.gguf".into(),
+            source_offset: 0,
+            bytes: 0,
+            bank: String::new(),
+            bank_offset: 0,
+        };
+        let manifest = CheckpointManifest {
+            schema_version: 3,
+            id: String::new(),
+            name: "fixture".into(),
+            source_format: "gguf".into(),
+            architecture: Some("llama".into()),
+            context_length: 4096,
+            scaled_context_length: None,
+            source_files: Vec::new(),
+            banks: Vec::new(),
+            tensors: vec![tensor("experts", 39), tensor("attn", 16)],
+            quality_policy: "preserve_source".into(),
+            pre_quantized: None,
+            warnings: Vec::new(),
+        };
+        let shown = |expert: &str| {
+            json!({"tensors":[
+                {"name":"experts","shape":[256],"type":expert},
+                {"name":"attn","shape":[256],"type":"iq2_xxs"},
+            ]})
+        };
+        verify_backend_tensors(&manifest, &shown("MXFP4")).unwrap();
+        let changed = verify_backend_tensors(&manifest, &shown("BF16")).unwrap_err();
+        assert!(
+            changed
+                .to_string()
+                .contains("expected MXFP4, received BF16")
+        );
+    }
 
     #[test]
     fn verbatim_windows_prefixes_are_removed_for_display() {

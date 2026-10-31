@@ -74,11 +74,12 @@ Normalize, list or verify complete local checkpoints without changing tensor pre
 
 ```bash
 kadmium checkpoint normalize /models/model.gguf --library /models/kadmium
+kadmium checkpoint normalize /models/model-Q4_K_M.gguf --accept-pre-quantized
 kadmium checkpoint list --library /models/kadmium
 kadmium checkpoint verify CHECKPOINT_ID --library /models/kadmium
 ```
 
-All three commands print JSON. `--library <DIR>` defaults to `KADMIUM_MODEL_LIBRARY`, then the shared per-user model directory (for example `%LOCALAPPDATA%\Kadmium\models` on Windows). Normalization preserves originals and writes 64 KiB-aligned KTB banks with SHA-256 identities; it does not load or execute the model. See [local checkpoints](guides/local-checkpoints.md) for supported formats, library migration, shard completeness, storage requirements and backend limits.
+All three commands print JSON. `--library <DIR>` defaults to `KADMIUM_MODEL_LIBRARY`, then the shared per-user model directory (for example `%LOCALAPPDATA%\Kadmium\models` on Windows). Normalization preserves originals and writes 64 KiB-aligned KTB banks with SHA-256 identities; it does not load or execute the model. A checkpoint that was quantized before import is refused unless you pass `--accept-pre-quantized`. Its bytes are kept exactly, but precision lost before import cannot be recovered, and the summary records the method and formats as `pre_quantized`. See [local checkpoints](guides/local-checkpoints.md) for supported formats, library migration, shard completeness, storage requirements and backend limits.
 
 ### `kadmium-condenser load-checkpoint`
 

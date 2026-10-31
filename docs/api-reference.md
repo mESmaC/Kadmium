@@ -16,7 +16,7 @@ These routes run on standalone Condenser's loopback server, with its Host/Origin
 | Method and path | Contract |
 | --- | --- |
 | `GET /api/v1/checkpoints` | Returns `{directory, checkpoints}` from the local package library. Listing is not an integrity check. |
-| `POST /api/v1/checkpoints/import` | `{source_path}` returns a checkpoint summary after lossless normalization and atomic publication. |
+| `POST /api/v1/checkpoints/import` | `{source_path, accept_pre_quantized?}` returns a checkpoint summary after lossless normalization and atomic publication. A source quantized before import (GGUF Q/IQ/TQ/MXFP4 tensors, sub-16-bit SafeTensors floats, or a declared quantization method) is refused unless `accept_pre_quantized` is `true`; the summary then carries `pre_quantized: {method, bits?, tensor_formats}`. |
 | `POST /api/v1/checkpoints/browse` | `{path?}` lists model files and folders on the host (up to 500 entries), with the directory, parent and a truncation indicator. |
 | `POST /api/v1/checkpoints/load` | `{checkpoint_id, base_url, context_length?}` verifies the package, imports preserved source files into loopback Ollama without quantization, checks tensor metadata and preloads the declared context or an explicitly smaller allocation. Returns `{checkpoint, provider, context_length, tensor_metadata_verified, execution}`. |
 | `POST /api/v1/compute/jobs` | `{base_url, api_key?, job}` proxies a job to the coordinator below with a 75-second timeout. Credentials are request-scoped; redirects are disabled. |

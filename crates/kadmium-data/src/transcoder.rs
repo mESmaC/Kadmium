@@ -142,7 +142,7 @@ impl SafetensorsToKtbTranscoder {
                 continue;
             }
 
-            let (encoding, _) = crate::checkpoint::formats::safetensors_encoding(&spec.dtype)?;
+            let encoding = crate::checkpoint::formats::safetensors_encoding(&spec.dtype)?;
 
             packer.add_tensor_bank(
                 key.clone(),

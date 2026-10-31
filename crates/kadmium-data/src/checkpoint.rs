@@ -4,6 +4,8 @@
 
 pub(crate) mod formats;
 
+pub use formats::ggml_type_name;
+
 use crate::{
     KTB_PAGE_ALIGNMENT_BYTES, KtbBinaryArchiveHeader, KtbPageAlignedTensorEntry, TensorEncoding,
 };
@@ -40,6 +42,48 @@ pub struct CheckpointTensor {
     pub bank_offset: u64,
 }
 
+/// A source stored below 16-bit floating point, or one that declares a quantization method.
+/// Kadmium never produces these bytes; it copies them unchanged, and only after the operator
+/// accepts the source precision for that import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreQuantizedSource {
+    /// Method declared by the checkpoint, such as `gptq`, `awq`, `fp8` or `gguf`. `None` when
+    /// the tensors are sub-16-bit floats but no method is declared.
+    pub method: Option<String>,
+    /// Bits per weight, when the checkpoint metadata states one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bits: Option<u64>,
+    /// Stored tensor formats below 16-bit floating point, such as `Q4_K`, `F8_E4M3` or the
+    /// `I32` words that hold packed GPTQ weights.
+    pub tensor_formats: Vec<String>,
+}
+
+impl PreQuantizedSource {
+    /// One-line description for errors, warnings and labels, such as `gptq 4-bit (I32)`.
+    pub fn description(&self) -> String {
+        let mut text = self
+            .method
+            .clone()
+            .unwrap_or_else(|| "undeclared method".into());
+        if let Some(bits) = self.bits {
+            text.push_str(&format!(" {bits}-bit"));
+        }
+        if !self.tensor_formats.is_empty() {
+            text.push_str(&format!(" ({})", self.tensor_formats.join(", ")));
+        }
+        text
+    }
+}
+
+/// Per-import choices. The default accepts only sources at 16-bit floating point or wider.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportOptions {
+    /// Import a checkpoint that was quantized before it reached Kadmium. Its bytes are kept
+    /// exactly; precision lost before import cannot be recovered.
+    #[serde(default)]
+    pub accept_pre_quantized: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointManifest {
     pub schema_version: u32,
@@ -55,6 +99,9 @@ pub struct CheckpointManifest {
     pub tensors: Vec<CheckpointTensor>,
     /// The importer never changes tensor bytes, drops layers, or changes routing.
     pub quality_policy: String,
+    /// Present when the operator accepted a pre-quantized source for this package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_quantized: Option<PreQuantizedSource>,
     pub warnings: Vec<String>,
 }
 
@@ -72,6 +119,8 @@ pub struct CheckpointSummary {
     pub bank_bytes: u64,
     pub bank_count: usize,
     pub dtypes: BTreeSet<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pre_quantized: Option<PreQuantizedSource>,
     pub warnings: Vec<String>,
 }
 
@@ -89,6 +138,7 @@ impl CheckpointManifest {
             bank_bytes: self.banks.iter().map(|f| f.bytes).sum(),
             bank_count: self.banks.len(),
             dtypes: self.tensors.iter().map(|t| t.dtype.clone()).collect(),
+            pre_quantized: self.pre_quantized.clone(),
             warnings: self.warnings.clone(),
         }
     }
@@ -150,7 +200,7 @@ impl CheckpointLibrary {
     pub fn read(&self, id: &str) -> Result<CheckpointManifest> {
         let path = self.package_dir(id)?.join("manifest.json");
         let manifest: CheckpointManifest = read_json(&path)?;
-        if !matches!(manifest.schema_version, 1 | 2)
+        if !matches!(manifest.schema_version, 1..=3)
             || manifest.id != id
             || manifest.quality_policy != "preserve_source"
         {
@@ -208,6 +258,7 @@ impl CheckpointLibrary {
             context_length: context,
             scaled_context_length: scaled_context,
             tensors,
+            pre_quantized,
         } = formats::inspect(&dir.join("source"), &manifest.source_files)?;
         let recorded: Vec<_> = manifest
             .tensors
@@ -245,6 +296,19 @@ impl CheckpointLibrary {
                 return Err("Checkpoint manifest does not match its source metadata".into());
             }
         }
+        if pre_quantized != manifest.pre_quantized {
+            // Packages written before schema 3 kept quantized sources without recording them.
+            // Record what the source holds so every view labels it; the bytes are unchanged.
+            if manifest.schema_version < 3 && manifest.pre_quantized.is_none() {
+                manifest.schema_version = 3;
+                manifest.pre_quantized = pre_quantized;
+                if let Ok(bytes) = serde_json::to_vec_pretty(&manifest) {
+                    let _ = fs::write(dir.join("manifest.json"), bytes);
+                }
+            } else {
+                return Err("Checkpoint manifest does not match its source precision".into());
+            }
+        }
         if manifest.banks.len() != tensors.len().div_ceil(64) {
             return Err("Checkpoint manifest has an inconsistent bank count".into());
         }
@@ -274,7 +338,12 @@ impl CheckpointLibrary {
         Ok(manifest)
     }
 
+    /// Import with the default options, which refuse pre-quantized sources.
     pub fn import(&self, source: &Path) -> Result<CheckpointManifest> {
+        self.import_with(source, ImportOptions::default())
+    }
+
+    pub fn import_with(&self, source: &Path, options: ImportOptions) -> Result<CheckpointManifest> {
         let source = source.canonicalize().map_err(io_error)?;
         let paths = source_paths(&source)?;
         // Validate headers before copying a potentially multi-terabyte checkpoint.
@@ -292,7 +361,7 @@ impl CheckpointLibrary {
                 })
             })
             .collect::<Result<_>>()?;
-        formats::inspect(
+        let inspected = formats::inspect(
             if source.is_dir() {
                 &source
             } else {
@@ -300,6 +369,7 @@ impl CheckpointLibrary {
             },
             &descriptors,
         )?;
+        refuse_unaccepted(&inspected.pre_quantized, options)?;
         fs::create_dir_all(&self.root).map_err(io_error)?;
         let temporary = self.root.join(format!(
             ".import-{}-{}",
@@ -339,7 +409,10 @@ impl CheckpointLibrary {
             context_length,
             scaled_context_length,
             mut tensors,
+            pre_quantized,
         } = formats::inspect(&staging.0.join("source"), &source_files)?;
+        // The copied bytes decide, in case the source changed after the first inspection.
+        refuse_unaccepted(&pre_quantized, options)?;
         let mut banks = Vec::new();
         // A bounded number of descriptors per bank keeps version-1 Page 0 readable everywhere.
         for (index, batch) in tensors.chunks_mut(64).enumerate() {
@@ -352,16 +425,24 @@ impl CheckpointLibrary {
             "KTB normalization preserves source precision; it cannot recover quality lost before import.".into(),
             "Generation requires a compatible inference backend. KTB banks are not a native language-model runtime or a RepOps parity certification.".into(),
         ];
-        if tensors.iter().any(|t| {
+        if let Some(quantized) = &pre_quantized {
+            warnings.push(format!(
+                "You imported a pre-quantized source: {}. Kadmium keeps these bytes exactly; responses reflect the precision this checkpoint had before import.",
+                quantized.description()
+            ));
+        } else if tensors.iter().any(|t| {
             !matches!(
                 t.encoding,
-                TensorEncoding::Fp32 | TensorEncoding::Fp16 | TensorEncoding::Bf16
+                TensorEncoding::Fp64
+                    | TensorEncoding::Fp32
+                    | TensorEncoding::Fp16
+                    | TensorEncoding::Bf16
             )
         }) {
-            warnings.push("This checkpoint contains quantized or non-floating tensors. Their original formats are preserved.".into());
+            warnings.push("This checkpoint contains integer, boolean or complex tensors. Their original formats are preserved.".into());
         }
         let manifest = CheckpointManifest {
-            schema_version: 2,
+            schema_version: 3,
             id,
             name: source
                 .file_name()
@@ -376,6 +457,7 @@ impl CheckpointLibrary {
             banks,
             tensors,
             quality_policy: "preserve_source".into(),
+            pre_quantized,
             warnings,
         };
         let mut file = File::create(staging.0.join("manifest.json")).map_err(io_error)?;
@@ -391,6 +473,16 @@ impl CheckpointLibrary {
             return Err(io_error(error));
         }
         Ok(manifest)
+    }
+}
+
+fn refuse_unaccepted(found: &Option<PreQuantizedSource>, options: ImportOptions) -> Result<()> {
+    match found {
+        Some(quantized) if !options.accept_pre_quantized => Err(format!(
+            "This checkpoint is already quantized: {}. Kadmium never quantizes weights, and it imports a pre-quantized source only when you accept its precision for this import. Its bytes are kept exactly, but precision lost before import cannot be recovered. Accept the pre-quantized source to continue, or choose a 16-bit or wider original.",
+            quantized.description()
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -432,6 +524,10 @@ fn source_paths(source: &Path) -> Result<Vec<PathBuf>> {
                         | "merges.txt"
                         | "chat_template.jinja"
                         | "model.safetensors.index.json"
+                        // Quantization parameters that some pre-quantized exports keep
+                        // outside config.json (AutoGPTQ, NVIDIA ModelOpt).
+                        | "quantize_config.json"
+                        | "hf_quant_config.json"
                 ))
         {
             paths.push(path);
