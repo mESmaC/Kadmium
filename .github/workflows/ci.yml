@@ -55,6 +55,10 @@ jobs:
         run: |
           (cd formal && lake exe repops_vectors ../crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt)
           git diff --exit-code -- crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt
+      - name: Check the transport chunk-map fixture matches the Lean model
+        run: |
+          (cd formal && lake exe transport_vectors ../crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt)
+          git diff --exit-code -- crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt
 
   workspace-ui:
     name: Workspace browser workflows

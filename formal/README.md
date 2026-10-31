@@ -15,7 +15,7 @@ An optimality theorem names its cost model, such as the number of additions or t
 
 ## Results
 
-All results are **Proved (model)**. The differential fixture is `crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt`, checked by `crates/kadmium-runtime/tests/repops_lean_vectors.rs`.
+All results are **Proved (model)**. The RepOps differential fixture is `crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt`, checked by `crates/kadmium-runtime/tests/repops_lean_vectors.rs`.
 
 | Theorem | Statement | Rust item |
 | :--- | :--- | :--- |
@@ -26,6 +26,18 @@ All results are **Proved (model)**. The differential fixture is `crates/kadmium-
 | `RepOps.push_pastEnd`, `RepOps.push_twice`, `RepOps.finish_incomplete` | A leaf past the end, a leaf pushed twice and an early `finish` are rejected. | `repops::TreeReducer` |
 | `RepOps.legacySum_eq_treeSum` | The legacy Verde reduction builds the same tree as `tree_sum`, so the two agree bit for bit. | `VerdeVerificationEngine::repops_pairwise_tree_sum` |
 | `RepOps.legacy_fallback_unreachable` | The legacy reduction's `if mid >= n { n / 2 }` branch is never taken for any `n ≥ 2`. | `VerdeVerificationEngine::repops_pairwise_tree_sum` |
+
+### Transport chunk maps
+
+**Proved (model).** The differential fixture is `crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt`, checked by `crates/kadmium-data/tests/transport_lean_vectors.rs` against both Rust functions, including short reads. Modelling choices are listed in `KadmiumFormal/Transport/ChunkMap.lean`: byte counts are unbounded `Nat`, digests are not modelled, and a read returns 0 only at end of file.
+
+| Theorem | Statement | Rust item |
+| :--- | :--- | :--- |
+| `Transport.readLoop_eq_chunkPlan` | The sender's read loop produces exactly `chunkPlan`, so every chunk map the sender builds passes the receiver's chunk check. | `checkpoint::transport::hash_stream`, `chunk_plan` |
+| `Transport.validChunks_iff` | The receiver's chunk check accepts exactly one map per file: `chunkPlan`. | `TransportManifest::validate`, `chunk_plan` |
+| `Transport.chunkPlan_tiles` | That map starts at offset 0, each chunk starts where the previous one ends, every chunk holds 1 to `chunk_bytes` bytes, and the chunks cover the file exactly once. An empty file has no chunks. | `chunk_plan` |
+| `Transport.chunkPlan_aligned` | If an alignment divides the chunk size, every chunk offset is aligned to it. | `chunk_plan` |
+| `Transport.layout_divides` | 4 KiB divides the 64 KiB KTB page, which divides the 16 MiB chunk. | `TRANSPORT_ALIGNMENT_BYTES`, `TRANSPORT_CHUNK_BYTES` |
 
 Every RepOps theorem holds for an arbitrary addition `add : α → α → α` with no associativity, commutativity or identity assumed. IEEE `f32` and `f64` addition has none of those laws, so the statements hold bit for bit for floats without a floating-point model: two reductions that evaluate the same tree perform the same additions on the same operands.
 
@@ -48,8 +60,10 @@ The toolchain is pinned in `lean-toolchain`; `elan` installs it on first use. Th
 cd formal
 lake build --wfail
 lake exe repops_vectors ../crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt
+lake exe transport_vectors ../crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt
 cd ..
 cargo test --locked -p kadmium-runtime --test repops_lean_vectors
+cargo test --locked -p kadmium-data --test transport_lean_vectors
 ```
 
 `lake build --wfail` checks every proof and turns warnings, including `declaration uses 'sorry'`, into errors. `KadmiumFormal/Audit.lean` fails the build if a listed theorem depends on any axiom other than `propext`, `Classical.choice` and `Quot.sound`, which rules out `sorry`, `native_decide` and project-local axioms. CI runs both steps and fails if the regenerated fixture differs from the committed one.

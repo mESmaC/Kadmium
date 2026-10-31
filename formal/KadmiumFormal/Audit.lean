@@ -2,6 +2,7 @@ import Lean
 import KadmiumFormal.Pow2
 import KadmiumFormal.RepOps.TreeSum
 import KadmiumFormal.RepOps.TreeReducer
+import KadmiumFormal.Transport.ChunkMap
 
 /-!
 # Axiom audit
@@ -35,3 +36,8 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.RepOps.push_pastEnd
 #assert_standard_axioms Kadmium.RepOps.push_twice
 #assert_standard_axioms Kadmium.RepOps.finish_incomplete
+#assert_standard_axioms Kadmium.Transport.readLoop_eq_chunkPlan
+#assert_standard_axioms Kadmium.Transport.validChunks_iff
+#assert_standard_axioms Kadmium.Transport.chunkPlan_tiles
+#assert_standard_axioms Kadmium.Transport.chunkPlan_aligned
+#assert_standard_axioms Kadmium.Transport.layout_divides

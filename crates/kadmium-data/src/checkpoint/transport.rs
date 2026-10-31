@@ -162,11 +162,9 @@ impl TransportManifest {
             if file.chunks.len() as u64 != expected {
                 return Err(format!("Chunk map for {} is incomplete", file.path));
             }
-            for (index, chunk) in file.chunks.iter().enumerate() {
-                let offset = index as u64 * self.chunk_bytes;
-                if chunk.offset != offset
-                    || chunk.bytes != (file.bytes - offset).min(self.chunk_bytes)
-                {
+            let plan = chunk_plan(file.bytes, self.chunk_bytes);
+            for (chunk, (offset, bytes)) in file.chunks.iter().zip(plan) {
+                if chunk.offset != offset || chunk.bytes != bytes {
                     return Err(format!("Chunk map for {} is misaligned", file.path));
                 }
                 hex_digest(&chunk.sha256)?;
@@ -502,11 +500,42 @@ fn check_extent(extent: &TransportExtent) -> Result<()> {
     Ok(())
 }
 
+/// The only chunk map `TransportManifest::validate` accepts for a file of `bytes` bytes, as
+/// `(offset, bytes)` pairs: chunk `i` starts at `i * chunk_bytes` and holds the rest of the file
+/// up to `chunk_bytes`. An empty file, or a zero chunk size, has no chunks.
+pub fn chunk_plan(bytes: u64, chunk_bytes: u64) -> Vec<(u64, u64)> {
+    if chunk_bytes == 0 {
+        return Vec::new();
+    }
+    (0..bytes.div_ceil(chunk_bytes))
+        .map(|index| {
+            let offset = index * chunk_bytes;
+            (offset, (bytes - offset).min(chunk_bytes))
+        })
+        .collect()
+}
+
 fn hash_chunks(dir: &Path, path: &str, record: Option<&PackageFile>) -> Result<TransportFile> {
-    let mut input = File::open(dir.join(path)).map_err(io_error)?;
+    let input = File::open(dir.join(path)).map_err(io_error)?;
+    let file = hash_stream(input, path, TRANSPORT_CHUNK_BYTES)?;
+    if record.is_some_and(|r| r.bytes != file.bytes || r.sha256 != file.sha256) {
+        return Err(format!(
+            "Integrity check failed for {path}; restore a backup or prepare the original again"
+        ));
+    }
+    Ok(file)
+}
+
+/// Reads `input` to the end in chunks of `chunk_bytes` and hashes each chunk and the whole
+/// stream. This is the sender's half of the chunk map; the receiver's check is `chunk_plan`.
+pub fn hash_stream(mut input: impl Read, path: &str, chunk_bytes: u64) -> Result<TransportFile> {
+    let size = usize::try_from(chunk_bytes)
+        .ok()
+        .filter(|&size| size > 0)
+        .ok_or("Transport chunk size must be positive")?;
     let mut whole = Sha256::new();
     let mut chunks = Vec::new();
-    let mut buffer = vec![0u8; TRANSPORT_CHUNK_BYTES as usize];
+    let mut buffer = vec![0u8; size];
     let mut offset = 0u64;
     loop {
         let mut filled = 0;
@@ -532,11 +561,6 @@ fn hash_chunks(dir: &Path, path: &str, record: Option<&PackageFile>) -> Result<T
         }
     }
     let sha256 = format!("{:x}", whole.finalize());
-    if record.is_some_and(|r| r.bytes != offset || r.sha256 != sha256) {
-        return Err(format!(
-            "Integrity check failed for {path}; restore a backup or prepare the original again"
-        ));
-    }
     Ok(TransportFile {
         path: path.into(),
         bytes: offset,
