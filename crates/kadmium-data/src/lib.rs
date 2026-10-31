@@ -649,21 +649,90 @@ mod tests {
         )
         .expect("plan hf selective pull");
         assert_eq!(hf_plan.hf_ref.repo_id, "deepseek-ai/DeepSeek-V3");
+        assert!(hf_plan.plan_only);
+        assert_eq!(hf_plan.files_downloaded, 0);
+        assert_eq!(hf_plan.ktb_banks_compiled, 0);
+        assert_eq!(hf_plan.index_source, "unverified_missing_index_manifest");
+        assert_eq!(hf_plan.seed_vault_node, plan.assignments[0].hostname);
         assert!(!hf_plan.node_pulls.is_empty());
         for np in &hf_plan.node_pulls {
-            assert!(!np.required_safetensors_files.is_empty());
+            assert!(np.required_safetensors_files.is_empty());
             assert!(np.full_repo_avoided_gb > 150.0);
             assert!(np.output_ktb_bank_path.ends_with(".ktb"));
         }
 
+        // Dataset URIs must not be planned as .safetensors/.ktb models and must not invent split filenames
+        assert!(
+            HuggingFaceHubConnector::plan_selective_model_pull(
+                "hf://datasets/open-r1/OpenR1-Math-220k@main",
+                &plan
+            )
+            .is_err()
+        );
+        let ds_plan = HuggingFaceHubConnector::plan_dataset_pull(
+            "hf://datasets/open-r1/OpenR1-Math-220k@main",
+        )
+        .expect("plan dataset pull");
+        assert_eq!(ds_plan.hf_ref.kind, HfRepoKind::Dataset);
+        assert!(ds_plan.dataset_info_url.contains("dataset_infos.json"));
+        assert!(ds_plan.parquet_split_urls.is_empty());
+        assert_eq!(ds_plan.files_downloaded, 0);
+
+        let ds_with_splits = HuggingFaceHubConnector::plan_dataset_pull_with_splits(
+            "hf://datasets/open-r1/OpenR1-Math-220k@main",
+            &["data/train-00000-of-00001.parquet"],
+        )
+        .expect("plan dataset pull with explicit split");
+        assert_eq!(ds_with_splits.parquet_split_urls.len(), 1);
+
+        // Real parsed index manifest populates exact shard files
+        let single_shard_index = SafetensorsIndexManifest {
+            total_size_bytes: 14_000_000_000,
+            weight_map: (0..=plan.total_layers)
+                .map(|l| {
+                    (
+                        format!("model.layers.{l}.self_attn.q_proj.weight"),
+                        "model.safetensors".to_string(),
+                    )
+                })
+                .collect(),
+        };
+        let indexed_plan = HuggingFaceHubConnector::plan_selective_model_pull_with_index(
+            "hf://Qwen/Qwen2.5-7B-Instruct@main",
+            &plan,
+            Some(&single_shard_index),
+        )
+        .expect("plan with parsed index");
+        assert_eq!(indexed_plan.index_source, "parsed_safetensors_index");
+        for np in &indexed_plan.node_pulls {
+            assert_eq!(
+                np.required_safetensors_files,
+                vec!["model.safetensors".to_string()]
+            );
+        }
+
         let gh_run = GitHubConnector::evaluate_repo_on_slice(
-            "gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt",
+            "gh://zhengkid/Dream-RSI@a4f91c2#worlds/gpu_kernel_opt",
         )
         .expect("evaluate github repo on slice");
         assert_eq!(gh_run.gh_ref.owner, "zhengkid");
         assert_eq!(gh_run.gh_ref.repo, "Dream-RSI");
+        assert_eq!(gh_run.gh_ref.git_ref, "a4f91c2");
+        assert_eq!(gh_run.pinned_commit_sha, "unverified_unmounted");
         assert_eq!(gh_run.assigned_slice_id, "slice-04-rl-dream-rsi");
-        assert!(gh_run.verde_verification_passed);
+        assert!(!gh_run.mounted);
+        assert_eq!(gh_run.execution_mode, "plan_only_unmounted");
+        assert_eq!(gh_run.verified_node_count, 0);
+        assert!(!gh_run.verde_verification_passed);
+        assert_eq!(gh_run.measured_tokens_per_sec, 0.0);
+        assert_eq!(gh_run.dream_rsi_best_speedup, 0.0);
+        assert!(
+            GitHubConnector::stage_local_repo(
+                "gh://nonexistent-owner-404/nonexistent-repo-404@deadbeef",
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]

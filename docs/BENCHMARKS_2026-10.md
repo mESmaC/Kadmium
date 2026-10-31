@@ -279,6 +279,26 @@ The guide also reports Windows loopback rates of 2–6 Gbit/s on one lane and 18
 
 ---
 
+## Run 7 — FTS3 pipelined loopback page transfer (`2026-10-31`)
+
+### 7.1 Configuration and provenance
+
+- **Date and repository state:** `2026-10-31`, `main` at `fec350c` (PR `#58`). The harness is in the repository: `fts3_latency_benchmark` in [`crates/kadmium-runtime/src/live_worker.rs`](../crates/kadmium-runtime/src/live_worker.rs), run with `KADMIUM_DELTA_LINK=0 cargo test --release -p kadmium-runtime --lib fts3_latency_benchmark -- --ignored --nocapture`.
+- **Configuration:** 32 × 64 KiB pages (`2 MiB` total bank), loopback TCP responder injecting a 20 ms per-reply delay (`KADMIUM_DELTA_LINK=0`), comparing stop-and-wait sequential `send_fts3_chunk_tcp` against the 8-in-flight completion-driven window (`MAX_IN_FLIGHT_FTS3_PAGES = 8`) in `stream_fts3_pages_tcp`.
+
+### 7.2 Results (Measured, loopback, injected 20 ms reply delay)
+
+| Mode | Wall time, 32 × 64 KiB pages (PR `#58` / verification run) | Label |
+| :--- | ---: | :--- |
+| Sequential (`1` in flight) | `908.65 ms` / `984.6 ms` | **Measured**, loopback TCP, injected 20 ms reply delay, `KADMIUM_DELTA_LINK=0` |
+| Pipelined (`MAX_IN_FLIGHT_FTS3_PAGES = 8`) | `130.21 ms` / `145.4 ms` | **Measured**, loopback TCP, injected 20 ms reply delay, `KADMIUM_DELTA_LINK=0` |
+
+### 7.3 Caveats
+
+1. This benchmark measures request-pipelining latency hiding against a synthetic 20 ms reply delay on loopback TCP; it does not measure LAN/WAN link bandwidth or disk I/O throughput.
+
+---
+
 ## How to add a run
 
 Copy the Run 1 structure and fill every field; leave nothing implied.

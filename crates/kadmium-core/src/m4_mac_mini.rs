@@ -276,6 +276,9 @@ fn send_m4_json_rpc(
     addr_str: &str,
     payload: &serde_json::Value,
 ) -> Option<(serde_json::Value, f64)> {
+    if !crate::external_hardware_probes_allowed(Some(addr_str)) {
+        return None;
+    }
     let mut guard = M4_PERSISTENT_CONN.lock().ok()?;
     let mut line = serde_json::to_string(payload).ok()?;
     line.push('\n');
@@ -604,7 +607,10 @@ impl M4MacMiniLanBridge {
 
     /// Probes local `sysctl` hardware counters when Kadmium is running natively on an Apple Silicon Mac (`arm64e`).
     pub fn probe_local_apple_silicon_telemetry() -> Option<M4MacMiniTelemetry> {
-        if !cfg!(target_os = "macos") || !cfg!(target_arch = "aarch64") {
+        if !crate::external_hardware_probes_allowed(None)
+            || !cfg!(target_os = "macos")
+            || !cfg!(target_arch = "aarch64")
+        {
             return None;
         }
         let read_sysctl = |key: &str| -> Option<String> {

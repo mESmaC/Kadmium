@@ -419,6 +419,14 @@ impl CoordinatorFailoverQuorum {
     /// Initializes the coordinator failover quorum from eligible `TrustedCore` nodes holding `NodeRole::Coordinator`
     /// or `NodeRole::StorageVault` (e.g. Main PC, M4 Mac Mini, Home NAS).
     pub fn from_cluster(nodes: &[HardwareNode]) -> Self {
+        if nodes.is_empty() {
+            return Self {
+                term: 0,
+                active_leader: NodeId("unconnected".into()),
+                standby_candidates: Vec::new(),
+            };
+        }
+
         let mut candidates: Vec<NodeId> = nodes
             .iter()
             .filter(|n| {
@@ -433,7 +441,7 @@ impl CoordinatorFailoverQuorum {
         let active_leader = if !candidates.is_empty() {
             candidates.remove(0)
         } else {
-            NodeId("node-m4-mac-mini".into())
+            nodes[0].id.clone()
         };
 
         Self {

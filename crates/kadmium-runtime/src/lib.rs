@@ -715,13 +715,24 @@ mod tests {
         let cluster = sample_personal_cluster();
         let report = HardwareKernelDispatcher::run_cluster_kernel_benchmark(&cluster);
         assert_eq!(report.node_profiles.len(), cluster.len());
-        assert!(report.cross_silicon_bit_identical);
+        assert!(!report.cross_silicon_bit_identical);
+        assert_eq!(report.verification_status, "host_reference_only");
         assert!(report.sample_output_norm > 0.0);
         assert!(
             report
                 .node_profiles
                 .iter()
                 .all(|p| p.repops_digest_fnv1a == report.canonical_repops_digest_fnv1a)
+        );
+
+        let verified = HardwareKernelDispatcher::run_verified_kernel_benchmark(&[
+            HardwareKernelDispatcher::measure_local_device_receipt(cluster[0].clone(), "node-a"),
+            HardwareKernelDispatcher::measure_local_device_receipt(cluster[1].clone(), "node-b"),
+        ]);
+        assert!(verified.cross_silicon_bit_identical);
+        assert_eq!(
+            verified.verification_status,
+            "bit_identical_across_participants"
         );
     }
 

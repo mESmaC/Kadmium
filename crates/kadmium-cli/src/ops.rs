@@ -1079,7 +1079,12 @@ pub async fn run_join(
     }
 }
 
-pub fn run_pull(uri: &str) {
+pub fn run_pull(
+    uri: &str,
+    plan_only: bool,
+    local_path: Option<&str>,
+    index_path: Option<&str>,
+) -> Result<(), String> {
     println!(
         "===================================================================================="
     );
@@ -1089,39 +1094,126 @@ pub fn run_pull(uri: &str) {
     );
 
     if uri.starts_with("gh://") || uri.contains("github.com") {
-        let gh_run =
-            GitHubConnector::evaluate_repo_on_slice(uri).expect("Failed to parse GitHub URI");
+        let gh_run = if plan_only {
+            GitHubConnector::evaluate_repo_on_slice(uri)?
+        } else {
+            let checkout = local_path.map(std::path::Path::new);
+            GitHubConnector::stage_local_repo(uri, checkout)?
+        };
         println!(
-            "  * GitHub Repo Mounted:    {}/{} @ {} (SHA: {})",
+            "  * GitHub Repository:      {}/{} @ {} (Pinned Ref: {})",
             gh_run.gh_ref.owner,
             gh_run.gh_ref.repo,
             gh_run.gh_ref.git_ref,
             gh_run.pinned_commit_sha
         );
+        println!(
+            "  * Execution Mode:         {} (Mounted: {}, Verified Nodes: {})",
+            gh_run.execution_mode, gh_run.mounted, gh_run.verified_node_count
+        );
         println!("  * Subpath / World:        {:?}", gh_run.gh_ref.subpath);
         println!("  * Target Slice Assigned:  {}", gh_run.assigned_slice_id);
         println!("  * Sandbox Runtime:        {}", gh_run.sandbox_runtime);
         println!(
-            "  * Verde Check Conclusion: {} ({:.1} tok/s, {:.2}x Dream-RSI speedup)",
-            gh_run.github_check_conclusion,
-            gh_run.measured_tokens_per_sec,
-            gh_run.dream_rsi_best_speedup
+            "  * Check Status:           {}",
+            gh_run.github_check_conclusion
         );
+        Ok(())
     } else {
-        let cluster = sample_personal_cluster();
-        let model = ModelSpec::deepseek_v3_671b_moe();
+        let hf_ref = kadmium_data::HfRepoRef::parse(uri)?;
+        if hf_ref.kind == kadmium_data::HfRepoKind::Dataset {
+            let ds_plan = HuggingFaceHubConnector::plan_dataset_pull(uri)?;
+            println!(
+                "  * Hugging Face Dataset:   {} (rev: {}, kind: {:?})",
+                ds_plan.hf_ref.repo_id, ds_plan.hf_ref.revision, ds_plan.hf_ref.kind
+            );
+            println!("  * Dataset Metadata URL:   {}", ds_plan.dataset_info_url);
+            println!(
+                "  * Mode:                   Plan-Only Preview ({} files downloaded, {} bytes staged)",
+                ds_plan.files_downloaded, ds_plan.staged_bytes
+            );
+            for split_url in &ds_plan.parquet_split_urls {
+                println!("  * Planned Parquet Split:  {split_url}");
+            }
+            return Ok(());
+        }
+
+        let parsed_index = match index_path {
+            Some(path) => {
+                let raw = std::fs::read_to_string(path)
+                    .map_err(|e| format!("Failed to read index file '{path}': {e}"))?;
+                Some(kadmium_data::HfByteRangeSlicer::parse_index_manifest(&raw)?)
+            }
+            None => None,
+        };
+
+        let local_node = LiveHardwareProfiler::probe_local_host();
+        let cluster = vec![local_node];
+        let repo_lower = hf_ref.repo_id.to_ascii_lowercase();
+        let mut model = if repo_lower.contains("671b") || repo_lower.contains("deepseek-v3") {
+            ModelSpec::deepseek_v3_671b_moe()
+        } else if repo_lower.contains("235b") {
+            ModelSpec::qwen3_235b_moe()
+        } else if repo_lower.contains("70b") {
+            ModelSpec::llama_3_70b_lora()
+        } else if repo_lower.contains("32b") {
+            ModelSpec::qwen2_5_coder_32b()
+        } else if repo_lower.contains("14b") {
+            ModelSpec::qwen2_5_coder_14b()
+        } else if repo_lower.contains("7b") || repo_lower.contains("8b") {
+            ModelSpec::qwen2_5_coder_7b()
+        } else if repo_lower.contains("3b")
+            || repo_lower.contains("1.5b")
+            || repo_lower.contains("0.5b")
+        {
+            ModelSpec::llama_3_2_3b_instruct()
+        } else {
+            ModelSpec::recommended_for_cluster(&cluster)
+        };
+        model.id = hf_ref.repo_id.clone();
+        if let Some(ref idx) = parsed_index {
+            if let Some(max_l) = idx
+                .weight_map
+                .keys()
+                .map(|t| kadmium_data::SafetensorsToKtbTranscoder::parse_layer_and_expert(t).0)
+                .max()
+                && max_l > 0
+            {
+                model.num_layers = max_l + 1;
+            }
+            if idx.total_size_bytes > 0 && model.num_layers > 0 {
+                let total_gb = (idx.total_size_bytes as f64) / 1_073_741_824.0;
+                if model.is_moe && model.experts_per_layer > 0 {
+                    model.dense_layer_size_gb = (total_gb * 0.15) / (model.num_layers as f64);
+                    model.single_expert_size_gb =
+                        (total_gb * 0.85) / ((model.num_layers * model.experts_per_layer) as f64);
+                } else {
+                    model.dense_layer_size_gb = total_gb / (model.num_layers as f64);
+                }
+            }
+        }
         let plan = ShardPlanner::compute_plan(1, &model, WorkloadKind::Inference, &cluster);
-        let hf_plan = HuggingFaceHubConnector::plan_selective_model_pull(uri, &plan)
-            .expect("Failed to parse Hugging Face URI");
+        let hf_plan = HuggingFaceHubConnector::plan_selective_model_pull_with_index(
+            uri,
+            &plan,
+            parsed_index.as_ref(),
+        )?;
         println!(
             "  * Hugging Face Repo:      {} (rev: {}, kind: {:?})",
             hf_plan.hf_ref.repo_id, hf_plan.hf_ref.revision, hf_plan.hf_ref.kind
         );
         println!("  * Index Manifest URL:     {}", hf_plan.index_manifest_url);
+        println!(
+            "  * Index Source:           {} (Plan-Only: {}, Files Downloaded: {}, .ktb Compiled: {})",
+            hf_plan.index_source,
+            hf_plan.plan_only,
+            hf_plan.files_downloaded,
+            hf_plan.ktb_banks_compiled
+        );
         println!("  * Primary .ktb Seed Node: {}", hf_plan.seed_vault_node);
         println!(
             "\n{:<22} {:<10} {:<12} {:<14} {:<42}",
-            "WORKER HOSTNAME", "LAYERS", "SELECTIVE", "AVOIDED DL", "COMPILED .KTB BANK"
+            "WORKER HOSTNAME", "LAYERS", "SELECTIVE", "AVOIDED DL", "PLANNED .KTB BANK PATH"
         );
         println!("{}", "-".repeat(104));
         for np in &hf_plan.node_pulls {
@@ -1135,11 +1227,16 @@ pub fn run_pull(uri: &str) {
                 np.output_ktb_bank_path
             );
         }
+        Ok(())
     }
 }
 
-pub fn run_mcp(inspect: bool) {
-    let mut state = GatewayState::new();
+pub fn run_mcp(inspect: bool, demo: bool) {
+    let mut state = if demo {
+        GatewayState::new()
+    } else {
+        GatewayState::new_live_unconnected()
+    };
 
     if inspect {
         let manifest = KadmiumMcpServer::manifest();
