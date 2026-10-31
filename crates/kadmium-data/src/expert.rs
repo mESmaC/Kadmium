@@ -831,6 +831,11 @@ impl ExpertLoader {
         }
     }
 
+    /// The cache budget this loader keeps its packets under, in bytes.
+    pub fn max_cache_bytes(&self) -> usize {
+        self.inner.max_cache_bytes
+    }
+
     fn acquire_permit(&self) -> ExpertLoadPermit<'_> {
         let mut active = self
             .inner

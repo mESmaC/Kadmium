@@ -173,6 +173,10 @@ pub struct GatewayState {
     pub grid_kv_catalog: kadmium_grid::ReplicaCatalog,
     /// When an idle session's pages sink, and how much a resume replays.
     pub grid_kv_policy: kadmium_sharding::KvTierPolicy,
+    /// The cross-session prompt cache: which session's decoder state a new prompt can start
+    /// from, and how much of the prompt that skips (InferSSD's server prompt cache); in memory
+    /// only, keyed by the prompt's tokens.
+    pub grid_prompt_cache: kadmium_sharding::PromptCache,
     pub coordinator_lan_ip: String,
     pub coordinator_http_port: u16,
     pub training_step_counter: u64,
@@ -204,6 +208,10 @@ pub struct GatewayState {
     /// Checkpoint id training was last resumed from via `/api/v1/training/resume`.
     pub resumed_from_checkpoint: Option<String>,
 }
+
+/// Modelled KV state the prompt cache keeps across sessions before it evicts, least recently
+/// used first.
+pub const DEFAULT_PROMPT_CACHE_BYTES: u64 = 256 << 20;
 
 /// On-disk persistent journal, stored separately for live and demo sessions,
 /// so active models, training progress, checkpoints, and OTA versions survive restarts.
@@ -319,6 +327,11 @@ impl GatewayState {
             grid_sessions: BTreeMap::new(),
             grid_kv_catalog: kadmium_grid::ReplicaCatalog::new(),
             grid_kv_policy: kadmium_sharding::KvTierPolicy::default(),
+            grid_prompt_cache: kadmium_sharding::PromptCache::new(
+                DEFAULT_PROMPT_CACHE_BYTES,
+                0,
+                kadmium_sharding::PromptMemoryKind::Truncatable,
+            ),
         }
     }
 

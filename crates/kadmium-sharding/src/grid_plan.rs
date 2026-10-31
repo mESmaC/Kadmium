@@ -20,7 +20,7 @@
 
 use kadmium_core::{
     ComputeBackend, HardwareNode, ModelSpec, NodeId, NodeRole, NodeTrustTier, ResourceOffer,
-    WorkloadKind,
+    WorkloadKind, batch_coverage,
 };
 use kadmium_grid::{
     AppKind, ContentKind, ContentRef, CostEstimate, PlacementConstraints, PlacementRule,
@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     BalanceMode, BalanceReport, CalibrationRecord, DeepEpStepAccount, ExpertLoadBalancer,
-    LinkSegments, ReplicaBudget, ShardPlanner,
+    LinkSegments, ReplicaBudget, ShardPlanner, f32_row_wire_bytes, nominal_hidden_dim,
 };
 
 const GIB: f64 = 1_073_741_824.0;
@@ -1246,6 +1246,28 @@ pub struct StrategyCostModel {
     /// Link segments the load balancer packs across first; derived from the nodes when absent.
     #[serde(default)]
     pub segments: Option<LinkSegments>,
+    /// Learned hop lines per node, `(fixed ms, ms per MB)` fitted from the coordinator's own
+    /// dispatch timings, which price a hop by the bytes it carries instead of the round trip
+    /// alone (InferSSD's learned link line).
+    #[serde(default)]
+    pub measured_hop_lines: BTreeMap<NodeId, (f64, f64)>,
+    /// How the distinct experts a batch touches grow with its rows.
+    #[serde(default)]
+    pub coverage: CoverageModel,
+}
+
+/// How many of a layer's experts a batch of rows is expected to touch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CoverageModel {
+    /// The exact expectation under independent routing: an expert selected with probability
+    /// `k * p` by one row is touched by at least one of `n` rows with `1 - (1 - k p)^n`, which
+    /// is InferSSD's `E (1 - (1 - k/E)^n)` under uniform routing. Opt in with
+    /// [`StrategyCostModel::with_coverage`].
+    Exact,
+    /// The fitted form, `min(1, k p n^growth)` with the model's `batch_expert_growth`: the
+    /// default, so estimates for a mesh that has learned nothing are what they always were.
+    #[default]
+    PowerGrowth,
 }
 
 impl Default for StrategyCostModel {
@@ -1257,6 +1279,8 @@ impl Default for StrategyCostModel {
             batch_expert_growth: 0.7,
             measured_stream_gbps: BTreeMap::new(),
             segments: None,
+            measured_hop_lines: BTreeMap::new(),
+            coverage: CoverageModel::default(),
         }
     }
 }
@@ -1282,6 +1306,56 @@ impl StrategyCostModel {
             self.measured_stream_gbps.insert(node, gbps);
         }
         self
+    }
+
+    /// A learned hop line for a node: `fixed_ms` plus `ms_per_mb` per megabyte carried.
+    pub fn with_measured_hop_line(mut self, node: NodeId, fixed_ms: f64, ms_per_mb: f64) -> Self {
+        if fixed_ms.is_finite() && ms_per_mb.is_finite() && fixed_ms >= 0.0 && ms_per_mb >= 0.0 {
+            self.measured_hop_lines.insert(node, (fixed_ms, ms_per_mb));
+        }
+        self
+    }
+
+    pub fn with_coverage(mut self, coverage: CoverageModel) -> Self {
+        self.coverage = coverage;
+        self
+    }
+
+    /// The share of an expert's bytes a batch of `rows` rows is expected to read, when one row
+    /// selects it with probability `p_select`.
+    fn expected_share(&self, p_select: f64, rows: f64) -> f64 {
+        match self.coverage {
+            CoverageModel::Exact => batch_coverage(p_select, rows),
+            CoverageModel::PowerGrowth => (p_select * rows.powf(self.batch_expert_growth)).min(1.0),
+        }
+    }
+
+    /// The cost of one hop to `node` carrying `wire_bytes`: the learned line when the node has
+    /// one, else its round trip alone (the bytes are then inside the round trip's prior).
+    fn hop_cost_ms(
+        &self,
+        node: &NodeId,
+        wire_bytes: u64,
+        budgets: &BTreeMap<NodeId, NodeBudget>,
+    ) -> f64 {
+        match self.measured_hop_lines.get(node) {
+            Some((fixed, per_mb)) => fixed + per_mb * wire_bytes as f64 / 1e6,
+            None => self.rtt_ms(node, budgets),
+        }
+    }
+
+    /// Bytes one MoE layer's dispatch and combine carry for `rows` rows: exact `f32` rows out
+    /// and `f32` partials back, at the model's nominal hidden width.
+    pub fn layer_hop_bytes(model: &ModelSpec, rows: u32) -> u64 {
+        let dim = nominal_hidden_dim(model);
+        2 * rows as u64 * f32_row_wire_bytes(dim) as u64
+    }
+
+    /// Bytes a stage boundary carries for `rows` rows: INT8 codes plus one `f32` scale per
+    /// 16-element block.
+    pub fn boundary_hop_bytes(model: &ModelSpec, rows: u32) -> u64 {
+        let dim = nominal_hidden_dim(model) as u64;
+        rows as u64 * (dim + dim.div_ceil(16) * 4)
     }
 
     /// Effective bandwidth of a tier on a node in GB/s: the node's own measured streaming rate
@@ -1334,7 +1408,8 @@ impl StrategyCostModel {
         let rows = self.rows.max(1) as f64;
         let expert_bytes = model.single_expert_size_gb * GIB;
         let k = model.active_experts_per_token as f64;
-        let distinct_scale = rows.powf(self.batch_expert_growth);
+        let layer_hop_bytes = Self::layer_hop_bytes(model, self.rows.max(1));
+        let boundary_hop_bytes = Self::boundary_hop_bytes(model, self.rows.max(1));
 
         let mut weight_ms = 0.0f64;
         let mut expert_ms = 0.0f64;
@@ -1384,7 +1459,7 @@ impl StrategyCostModel {
                 let mut node_tier_bytes: BTreeMap<(NodeId, ResidencyTier), f64> = BTreeMap::new();
                 for home in placement.experts.iter().filter(|h| h.layer == layer) {
                     let p = probs.get(home.expert as usize).copied().unwrap_or(0.0);
-                    let expected = (k * p * distinct_scale).min(1.0) * expert_bytes;
+                    let expected = self.expected_share((k * p).min(1.0), rows) * expert_bytes;
                     if home.holders.is_empty() {
                         *node_tier_bytes
                             .entry((range.owner.clone(), home.tier))
@@ -1432,8 +1507,8 @@ impl StrategyCostModel {
                     let worst = remote
                         .iter()
                         .map(|n| {
-                            self.rtt_ms(n, &budgets)
-                                .max(self.rtt_ms(&range.owner, &budgets))
+                            self.hop_cost_ms(n, layer_hop_bytes, &budgets)
+                                .max(self.hop_cost_ms(&range.owner, layer_hop_bytes, &budgets))
                         })
                         .fold(0.0, f64::max);
                     hop_ms += worst;
@@ -1446,8 +1521,8 @@ impl StrategyCostModel {
         if placement.trunk_ranges.len() > 1 {
             for pair in placement.trunk_ranges.windows(2) {
                 hop_ms += self
-                    .rtt_ms(&pair[0].owner, &budgets)
-                    .max(self.rtt_ms(&pair[1].owner, &budgets));
+                    .hop_cost_ms(&pair[0].owner, boundary_hop_bytes, &budgets)
+                    .max(self.hop_cost_ms(&pair[1].owner, boundary_hop_bytes, &budgets));
                 hops += 1;
             }
         }
@@ -2719,6 +2794,66 @@ mod tests {
         assert_eq!(batched.rows, 8);
         assert!(batched.ms_per_token < base.ms_per_token);
         assert!(batched.step_ms >= base.step_ms);
+    }
+
+    #[test]
+    fn learned_hop_lines_price_bytes_and_exact_coverage_bounds_batch_growth() {
+        let nodes = cluster();
+        let model = toy_moe();
+        let plan =
+            ExpertPlacementPlanner::plan(&model, &nodes, ExecutionStrategy::ExpertParallel, None);
+        let base = StrategyCostModel::default().estimate(&model, &plan, &nodes, None);
+        assert_eq!(
+            StrategyCostModel::default().coverage,
+            CoverageModel::PowerGrowth
+        );
+
+        // A learned line with a large per-megabyte term raises the hop cost; a zero-byte line
+        // with the same fixed term as the round trip leaves it where it was.
+        let mut priced = StrategyCostModel::default();
+        for node in &nodes {
+            priced = priced.with_measured_hop_line(node.id.clone(), 0.5, 200.0);
+        }
+        let priced_est = priced.estimate(&model, &plan, &nodes, None);
+        assert!(
+            priced_est.hop_ms > base.hop_ms,
+            "{} {}",
+            priced_est.hop_ms,
+            base.hop_ms
+        );
+        assert!(
+            StrategyCostModel::default()
+                .with_measured_hop_line(nodes[0].id.clone(), -1.0, 1.0)
+                .measured_hop_lines
+                .is_empty(),
+            "a negative line is ignored"
+        );
+        let bytes = StrategyCostModel::layer_hop_bytes(&model, 4);
+        assert_eq!(bytes, 2 * 4 * 2048 * 4);
+        assert!(StrategyCostModel::boundary_hop_bytes(&model, 4) < bytes);
+
+        // Exact coverage never charges more than every expert once, however wide the batch,
+        // where the power form saturates earlier for a skewed popularity.
+        let wide = 64;
+        let exact = StrategyCostModel::default()
+            .with_rows(wide)
+            .with_coverage(CoverageModel::Exact)
+            .estimate(&model, &plan, &nodes, None);
+        let power = StrategyCostModel::default()
+            .with_rows(wide)
+            .with_coverage(CoverageModel::PowerGrowth)
+            .estimate(&model, &plan, &nodes, None);
+        assert!(
+            exact.expert_read_ms <= power.expert_read_ms + 1e-9,
+            "{exact:?} {power:?}"
+        );
+        let one = StrategyCostModel::default()
+            .with_coverage(CoverageModel::Exact)
+            .estimate(&model, &plan, &nodes, None);
+        // Under uniform routing one row touches k experts; 64 rows touch nearly all 8, so the
+        // expert reads grow by less than E/k = 4.
+        let growth = exact.expert_read_ms / one.expert_read_ms.max(1e-9);
+        assert!(growth > 1.0 && growth <= 4.0 + 1e-6, "{growth}");
     }
 
     #[test]

@@ -3,6 +3,10 @@
 //! Opening a model reads its index (when present) and only the 8-byte length prefix and JSON
 //! header of each shard. Tensor payloads remain on disk until explicitly requested.
 
+use crate::batch_read::{
+    DEFAULT_COALESCE_GAP_BYTES, READ_ALIGNMENT_BYTES, ReadPlanStats, plan_reads, plan_stats,
+    read_planned,
+};
 use crate::transcoder::SafetensorsToKtbTranscoder;
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -529,6 +533,52 @@ impl SafetensorsManifest {
         Ok(bytes)
     }
 
+    /// Reads many tensors with as few reads as possible: per shard, the tensors' byte ranges are
+    /// merged when contiguous or within one `.ktb` page of each other, aligned to the drive's
+    /// sector, and read by a small pool of reader threads with one handle each, instead of an
+    /// open, a seek and a read per tensor (InferSSD's expert copy plan and pool reader). The
+    /// payloads come back in the order of `names`. The stats say how many reads the plan saved.
+    pub fn read_tensors(
+        &self,
+        names: &[&str],
+    ) -> Result<(Vec<Vec<u8>>, ReadPlanStats), SafetensorsManifestError> {
+        let mut per_shard: BTreeMap<usize, Vec<(usize, u64, u64)>> = BTreeMap::new();
+        for (position, name) in names.iter().enumerate() {
+            let tensor =
+                self.tensor(name)
+                    .ok_or_else(|| SafetensorsManifestError::TensorNotFound {
+                        name: (*name).to_string(),
+                    })?;
+            per_shard.entry(tensor.shard_index).or_default().push((
+                position,
+                tensor.absolute_offset,
+                tensor.byte_len,
+            ));
+        }
+        let mut out: Vec<Vec<u8>> = (0..names.len()).map(|_| Vec::new()).collect();
+        let mut stats = ReadPlanStats::default();
+        for (shard_index, entries) in per_shard {
+            let shard = &self.shards[shard_index];
+            let ranges: Vec<(u64, u64)> = entries.iter().map(|e| (e.1, e.2)).collect();
+            let reads = plan_reads(&ranges, DEFAULT_COALESCE_GAP_BYTES, READ_ALIGNMENT_BYTES);
+            let shard_stats = plan_stats(&ranges, &reads);
+            stats.ranges += shard_stats.ranges;
+            stats.reads += shard_stats.reads;
+            stats.bytes_requested += shard_stats.bytes_requested;
+            stats.bytes_read += shard_stats.bytes_read;
+            let buffers = read_planned(&shard.path, &reads, reads.len()).map_err(|source| {
+                SafetensorsManifestError::Io {
+                    path: shard.path.clone(),
+                    source,
+                }
+            })?;
+            for (entry, bytes) in entries.iter().zip(buffers) {
+                out[entry.0] = bytes;
+            }
+        }
+        Ok((out, stats))
+    }
+
     /// Seeks to a tensor and fills an exactly sized caller-provided buffer.
     pub fn read_tensor_into(
         &self,
@@ -1030,6 +1080,29 @@ mod tests {
             20,
         );
         (model, payloads)
+    }
+
+    #[test]
+    fn batch_reads_merge_per_shard_and_return_payloads_in_request_order() {
+        let (model, payloads) = two_shard_model();
+        let manifest = SafetensorsManifest::open(&model.path).expect("open multi-shard model");
+        let names = [NORM, LAYER_0, LAYER_2, LAYER_1];
+        let (bytes, stats) = manifest.read_tensors(&names).expect("batch read");
+        for (name, got) in names.iter().zip(&bytes) {
+            assert_eq!(got, &payloads[*name], "{name}");
+        }
+        // Four tensors in two shards, each shard's two tensors adjacent: two reads.
+        assert_eq!(stats.ranges, 4);
+        assert_eq!(stats.reads, 2);
+        assert_eq!(stats.bytes_requested, 20);
+        assert!(stats.bytes_read >= 20);
+        let missing = manifest.read_tensors(&[LAYER_0, "nope"]).unwrap_err();
+        assert!(matches!(
+            missing,
+            SafetensorsManifestError::TensorNotFound { .. }
+        ));
+        let (none, empty) = manifest.read_tensors(&[]).unwrap();
+        assert!(none.is_empty() && empty.reads == 0);
     }
 
     #[test]

@@ -177,6 +177,18 @@ impl DispatchLayout {
     }
 }
 
+/// The model's nominal hidden width, derived from `dense_layer_size_gb` (about 24 MiB of dense
+/// weights per layer is a 2048-wide model, up to 150 MiB a 4096-wide one, larger 7168).
+pub fn nominal_hidden_dim(model: &ModelSpec) -> usize {
+    if model.dense_layer_size_gb <= 0.05 {
+        2048
+    } else if model.dense_layer_size_gb <= 0.15 {
+        4096
+    } else {
+        7168
+    }
+}
+
 /// Wire payload bytes for one activation row of width `dim` in `f32` (`4 * dim`).
 #[inline]
 pub fn f32_row_wire_bytes(dim: usize) -> usize {
@@ -244,14 +256,7 @@ impl DeepEpStepAccount {
         }
         let rows = ep_estimate.rows.max(1);
         let rows_f = rows as f64;
-        // Derive nominal hidden dimension from `dense_layer_size_gb` (~24 MiB -> D=2048, else 4096).
-        let hidden_dim: usize = if model.dense_layer_size_gb <= 0.05 {
-            2048
-        } else if model.dense_layer_size_gb <= 0.15 {
-            4096
-        } else {
-            7168
-        };
+        let hidden_dim = nominal_hidden_dim(model);
         let f32_row = f32_row_wire_bytes(hidden_dim) as f64;
         let fp8_row = fp8_ue8m0_row_wire_bytes(hidden_dim, DEEP_EP_DISPATCH_BLOCK_SIZE) as f64;
 

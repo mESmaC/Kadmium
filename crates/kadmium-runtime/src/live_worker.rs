@@ -15,11 +15,16 @@
 use crate::{
     BlockwiseInt8Tensor, DeMoDctCompressor, DistributedMoEPipelineExecutor,
     DistributedPipelineExecutionReport, DistributedQLoRAAdapter, ExecutorContext, ExecutorRegistry,
-    ExpertResidencyTier, LAYER_BOUNDARY_BLOCK, LayerHook, LayerReference, MoERoutedExpertSelection,
+    ExpertCache, ExpertCacheAllocation, ExpertCacheStats, ExpertResidencyTier,
+    LAYER_BOUNDARY_BLOCK, LayerCacheTrace, LayerHook, LayerReference, MoERoutedExpertSelection,
     SparseDctPacket, SpeculativeDraftVerificationReport, StageExecutionTrace,
-    VerdeVerificationEngine, WorkDispatchPayload, WorkResultPayload, execute_dispatch, repops,
+    VerdeVerificationEngine, WorkDispatchPayload, WorkResultPayload, execute_dispatch,
+    lock_expert_cache, repops,
 };
-use kadmium_core::{HardwareNode, NodeId, NodeRole, PoliteState, sample_personal_cluster};
+use kadmium_core::{
+    HardwareNode, HostMemoryLedger, NodeId, NodeRole, PoliteState, lock_host_ledger,
+    sample_personal_cluster,
+};
 use kadmium_data::{
     ExpertLoadRequest, ExpertLoadResponse, ExpertLoader, Fts3PagePatchEngine,
     KTB_PAGE_ALIGNMENT_BYTES, KtbBankPacker, KtbBankReader, KtbMerkleTree, MerkleInclusionProof,
@@ -127,6 +132,15 @@ pub struct LiveHeartbeatPong {
     pub installed_version: String,
     #[serde(default)]
     pub ktb_merkle_root_fnv64: u64,
+    /// Hit rate of the worker's expert cache since start, 0 without one.
+    #[serde(default)]
+    pub expert_cache_hit_rate: f64,
+    /// Bytes resident in the worker's expert cache.
+    #[serde(default)]
+    pub expert_cache_resident_bytes: u64,
+    /// Room the worker's host memory ledger has for a new allocation, in GiB.
+    #[serde(default)]
+    pub host_room_gb: f64,
 }
 
 /// Payload inside a `WireFrameKind::Fts3KtbChunkStream` frame sent to a worker node
@@ -406,6 +420,9 @@ pub struct LiveStageForwardResponse {
     pub compute_exec_ms: f64,
     pub draft_tokens: Vec<String>,
     pub draft_probs: Vec<f64>,
+    /// What the node's expert cache did for the stage, when the stage ran through one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expert_cache: Option<LayerCacheTrace>,
 }
 
 /// Request payload inside a `WireFrameKind::DeMoCompressedGradient` frame sent to a training worker.
@@ -592,6 +609,51 @@ pub fn execute_stage_layers_with_ktb_routed_hooked(
     top_k: u32,
     hook: Option<LayerHook<'_>>,
 ) -> (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>) {
+    execute_stage_layers_cached(
+        node_id,
+        hostname,
+        req,
+        resident_ktb_bytes,
+        experts_per_layer,
+        top_k,
+        hook,
+        None,
+        0,
+    )
+}
+
+/// Ranks of the next-layer hint a chain stage prefetches, from `KADMIUM_EXPERT_PREFETCH_DEPTH`;
+/// 0 (the default) runs no speculative router at all, since the hint costs a second router run
+/// per layer and only pays where misses are expensive.
+pub fn expert_prefetch_depth() -> usize {
+    static DEPTH: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *DEPTH.get_or_init(|| {
+        std::env::var("KADMIUM_EXPERT_PREFETCH_DEPTH")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(0)
+            .min(64)
+    })
+}
+
+/// [`execute_stage_layers_with_ktb_routed_hooked`] with the node's expert cache: the layers
+/// run through [`LayerReference::run_layers_cached`], which serves every routed expert from
+/// the cache (and, with [`expert_prefetch_depth`] set, prefetches the next layer's predicted
+/// experts), and the response reports what the cache did. A cache with no budget is skipped
+/// outright. `weights_revision` is the node's weights fingerprint. The bytes are the uncached
+/// ones.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_stage_layers_cached(
+    node_id: &str,
+    hostname: &str,
+    req: &LiveStageForwardRequest,
+    resident_ktb_bytes: Option<&[u8]>,
+    experts_per_layer: u32,
+    top_k: u32,
+    hook: Option<LayerHook<'_>>,
+    expert_cache: Option<&Mutex<ExpertCache>>,
+    weights_revision: u64,
+) -> (LiveStageForwardResponse, Vec<(u32, Vec<u32>)>) {
     let t0 = Instant::now();
     let mut hidden = req.boundary_input.dequantize();
     let dim = hidden.len().max(16);
@@ -676,17 +738,39 @@ pub fn execute_stage_layers_with_ktb_routed_hooked(
     }
     let mut routed_per_layer: Vec<(u32, Vec<u32>)> = Vec::new();
     let mut layer_digests: Vec<LayerDigest> = Vec::new();
+    let mut cache_trace: Option<LayerCacheTrace> = None;
     if k230_hw_exec_ms.is_none() {
-        let run = LayerReference::run_layers(
-            &hidden,
-            req.start_layer,
-            req.end_layer,
-            &gamma,
-            experts_per_layer,
-            top_k,
-            req.q_star_ratio,
-            hook,
-        );
+        let cache = expert_cache.filter(|c| lock_expert_cache(c).budget_bytes() > 0);
+        let run = match cache {
+            Some(cache) => {
+                let (run, trace) = LayerReference::run_layers_cached(
+                    &req.model_id,
+                    LayerReference::expert_revision(weights_revision, dim),
+                    &hidden,
+                    req.start_layer,
+                    req.end_layer,
+                    &gamma,
+                    experts_per_layer,
+                    top_k,
+                    req.q_star_ratio,
+                    hook,
+                    cache,
+                    expert_prefetch_depth().min(top_k as usize),
+                );
+                cache_trace = Some(trace);
+                run
+            }
+            None => LayerReference::run_layers(
+                &hidden,
+                req.start_layer,
+                req.end_layer,
+                &gamma,
+                experts_per_layer,
+                top_k,
+                req.q_star_ratio,
+                hook,
+            ),
+        };
         hidden = run.hidden;
         last_boundary = run.boundary;
         layer_digests = run.layer_digests;
@@ -746,6 +830,7 @@ pub fn execute_stage_layers_with_ktb_routed_hooked(
         compute_exec_ms: compute_exec_ms.max(0.05),
         draft_tokens,
         draft_probs,
+        expert_cache: cache_trace,
     };
     (response, routed_per_layer)
 }
@@ -1474,6 +1559,10 @@ pub struct WorkerFrameContext {
     /// Executors for generic grid work units, by app kind.
     pub executors: ExecutorRegistry,
     pub served_work_units: Arc<AtomicU64>,
+    /// The node's expert cache, shared by every stage and expert-slice unit it runs.
+    pub expert_cache: Arc<Mutex<ExpertCache>>,
+    /// The host memory envelope the cache and the delta-link stores live under.
+    pub host_ledger: Arc<Mutex<HostMemoryLedger>>,
     /// Remote address of the connection the frame arrived on (console logging only).
     pub peer_addr: SocketAddr,
     pub log_console: bool,
@@ -1500,6 +1589,27 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
         WireFrameKind::HeartbeatTelemetry => {
             let cur_ver = ctx.installed_version.lock().expect("version lock").clone();
             let cur_mrk = ctx.ktb_merkle_root_fnv64.load(Ordering::Relaxed);
+            // A heartbeat is also when the cache takes back budget it gave the ledger: ask for
+            // the deficit (the ledger locks the cache itself only to reclaim, which cannot
+            // happen while asking for room the cache gave up), then grow.
+            let host_room_gb = {
+                let mut ledger = lock_host_ledger(&ctx.host_ledger);
+                // The expert loader's packets are memory held outside the cache: book what it
+                // holds now, not its ceiling.
+                ledger.set_external_bytes(ctx.expert_loader.stats().cached_bytes as u64);
+                let deficit = lock_expert_cache(&ctx.expert_cache).grow_target_bytes();
+                if deficit > 0
+                    && ledger.measure(deficit).fits()
+                    && let Ok(ticket) = ledger.take(deficit)
+                {
+                    let granted = ticket.bytes;
+                    ledger.commit(ticket);
+                    let grown = lock_expert_cache(&ctx.expert_cache).grow(granted);
+                    ledger.release(granted - grown);
+                }
+                ledger.room_bytes() as f64 / 1_073_741_824.0
+            };
+            let cache_stats = lock_expert_cache(&ctx.expert_cache).stats();
             let pong = LiveHeartbeatPong {
                 polite_state: node_snapshot.polite_state,
                 node: node_snapshot,
@@ -1507,6 +1617,9 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                 served_training_steps: ctx.served_training_steps.load(Ordering::Relaxed),
                 installed_version: cur_ver,
                 ktb_merkle_root_fnv64: cur_mrk,
+                expert_cache_hit_rate: cache_stats.hit_rate(),
+                expert_cache_resident_bytes: cache_stats.resident_bytes,
+                host_room_gb: (host_room_gb * 100.0).round() / 100.0,
             };
             let reply = WireFrame::new(
                 WireFrameKind::HeartbeatTelemetry,
@@ -1519,12 +1632,24 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
             if let Ok(req) = serde_json::from_slice::<LiveStageForwardRequest>(&frame.payload) {
                 let resp = {
                     let ktb_guard = ctx.resident_ktb_bank.lock().expect("ktb bank lock");
-                    execute_stage_kernels_with_ktb(
+                    let model = kadmium_core::ModelSpec::from_id(&req.model_id);
+                    let (experts_per_layer, top_k) = if model.is_moe {
+                        (model.experts_per_layer, model.active_experts_per_token)
+                    } else {
+                        (0, 0)
+                    };
+                    execute_stage_layers_cached(
                         &node_id_str,
                         &hostname_str,
                         &req,
                         Some(&ktb_guard),
+                        experts_per_layer,
+                        top_k,
+                        None,
+                        Some(&ctx.expert_cache),
+                        ctx.ktb_merkle_root_fnv64.load(Ordering::Relaxed),
                     )
+                    .0
                 };
                 let count = ctx.served_forward_stages.fetch_add(1, Ordering::Relaxed) + 1;
                 if log_console {
@@ -1923,7 +2048,9 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                 &node_id_str,
                 &hostname_str,
                 Arc::clone(&ctx.resident_ktb_bank),
-            );
+            )
+            .with_expert_cache(Arc::clone(&ctx.expert_cache))
+            .with_weights_revision(ctx.ktb_merkle_root_fnv64.load(Ordering::Relaxed));
             let reply = match WorkDispatchPayload::from_le_bytes(&frame.payload) {
                 Ok(dispatch) => {
                     let app = dispatch.header.unit.app.label();
@@ -2014,6 +2141,81 @@ pub async fn serve_worker_connection(stream: tokio::net::TcpStream, ctx: WorkerF
     let _ = serve_worker_stream(read_half, write_half, ctx).await;
 }
 
+/// Host memory held for a stream's delta-link chunk stores (one per direction), given back
+/// when the stream ends. Nothing is booked until a peer opens a link, so a connection that
+/// never sends a `DeltaHello` costs the ledger nothing; when one does, the stores are booked
+/// before the link is accepted, with the expert cache yielding room if the ledger is short,
+/// and a link the ledger cannot book is declined rather than run unaccounted.
+struct DeltaStoreLease {
+    ledger: Arc<Mutex<HostMemoryLedger>>,
+    bytes: u64,
+}
+
+impl DeltaStoreLease {
+    /// The delta configuration this stream may offer, and an empty lease: the configured store
+    /// when the ledger has room for both directions or the cache could yield what is short, a
+    /// disabled link otherwise.
+    fn offer(
+        ledger: &Arc<Mutex<HostMemoryLedger>>,
+        cache: &Arc<Mutex<ExpertCache>>,
+    ) -> (DeltaLinkConfig, Self) {
+        let config = DeltaLinkConfig::from_env();
+        let lease = Self {
+            ledger: Arc::clone(ledger),
+            bytes: 0,
+        };
+        if !config.enabled || config.store_bytes == 0 {
+            return (config, lease);
+        }
+        let room = lock_host_ledger(ledger).measure(config.store_bytes.saturating_mul(2));
+        let can_yield = lock_expert_cache(cache).budget_bytes() >= room.shortage();
+        if room.fits() || can_yield {
+            (config, lease)
+        } else {
+            (DeltaLinkConfig::disabled(), lease)
+        }
+    }
+
+    /// Books `store_bytes` per direction before a link is accepted (the ledger runs the
+    /// cache's reclaim if it must). False when the ledger refuses, in which case the link is
+    /// declined.
+    fn book(&mut self, store_bytes: u64) -> bool {
+        let wanted = store_bytes.saturating_mul(2);
+        if wanted == 0 {
+            return true;
+        }
+        if self.bytes > 0 {
+            return true;
+        }
+        let mut ledger = lock_host_ledger(&self.ledger);
+        match ledger.take(wanted) {
+            Ok(ticket) => {
+                ledger.commit(ticket);
+                self.bytes = wanted;
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Gives back what the negotiated store did not need (`store_bytes` per direction).
+    fn trim_to(&mut self, store_bytes: u64) {
+        let keep = store_bytes.saturating_mul(2);
+        if self.bytes > keep {
+            lock_host_ledger(&self.ledger).release(self.bytes - keep);
+            self.bytes = keep;
+        }
+    }
+}
+
+impl Drop for DeltaStoreLease {
+    fn drop(&mut self) {
+        if self.bytes > 0 {
+            lock_host_ledger(&self.ledger).release(self.bytes);
+        }
+    }
+}
+
 /// The next frame, or `None` when the peer ended the stream cleanly between frames.
 async fn next_worker_frame<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut FrameReader<tokio::io::BufReader<R>>,
@@ -2042,7 +2244,11 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let delta_config = DeltaLinkConfig::from_env();
+    // A delta link holds a chunk store per direction for the life of the stream: offer one
+    // only when the host ledger has room for both, book them once a peer opens the link, and
+    // give them back on every exit path.
+    let (delta_config, mut delta_store_lease) =
+        DeltaStoreLease::offer(&ctx.host_ledger, &ctx.expert_cache);
     let mut reader = FrameReader::new(tokio::io::BufReader::new(read_half));
     let writer = Arc::new(tokio::sync::Mutex::new(FrameWriter::new(write_half)));
     let connection_failed = Arc::new(tokio::sync::Notify::new());
@@ -2059,13 +2265,24 @@ where
         };
         if frame.kind == WireFrameKind::DeltaHello {
             let mut w = writer.lock().await;
-            match accept_delta_hello(&frame, &delta_config, &mut reader, &mut w).await {
-                Ok(store_bytes) if ctx.log_console && store_bytes > 0 => println!(
-                    "  [WireFrame DELTA] Peer {} opened a delta link ({} MiB chunk store per direction)",
-                    ctx.peer_addr,
-                    store_bytes >> 20
-                ),
-                Ok(_) => {}
+            // Book the offered stores before answering; a refusal declines the link.
+            let config = if delta_store_lease.book(delta_config.store_bytes) {
+                delta_config
+            } else {
+                DeltaLinkConfig::disabled()
+            };
+            match accept_delta_hello(&frame, &config, &mut reader, &mut w).await {
+                Ok(store_bytes) if store_bytes > 0 => {
+                    delta_store_lease.trim_to(store_bytes);
+                    if ctx.log_console {
+                        println!(
+                            "  [WireFrame DELTA] Peer {} opened a delta link ({} MiB chunk store per direction)",
+                            ctx.peer_addr,
+                            store_bytes >> 20
+                        );
+                    }
+                }
+                Ok(_) => delta_store_lease.trim_to(0),
                 Err(_) => return false,
             }
             continue;
@@ -2120,6 +2337,65 @@ where
     }
 }
 
+/// Default budget of a worker's routed-expert cache when `KADMIUM_EXPERT_CACHE_MB` is not
+/// set. (The checkpoint-aware [`ExpertLoader`] has its own, larger budget; both are booked on
+/// the same host ledger.)
+pub const DEFAULT_WORKER_EXPERT_CACHE_BYTES: u64 = 256 << 20;
+/// Envelope assumed for a host whose memory the ledger cannot read.
+const HOST_ENVELOPE_FALLBACK_BYTES: u64 = 8 << 30;
+
+/// The worker's host memory ledger and expert cache: the ledger from the platform probe (an
+/// explicit `KADMIUM_HOST_BUDGET_MB` wins) with the bytes the expert loader holds right now
+/// booked on it as memory held outside the cache (heartbeats keep that figure current); the
+/// cache sized by `KADMIUM_EXPERT_CACHE_MB` or a quarter of the ledger's remaining room up to
+/// 256 MiB, taken under a committed ticket and registered as the ledger's first reclaimer. A
+/// cache that starts under pressure keeps the full figure as the budget it grows back toward.
+pub fn build_host_ledger_and_expert_cache(
+    expert_loader_bytes: u64,
+) -> (Arc<Mutex<HostMemoryLedger>>, Arc<Mutex<ExpertCache>>) {
+    let mut ledger = match std::env::var("KADMIUM_HOST_BUDGET_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        Some(mb) => HostMemoryLedger::with_envelope(mb << 20, kadmium_core::SystemMemoryProbe),
+        None => HostMemoryLedger::for_this_host(HOST_ENVELOPE_FALLBACK_BYTES),
+    };
+    ledger.set_external_bytes(expert_loader_bytes);
+    let budget = std::env::var("KADMIUM_EXPERT_CACHE_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|mb| mb << 20)
+        .unwrap_or_else(|| (ledger.room_bytes() / 4).min(DEFAULT_WORKER_EXPERT_CACHE_BYTES));
+    let configured = budget;
+    let budget = match ledger.take(budget) {
+        Ok(ticket) => {
+            let granted = ticket.bytes;
+            ledger.commit(ticket);
+            granted
+        }
+        Err(room) => {
+            let smaller = room.surplus() / 2;
+            match ledger.take(smaller) {
+                Ok(ticket) => {
+                    let granted = ticket.bytes;
+                    ledger.commit(ticket);
+                    granted
+                }
+                Err(_) => 0,
+            }
+        }
+    };
+    let cache = Arc::new(Mutex::new(
+        ExpertCache::new(budget, ExpertCacheAllocation::Global).with_configured_bytes(configured),
+    ));
+    let reclaimer_cache = Arc::clone(&cache);
+    ledger.register_reclaimer(
+        "expert-cache",
+        Box::new(move |short| lock_expert_cache(&reclaimer_cache).reclaim(short)),
+    );
+    (Arc::new(Mutex::new(ledger)), cache)
+}
+
 /// Persistent TCP `WireFrame` Worker Server running on each node in the Kadmium mesh.
 #[derive(Clone)]
 pub struct LiveNodeWorkerServer {
@@ -2141,9 +2417,25 @@ pub struct LiveNodeWorkerServer {
     /// Executors for generic grid work units; register more after spawning to extend the worker.
     pub executors: ExecutorRegistry,
     pub served_work_units: Arc<AtomicU64>,
+    /// The node's expert cache, shared by every connection.
+    pub expert_cache: Arc<Mutex<ExpertCache>>,
+    /// The host memory envelope the cache and the delta-link stores live under.
+    pub host_ledger: Arc<Mutex<HostMemoryLedger>>,
 }
 
 impl LiveNodeWorkerServer {
+    /// Room the host memory ledger has for a new allocation, in GiB: what the worker reports as
+    /// free system RAM.
+    pub fn host_room_gb(&self) -> f64 {
+        let bytes = lock_host_ledger(&self.host_ledger).room_bytes();
+        (bytes as f64 / 1_073_741_824.0 * 100.0).round() / 100.0
+    }
+
+    /// The expert cache's counters.
+    pub fn expert_cache_stats(&self) -> ExpertCacheStats {
+        lock_expert_cache(&self.expert_cache).stats()
+    }
+
     /// Binds a TCP `WireFrame` listener on `preferred_port` (or scans `preferred_port..preferred_port+32`
     /// if multiple worker instances are started on the same machine) and spawns the async handler loop.
     pub async fn spawn_auto_port(
@@ -2198,6 +2490,8 @@ impl LiveNodeWorkerServer {
         let expert_loader = ExpertLoader::default();
         let expert_load_slots = Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_EXPERT_LOADS));
 
+        let (host_ledger, expert_cache) =
+            build_host_ledger_and_expert_cache(expert_loader.stats().cached_bytes as u64);
         let ctx_template = WorkerFrameContext {
             node: Arc::clone(&node_arc),
             installed_version: Arc::clone(&version_arc),
@@ -2210,6 +2504,8 @@ impl LiveNodeWorkerServer {
             expert_load_slots: Arc::clone(&expert_load_slots),
             executors: executors.clone(),
             served_work_units: Arc::clone(&work_counter),
+            expert_cache: Arc::clone(&expert_cache),
+            host_ledger: Arc::clone(&host_ledger),
             peer_addr: local_addr,
             log_console,
         };
@@ -2240,6 +2536,8 @@ impl LiveNodeWorkerServer {
             expert_load_slots,
             executors,
             served_work_units: work_counter,
+            expert_cache,
+            host_ledger,
         })
     }
 }
@@ -2276,6 +2574,8 @@ impl LiveNodeWorkerServer {
             expert_load_slots: Arc::clone(&self.expert_load_slots),
             executors: self.executors.clone(),
             served_work_units: Arc::clone(&self.served_work_units),
+            expert_cache: Arc::clone(&self.expert_cache),
+            host_ledger: Arc::clone(&self.host_ledger),
             peer_addr: local_addr,
             log_console,
         };

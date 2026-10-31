@@ -34,6 +34,37 @@ pub struct HttpByteRangeSlice {
     pub target_encoding: TensorEncoding,
 }
 
+/// One HTTP request covering several planned slices whose byte ranges are contiguous or within
+/// `max_gap` of each other: one round trip and one TCP ramp-up instead of one per tensor, the
+/// way InferSSD merges contiguous expert ranges into one read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpRangeRequest {
+    pub url: String,
+    pub http_range_header: String,
+    pub byte_start: u64,
+    pub byte_end_inclusive: u64,
+    /// Positions in the planned slice list this request serves, in byte order.
+    pub members: Vec<usize>,
+    /// Bytes inside the request no slice asked for.
+    pub gap_bytes: u64,
+}
+
+impl HttpRangeRequest {
+    pub fn len(&self) -> u64 {
+        self.byte_end_inclusive - self.byte_start + 1
+    }
+
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// The bytes of `slice` (one of `members`) inside this request's body.
+    pub fn slice_bounds(&self, slice: &HttpByteRangeSlice) -> (usize, usize) {
+        let start = (slice.byte_start - self.byte_start) as usize;
+        (start, start + slice.payload_len_bytes)
+    }
+}
+
 /// Plans and executes selective HTTP `Range: bytes=...` pulls from Hugging Face `.safetensors` repositories.
 pub struct HfByteRangeSlicer;
 
@@ -165,6 +196,50 @@ impl HfByteRangeSlicer {
         }
 
         Ok(slices)
+    }
+
+    /// Merges planned slices of one file into as few HTTP range requests as possible: slices
+    /// whose byte ranges touch or sit within `max_gap_bytes` of each other share a request.
+    /// Slices of different URLs never merge. Requests come back in byte order per URL.
+    pub fn coalesce_range_requests(
+        slices: &[HttpByteRangeSlice],
+        max_gap_bytes: u64,
+    ) -> Vec<HttpRangeRequest> {
+        let mut order: Vec<usize> = (0..slices.len()).collect();
+        order.sort_by(|&a, &b| {
+            slices[a]
+                .url
+                .cmp(&slices[b].url)
+                .then(slices[a].byte_start.cmp(&slices[b].byte_start))
+        });
+        let mut requests: Vec<HttpRangeRequest> = Vec::new();
+        for index in order {
+            let s = &slices[index];
+            match requests.last_mut() {
+                Some(last)
+                    if last.url == s.url
+                        && s.byte_start
+                            <= last.byte_end_inclusive.saturating_add(1 + max_gap_bytes) =>
+                {
+                    if s.byte_start > last.byte_end_inclusive + 1 {
+                        last.gap_bytes += s.byte_start - last.byte_end_inclusive - 1;
+                    }
+                    last.byte_end_inclusive = last.byte_end_inclusive.max(s.byte_end_inclusive);
+                    last.http_range_header =
+                        format!("bytes={}-{}", last.byte_start, last.byte_end_inclusive);
+                    last.members.push(index);
+                }
+                _ => requests.push(HttpRangeRequest {
+                    url: s.url.clone(),
+                    http_range_header: format!("bytes={}-{}", s.byte_start, s.byte_end_inclusive),
+                    byte_start: s.byte_start,
+                    byte_end_inclusive: s.byte_end_inclusive,
+                    members: vec![index],
+                    gap_bytes: 0,
+                }),
+            }
+        }
+        requests
     }
 
     /// Extracts the planned `[byte_start..=byte_end_inclusive]` byte ranges from `safetensors_bytes`
