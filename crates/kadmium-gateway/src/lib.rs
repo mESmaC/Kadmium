@@ -1577,10 +1577,10 @@ mod tests {
         assert_eq!(pf.tegra_x1_catalog.len(), 5);
         assert_eq!(pf.kendryte_k230_catalog.len(), 5);
         assert_eq!(pf.phone_farm_catalog.len(), 3);
-        if pf.apple_m4_probe.physical_board_online {
-            let deep = pf
-                .apple_m4_deep_metal4
-                .expect("live Apple M4 deep Metal 4 suite");
+        // Local Apple Silicon detection does not imply the separate LAN Metal
+        // benchmark worker is running (for example, on macOS CI runners).
+        if let Some(deep) = pf.apple_m4_deep_metal4 {
+            assert!(pf.apple_m4_probe.physical_board_online);
             assert!(deep.tiled_gemm1024_gflops > 50.0);
             assert!(deep.zerocopy_mmap_verified);
         }
