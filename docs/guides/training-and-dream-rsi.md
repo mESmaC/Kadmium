@@ -1,90 +1,71 @@
-# Guide: Distributed Training, RL & Dream-RSI Evolving Worlds
+# Guide: Distributed Training, RL & Dream-RSI Reference Workloads
 
-Kadmium provides reference training and RL mechanisms, plus a bounded stateful DiLoCo outer loop for complete replicas. The pipeline-sharded and large-model workflows below are target designs; the current session engine does not provide distributed model-scale pre-training or fine-tuning.
+Kadmium provides reference training and RL mechanisms plus a bounded stateful DiLoCo outer loop for small complete replicas. Pipeline-sharded large-model training and online policy learning are target designs, not current integrated capabilities.
 
 ---
 
-## 1. Fault-Tolerant Distributed Training (`Sharded-Island DiLoCo` + `DeMo`)
+## 1. Training mechanisms
 
-The runtime exposes separate pipeline planning, stateful outer synchronization and gradient-compression mechanisms. They do not yet form an integrated pipeline-sharded DiLoCo learner.
+### A. Pipeline planning and stateless stage previews
 
-### A. Pipeline planning and stage previews
+[`ShardPlanner`](../../crates/kadmium-sharding/src/lib.rs) assigns layer ranges, [`Pipeline1F1BScheduler`](../../crates/kadmium-runtime/src/lib.rs) models warmup/steady-state/cooldown, and [`BlockwiseInt8Tensor`](../../crates/kadmium-runtime/src/lib.rs) provides boundary quantization. In the [target sharded-island design](../ARCHITECTURE.md#53-mode-c-sharded-island-diloco-target-architecture), devices inside one island would collectively hold a full replica.
 
-[`ShardPlanner`](../../crates/kadmium-sharding/src/lib.rs) assigns layer ranges, [`Pipeline1F1BScheduler`](../../crates/kadmium-runtime/src/lib.rs) models the warmup, steady-state and cooldown schedule, and [`BlockwiseInt8Tensor`](../../crates/kadmium-runtime/src/lib.rs) provides boundary quantization. In the [target sharded-island design](../ARCHITECTURE.md#53-mode-c-sharded-island-diloco-target-architecture), several devices inside one island would collectively hold a full replica.
-
-The current `/api/v1/training/step` and grid training endpoints instead run independent synthetic stage previews. Each request resets the stage's model state; counters and loss history do not turn those previews into a persistent learner. Their summaries report `execution_mode: "stateless_per_stage_gradient_preview"`, not a completed island synchronization.
+The current `/api/v1/training/step` and grid training endpoints run independent synthetic stage previews. Each request resets the stage's model state. Their summaries report `execution_mode: "stateless_per_stage_gradient_preview"`; counters and loss history do not make them persistent learners or synchronized replicas.
 
 ### B. Stateful DiLoCo rounds
 
-[`DiLoCoSession`](../../crates/kadmium-runtime/src/diloco.rs) implements a synchronous outer training loop inspired by [OpenDiLoCo's pinned PyTorch implementation](https://github.com/PrimeIntellect-ai/OpenDiloco/blob/2d750e58a692ce1424d2a2366b2b3de1f42c9bf1/open_diloco/train_diloco_torch.py#L336-L353):
+[`DiLoCoSession`](../../crates/kadmium-runtime/src/diloco.rs) implements a synchronous outer loop inspired by [OpenDiLoCo](https://github.com/PrimeIntellect-ai/OpenDiloco):
 
-1. All islands begin from the same committed parameter snapshot. Each island contains the same complete model layout; a shard is an identified parameter partition within that replica, not a different model layer contributed by another island. Every island submits every shard. The session API does not construct or execute a pipeline inside a replica.
-2. Each island's caller takes exactly `H` local optimizer steps on its own data. The caller owns and retains the local optimizer state; `DiLoCoSession` does not implement that optimizer.
-3. Islands submit their final parameter shards with the round number and the snapshot's `baseline_id`. The coordinator waits for every registered island, rejecting unknown/duplicate islands, stale rounds, mismatched baselines/layouts and invalid values.
-4. For master parameters `theta` and each locally trained replica `theta_i`, the session forms FP32 pseudo-gradients `theta - theta_i` and calls the shared `DiLoCoOuterOptimizer::try_step_pseudo_gradients`. That optimizer orders contributors by pseudo-gradient bits, computes the equally weighted mean using the RepOps FP64 tree reduction and applies its existing FP32 Nesterov update with persistent momentum. The new snapshot starts the next round.
+1. Every island starts from the same committed snapshot and contains the same complete model layout. A session shard is a named parameter partition within each replica, not a pipeline stage supplied by a different island.
+2. Each caller performs exactly `H` local optimizer steps and owns its local optimizer state.
+3. Islands submit final values with the round and `baseline_id`. The coordinator rejects stale rounds, mismatched layouts, duplicate submissions, and invalid values.
+4. After all islands submit, the session forms FP32 master-minus-local pseudo-gradients, averages them with the RepOps tree reduction, and applies the shared Nesterov outer update with persistent momentum.
 
-The barrier is synchronous even when submissions arrive at different times. A missing island prevents the round from committing. This implementation does not include OpenDiLoCo's networking or membership recovery, async reinforcement learning, or an inference acceleration technique. It adds an independent session API; existing generic training and RL endpoints do not automatically use this stateful loop.
+The barrier is synchronous: a missing island prevents commitment. The session does not provide pipeline execution, membership recovery, or automatic local learner checkpoints.
 
-Run the integrated reference workload:
+Run the integrated two-parameter CPU regression example:
 
 ```bash
 cargo run -p kadmium-cli -- diloco --inner-steps 20 --rounds 25 --islands 3 --json
 ```
 
-This trains a real small CPU regression objective (`y = 2*x + 1`) with different data ranges per island, two parameter shards, persistent local AdamW state, and an outer Nesterov update. The report includes loss history and 25 synchronizations versus a 500-sync per-step baseline for the same local step count. Payload numbers count FP32 parameters uploaded and broadcast; they exclude protocol overhead and are not measured traffic. This proves the reference training path and cadence, not LLM convergence, GPU throughput or WAN performance.
+This uses nonidentical data ranges, persistent local AdamW state, and the shared outer optimizer. Its payload estimate excludes protocol overhead and is not measured network traffic. It demonstrates the reference cadence, not LLM convergence or GPU/WAN performance.
 
-The hand-written AdamW implementation is private to this deterministic two-parameter CLI example. There is no shared AdamW implementation; the existing GaLore/Muon primitives are different algorithms, so they are not substituted here. This example does not expose a general or production optimizer. The session uses the shared Nesterov outer optimizer, while external callers supply and checkpoint their own local optimizer.
+The [session HTTP API](../api-reference.md#stateful-diloco-sessions) exposes creation, updates, status, snapshots, and checkpoint/restore. Session checkpoints preserve master parameters, outer momentum, and pending submissions; callers must separately save local optimizer, data, and RNG state. Sessions do not automatically update an inference model.
 
-The [session HTTP API](../api-reference.md#stateful-diloco-sessions) exposes create, submit, status, committed snapshot and checkpoint/restore. Session checkpoints preserve master parameters, outer momentum and pending submissions. External learners must separately save their own model, local optimizer, data cursor and random state for a complete training restart. A committed snapshot can be consumed by a future inference adapter; no current inference model is automatically replaced.
+### C. DeMo compression
 
-### C. DeMo frequency-domain compression
+[`DeMoDctCompressor::step_and_compress`](../../crates/kadmium-runtime/src/lib.rs) transforms momentum chunks with DCT-II, selects top-k components, and retains unsent residuals. Its ratio depends on tensor size and `top_k`. The DiLoCo session transports full FP32 shards and does not automatically enable this compressor. No universal compression ratio or convergence guarantee is established by the primitive.
 
-[`DeMoDctCompressor::step_and_compress`](../../crates/kadmium-runtime/src/lib.rs) is a separate compression primitive: it transforms momentum chunks using DCT-II, selects top-k frequency components and retains unsent residuals. The new DiLoCo session API transports full FP32 parameter shards and does not enable this compressor. Communication reductions from sparse compression and from taking `H` local steps must be measured separately before combining claims.
+## 2. RL topology and sandbox reference
 
----
+[`RlTopologyPlanner`](../../crates/kadmium-rl/src/lib.rs) produces actor/environment/learner placement plans. The current `GrpoEpochExecutor` verifies eight synthesized programs for a fixed polynomial and computes normalized group advantages. `WasiMicroSandbox` is a custom fuel-metered integer stack machine, despite its historical name; it is not a WebAssembly/WASI runtime.
 
-## 2. Disaggregated RL (`Actor` / `Environment` / `Learner`)
+These paths do not generate model rollouts, execute arbitrary Rust/CUDA/Triton code, run PPO, or update a language model. Wasmtime/OCI execution and distributed online RL remain target integrations.
 
-Reinforcement learning workloads (e.g., GRPO reasoning, tool use, and GPU kernel synthesis) waste up to 70% of GPU cycles if GPUs block waiting for CPU-bound code execution or environment rollouts.
+## 3. Dream-RSI offline replay
 
-[`RlTopologyPlanner`](../../crates/kadmium-rl/src/lib.rs) disaggregates RL across your hardware tiers:
-- **Rollout Actors (`main-gaming-pc`, `mac-mini-m4-pro`):** High-throughput token generation for trajectory rollouts, assisted by speculative draft tokens from `rk3588-sbc-bramble`.
-- **Environment Sandbox Workers (`legacy-thinkpad-t480`, `rk3588-sbc-bramble`, `home-nas-vault`):** Execute verifiable reward sandboxes (embedded **Wasmtime WASI** micro-sandboxes for deterministic unit/math/compiler verifiers + OCI container bridge for Gymnasium/Python environments).
-- **Policy Learners (`main-gaming-pc` + `gaming-laptop-rtx4070`):** Consume verified rollout trajectories, compute zero-mean unit-variance group advantages ([`compute_grpo_group_advantages`](../../crates/kadmium-rl/src/lib.rs)), and apply `DeMo` + DiLoCo gradient updates.
+[`DreamRsiSimulator`](../../crates/kadmium-rl/src/lib.rs) replays an **in-memory sample discovery tree** with counterfactual exploration policies. Because node scores are already present, replay is CPU graph traversal and needs no GPU evaluation.
 
----
-
-## 3. First-Class Support for Dream-RSI (*Recursive Self-Improvement through Evolving Worlds*)
-
-Kadmium includes native support for [**Dream-RSI**](https://www.dream-rsi.com/) ([`zhengkid/Dream-RSI`](https://github.com/zhengkid/Dream-RSI), arXiv:2609.14858) in [`DreamRsiSimulator`](../../crates/kadmium-rl/src/lib.rs):
-
-### How Dream-RSI Works on Kadmium
-1. **Online Discovery Tree Recording:** During online evolutionary search (e.g., optimizing a custom CUDA/Triton/CubeCL kernel from a `16.8 GB/s` baseline to `123.5 GB/s` peak), Kadmium records every parent-child mutation, evaluator score, and compute cost into a persistent [`DiscoveryTree`](../../crates/kadmium-rl/src/lib.rs) on your Home NAS.
-2. **Zero-GPU Offline Causal Replay ("Dreaming"):**
-   - While your GPUs are busy or while you are gaming, Kadmium schedules **offline causal replay simulations** onto your **ARM/RISC-V SBCs (`rk3588-sbc-bramble`), Legacy Laptops (`legacy-thinkpad-t480`), and idle Home NAS CPU threads**.
-   - Why can low-power CPUs run this? Because in a recorded `DiscoveryTree`, the expensive GPU kernel benchmarks at each tree node have *already been evaluated and cached*! Replaying counterfactual exploration policies ($\alpha$ priority weight, $\tau_{\text{prune}}$ pruning ratio, frontier width $W$) is pure causal graph traversal (`0` GPU hours required).
-3. **Self-Evolving Meta-Policy Injection:**
-   - `DreamRsiSimulator::evolve_meta_policy` identifies the exploration policy that reaches the global peak (`123.5 GB/s`) while pruning dead-end regressions—achieving **`71.4%` compute savings** (`2.8x` discovery speedup)—and automatically injects the evolved meta-policy into the next online RL epoch.
-
-Run the standalone Dream-RSI simulator anytime via:
 ```bash
 kadmium dream
 ```
 
----
+`run_dream_cycle` reports normalized scores and evaluation costs. In the current sample, the promoted policy reaches the **2.31× peak** after **4 of 9 unit-cost evaluations**, a **55.6% evaluation-cost saving** relative to the baseline discovery order.
 
-## 4. TPU / Compute-in-Memory (CIM) Inspired Dataflows
+The CLI does not record a persistent tree on a NAS, benchmark a real GPU kernel, synthesize or inject a meta-prompt, or modify a subsequent online RL epoch. The figures describe only the bundled sample.
 
-Different phases of inference and RL have radically different arithmetic intensities. [`DataflowStreamPlanner`](../../crates/kadmium-sharding/src/lib.rs) lets you inspect and switch between three execution dataflows:
+## 4. Dataflow comparison
 
-1. **`WeightStationaryTokenStreaming` (Google TPU / CIM Systolic Mode):**
-   - Keeps `.ktb` weight banks stationary in SRAM/VRAM/Unified Memory and streams micro-batches of tokens ($B \ge 64$) through the stationary weights, amortizing memory reads by $B\times$.
-2. **`TokenStationaryWeightStreaming` (Colibri / FreeToken Edge Mode):**
-   - Keeps the active token's KV-cache and hidden state stationary in L2/VRAM while streaming `64 KiB` page-aligned `.ktb` weight/expert banks dynamically from NVMe/DDR5 (`B = 1..8` low-latency chat).
-3. **`HybridCimAdaptive` (Default Recommended):**
-   - Automatically runs `WeightStationaryTokenStreaming` on high-$q^*$ nodes (`mac-mini-m4-pro`, `main-gaming-pc`) and `TokenStationaryWeightStreaming` on NVMe/CPU edge nodes.
+[`DataflowStreamPlanner`](../../crates/kadmium-sharding/src/lib.rs) reports four planning variants:
 
-Compare all three modes across your cluster with:
+- `AdaptiveTieredHybrid`
+- `ComputeInMemoryTokenStreaming`
+- `TokenStationaryWeightStreaming`
+- `DisaggregatedDualStream`
+
+For the current report, low-batch inference favors compute-in-memory token streaming, while high-batch inference favors token-stationary weight streaming. These are modelled planner recommendations, not measurements of a loaded model.
+
 ```bash
-kadmium dataflow --batch-tokens 512
+kadmium dataflow --model deepseek-v3-671b-moe --batch-tokens 512
 ```

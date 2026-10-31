@@ -1,81 +1,61 @@
 # Guide: Hardware Setup, Asymmetric Sharding & Polite Host Governance
 
-Unlike datacenter frameworks that require identical $8 \times \text{H100}$ nodes on InfiniBand, **Kadmium** is built from the ground up for **extreme hardware asymmetry** across rooms, homes, and continents.
+Kadmium profiles heterogeneous machines and computes placement and governance plans. Current model-related execution uses small reference tensors; hardware classification does not imply that every native backend or model-serving path is implemented.
 
 ---
 
-## 1. Supported Hardware Tiers & Roles
+## 1. Hardware profiles and planning roles
 
-Every node in a Kadmium cluster is profiled across a **5-Tier Memory Hierarchy** (`VRAM` $\to$ `Unified RAM` $\to$ `System DDR4/DDR5` $\to$ `NVMe Gen4/Gen5 Cache` $\to$ `Peer Network Staging`) and automatically assigned a specialized role:
+Nodes are represented with fast accelerator memory, unified memory, system RAM, NVMe, and peer/network tiers. The planner can assign different layer and expert ranges according to those profiles.
 
-| Device Class | Example Hardware | Primary Kadmium Role |
+| Device class | Example | Planning role |
 | :--- | :--- | :--- |
-| **Main Gaming Desktop** | RTX 4090 (24 GB VRAM) + 64 GB DDR5 + Gen4 NVMe | Heavy transformer layers, Layer $0$ ingress, `Colibri` NVMe MoE expert streaming, and DiLoCo GPU learner. |
-| **Apple Silicon Mini / Studio** | Mac Mini M4 Pro (64 GB Unified Memory, $q^* = 0.96$) | High-memory-capacity backbone holding the largest contiguous block of transformer layers & hot MoE experts. |
-| **Gaming Laptop** | RTX 4070 Mobile (8 GB VRAM) + 32 GB DDR5 | Middle pipeline layers (`1F1B` stage) + battery-aware elastic worker. |
-| **Home NAS Storage Vault** | TrueNAS / Synology (64 TB ZFS + 2 TB NVMe Cache, 10 GbE) | **Primary Seed Vault** storing canonical `.ktb` model banks & datasets; serves chunks directly to workers via CERN FTS3; standby Coordinator Quorum leader. |
-| **Legacy Laptop** | ThinkPad T480 (16 GB DDR4, iGPU) | Lightweight tail layers, Layer $N-1$ egress (if `TrustedCore`), or CPU RL environment sandbox. |
-| **ARM / RISC-V SBC Bramble** | 4x Orange Pi 5 Plus (RK3588 NPU, 32 GB LPDDR4x) | **Speculative Decoding Draft Head** (`0.6B` draft model) & **Dream-RSI** offline causal replay workers. |
-| **Friend's Remote PC** | RTX 3080 (10 GB VRAM) over 300 Mbps WAN | Middle hidden-state layers ($1 \dots N-2$) over `Hivemind` 8-bit blockwise quantized QUIC links. |
+| Gaming desktop | RTX 4090, DDR5, NVMe | Compute-heavy layers and trusted ingress |
+| Apple Silicon Mac | M4 Pro unified memory | High-capacity contiguous stages; unified-memory profiles use $q^*=0.96$ |
+| Gaming laptop | RTX 4070 Mobile | Middle stages with battery/thermal governance |
+| NAS | TrueNAS/Linux ZFS | Tensor-bank storage and coordinator standby metadata |
+| Legacy laptop | x86_64 CPU | Lightweight reference work or sandbox planning |
+| ARM/RISC-V SBC | RK3588, CM4, K230 | Utility, replay, and verification planning |
+| Remote peer | Reachable TCP worker | Middle-layer placement according to trust policy |
 
----
+Only a specific set of CUDA kernels currently has a native device implementation. Other backends primarily use host reference math and platform classification. See the [support and execution boundaries](../SPECSHEET_AND_ROADMAP.md#2-hardware-profiles-and-execution-support).
 
-## 2. Zero-Conversion Model Ingestion (`.ktb` Kadmium Tensor Banks)
+## 2. Local `.ktb` ingestion
 
-You never have to manually convert or pre-slice models before launching a cluster:
+`kadmium import --path <FILE>` is a constrained **local single-file reference importer** for SafeTensors and GGUF v3. The GGUF parser currently accepts only compact streams with zero metadata key-value pairs, which excludes many standard GGUF models. Omitting `--path` synthesizes a reference input file.
 
-1. Point Kadmium at any standard **HuggingFace Safetensors** repository or **GGUF v3** file stored on your Home NAS or primary workstation.
-2. [`SafetensorsToKtbTranscoder`](../../crates/kadmium-data/src/lib.rs) or [`GgufToKtbTranscoder`](../../crates/kadmium-data/src/lib.rs) automatically compiles each node's assigned layer range (`start_layer..=end_layer`) and routed MoE experts into **64 KiB (`65,536`-byte) page-aligned `.ktb` (`"KDTB"` magic)** shard banks.
-3. Why `64 KiB` page alignment?
-   - Matches OS virtual memory granularity on Windows (`64 KiB`), Apple Silicon (`16 KiB` $\times 4$), and Linux (`4 KiB` $\times 16$).
-   - Enables zero-copy `mmap` and `io_uring` / DirectStorage NVMe expert streaming (`Colibri` pattern) without heap allocations or unaligned read amplification.
-
----
-
-## 3. CERN FTS3 Third-Party P2P Data Staging
-
-When a new node joins or a live responsibility shift occurs, **the coordinator never relays gigabytes of model weights through itself**:
-
-```mermaid
-sequenceDiagram
-    participant Coord as Kadmium Coordinator
-    participant NAS as Home NAS Vault (.ktb Seed)
-    participant Worker as Worker Node (Mac Mini / Laptop)
-
-    Coord->>Worker: 1. Assign Shard Plan (Layers 20..44) + Chunk Manifest
-    Coord->>NAS: 2. Issue FTS3 Third-Party Transfer Order
-    NAS->>Worker: 3. Stream 64 KiB Page-Aligned .ktb Chunks Directly (P2P QUIC)
-    Worker->>Worker: 4. Verify 64-bit FNV-1a Checksums & mmap into Tiered Cache
-    Worker->>Coord: 5. Ready for Epoch Transition
+```bash
+kadmium import --model example --path ./model.safetensors --start-layer 0 --end-layer 3
+kadmium inspect <PATH_PRINTED_BY_IMPORT>
 ```
 
-If a worker already has an earlier epoch's `.ktb` bank cached on NVMe, [`Fts3ChunkSlicer::compute_delta_chunks`](../../crates/kadmium-data/src/lib.rs) diffs the 64-bit chunk hashes so **only modified or newly assigned 64 MiB chunks** cross the network.
+The importer reads the whole source file and writes 64 KiB-aligned `.ktb` pages with FNV-1a checksums and Merkle proofs. `kadmium compile` is different: it generates deterministic synthetic tensor payloads for a requested layer range; it does not transcode a named pretrained model.
 
----
+Zero-copy slices into already loaded byte buffers are implemented. Actual memory-mapped file loading, `io_uring`, and DirectStorage paths are planned, not established by the current importer.
 
-## 4. Polite Host Governance (`<200ms` Gaming & Battery Auto-Yield)
+## 3. Transfer planning and live reference streaming
 
-Kadmium borrows BOINC's polite volunteer computing philosophy and modernizes it for interactive gaming PCs and laptops:
+[`Fts3ChunkSlicer`](../../crates/kadmium-data/src/lib.rs) exposes `compute_chunk_manifest` and `diff_missing_chunks`. Callers select a chunk size, clamped to at least 64 KiB, and compare FNV-1a chunk hashes to identify missing data.
 
-- **`PoliteState::IdleDedicated` (`100%` Capacity):** Full GPU VRAM, Tensor Cores, and NVMe streaming bandwidth are dedicated to the cluster.
-- **`PoliteState::LightDesktopUse` (`65%` Capacity):** Reserves 25% of VRAM and caps GPU duty cycle so desktop responsiveness stays locked at 120 Hz.
-- **`PoliteState::GamingOrHeavyApp` (`<200ms` Auto-Yield to `15%` Background Budget):**
-  1. As soon as a fullscreen DirectX/Vulkan/Metal game or heavy creative app launches on `main-gaming-pc`, Kadmium's hardware governor detects the foreground context switch in `<200ms`.
-  2. [`ShardPlanner::plan_responsibility_shift`](../../crates/kadmium-sharding/src/lib.rs) immediately shifts heavy transformer layers and MoE experts off the Gaming PC onto `mac-mini-m4-pro` and `gaming-laptop-rtx4070`.
-  3. Only the tiny live KV-cache / LoRA boundary delta is handed off over the LAN while static `.ktb` weights are pre-staged from the Home NAS.
-- **`PoliteState::OnBatteryPowerSaver` (`25%` Capacity):** Automatically throttles TDP and shifts compute-heavy layers off unplugged laptops.
+The current live worker path synthesizes a reference bank, after which the coordinator sends pages to workers over TCP and verifies patch/digest behavior. It does not order a NAS to stream directly to a worker and does not establish third-party QUIC/FTS3 network transfers. Direct peer staging, production retry behavior, and mmap-based caches remain target work.
 
----
+## 4. Polite host governance
 
-## 5. 3-Tier Trust Model & Prompt Privacy
+The policy model includes:
 
-When pooling hardware with friends, university lab mates, or a public swarm, [`NodeTrustTier`](../../crates/kadmium-core/src/lib.rs) enforces strict cryptographic and topological boundaries:
+- `IdleDedicated`: full planning capacity.
+- `LightDesktopUse`: **75%** compute multiplier; it does not reserve a fixed 25% of VRAM.
+- `GamingOrHeavyApp`: reduced background budget and a **target** sub-200 ms yield policy.
+- `BatteryOrThermalThrottle`: reduced compute and VRAM budgets for battery/thermal pressure.
 
-1. **`NodeTrustTier::TrustedCore` (Your Owned Devices):**
-   - **Exclusively** allowed to hold **Layer $0$ (Token Embedding Ingress)** and **Layer $N-1$ (LM Head / Output Logits Egress)**.
-   - Raw user prompts and decoded output tokens never leave your `TrustedCore` hardware.
-2. **`NodeTrustTier::VerifiedPeerMiddleLayersOnly` (Friends & Lab Peers):**
-   - Restricted to middle transformer layers ($1 \le \ell \le N-2$).
-   - Only receives intermediate floating-point/int8 hidden-state activation tensors (`BlockwiseInt8Tensor`).
-3. **`NodeTrustTier::UntrustedPublicSwarm` (Open Volunteer Nodes):**
-   - Restricted to middle layers AND continuously audited via **Gensyn `Verde` Refereed Delegation** ([`VerdeVerificationEngine`](../../crates/kadmium-runtime/src/lib.rs)), using `RepOps` deterministic pairwise tree reductions and $O(\log_2 L)$ binary layer bisection to pinpoint any faulty or malicious worker in logarithmic steps.
+Live sampling and hysteresis are limited; native foreground/swapchain drivers are not universally implemented. The displayed yield latency is a policy estimate, not a measured responsiveness or 120 Hz guarantee. Responsibility-shift reports are planner scenarios, not evidence that an active model migrated without interruption.
+
+## 5. Trust tiers and placement boundaries
+
+[`NodeTrustTier`](../../crates/kadmium-core/src/lib.rs) supplies placement constraints:
+
+1. `TrustedCore` may hold layer 0 and layer $N-1$.
+2. `VerifiedPeerMiddleLayersOnly` is restricted to middle layers.
+3. `UntrustedAuditedMiddleLayersOnly` is restricted to middle layers and selected for audit-oriented verification.
+
+These are topological planning rules, not cryptographic privacy or authentication. Intermediate activations can still reveal information. FNV checksums and RepOps digest comparisons provide deterministic integrity/reference checks, not confidential computing or a settlement proof. Protect the coordinator with external network access controls.

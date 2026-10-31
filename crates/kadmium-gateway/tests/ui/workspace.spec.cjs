@@ -127,3 +127,30 @@ test('Control Room setup guidance follows live workers and model state', async (
   await page.locator('.kw-quick-actions summary').click();
   await expect(page.getByRole('link', { name: /Train a model/ })).toBeVisible();
 });
+
+test('Docs portal resolves catalog and repository-relative links', async ({ page }) => {
+  const errors = [];
+  page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/docs');
+  const body = page.locator('#docBody');
+
+  await body.getByRole('link', { name: 'Quickstart and installation', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('docs/getting-started.md');
+  await body.getByRole('link', { name: 'launch guide', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('docs/guides/cli.md');
+
+  await page.goto('/docs');
+  await body.getByRole('link', { name: 'Measured benchmark ledger', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('docs/BENCHMARKS_2026-10.md');
+
+  await page.goto('/docs');
+  await body.getByRole('link', { name: 'Contributing', exact: true }).click();
+  await expect(page.locator('#currentPath')).toHaveText('CONTRIBUTING.md');
+
+  await page.evaluate(() => selectDoc('hardware-and-sharding'));
+  await expect(body.getByRole('link', { name: 'Fts3ChunkSlicer', exact: true })).toHaveAttribute(
+    'href',
+    'https://github.com/mESmaC/Kadmium/blob/main/crates/kadmium-data/src/lib.rs'
+  );
+  expect(errors).toEqual([]);
+});

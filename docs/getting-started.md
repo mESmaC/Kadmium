@@ -8,7 +8,7 @@ This guide covers installing **Kadmium**, inspecting a launch plan, opening the 
 
 ### Build the current source
 
-Use the current stable Rust toolchain (`rustup`):
+Install `rustup`; the repository's `rust-toolchain.toml` automatically selects the pinned Rust 1.99.0 toolchain with `rustfmt` and Clippy:
 
 ```bash
 git clone https://github.com/mESmaC/Kadmium.git
@@ -41,26 +41,29 @@ bash scripts/install.sh --version vX.Y.Z
 
 The scripts verify the archive against `SHA256SUMS`, check its executable names and CLI version, and install into a versioned per-user directory. They print the binary path and do not modify `PATH`. Windows and macOS archives include the desktop companion. Linux builds use GNU targets, with Ubuntu 22.04 for x64 and Ubuntu 24.04 for ARM64 as build baselines; compatibility is not universal across Linux distributions or musl systems. No release archive is promised for other architectures.
 
-The checksums detect corrupted or mismatched downloads; they are not an independent signature. This setup change adds no direct or transitive Rust dependencies and preserves the existing Cargo manifests and lockfile.
+The checksums detect corrupted or mismatched downloads; they are not an independent signature.
+
+### Roll back or remove an installed release
+
+Installs are versioned under the per-user Kadmium directory printed by the installer. To use an earlier release, invoke its executable directly from that release's `releases/<tag>-<platform>` directory; there is no automated rollback command and the installer does not change `PATH`. To remove a version, close Kadmium and delete only that version's `releases/<tag>-<platform>` directory. Keep the directory if other shortcuts or scripts still reference it.
 
 ---
 
 ## 2. Probe Your Local Machine
 
-Before joining or starting a cluster, inspect how Kadmium sees your machine's CPU threads, GPU VRAM, unified memory bandwidth, NVMe streaming throughput, and **FreeToken $q^*$ bandwidth-adaptive ratio**:
+Before joining or starting a cluster, inspect how Kadmium profiles your machine's CPU threads, memory, GPU VRAM, platform family, and **FreeToken $q^*$ placement heuristic**:
 
 ```bash
 cargo run -p kadmium-cli -- probe
 ```
 
 **What `kadmium probe` does:**
-1. Queries OS memory APIs and GPU drivers (`nvidia-smi` for CUDA, Metal unified memory on macOS, or CPU AVX2/AVX-512 + Vulkan fallback).
-2. Runs a live 16 MiB page-aligned streaming benchmark (`64 KiB` pages) to measure real memory/NVMe streaming bandwidth.
-3. Computes your node's **FreeToken $q^*$ ratio**:
-   $$q^* = \frac{\text{BW}_{\text{RAM}}}{\text{BW}_{\text{VRAM}} + \text{BW}_{\text{RAM}}}$$
-   - On an **Apple Silicon Mac Mini (`M4 Pro`)**, unified memory yields $q^* \approx 0.96$.
-   - On a **Gaming Desktop (`RTX 4090` + DDR5)**, discrete PCIe bandwidth yields $q^* \approx 0.74$.
-4. Generates a cryptographically signed **Kadmium Join Ticket (`kdm1_...`)** ready for peers to join.
+1. Queries available OS memory and hardware interfaces, including `nvidia-smi` when present. Reported platform/backend labels do not guarantee a native model backend.
+2. Runs a 16 MiB synthetic in-memory page-chunk probe and clamps its result to produce the displayed NVMe estimate. This does not read an NVMe device.
+3. Computes $q^*$ using `HardwareNode::compute_q_star_ratio`: unified-memory nodes return `0.96`, nodes without VRAM return `0.0`, and discrete-GPU nodes use polite-adjusted FP16 compute, CPU, interconnect, and NVMe terms clamped to `0.10..=0.95`. It is not a RAM/VRAM bandwidth ratio.
+4. Prints a truncated example join-ticket prefix with hard-coded endpoints. It is not a usable ticket for your coordinator and is not cryptographically signed.
+
+A generic local P2P roundtrip is not part of `probe`; some physical-platform branches run their own hardware checks.
 
 ---
 
@@ -111,16 +114,13 @@ kadmium join --coordinator http://192.168.1.10:7848
 
 Replace the example IP with the coordinator's real address. Omitting `--coordinator` uses Kadmium's UDP discovery announcements on port `7849`, not mDNS. Discovery and joining require the relevant HTTP, worker and UDP ports to be reachable. Client API keys do not authenticate access to the coordinator.
 
-### Remote Friends, Family, Lab Nodes, or Cloud GPUs (`kdm1_...` Join Tickets)
-To add a machine across the internet (behind home NAT) or in a cloud datacenter, copy the `kdm1_...` ticket printed by `kadmium probe` or `kadmium serve`.
+### Reachable remote workers and join-ticket limitations
 
-Tickets encode:
-- The coordinator's QUIC hole-punching relay endpoints
-- An optional target **Sub-Cluster Slice ID** (e.g., `slice-01-prod-deploy` or `slice-04-rl-dream-rsi`)
-- The node's **Trust Tier**:
-  - `TrustedCore` (owned hardware allowed to hold Layer $0$ embedding ingress and Layer $N-1$ output logits)
-  - `VerifiedPeerMiddleLayersOnly` (friends/lab peers restricted to middle hidden-state layers $1 \dots N-2$ so raw prompts and decoded tokens never leave your owned devices)
-  - `UntrustedPublicSwarm` (verified via Gensyn `Verde` $O(\log_2 L)$ refereed layer bisection)
+A remote worker needs a reachable coordinator HTTP address to register. Coordinator-to-worker TCP reachability is also required for execution and health checks; registration itself can report acceptance with a fallback RTT when that ping fails. Use a LAN, VPN, or explicitly configured port forwarding and external access controls. The current join path does not perform QUIC hole punching or managed relay traversal.
+
+`kdm1_...` tickets contain endpoint metadata with an unkeyed FNV-1a integrity checksum. They are **not authentication credentials or signed authorization**, and registration currently does not enforce a ticket's target slice or trust tier. Do not treat a ticket as proof that a node is trusted.
+
+`kadmium probe` prints only a truncated example ticket, while `kadmium serve` prints join commands rather than a full ticket. Prefer the direct `--coordinator` flow above. The supported trust-tier names used by placement policy are `TrustedCore`, `VerifiedPeerMiddleLayersOnly`, and `UntrustedAuditedMiddleLayersOnly`; these constrain layer placement, not cryptographic privacy.
 
 ---
 

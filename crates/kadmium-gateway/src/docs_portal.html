@@ -598,17 +598,46 @@
     }
 
     const DOC_LINKS = {
-      "./getting-started.md": "getting-started",
-      "./cli-reference.md": "cli-reference",
-      "./api-reference.md": "api-reference",
-      "./SPECSHEET_AND_ROADMAP.md": "specsheet-and-roadmap",
-      "./ARCHITECTURE.md": "architecture",
-      "./guides/hardware-and-sharding.md": "hardware-and-sharding",
-      "./guides/training-and-dream-rsi.md": "training-and-dream-rsi",
-      "./guides/subclusters-and-cloud-shield.md": "subclusters-and-cloud-shield",
-      "./guides/integrations-hf-github.md": "integrations-hf-github",
-      "./guides/mcp-server.md": "mcp-server"
+      "docs/README.md": "overview",
+      "docs/getting-started.md": "getting-started",
+      "docs/guides/cli.md": "launch-guide",
+      "docs/cli-reference.md": "cli-reference",
+      "docs/api-reference.md": "api-reference",
+      "docs/SPECSHEET_AND_ROADMAP.md": "specsheet-and-roadmap",
+      "docs/ARCHITECTURE.md": "architecture",
+      "docs/BENCHMARKS_2026-10.md": "benchmarks",
+      "docs/guides/hardware-and-sharding.md": "hardware-and-sharding",
+      "docs/guides/condenser-workspace.md": "condenser-workspace",
+      "docs/guides/training-and-dream-rsi.md": "training-and-dream-rsi",
+      "docs/guides/subclusters-and-cloud-shield.md": "subclusters-and-cloud-shield",
+      "docs/guides/integrations-hf-github.md": "integrations-hf-github",
+      "docs/guides/mcp-server.md": "mcp-server",
+      "docs/guides/release.md": "release-runbook",
+      "docs/MARKET_RESEARCH_AND_LAUNCH_PLAN.md": "market-research-and-launch-plan",
+      "CONTRIBUTING.md": "contributing"
     };
+    function normalizeRepoPath(path) {
+      const parts = [];
+      for (const part of path.split("/")) {
+        if (!part || part === ".") continue;
+        if (part === "..") {
+          if (!parts.length) return null;
+          parts.pop();
+        } else {
+          parts.push(part);
+        }
+      }
+      return parts.join("/");
+    }
+    function resolveRepoHref(raw) {
+      const hashAt = raw.indexOf("#");
+      const path = hashAt >= 0 ? raw.slice(0, hashAt) : raw;
+      const anchor = hashAt >= 0 ? raw.slice(hashAt) : "";
+      const doc = allDocs.find(d => d.slug === activeSlug);
+      const base = doc ? doc.file_path.split("/").slice(0, -1).join("/") : "docs";
+      const normalized = normalizeRepoPath(`${base}/${path}`);
+      return { normalized, anchor };
+    }
     function formatInline(text) {
       const held = [];
       const hold = html => "\u0000" + (held.push(html) - 1) + "\u0000";
@@ -620,8 +649,14 @@
         .replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?![\w*])/g, "$1<em>$2</em>")
         .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label, href) => {
           const raw = href.replace(/&amp;/g, "&");
-          if (DOC_LINKS[raw]) return `<a href="#${DOC_LINKS[raw]}" onclick="selectDoc('${DOC_LINKS[raw]}'); return false;">${label}</a>`;
+          if (raw.startsWith("#")) return `<a href="${href}">${label}</a>`;
           if (/^(https?:|mailto:|\/)/i.test(raw)) return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+          const { normalized, anchor } = resolveRepoHref(raw);
+          if (normalized && DOC_LINKS[normalized]) {
+            const slug = DOC_LINKS[normalized];
+            return `<a href="#${slug}" onclick="selectDoc('${slug}'); return false;">${label}</a>`;
+          }
+          if (normalized) return `<a href="https://github.com/mESmaC/Kadmium/blob/main/${normalized}${anchor}" target="_blank" rel="noopener">${label}</a>`;
           return label;
         });
       return out.replace(/\u0000(\d+)\u0000/g, (_, n) => held[Number(n)]);

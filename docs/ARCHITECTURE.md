@@ -20,28 +20,28 @@ Conventional distributed AI/ML frameworks (Megatron-LM, DeepSpeed, FSDP, vLLM mu
 
 When run on real-world personal, academic, or community hardware—such as a desktop gaming PC, an M4 Mac Mini, two gaming laptops, older laptops, Linux SBCs, and a home NAS—traditional frameworks either refuse to initialize or bottleneck the entire cluster down to the speed of the slowest node.
 
-**Kadmium** replaces these assumptions with a **Heterogeneity-Native Compute Fabric** built around four core mechanisms:
-1. **Asymmetric Topology-Aware Model Sharding** (proportional to each device's actual compute, memory hierarchy, and link speed).
-2. **Dynamic Compute Responsibility Shifting** (live migration of model shards, KV caches, and training states when nodes throttle, enter gaming mode, or when a burst cloud GPU attaches).
-3. **Bandwidth-Adaptive Tiered Execution ($q^*$ Policy + NVMe Expert Streaming)** inspired by **FreeToken**, **Colibri**, and **Lumabri**.
+**Kadmium** explores a **Heterogeneity-Native Compute Fabric** through four mechanisms:
+1. **Asymmetric Topology-Aware Shard Planning** from hardware, memory, and link profiles.
+2. **Dynamic Compute Responsibility Planning**, with production KV/training-state migration as target architecture.
+3. **Tiered Execution Models ($q^*$ and expert streaming)** inspired by **FreeToken**, **Colibri**, and **Lumabri**, currently evaluated on reference workloads.
 4. **Scientific Grid Data Staging & Polite Scheduling** inspired by **CERN FTS3**, **Davix**, and **BOINC**.
 
 ---
 
 ## 2. Node Roles & Capability Vector (`kadmium-core`)
 
-Every machine running the single `kadmium` binary discovers or joins a mesh and continuously advertises a **`HardwareProfile`** along with its **`PolitePolicy`** envelope.
+Machines are represented by hardware profiles and polite-policy envelopes. Live workers register over reachable HTTP/TCP addresses and send heartbeats; discovery, native backend coverage, and policy sensors vary by platform.
 
 ### 2.1 Logical Node Roles
 A single physical device can hold multiple roles simultaneously:
-- **`Coordinator`:** Maintains the cluster topology matrix, runs the `ShardPlanner`, orchestrates FTS3 third-party transfers, and exposes the Dashboard & API Gateway. (Can fail over to any standby node).
-- **`ComputeWorker`:** Executes assigned model shards (dense layers, MoE expert banks, vision encoders, or training backward stages).
-- **`DraftAndUtilityWorker`:** Optimized for Linux SBCs and older CPUs—runs tokenization, speculative decoding draft generation, BPE dataset preparation, embedding table lookups, and validation scoring.
-- **`StorageVault`:** Optimized for Home NAS units—stores canonical **Kadmium Tensor Banks (`KTB`)**, training datasets, and rolling checkpoints, seeding them directly to compute nodes via parallel QUIC streams.
-- **`BurstAccelerator`:** Ephemeral high-FLOP node (e.g., rented cloud GPU for 2–4 hours) that dynamically absorbs heavy prefill or training pipeline stages and cleanly hands them back before termination.
+- **`Coordinator`:** Maintains topology/state, runs planners, schedules reference transfers, and exposes the Dashboard/API. Coordinator failover scenarios do not establish production quorum guarantees.
+- **`ComputeWorker`:** Executes assigned synthetic reference stages over TCP; native execution is limited to specifically documented bridges/kernels.
+- **`DraftAndUtilityWorker`:** Target role for tokenization, draft generation, data preparation, and scoring. Current speculative acceptance is modelled.
+- **`StorageVault`:** Storage/catalog role for `.ktb` banks and reference checkpoints. Direct NAS-to-worker QUIC seeding is target architecture.
+- **`BurstAccelerator`:** Planning role for ephemeral capacity. Provider procurement and live drain/failback are not implemented managed services.
 
 ### 2.2 Multi-Tier Memory Hierarchy
-Rather than treating memory as a binary "fits in VRAM or OOM", Kadmium models five explicit memory tiers per node:
+Rather than treating memory as a binary "fits in VRAM or OOM", Kadmium models five explicit memory tiers per node. Bandwidths below are representative hardware-profile inputs, not measured Kadmium throughput:
 
 | Tier | Examples | Typical Bandwidth | Primary Kadmium Allocation |
 | :--- | :--- | :--- | :--- |
@@ -66,69 +66,41 @@ Where:
 - **`FLOPs_avail(n_i)`** is scaled by the node's current **Polite Availability Multiplier** $\rho(n_i) \in [0.0, 1.0]$ (e.g., $\rho = 1.0$ when idle, $\rho = 0.15$ when the user is actively gaming on their main PC).
 - **`Mem_fast(n_i)`** combines Tier 0 (VRAM), Tier 1 (Unified Memory), and bandwidth-discounted Tier 2 (System RAM) via the **FreeToken-inspired $q^*$ policy**.
 
-### 3.2 Bandwidth-Adaptive Execution ($q^*$ Policy)
-Adopted from **FreeToken**, each node calculates its local split ratio $q^* \in [0, 1]$ between Accelerator (GPU/Metal) execution and Host (CPU/RAM/NVMe) execution so that accelerator compute time equals interconnect/streaming time:
+### 3.2 Tiered Placement Heuristic ($q^*$)
 
-$$T_{\text{accel}}(q^* \cdot W) \approx T_{\text{host + stream}}((1 - q^*) \cdot W)$$
+The FreeToken-inspired $q^*$ value guides placement between fast accelerator/unified memory and host/streaming tiers. The current `HardwareNode::compute_q_star_ratio` implementation is a heuristic, not a measured time-equality equation:
 
-- On a **Gaming Laptop** (high GPU FLOPs, limited 8–12 GB VRAM, 32 GB DDR5 RAM, fast Gen4 NVMe): dense attention runs 100% in VRAM while routed MoE experts are split across VRAM, RAM, and zero-copy NVMe `KTB` banks.
-- On an **M4 Mac Mini** (Unified Memory): zero PCIe copy overhead ($q^* \to 1.0$ across unified memory), making it an ideal anchor for contiguous middle transformer blocks and large KV caches or training activation buffers.
-- On **Linux SBCs**: assigned non-bottlenecking edge stages—tokenization, HTTP/SSE stream assembly, speculative draft token generation (small 0.5B–1.5B int4 model), or embedding lookup tables.
+- unified-memory profiles return `0.96`;
+- nodes without VRAM return `0.0`;
+- discrete-GPU profiles combine polite-adjusted FP16 compute, CPU compute, interconnect, and NVMe terms, clamped to `0.10..=0.95`.
 
-### 3.3 TPU / Systolic & Compute-in-Memory (CIM) Inspired Dataflow Modes (`DataflowStreamPlanner`)
-In matrix multiplication $Y = X \cdot W$, either activations $X$ or weights $W$ must move across memory tiers and network links. Borrowing from Google TPU systolic arrays and Compute-in-Memory (CIM / Processing-in-Memory) designs, Kadmium provides programmable dataflow modes:
-1. **`ComputeInMemoryTokenStreaming` (Weight-Stationary / CIM):**
-   - Weights $W^{(l)}$ are permanently pinned across distributed VRAM, Apple Unified Memory, and dual-channel DDR System RAM banks.
-   - Zero weight movement occurs during execution; instead, compact token activation micro-packets ($x_t \in \mathbb{R}^d$, $16\text{–}32\text{ KB}$) flow like a systolic wavefront directly to the memory controllers where the weights reside.
-   - Optimal when batch size is small ($B \le 8$) and execution is memory-bandwidth bound.
-2. **`TokenStationaryWeightStreaming` (Dynamic Weight Streaming):**
-   - Large batches of token activations ($X \in \mathbb{R}^{B \times S \times d}$) stay stationary in fast GPU SRAM/VRAM while double-buffered `.ktb` weight tiles stream continuously from local NVMe, Home NAS, or peer RAM banks.
-   - Optimal when $B \times S \ge 256$, where high arithmetic intensity ($\text{FLOPs/Byte}$) completely hides weight streaming latency behind tensor core execution.
-3. **`DisaggregatedDualStream`:**
-   - Executes prompt prefill using `TokenStationaryWeightStreaming` on high-FLOP discrete GPUs, then streams the resulting KV-cache and single-token decode wavefront through `ComputeInMemoryTokenStreaming` memory nodes.
+The value informs planner assignments; it does not prove that dense attention, expert streaming, draft models, or native Metal/CUDA execution is active on a node.
+
+### 3.3 TPU / CIM-Inspired Dataflow Models (`DataflowStreamPlanner`)
+
+For $Y = X \cdot W$, activations or weights must move across memory/network tiers. The planner compares four modelled variants:
+
+1. **`ComputeInMemoryTokenStreaming`:** weight-stationary token streaming; the current report recommends it for low-batch cases.
+2. **`TokenStationaryWeightStreaming`:** token-stationary weight streaming; the current report recommends it for high-batch cases.
+3. **`DisaggregatedDualStream`:** models separate prefill and decode streaming arrangements.
+4. **`AdaptiveTieredHybrid`:** models tier-dependent selection across nodes.
+
+Reported crossover points, overlap, and throughput are model outputs, not evidence of a systolic/CIM hardware implementation or measured loaded-model execution.
 
 ### 3.4 Multi-Environment Pool Slicing (`SubClusterPartitioner`)
-For larger deployments (e.g., a 100-node university, lab, or community pool), Kadmium supports partitioning the global hardware pool into $K$ isolated **Sub-Compute Environments (`ComputeSubCluster`)**—such as 5 sub-clusters of 20 nodes each:
-- **`ProductionDeployment`:** Locked inference slice with strict SLA and dedicated `/v1/slices/slice-01-prod-deploy` gateway routing.
-- **`StagingAndTesting`:** Isolated canary environment for testing new models, kernels, or sharding layouts without perturbing production.
-- **`DistributedTrainingLab`:** Dedicated 1F1B + Sharded-Island DiLoCo + DeMo training slice.
-- **`RlAndDreamRsiArena`:** Disaggregated RL sandbox + Dream-RSI offline replay slice.
-- **`BatchAndEvalPool`:** High-throughput dynamic weight-streamed batch evaluation slice.
-- Slices enforce hard resource/network fences by default, with optional **Elastic Borrowing** so training/batch slices can temporarily harvest idle nodes from staging/test slices and yield them back on demand.
+For larger pools, `SubClusterPartitioner` computes $K$ stratified **planning partitions (`ComputeSubCluster`)**, such as five groups of 20 nodes. Purposes are `ProductionDeployment`, `StagingAndTesting`, `DistributedTrainingLab`, `RlAndDreamRsiArena`, and `BatchAndEvalPool`.
+
+Each record contains an API namespace, member nodes, an elastic-borrowing policy, and a shard plan. Current partitions do not create strict SLA routing, per-slice coordinators, hard resource/network fences, authenticated tenants, or automatic borrowing/re-slicing.
 
 ---
 
-## 4. Dynamic Compute Responsibility Shifting
+## 4. Dynamic Compute Responsibility Planning
 
-A core innovation in Kadmium is **Live Compute Responsibility Shifting**—allowing the cluster to adapt in real time without restarting inference sessions or aborting multi-hour training jobs.
+`ShardPlanner::plan_responsibility_shift` recomputes placements for activity and membership scenarios, including gaming and a sample cloud-burst node joining. Shift reports describe layer changes and modelled transfers.
 
-```mermaid
-sequenceDiagram
-    participant PC as 🖥️ Main PC (Gaming Mode Triggered)
-    participant Coord as 🧠 Kadmium Coordinator
-    participant NAS as 🗄️ Home NAS (KTB Seed)
-    participant Mac as 🍎 M4 Mac Mini
-    participant Laptop as 💻 Gaming Laptop #1
+The target live-migration sequence is to pre-stage static banks, hand off mutable KV/optimizer state at a step boundary, and then change the routing epoch. That complete sequence is **not** implemented as a production guarantee: direct NAS-to-worker FTS3/QUIC staging, zero-downtime model migration, rented-node lifecycle, and uninterrupted training/API service remain integration work.
 
-    PC->>Coord: Telemetry Alert: User launched game (GPU Budget 100% -> 15%)
-    Coord->>Coord: Compute ShiftPlan (Shrink PC Layers [0..22] -> [0..6])
-    Coord->>NAS: FTS3 3rd-Party Transfer: Stage Layers [7..15] -> Mac, [16..22] -> Laptop
-    NAS-->>Mac: Direct QUIC Parallel Chunk Stream (Static Base Weights)
-    NAS-->>Laptop: Direct QUIC Parallel Chunk Stream (Static Base Weights)
-    Mac->>Coord: Standby Shard Ready (Layers 7..15)
-    Laptop->>Coord: Standby Shard Ready (Layers 16..22)
-    Coord->>PC: Commit Handoff at Step/Token Boundary T+1
-    PC-->>Mac: Direct P2P Delta Stream (KV Cache / LoRA Gradients for Layers 7..15)
-    PC-->>Laptop: Direct P2P Delta Stream (KV Cache / LoRA Gradients for Layers 16..22)
-    Coord->>Coord: Atomically Flip Cluster Routing Epoch
-```
-
-### 4.1 Shift Triggers (`MigrationTrigger`)
-1. **`HostActivitySpike`:** User starts gaming, video editing, or compiling on a desktop/laptop.
-2. **`ThermalOrBatteryConstraint`:** A laptop transitions to battery power or hits a thermal ceiling.
-3. **`BurstNodeJoined`:** A rented cloud GPU or returning desktop joins the mesh, allowing Kadmium to offload heavy shards onto the new accelerator.
-4. **`BurstNodeDraining`:** Cloud GPU rental timer reaches $T - 5\text{ min}$; Kadmium proactively drains its shards and checkpoints back to local hardware + NAS.
-5. **`ThroughputBottleneckDetected`:** Pipeline bubble profiler notices a stage straggler and shifts $k$ layers to an adjacent underutilized peer.
+Grid KV-tier and replay mechanisms in section 9.12 are separate reference bookkeeping/execution paths; they do not turn shift reports into measured live failover.
 
 ---
 
@@ -136,19 +108,15 @@ sequenceDiagram
 
 Training on real-world personal, academic, and community hardware requires overcoming both **compute/memory asymmetry** (no single device fits a 70B+ model) and **network asymmetry** (Gigabit/Wi-Fi LANs and consumer WAN links cannot run datacenter `AllReduce`).
 
-Kadmium synthesizes breakthroughs from **Prime Intellect (`OpenDiLoCo` / `prime-diloco`)**, **Nous Research (`DisTrO` / `DeMo` & `Psyche`)**, **Learning@Home (`Hivemind` / `Petals` SWARM)**, and **Gensyn (`RL-Swarm` / `Verde` / `SkipPipe`)** into a unified training architecture:
+Kadmium contains reference mechanisms inspired by **Prime Intellect (`OpenDiLoCo`)**, **Nous Research (`DisTrO` / `DeMo`)**, **Learning@Home (`Hivemind` / `Petals`)**, and **Gensyn (`Verde` / `SkipPipe`)**. They are not yet a unified persistent large-model training architecture:
 
-### 5.1 Mode A: Asymmetric 1F1B Pipeline Parallelism + Hivemind 8-Bit Boundaries (Intra-Island LAN)
-For nodes on the same LAN (e.g., Main PC, M4 Mac Mini, 2 Gaming Laptops):
-- The model is partitioned into asymmetric pipeline stages $S_1, S_2, \dots, S_k$ matched to each node's step time so that forward/backward micro-batch durations $t(S_i)$ are equalized.
-- **8-Bit Blockwise Boundary Compression (`Hivemind`):** Forward activations and backward activation gradients crossing LAN/Wi-Fi node boundaries are dynamically quantized using 8-bit blockwise quantization with stochastic rounding, cutting inter-node pipeline wire traffic by $50\%$–$75\%$.
-- **Per-Node Selective Activation Checkpointing:**
-  - Nodes with tight VRAM but high FLOPs (e.g., Gaming Laptop with 8 GB VRAM) enable **Full Activation Recomputation** during the backward pass.
-  - Nodes with abundant Unified/System Memory (e.g., M4 Mac Mini with 24–64 GB Unified Memory) **Cache Activations** in memory to save FLOPs.
+### 5.1 Mode A: Pipeline Scheduling and Boundary References
 
-### 5.2 Mode B: Distributed LoRA / QLoRA / DoRA
-- Base weights are stored in compressed `KTB` banks (`NF4` / `INT4` / `FP8`) and sharded across nodes.
-- Only compact low-rank adapter matrices ($A, B$) and micro-batch hidden states cross node boundaries, slashing memory footprint and network traffic by $>90\%$.
+`Pipeline1F1BScheduler` models asymmetric warmup, steady-state, and cooldown schedules, while blockwise INT8 tensors provide reference boundary quantization. These mechanisms establish schedules and arithmetic on synthetic inputs, not persistent 1F1B training across real model weights. Traffic-reduction percentages are workload/model calculations unless separately recorded in the benchmark ledger.
+
+### 5.2 Mode B: LoRA / QLoRA References
+
+The runtime includes quantized tensor-bank and adapter primitives. Current legacy training previews are stateless per-stage calculations; they do not persist adapter/model weights or establish a measured memory/network reduction for a real fine-tune.
 
 ### 5.3 Mode C: Sharded-Island DiLoCo (target architecture)
 
@@ -166,24 +134,23 @@ Inspired by **Nous Research's DisTrO / DeMo (Decoupled Momentum Optimization)**:
 - Optimizer momentum states $m_t$ are transformed into the frequency domain via chunked **Discrete Cosine Transform (`DCT`)**.
 - Only the **Top-$k$ fastest-moving frequency components** ($q_{\text{dct}}$) are extracted and transmitted across peers, while unselected frequencies remain in a local **Residual Error Feedback Accumulator** $e_t$:
   $$m_t = \beta m_{t-1} + g_t, \quad c_t = \text{TopK}(\mathcal{F}_{\text{DCT}}(m_t + e_{t-1})), \quad e_t = (m_t + e_{t-1}) - \mathcal{F}_{\text{DCT}}^{-1}(c_t)$$
-- This achieves **$800\times$ to $3{,}000\times$ communication compression** compared to raw `AllReduce` without degrading training convergence.
+- The wire ratio depends on tensor size, selected `top_k`, and packet encoding. Residual error feedback preserves unsent information locally, but does not by itself prove convergence or a universal compression ratio. The stateful DiLoCo session currently sends full FP32 parameter shards rather than automatically applying DeMo.
 
-### 5.5 Mode E: SWARM Stochastic Routing & SkipPipe Fault Tolerance
-When training across opportunistic devices (laptops on Wi-Fi, volunteer lab machines):
-- **SWARM Dynamic Stage Routing (`Hivemind`/`Petals`):** If multiple nodes or islands hold overlapping layer shards, micro-batches are routed stochastically inversely proportional to real-time queue latency.
-- **SkipPipe Recovery (`Gensyn`):** If a non-critical peer drops or spikes in latency mid-micro-batch, Kadmium dynamically reroutes remaining micro-batches in the window to standby/adjacent peers without aborting the global step.
+### 5.5 Mode E: Routing and SkipPipe Reference Models
 
-### 5.6 Mode F: Decentralized RL Post-Training Swarms (`RL-Swarm` / `Prime-RL` / GRPO)
-Post-training reasoning and coding models via Reinforcement Learning (GRPO / PPO / RLOO) naturally decouples into three distinct hardware workloads that map onto a heterogeneous Kadmium cluster:
-1. **Rollout Generation (Inference-Bound):** Gaming Laptops + M4 Mac Mini generate $G$ candidate reasoning/code completions per prompt using high-speed quantized `.ktb` shards.
-2. **Verifiable Reward Sandboxes (CPU/Edge-Bound):** **Linux SBCs, older laptops, and NAS CPU cores** execute deterministic reward verifiers in parallel (compiling generated code, running unit test suites in lightweight sandboxes, checking math proofs/symbolic equivalence).
-3. **Policy Gradient Update (Compute-Bound):** Main Desktop PC (and optional Burst Cloud GPU) consumes the verified `(prompt, rollout, advantage)` tuples to compute policy gradients and update adapter/model weights.
+Grid matching, replica selection, and SkipPipe-inspired schedulers provide routing/recovery mechanisms over reference work units. They do not establish production micro-batch recovery or uninterrupted global training steps for opportunistic large-model swarms.
 
-### 5.7 Mode G: Dream-RSI — Recursive Self-Improvement through Evolving Worlds (`kadmium-rl`)
-Inspired by **[Dream-RSI](https://www.dream-rsi.com/) ([zhengkid/Dream-RSI](https://github.com/zhengkid/Dream-RSI), arXiv:2609.14858)**, Kadmium provides first-class architectural support for off-policy recursive self-improvement in long-horizon discovery domains (GPU kernel engineering, algorithm design, mathematical optimization, and self-tuning cluster heuristics):
-1. **Online Waking Discovery (GPU/Metal Nodes):** Accelerator nodes execute the current active exploration policy $\pi_{\text{explore}}$ to propose and benchmark new code/kernel/math artifacts, logging the complete **Discovery Tree** $\mathcal{T}$ (visited states, parent-child mutations, prior novelty estimates, realized scores, and evaluation costs) to the **Home NAS**.
-2. **Replay World Construction (Home NAS Vault):** Rather than discarding trial-and-error trajectories, the Home NAS indexes accumulated discovery trees into an empirical **Replay Simulator**.
-3. **Offline "Dreaming" Policy Evolution (Linux SBCs, Legacy Laptops, & Idle CPUs):** Because outcomes on historical trees are already recorded, evaluating candidate meta-exploration policies $\pi'_{\text{explore}}$ (varying exploitation vs. novelty weights, parallel wave widths, and early-pruning thresholds) requires **zero live 70B LLM forward passes**. Kadmium offloads thousands of parallel "dream" replay rollouts onto Linux SBCs, older laptops, and NAS CPU cores to discover an exploration policy $\pi^*_{\text{explore}}$ that reaches breakthrough nodes with $>50\%$ fewer online evaluations—without having to retrain the underlying base model weights.
+### 5.6 Mode F: RL Topology and GRPO References
+
+`RlTopologyPlanner` models actor, environment, and learner placement. The current `GrpoEpochExecutor` verifies eight synthesized programs for a fixed polynomial and computes normalized group advantages. `WasiMicroSandbox` is a custom fuel-metered integer stack machine, not a general WASI runtime or code compiler.
+
+Model rollout generation, arbitrary code execution, PPO/RLOO, and policy-weight updates remain target integrations.
+
+### 5.7 Mode G: Dream-RSI Replay (`kadmium-rl`)
+
+Inspired by **[Dream-RSI](https://www.dream-rsi.com/)**, `DreamRsiSimulator::run_dream_cycle` traverses an in-memory sample `DiscoveryTree` with candidate exploration policies. Cached node scores make this CPU graph traversal without new GPU evaluations.
+
+The bundled sample reaches a normalized **2.31× peak** after **4 of 9 unit-cost evaluations**, a **55.6% evaluation-cost saving** relative to its baseline discovery order. Current CLI/API paths do not record persistent NAS trees, execute real kernel optimization, distribute thousands of rollouts, or inject an evolved policy into online training. Persistent replay-world construction and policy feedback are target architecture.
 
 ---
 
@@ -192,15 +159,14 @@ Inspired by **[Dream-RSI](https://www.dream-rsi.com/) ([zhengkid/Dream-RSI](http
 ### 6.1 Kadmium Tensor Bank (`KTB`) Format
 Inspired by **FreeToken (`FTW`)** and **Colibri**:
 - Standard `safetensors` or `GGUF` files often store tensors in logical naming order, requiring expensive seeks or repacking when streaming specific MoE experts or layer shards.
-- **`.ktb` (Kadmium Tensor Bank)** pre-aligns tensors into **4 KB / 64 KB page-aligned execution banks** grouped by `(LayerIndex, ExpertId, QuantFormat)` with Blake3 content-addressed chunk hashes.
-- Enables direct `mmap` / `io_uring` / Windows `IoRing` reads straight from NVMe into DMA buffers or QUIC network streams with zero deserialization overhead.
+- **`.ktb` (Kadmium Tensor Bank)** aligns pages to strict **64 KiB (65,536-byte)** boundaries and groups tensor metadata by layer/expert/encoding. Chunk checksums and Merkle proofs use FNV-1a 64, not Blake3; FNV is not collision-resistant authentication.
+- Current readers provide zero-copy slices into already loaded byte buffers. The local importer uses whole-file `std::fs::read`; direct `mmap`, `io_uring`, and Windows `IoRing` file paths are planned.
 
 ### 6.2 Third-Party Transfer Scheduler (CERN FTS3 Pattern)
 In naive distributed systems, the coordinator downloads and forwards weights to workers, becoming a severe bottleneck.
-Following **CERN's FTS3** architecture:
-1. The coordinator issues a **`TransferJob`** specifying `(SourcePeer, DestinationPeer, ChunkManifest, Priority, MaxBandwidthMbps)`.
-2. `SourcePeer` (e.g., the Home NAS or a peer that already cached the shard) opens a direct multi-stream QUIC connection to `DestinationPeer` (Davix-style chunked streaming).
-3. Both peers report progress, throughput, and checksum verification states back to the coordinator's state machine.
+The current `Fts3TransferScheduler` constructs transfer plans and `Fts3ChunkSlicer` computes chunk manifests/missing-chunk diffs. In the live reference path, the coordinator sends synthesized bank pages to workers over TCP and verifies them.
+
+The following remains **target architecture**: a coordinator orders a source peer to open direct multi-stream QUIC transfers to a destination, and both peers report production progress/retry/checksum state. No current FTS3/Davix network service or direct NAS-to-worker stream is established by the planner.
 
 ---
 
@@ -208,9 +174,9 @@ Following **CERN's FTS3** architecture:
 
 To make it effortless for friends, family, academic labs, and decentralized peers to contribute idle machines without degrading their daily usage or corrupting training runs:
 
-### 7.1 Zero-Interference Resource Governor (`BOINC`-Inspired)
-- Monitors CPU/GPU load, foreground fullscreen/gaming processes, battery state, and time-of-day schedules.
-- Drops compute budget within $<250\text{ ms}$ of user activity and triggers a `LiveRebalancer` responsibility shift.
+### 7.1 Polite Resource Governor (`BOINC`-Inspired)
+- Models CPU/GPU budgets, foreground activity, battery/thermal states, and schedules; live sensor coverage is limited and platform-dependent.
+- Uses a **target/estimated sub-200 ms** fast-yield policy with hysteresis. This is not an observed cross-platform latency SLA, and native swapchain/foreground drivers plus guaranteed live rebalancing remain future work.
 
 ### 7.2 Cross-Silicon Reproducible Verification (`Gensyn Verde` & `REE` Inspired)
 Classic BOINC verification relies on bit-exact output matching across identical CPU binaries. In AI/ML, an NVIDIA RTX 4090 (`CUDA`), an Apple M4 Mac Mini (`Metal`), and an AMD/Linux laptop (`ROCm`/`Vulkan`) produce slightly different IEEE-754 floating-point results due to non-associative parallel FMA reductions.
@@ -221,22 +187,24 @@ Kadmium applies the two mechanisms Gensyn published for this, RepOps and Verde, 
 
 ---
 
-## 8. Open-Core & Hybrid Cloud Architecture ("Supabase for AI Compute")
+## 8. Open-Core and Target Hybrid-Cloud Architecture
 
-Kadmium's core technical primitives—asymmetric sharding, low-communication DeMo/DiLoCo synchronization, FTS3 third-party `.ktb` staging, and sub-second live responsibility shifting—unlock a natural **Open-Core + Managed Hybrid Cloud** architecture (`HybridCloudArbitragePlanner`):
+The self-hosted repository provides planners, local interfaces, reference execution, and simulations. Managed cloud functionality is a target built around `HybridCloudArbitragePlanner` and related policy types, not an operating service.
 
-### 8.1 Self-Hosted Open Source vs. Managed Kadmium Cloud
-- **Self-Hosted Core (`MIT / Apache-2.0`):** Every feature required to run a personal, academic, or enterprise cluster is open-source in the single `kadmium` Rust binary.
-- **Managed Control Plane:** Teams can optionally link their local clusters (`kadmium login`) to a managed coordinator that handles zero-config WAN mesh relays, sub-cluster RBAC, centralized observability, and encrypted `.ktb` checkpoint mirroring.
+### 8.1 Current Companion state vs. managed control plane
 
-### 8.2 Multi-Datacenter Fragmented GPU & Spot Arbitrage
-Hyperscalers charge premium rates for contiguous 8xH100 InfiniBand nodes because conventional frameworks cannot tolerate heterogeneous GPUs or cross-datacenter latency.
-Because Kadmium shards asymmetrically and compresses inter-node gradients/activations by $1{,}000\times$, it can aggregate stranded single-GPU spot instances (`1x L40S`, `1x A100`), green stranded-energy datacenter GPUs, and cheap high-RAM bare-metal servers (`256 GB DDR5 + Gen5 NVMe` for warm/cold MoE expert banks) across multiple providers—reducing hourly compute costs by **60%–85%**.
+- **Self-hosted:** local coordinator, hardware profiles, reference workloads, and simulations need no cloud account.
+- **Cloud-managed mode:** `POST /api/v1/companion/mode` only stores local mode fields. There is no `kadmium login` command, managed coordinator connection, automatic WAN relay, enforced tenant RBAC, or encrypted remote mirroring in this path.
 
-### 8.3 Bidirectional Downtime Protection (`Local <-> Cloud Failover Shield`)
-1. **Local-to-Cloud Outage Shield:** When a user's self-hosted node loses power, overheats, or drops its ISP connection, Kadmium Cloud's pre-warmed `.ktb` standby vault immediately spins up a spot GPU to take over only the missing layer range $[L_a..L_b]$ within $<350\text{ ms}$ RTO.
-2. **Automatic Failback to Local ($0/hr):** Once local power/internet is restored, Kadmium drains the temporary cloud shard back to the user's local hardware so cloud billing stops immediately.
-3. **Cloud Spot Preemption to Local/Multi-Cloud Fallback:** When a cloud spot instance emits a 30-second eviction warning or a provider suffers an outage, Kadmium's `LiveRebalancer` shifts the affected shards onto an alternate cloud provider or back onto the user's local M4 Mac Mini, Desktop PC, and Gaming Laptops without dropping a single training step or API request.
+### 8.2 Spot-arbitrage simulation
+
+The current arbitrage fixture compares hard-coded local and provider offers: **$1.82/hr versus $13.70/hr**, an **86.7% modelled saving**. `query_live_orderbook` returns an in-memory array and `provision_optimal_middle_shard` constructs a descriptor; neither contacts a provider nor creates capacity. Prices and savings are illustrative, not live quotes.
+
+### 8.3 Failover simulation and production requirements
+
+Current scenario outputs are 340 ms local-to-cloud, 185 ms cloud-to-local/multicloud, and 210 ms failback; the watcher fixture reports 340 ms. Zero-dropped-request fields are hard-coded scenario results.
+
+Production CloudShield still requires authenticated provider integrations, procurement and spend enforcement, warm state replication, liveness monitoring, live state migration, billing, and measured failure testing. No current RTO, zero-loss, or automatic-failback guarantee is made.
 
 ---
 
@@ -272,7 +240,7 @@ Training is a bag of island units (`TrainForwardBackward`) fanning into one `DeM
 
 Frames carry a request id (`KDM2` header, 21 bytes; the legacy 13-byte `KDMF` header still decodes). One persistent multiplexed channel per peer carries pipelined work dispatches and demultiplexes out-of-order replies, so a fan-out layer costs one round trip rather than one connection per unit. Work units travel as `WorkDispatch` frames whose envelope holds the unit as JSON plus named binary activation blobs; results come back as `WorkResult` envelopes. Workers execute units through an `ExecutorRegistry` keyed by app kind, and the coordinator's `GridDispatcher` carries the activation one unit produces to the units that depend on it.
 
-**Delta links (`kadmium_network::delta_link`).** Channels from the dispatcher's pool open with a `DeltaHello`. Once the hello is accepted, every frame in both directions travels as a `DeltaFrame` that carries only the bytes the peer does not already hold. This generalizes InferSSD's ggml RPC transport, where `SET_TENSOR_HASH` skips tensors the remote GPU has cached and `GRAPH_RECOMPUTE` replays a stored graph, to any frame kind. The sender cuts each payload into content-defined chunks (Gear rolling hash, about 1,024 chunks per payload, 2 KiB to 1 MiB average). Each chunk is keyed by XXH64 and length, and a chunk the receiver holds goes out as a 13-byte reference. The sender keeps an exact mirror of the receiver's LRU store, so it never asks whether the receiver holds a chunk. Both sides apply the same operations in wire order, and a reference that does not resolve closes the connection; the pool then redials with empty stores. Workers that predate delta links close the connection on the unknown hello, and the channel reconnects as a plain `KDM2` channel. Set `KADMIUM_DELTA_LINK=0` to turn delta links off, and `KADMIUM_DELTA_LINK_STORE_MB` to change the per-direction store budget (default 128 MiB; each worker connection holds one store of chunk bytes). `cargo run --release -p kadmium-network --example delta_link_bench -- serve` on a worker and `-- run <host>:7870` on the coordinator measures a link. Over Wi-Fi to an M4 Mac mini on 2026-10-30 (12 steps per scenario), the bench measured 8.0× faster re-sent stage weights, 9.1× faster decode steps with unchanged context, 6.9× faster KV appends and 5.8× faster sparse parameter updates. Fresh random payloads ran at 0.9× (the worst case).
+**Delta links (`kadmium_network::delta_link`).** Channels from the dispatcher's pool open with a `DeltaHello`. Once the hello is accepted, every frame in both directions travels as a `DeltaFrame` that carries only the bytes the peer does not already hold. This generalizes InferSSD's ggml RPC transport, where `SET_TENSOR_HASH` skips tensors the remote GPU has cached and `GRAPH_RECOMPUTE` replays a stored graph, to any frame kind. The sender cuts each payload into content-defined chunks (Gear rolling hash, about 1,024 chunks per payload, 2 KiB to 1 MiB average). Each chunk is keyed by XXH64 and length, and a chunk the receiver holds goes out as a 13-byte reference. The sender keeps an exact mirror of the receiver's LRU store, so it never asks whether the receiver holds a chunk. Both sides apply the same operations in wire order, and a reference that does not resolve closes the connection; the pool then redials with empty stores. Workers that predate delta links close the connection on the unknown hello, and the channel reconnects as a plain `KDM2` channel. Set `KADMIUM_DELTA_LINK=0` to turn delta links off, and `KADMIUM_DELTA_LINK_STORE_MB` to change the per-direction store budget (default 128 MiB; each worker connection holds one store of chunk bytes). `cargo run --release -p kadmium-network --example delta_link_bench -- serve` on a worker and `-- run <host>:7870` on the coordinator measures a link. Over Wi-Fi to an M4 Mac mini on 2026-10-30 (12 steps per scenario), the bench reported 8.0× faster re-sent stage weights, 9.1× faster decode steps with unchanged context, 6.9× faster KV appends and 5.8× faster sparse parameter updates. Fresh random payloads ran at 0.9× (the worst case). These ratios are derived from scenario timings; the peer details, checkout, and raw logs are not recorded, as noted in the [benchmark ledger](BENCHMARKS_2026-10.md).
 
 ### 9.4 Endpoints
 
@@ -466,4 +434,4 @@ The unit tests verify that for both `ExactF32` and `Ue8M0PowerOfTwo` scales, `fo
 
 The chain of evidence has two links. `device/` runs every kernel on the GPU and compares its output with `kadmium_cuda::reference` bit for bit (`cargo oxide run`). The runtime's `cuda_parity` tests compare that reference with the runtime's own `Q8KBlockVector`, `Q4KBlockTensor`, `repops::exp` and `repops::silu`. Every NaN counts as one value: IEEE 754 lets the hardware choose a NaN's payload, and x86 returns `0xffc00000` for `inf - inf` where an NVIDIA GPU returns `0x7fffffff`; whether a result is NaN is still exact. `HardwareKernelTarget::native_cuda_kernels` lists the kernels a CUDA node runs natively.
 
-Measured on an RTX 5070 (sm_120, CUDA 13.3, driver 616.92, WSL2): all cases bit-identical; at 4096 x 4096, `q4k_q8k_matvec` takes 33-38 us per launch (330-380 GB/s of weights) and `mxfp4_matvec` 100-110 us (81-88 GB/s) across runs. The generated PTX holds no `fma`: every `f32` operation is an explicit `add`, `sub`, `mul` or `div` `.rn`. The `MXFP4` kernel makes every product a leaf of the tree, so it is bound by the reduction rather than by memory; a `MXFP4` x `Q8_K` integer block dot, as in InferSSD's own expert path, would move it onto the `Q4_K` kernel's shape and is the next step.
+Reported for an RTX 5070 (sm_120, CUDA 13.3, driver 616.92, WSL2): all cases bit-identical; at 4096 x 4096, `q4k_q8k_matvec` takes 33-38 us per launch (330-380 GB/s of weights) and `mxfp4_matvec` 100-110 us (81-88 GB/s) across runs. Exact checkout, run date, repetition count, and raw logs are not recorded; see the provenance and Measured/Derived labels in the [benchmark ledger](BENCHMARKS_2026-10.md). The generated PTX holds no `fma`: every `f32` operation is an explicit `add`, `sub`, `mul` or `div` `.rn`. The `MXFP4` kernel makes every product a leaf of the tree, so it is bound by the reduction rather than by memory; a `MXFP4` x `Q8_K` integer block dot, as in InferSSD's own expert path, would move it onto the `Q4_K` kernel's shape and is the next step.

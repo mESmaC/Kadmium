@@ -1,71 +1,14 @@
 # Kadmium CLI Command Reference
 
-The `kadmium` CLI (`crates/kadmium-cli`) is a single-binary control tool, hardware profiler, simulator, and HTTP/QUIC coordinator for the **Kadmium (`Cd-48`)** compute fabric.
+The `kadmium` CLI is a single-binary hardware profiler, planner, reference-workload runner, and HTTP/TCP coordinator. Many commands intentionally print **simulated or modelled reports**; those outputs are not live cloud operations, remote downloads, production benchmarks, or language-model generation.
 
-```text
-Usage: kadmium [COMMAND]
+Run `kadmium --help` or `kadmium <COMMAND> --help` for the clap-generated synopsis. Examples below use an installed binary; prefix a command with `cargo run -p kadmium-cli --locked --` to run it from a checkout.
 
-Commands:
-  simulate      Run the full end-to-end heterogeneous cluster & live responsibility shift simulation
-  probe         Probe and benchmark THIS local host machine (CPU, GPU, RAM, 64KB page-aligned bandwidth, and Join Ticket)
-  dream         Run a standalone Dream-RSI (Recursive Self-Improvement through Evolving Worlds) offline replay simulation
-  diloco        Train a deterministic CPU regression workload using stateful DiLoCo island synchronization
-  slice         Partition a large node pool (e.g., 100 nodes) into isolated sub-compute environments (Prod, Test, Train, RL)
-  dataflow      Evaluate TPU / Compute-in-Memory (CIM) inspired Dynamic Token Streaming vs. Dynamic Weight Streaming
-  cloud-shield  Evaluate Kadmium Cloud Business Model: Multi-Datacenter Spot Arbitrage + Bidirectional Downtime Protection
-  plan          Compute and print the asymmetric sharding plan for a target workload
-  launch        Inspect setup, create a missing configuration and start the existing coordinator
-  serve         Launch the Control Room and reference API diagnostics
-  desktop       Open the Kadmium desktop app (the Companion in its own window) with a local coordinator
-```
+## Coordinator and desktop
 
----
+### `kadmium serve`
 
-## `kadmium diloco`
-
-Runs a reproducible, single-process CPU training experiment: independent islands learn `y = 2*x + 1` from nonidentical input ranges. Weight and bias are separate shards of the same complete model on every island. Each island performs `H` local AdamW steps, submits its parameters to the synchronous DiLoCo barrier, then receives the committed outer update. Local AdamW moments and step counters persist across rounds.
-
-```bash
-cargo run -p kadmium-cli -- diloco --inner-steps 20 --rounds 25 --islands 3
-kadmium diloco --inner-steps 20 --rounds 25 --islands 3 --json
-```
-
-| Flag | Default | Description |
-| :--- | :--- | :--- |
-| `--inner-steps <H>` | `20` | Local steps per island before synchronization, `1..=10000`. |
-| `--rounds <N>` | `25` | Outer synchronization rounds, `1..=1000`. |
-| `--islands <N>` | `3` | Independent learners, `2..=64`. |
-| `--json` | off | Include loss history, learned shards, optimizer settings and payload estimates. |
-
-The experiment limits total local steps (`H × rounds × islands`) to two million. Invalid inputs exit nonzero. Its fixed inner optimizer is AdamW (`lr=0.02`, betas `0.9/0.999`, epsilon `1e-8`, weight decay `0.01`); the outer Nesterov optimizer uses learning rate `0.7` and momentum `0.9`.
-
-AdamW is hand-written only for this deterministic two-parameter CPU example and is not a shared or production optimizer API. No shared AdamW exists; GaLore/Muon implement different algorithms and are not substitutes. The session delegates its outer update to the shared `DiLoCoOuterOptimizer`; callers of the session API remain responsible for their own local optimizer and its checkpoints. A parameter shard here is a named part of the complete replica present on every island, not a pipeline stage distributed by the session engine.
-
-The default run performs 500 local steps per island and 25 outer synchronizations, compared with 500 synchronizations at every local step. The reported 20× reduction describes synchronization frequency and a like-for-like FP32 parameter payload estimate; it is not a measured network reduction or speedup. No network workers, LLM weights, GPU execution, async RL or inference acceleration are exercised. The CLI starts a fresh experiment each time. For explicit session checkpoint/restore, use the [DiLoCo HTTP API](api-reference.md#stateful-diloco-sessions).
-
----
-
-## 1. `kadmium probe`
-
-Probes the local machine's CPU cores, system RAM, GPU VRAM (`nvidia-smi` / Metal / Vulkan), and benchmarks `64 KiB` page-aligned memory/NVMe streaming throughput, then outputs a `kdm1_...` Join Ticket and runs a live local Tokio P2P `WireFrame` roundtrip self-test.
-
-```bash
-kadmium probe
-# Or via Cargo:
-cargo run -p kadmium-cli -- probe
-```
-
-**Example Output Highlights:**
-- **Detected Hostname & OS/Arch:** e.g., `DESKTOP-F1M5LLE (windows/x86_64)`
-- **Compute Backend:** `Cuda` / `MetalUnified` / `CpuAvx512OrAvx2`
-- **FreeToken $q^*$ Ratio:** Bandwidth-adaptive split ratio between VRAM and system RAM.
-- **Generated Join Ticket:** `kdm1_...` (with 64-bit FNV-1a MAC signature).
-
----
-
-## 2. `kadmium serve`
-
-Starts the **Kadmium Control Room** and existing reference API diagnostics. The `/v1` message routes return fixed diagnostic text and telemetry; they do not provide language-model generation or full OpenAI/Anthropic SDK compatibility.
+Starts the Control Room, reference HTTP API, and built-in TCP worker.
 
 ```bash
 kadmium serve --port 7848
@@ -73,20 +16,18 @@ kadmium serve --port 7848
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `-p`, `--port <PORT>` | `7848` | TCP port for the web dashboard, REST control plane, and `/v1/chat/completions` + `/v1/messages` endpoints. |
-| `-c`, `--config <PATH>` | none | Read a workspace file using the existing tolerant parser. |
-| `--live` | on unless `--demo` | Start with only the real probed hardware nodes. |
-| `--demo` | off | Include the simulated seven-node fleet alongside live hardware. |
-| `--spawn-fleet` | off | Start the existing worker test fleet. |
-| `--worker-port <PORT>` | `7850` | Preferred built-in worker TCP port; `0` asks the OS for a free port. |
+| `-p`, `--port <PORT>` | `7848` | HTTP port on all interfaces. |
+| `-c`, `--config <PATH>` | none | Optional tolerant `kadmium.toml` parser input. |
+| `--live` | on unless `--demo` | Use only probed hardware nodes. |
+| `--demo` | off | Add the simulated seven-node fleet. |
+| `--spawn-fleet` | off | Start the five-node local/online TCP test fleet on ports `7851..=7855`. |
+| `--worker-port <PORT>` | `7850` | Built-in worker TCP port; `0` requests an ephemeral port. |
 
-HTTP and worker listeners use all interfaces. `serve` behavior, its defaults and its parser are unchanged by the additive setup command. Configuration does not override the listener, host capabilities or active model; the existing coordinator consumes CloudShield settings and the workspace name for that mode. There are no new backend URL, key or inference-relay settings.
+The `/v1` routes return fixed diagnostic text and reference vectors, not model output. The coordinator has no built-in tenant authentication; use a trusted network or external access controls.
 
----
+### `kadmium launch`
 
-## 2a. `kadmium launch`
-
-Probes this host, prints an informational planning recommendation, preserves an existing configuration or exclusively creates a missing one, then starts the existing coordinator. `--plan` performs only the probe and prints the plan: no files, listeners, bridge discovery or downloads.
+Probes the host, prints an informational setup recommendation, preserves or creates a workspace file, and starts the coordinator. `--plan` performs no writes and starts no listeners.
 
 ```bash
 kadmium launch --plan
@@ -95,40 +36,68 @@ kadmium launch --config kadmium.toml --port 7848
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--plan` | off | Print a human-readable setup plan and exit. |
-| `-c`, `--config <PATH>` | `kadmium.toml` | Preserve an existing readable file; create a missing file without overwriting. |
-| `-p`, `--port <PORT>` | `7848` | HTTP port, listening on all interfaces. |
-| `--demo` | off | Include the simulated seven-node fleet. |
-| `--spawn-fleet` | off | Start the existing worker test fleet. |
-| `--worker-port <PORT>` | `7850` | Preferred built-in worker TCP port; `0` asks for a free port. |
+| `--plan` | off | Print the setup plan and exit. |
+| `-p`, `--port <PORT>` | `7848` | HTTP port; configuration cannot override it. |
+| `-c`, `--config <PATH>` | `kadmium.toml` | Preserve an existing file or create a missing one. |
+| `--demo` | off | Add the simulated fleet. |
+| `--worker-port <PORT>` | `7850` | Worker TCP port; `0` requests an ephemeral port. |
+| `--spawn-fleet` | off | Start the local TCP test fleet. |
 
-The generated recommendation does not fix model selection, prove model fit or load weights; the coordinator recommends again at startup. Existing configuration bytes are left unchanged. See the [launch guide](guides/cli.md) for the dependency decision and network/configuration limitations. `init`, `serve` and `desktop` retain their existing behavior.
+The recommendation does not download weights, select a loaded model, or prove model fit.
 
----
+### `kadmium desktop`
 
-## 3. `kadmium plan`
-
-Computes and prints the optimal asymmetric layer and MoE expert assignment across your heterogeneous cluster for a specific workload mode (`inference` or `training`).
+Opens the Companion and starts or attaches to a local coordinator. The `app` alias is equivalent.
 
 ```bash
-# Plan DeepSeek-V3-671B-MoE inference across the cluster:
-kadmium plan --workload inference
-
-# Plan Llama-3-70B LoRA/DiLoCo distributed training across the cluster:
-kadmium plan --workload training
+cargo build -p kadmium-desktop
+kadmium desktop --control-room
 ```
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `-w`, `--workload <MODE>` | `inference` | Target workload (`inference` or `training`). |
+| `-p`, `--port <PORT>` | `7848` | Coordinator port. |
+| `--live` | on unless `--demo` | Use only probed hardware. |
+| `--demo` | off | Add the simulated fleet. |
+| `--control-room` | off | Also open the Control Room in the browser. |
+| `--check-only` | off | Print hardware and desktop-app discovery information, then exit. |
 
-After the shard plan it prints the grid execution shape: both modelled estimates, the placement, the usage it learned from a coordinator's ledger when `target/kadmium-state/usage/<model>.usage.json` exists, every calibration record kept for the model, and the offers and fit table (fast memory, RAM and NVMe used against offered per node, and one line per shortfall).
+The app is searched for next to `kadmium`, then on `PATH`. Linux uses the browser by default; a native WebView requires the `linux-native` feature and WebKitGTK 4.1/GTK 3 development packages.
 
----
+## Hardware and placement
 
-## 3a. `kadmium calibrate`
+### `kadmium probe`
 
-Asks a running coordinator to measure the placement in force: up to 8 decode steps of one shape within a 20 second budget, recorded as ms per token bound to the placement digest, node set and versions that ran.
+Profiles local hardware and runs reference packing/page probes. The displayed NVMe figure is a clamped estimate from a 16 MiB synthetic in-memory operation, not an NVMe-device benchmark.
+
+The $q^*$ heuristic returns `0.96` for unified memory, `0.0` without VRAM, and otherwise uses compute/interconnect/NVMe terms clamped to `0.10..=0.95`. The printed join-ticket prefix is truncated and uses example endpoints; it is not a usable signed credential. A generic P2P roundtrip is not part of this command.
+
+```bash
+kadmium probe
+```
+
+### `kadmium plan`
+
+Computes a model/workload placement over the sample personal cluster.
+
+```bash
+kadmium plan --model deepseek-v3-671b-moe --workload inference
+kadmium plan --model llama-3-70b-lora --workload training
+kadmium plan --workload batch
+kadmium plan --workload rl
+kadmium plan --workload dream-rsi
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-m`, `--model <ID>` | `deepseek-v3-671b-moe` | Preset: `deepseek-v3-671b-moe`, `qwen3-235b-moe`, or `llama-3-70b-lora`. |
+| `-w`, `--workload <MODE>` | `inference` | `inference`, `training`, `batch`, `rl`, or `dream-rsi`. |
+
+RL and Dream-RSI use the dedicated RL topology planner; the other modes use `ShardPlanner`. Estimates, staging streams, and fit reports are modelled. Usage/calibration records are loaded from `target/kadmium-state` when present.
+
+### `kadmium calibrate`
+
+Asks a running coordinator to measure up to eight synthetic decode steps of one placement shape within its 20-second budget.
 
 ```bash
 kadmium calibrate --coordinator http://127.0.0.1:7848 --strategy expert-parallel --steps 8
@@ -138,206 +107,295 @@ kadmium calibrate --coordinator http://127.0.0.1:7848 --strategy expert-parallel
 | :--- | :--- | :--- |
 | `-c`, `--coordinator <URL>` | `http://127.0.0.1:7848` | Coordinator HTTP gateway. |
 | `-s`, `--strategy <SHAPE>` | planner's choice | `chain` or `expert-parallel`. |
-| `--steps <N>` | `8` | Decode steps to run, at most 8. |
+| `--steps <N>` | `8` | Decode steps, at most 8. |
 | `--rows <N>` | `1` | Rows per step. |
 
----
+### `kadmium simulate`
 
-## 4. `kadmium simulate`
-
-Runs the comprehensive 5-phase end-to-end fabric simulation on the terminal:
-- **Phase 1:** Hardware Discovery, FreeToken $q^*$ Bandwidth Ratios, and Asymmetric MoE Sharding (`DeepSeek-V3-671B-MoE`, `61` layers, `256` routed experts/layer).
-- **Phase 2:** CERN FTS3 Third-Party P2P Data Staging directly from the `home-nas-vault` seed node (`0.00 GB` coordinator relay bottleneck).
-- **Phase 3:** Live Responsibility Shift (`Gaming Mode` `<200ms` Polite Auto-Yield on the main PC, followed by a `Cloud Burst GPU` join event).
-- **Phase 4:** Fault-Tolerant Distributed Training (`Sharded-Island DiLoCo` + `Nous DisTrO/DeMo` DCT momentum compression + `Gensyn Verde` refereed verification).
-- **Phase 5:** Disaggregated RL (`Actor` / `Environment` / `Learner`) + **Dream-RSI** (*Recursive Self-Improvement through Evolving Worlds*).
+Prints five groups of sample output: hardware discovery, an inference plan, a training plan, a gaming responsibility-shift plan, and a cloud-burst shift plan, followed by RL and BOINC-style sample reports. It does not execute FTS3 network staging or live model migration.
 
 ```bash
 kadmium simulate
 ```
 
----
+### `kadmium diloco`
 
-## 5. `kadmium slice`
-
-Partitions a large pool of heterogeneous compute nodes into isolated sub-cluster environments (`ProductionDeployment`, `TestingAndStaging`, `DistributedTraining`, `RlAndDreamRsi`, and `BatchDataProcessing`), each with its own independent shard plan and `isolated_network_namespace`.
+Runs a deterministic single-process CPU regression experiment. Independent islands learn `y = 2*x + 1` from different input ranges, perform local AdamW steps, and synchronize complete replicas through the shared Nesterov outer optimizer.
 
 ```bash
-# Partition 100 nodes into 5 isolated sub-clusters of 20 nodes each:
+kadmium diloco --inner-steps 20 --rounds 25 --islands 3 --json
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--inner-steps <H>` | `20` | Local steps per round, `1..=10000`. |
+| `--rounds <N>` | `25` | Outer rounds, `1..=1000`. |
+| `--islands <N>` | `3` | Independent learners, `2..=64`. |
+| `--json` | off | Emit the full JSON report. |
+
+Total local work is capped at two million steps. The default report compares 25 outer synchronizations with a 500-sync per-step baseline; payload estimates are not measured network savings. This is not LLM, GPU, WAN, or distributed pipeline training. Each CLI run starts fresh.
+
+## Pool, RL, and cloud simulations
+
+### `kadmium slice`
+
+Builds a stratified pool-partition report. The default five-slice catalog uses purposes `ProductionDeployment`, `StagingAndTesting`, `DistributedTrainingLab`, `RlAndDreamRsiArena`, and `BatchAndEvalPool`. It does not create isolated network namespaces, per-slice coordinators, or tenant boundaries.
+
+```bash
 kadmium slice --pool-size 100 --slices 5
 ```
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--pool-size <N>` | `100` | Total number of heterogeneous nodes in the master pool. |
-| `--slices <K>` | `5` | Number of isolated sub-cluster slices to provision. |
+| `-p`, `--pool-size <N>` | `100` | Nodes in the sample pool. |
+| `-s`, `--slices <K>` | `5` | Number of partitions. |
 
----
+### `kadmium dataflow`
 
-## 6. `kadmium dataflow`
-
-Evaluates Google TPU / Compute-in-Memory (CIM) inspired execution dataflows across your cluster for a given micro-batch token count:
-1. **`WeightStationaryTokenStreaming` (TPU/CIM Systolic Mode):** Weights stay pinned in SRAM/VRAM/Unified RAM while micro-batches of tokens stream continuously through the stationary weight banks.
-2. **`TokenStationaryWeightStreaming` (Colibri/FreeToken Edge Mode):** Activations stay pinned in L2/VRAM while `.ktb` weight banks stream dynamically from NVMe/DDR5 (`64 KiB` page-aligned).
-3. **`HybridCimAdaptive` (Kadmium Optimal):** Assigns Weight-Stationary Token Streaming to high-$q^*$ nodes (Main GPU, Mac Mini) and Dynamic Weight Streaming to NVMe/CPU edge nodes.
+Evaluates `AdaptiveTieredHybrid`, `ComputeInMemoryTokenStreaming`, `TokenStationaryWeightStreaming`, and `DisaggregatedDualStream` planning profiles. Recommendations and throughput are modelled.
 
 ```bash
-kadmium dataflow --batch-tokens 512
+kadmium dataflow --model deepseek-v3-671b-moe --batch-tokens 512
 ```
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `-b`, `--batch-tokens <TOKENS>` | `512` | Active token micro-batch size used to find the roofline crossover point. |
+| `-m`, `--model <ID>` | `deepseek-v3-671b-moe` | Model preset. |
+| `-b`, `--batch-tokens <N>` | `512` | Active token batch used by the roofline model. |
 
----
+### `kadmium dream`
 
-## 7. `kadmium dream`
-
-Runs a standalone **Dream-RSI** ([*Recursive Self-Improvement through Evolving Worlds*](https://www.dream-rsi.com/), arXiv:2609.14858) offline causal replay simulation over recorded discovery trees (`DiscoveryTree`) using low-power CPU/SBC/NAS threads (`0` GPU hours required).
+Replays the bundled in-memory Dream-RSI discovery tree. The promoted sample policy reaches its normalized 2.31× peak after 4 of 9 unit-cost evaluations, a 55.6% evaluation-cost saving. No GPU benchmark, persistent NAS tree, online RL epoch, or meta-prompt injection is performed.
 
 ```bash
 kadmium dream
 ```
 
-Outputs a comparative table of candidate exploration policies ($\alpha$ priority weight, $\tau_{\text{prune}}$ pruning threshold, frontier width $W$), showing **compute savings %** to reach the global peak reward (`123.5 GB/s` GPU kernel throughput) and the synthesized meta-prompt injected into the next online RL epoch.
+### `kadmium cloud-shield`
 
----
-
-## 8. `kadmium cloud-shield`
-
-Evaluates the **`kadmium.ai` Managed Hybrid Cloud** features:
-- **Multi-Datacenter Spot Arbitrage:** Splits layers across local hardware (`$0.00/hr`) + verified spot GPU providers (Vast.ai, RunPod, Lambda, AWS, GCP) and compares hourly cost against single-cloud on-demand pricing.
-- **Bidirectional Downtime Protection (`CloudShield`):** Simulates both **Local $\to$ Cloud** failover (e.g., home power/ISP outage) and **Cloud $\to$ Local** failover (e.g., spot GPU preemption preemption notice), reporting hot-standby FTS3 sync overhead and `<400ms` cutover latency.
+Runs fixed spot-arbitrage and bidirectional-failover scenarios. The current sample prices total $1.82/hr versus $13.70/hr (86.7% modelled savings); simulated timings are 340 ms local-to-cloud, 185 ms cloud-to-local/multicloud, and 210 ms failback. No provider is contacted and no capacity is provisioned.
 
 ```bash
 kadmium cloud-shield
 ```
 
----
+### `kadmium lease`
 
-## 9. `kadmium init`
-
-Probes the local host hardware (`VRAM`, `RAM`, `NVMe BW`, $q^*$) and generates a `kadmium.toml` workspace configuration manifest:
+Prints a local settlement **quote** for idle capacity. It does not create a lease, transfer money, or issue credits.
 
 ```bash
-kadmium init --out kadmium.toml
+kadmium lease --hours 8 --payout credits
+kadmium lease --payout usd
 ```
 
----
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--hours <HOURS>` | `12.0` | Daily idle hours, `0.0..=24.0`. |
+| `-p`, `--payout <MODE>` | `credits` | `credits` (illustrative 1.25× rate) or `usd`. |
 
-## 10. `kadmium compile` & `kadmium inspect`
+## Workers and integrations
 
-Compiles a contiguous layer range into a 64 KiB page-aligned `.ktb` (Kadmium Tensor Bank) binary archive, computes its `KtbMerkleTree` root digest, and inspects/verifies every 64 KiB page:
+### `kadmium join`
+
+Registers a persistent TCP worker with a reachable coordinator. Use `--coordinator` for a direct address or omit it for UDP LAN discovery on port `7849`.
 
 ```bash
-kadmium compile --model deepseek-v3-671b-moe --start-layer 0 --end-layer 3 --out shard.ktb
-kadmium inspect shard.ktb
+kadmium join --coordinator http://192.168.1.10:7848
+kadmium join --offer-ram-gb 24 --offer-fast-gb 10 --slots 2 --require-approval
 ```
 
----
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-c`, `--coordinator <URL>` | UDP discovery | Coordinator HTTP gateway. |
+| `-t`, `--ticket <TOKEN>` | none | Optional `kdm1_...` endpoint descriptor. |
+| `--worker-port <PORT>` | `7850` | Worker TCP listener port. |
+| `--hostname <NAME>` | detected | Custom node label. |
+| `--live-only` | off | Switch coordinator to live-only mode on registration. |
+| `--once` | off | Register and run one verification pass instead of the heartbeat loop. |
+| `--offer-fast-gb <GIB>` | 90% VRAM + unified memory | Offered accelerator/unified memory. |
+| `--offer-ram-gb <GIB>` | 70% outside reserve | Offered RAM; reserve is one quarter of RAM bounded to 1–4 GiB. |
+| `--offer-nvme-gb <GIB>` | whole Kadmium cache | Offered cold-storage capacity. |
+| `--slots <N>` | `4` | Concurrent work instances. |
+| `--require-approval` | off | Require owner approval before staging. |
 
-## 11. `kadmium pull`
+The worker measures memory streaming with a 64 MiB single-thread copy before registration. Tickets use an unkeyed FNV-1a integrity checksum, not HMAC or a signature; registration does not authenticate the ticket or enforce its slice/trust fields. Remote joining requires reachable HTTP/TCP addresses through a LAN, VPN, or port forwarding, not automatic QUIC/NAT traversal.
 
-Stages selective layer-range shards from Hugging Face Hub (`hf://`) or mounts commit-pinned RL / Dream-RSI repositories from GitHub (`gh://`):
+### `kadmium pull`
+
+Prints an `hf://` selective-pull plan or a simulated `gh://` slice evaluation. It performs no download, repository mount, dataset stream, checkpoint push, webhook, or GitHub Check Run.
 
 ```bash
 kadmium pull hf://deepseek-ai/DeepSeek-V3@main
 kadmium pull gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt
 ```
 
----
+The optional URI defaults to `hf://deepseek-ai/DeepSeek-V3@main`. See the [integration guide](guides/integrations-hf-github.md).
 
-## 12. `kadmium join`
+### `kadmium mcp`
 
-Verifies an HMAC-SHA256 `kdm1_...` Join Ticket, broadcasts a UDP LAN discovery beacon (`KDMD`), and attaches the local host to a cluster slice:
-
-```bash
-kadmium join --ticket kdm1_...
-kadmium join --offer-ram-gb 24 --offer-fast-gb 10 --slots 2 --require-approval
-```
-
-The worker measures its memory streaming rate before registering (a single-thread copy, which replaces the nominal RAM figure in the coordinator's cost model for this node) and sends the owner's offer with every registration and heartbeat.
-
-| Flag | Default | Description |
-| :--- | :--- | :--- |
-| `--offer-fast-gb <GiB>` | 90% of VRAM plus all unified memory | VRAM or unified memory offered to the grid. |
-| `--offer-ram-gb <GiB>` | 70% of RAM, never within the reserve | System RAM offered; the reserve (a quarter of RAM, bounded to 1 to 4 GiB) is never offered. |
-| `--offer-nvme-gb <GiB>` | the whole Kadmium cache | NVMe offered for cold weight banks. |
-| `--slots <N>` | `4` | Work instances this machine runs at once. |
-| `--require-approval` | off for owned hardware | Review placement plans before anything is staged here. |
-
----
-
-## 13. `kadmium mcp`
-
-Starts the **Kadmium Model Context Protocol (`kadmium-mcp`) Server** over `stdio` for AI coding agents (Claude Code, Cursor, Antigravity, Windsurf, Zed), or prints the full MCP tool/resource/prompt catalog with `--inspect`:
+Starts an isolated stdio MCP server with a fresh in-process gateway state, or prints its seven-tool manifest. It does not attach to a running coordinator or read `KADMIUM_COORDINATOR_URL`; use `POST /mcp` for shared coordinator state.
 
 ```bash
 kadmium mcp --inspect
 kadmium mcp
 ```
 
----
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-i`, `--inspect` | off | Print the manifest and client snippet, then exit. |
 
-## 14. `kadmium lease`
+## Tensor banks and quantization
 
-Configures and simulates the **Kadmium Supply Grid** on your local nodes, comparing direct USD payout rates against **1.25× Kadmium Cloud compute credits** while enforcing middle-layer-only privacy ($1 \dots N-2$) and `< 200 ms` gaming auto-eviction:
+### `kadmium import`
+
+Imports one local SafeTensors or compact zero-metadata GGUF v3 file into `.ktb`. Typical GGUF files with metadata are outside the current parser's support. Without `--path`, the command synthesizes a reference input under `target/kadmium-models/`.
 
 ```bash
-kadmium lease --hours 8 --credits true
+kadmium import --model example --path ./model.safetensors --start-layer 0 --end-layer 3
 ```
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--hours <HOURS>` | `8.0` | Daily idle lease hours to simulate per node. |
-| `--credits <BOOL>` | `true` | Choose `1.25×` Kadmium Cloud credits (`true`) or direct USD payout (`false`). |
+| `-m`, `--model <ID>` | `qwen2.5-coder-32b-instruct` | Output model identifier. |
+| `-p`, `--path <PATH>` | synthesize input | Local `.gguf` or `.safetensors` file. |
+| `-f`, `--format <FORMAT>` | `gguf` | Synthesized-input hint: `gguf` or `safetensors`. |
+| `--start-layer <N>` | `0` | Inclusive first layer. |
+| `--end-layer <N>` | `3` | Inclusive last layer. |
 
----
+### `kadmium compile`
 
-## 15. `kadmium bench`
+Generates a synthetic `.ktb` archive for a layer range, parses its header, and prints its Merkle root. It does not read or compile pretrained model weights. Use `kadmium inspect` to verify every page proof.
 
-Executes the native hardware kernel suite (`FusedRmsNormRopeKernel` $\to$ `PagedGqaAttentionKernel` $\to$ `FusedSwiGluExpertKernel`), prints the active vendor intrinsic target (`CUDA PTX`, `ROCm HIP`, `Metal SIMD-group`, `Vulkan Subgroup`, `AVX-512 FMA`, `ARM NEON DotProd`), verifies deterministic `Verde RepOps` digest parity across nodes, and probes the UDP hole-punch + DERP relay NAT mesh:
+```bash
+kadmium compile --model example --start-layer 0 --end-layer 3 --out shard.ktb
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-m`, `--model <ID>` | `deepseek-v3-671b-moe` | Archive model label. |
+| `--start-layer <N>` | `0` | Inclusive first layer. |
+| `--end-layer <N>` | `3` | Inclusive last layer. |
+| `-o`, `--out <PATH>` | in-memory only | Optional output file. |
+
+### `kadmium inspect`
+
+Reads a `.ktb` file and verifies every 64 KiB page against its FNV-1a Merkle proof. Without a path, inspects an in-memory synthetic archive.
+
+```bash
+kadmium inspect shard.ktb
+```
+
+### `kadmium exl3`
+
+Runs the EXL3/QTIP conversion and benchmark **model** over the sample cluster. Reported sizes, SNR, and throughput are synthetic/modelled, not conversion of a downloaded checkpoint.
+
+```bash
+kadmium exl3 --model deepseek-v3-671b-exl3-2.5bpw --bpw 2.55
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-m`, `--model <ID>` | `deepseek-v3-671b-exl3-2.5bpw` | Model preset/label. |
+| `-b`, `--bpw <BPW>` | `2.55` | Target bits per weight, `2.0..=6.0`. |
+
+## Configuration, diagnostics, and platform profiles
+
+### `kadmium init`
+
+Probes the host and prints a workspace configuration. `--out` also writes it, replacing the specified file.
+
+```bash
+kadmium init --out kadmium.toml
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-o`, `--out <PATH>` | stdout only | Output configuration path. |
+
+### `kadmium bench`
+
+Runs synthetic host kernel, range-slicer, and NAT-planning reports over sample node profiles. Its cross-silicon labels and estimated GFLOPS do not establish native execution on each labelled backend. NAT output includes route planning and a loopback UDP self-test, not a live STUN/DERP service.
 
 ```bash
 kadmium bench
 ```
 
----
+### `kadmium pairing`
 
-## 16. `kadmium pairing`
-
-Runs the **Zero-Click LAN Pairing** (`ZeroClickLanPairingEngine` with 6-digit SAS verification codes), **OS Swapchain/Thermal Hysteresis** (`DXGI` / `IOKit` / `DRM` `< 200 ms` fast-yield + `15 s` anti-thrash cooldown), and **Automated `CloudShield` Cutover Watcher** (`380 ms` RTO, `0` dropped requests):
+Prints sample LAN-pairing candidates, an OS-hysteresis timeline, and the fixed CloudShield watcher scenario (340 ms simulated RTO). These are reference state machines, not proof of foreground-hook integration, measured failover, or zero dropped requests.
 
 ```bash
 kadmium pairing
 ```
 
----
+### `kadmium registry`
 
-## 17. `kadmium registry`
-
-Inspects the **`v1.0 GA` Multi-Provider Spot Orderbook**, **Sub-Cluster RBAC & Scoped API Keys (`kdm_live_...`)**, **Cryptographic `Verde` $O(\log_2 L)$ Fraud-Proof Certificates**, and the **Public `Dream-RSI` World Registry**:
+Displays fixed spot quotes, a sample RBAC/key catalog, a deterministic reference fraud-proof example, and the built-in Dream-RSI world catalog. It does not query providers, enforce tenant access, slash workers, or contact a public registry.
 
 ```bash
 kadmium registry
 ```
 
----
+### `kadmium update`
 
-## 18. `kadmium desktop`
-
-Opens the **desktop app** (`kadmium-desktop`): the Companion in its own native window, with a local coordinator running inside the app. If a coordinator already answers on the port (for example `kadmium serve`), the window attaches to it instead. Closing the window ends the command.
+Submits an update-manifest request to `POST /api/v1/update/push`. If no coordinator answers, it starts an in-process test fleet and pushes the synthetic manifest to those test workers. This is not a general release-binary deployment mechanism or proof of zero-downtime WAN delivery.
 
 ```bash
-cargo build -p kadmium-desktop   # once, so the app sits next to the kadmium binary
-kadmium desktop --control-room
+kadmium update --coordinator http://127.0.0.1:7848 --version v0.2.0-cd48 --kind binary --scope all
 ```
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `-p`, `--port <PORT>` | `7848` | Coordinator port to attach to or start on. |
-| `--demo` | off | Start the coordinator with the 7-node simulated demo fleet alongside live hardware. |
-| `--control-room` | off | Also open the Control Room in your default browser. |
-| `--check-only` | off | Print the hardware summary and where the desktop app was found, then exit. |
+| `-c`, `--coordinator <URL>` | `http://127.0.0.1:7848` | Coordinator HTTP gateway. |
+| `-v`, `--version <VERSION>` | `v0.2.0-cd48` | Target version label. |
+| `-k`, `--kind <KIND>` | `binary` | `binary`, `ktb-delta`, or `policy`. |
+| `-s`, `--scope <SCOPE>` | `all` | `all`, `local`, or `online`. |
 
-The app is looked up next to the `kadmium` binary first, then on `PATH`. If it is not built, `kadmium desktop` says so and opens the Companion in your browser. You can also start the app directly: `kadmium-desktop --port 7848`.
+### `kadmium phone-farm`
+
+Builds a 20-slot phone-farm hardware profile and simulated topology, with ADB discovery dependent on the local `adb` installation and attached devices.
+
+```bash
+kadmium phone-farm --preset sd865 --disaggregated
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-p`, `--preset <PRESET>` | `sd865` | `sd845`, `sd865`, or `sd8gen2`. |
+| `-d`, `--disaggregated` | off | Model 20 individual micro-workers instead of one coherent array. |
+
+### `kadmium switch`
+
+Builds a Tegra X1/X1+ platform profile; alias `tegra-x1`.
+
+```bash
+kadmium switch --revision mariko
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-r`, `--revision <REV>` | `mariko` | `mariko`, `erista`, or `mariko-8gb`. |
+
+### `kadmium reterminal`
+
+Probes the CM4 LAN bridge and runs its platform verification path; aliases `cm4` and `rpi-cm4`.
+
+```bash
+kadmium reterminal --ip 192.168.40.75
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-i`, `--ip <ADDR>` | `192.168.40.75` | LAN address of the CM4 node. |
+
+### `kadmium m4`
+
+Probes the Apple M4 LAN bridge and runs its platform verification path; alias `apple-m4`.
+
+```bash
+kadmium m4 --ip 192.168.40.237
+```
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `-i`, `--ip <ADDR>` | `192.168.40.237` | LAN address of the Apple M4 node. |
