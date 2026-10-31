@@ -35,7 +35,7 @@ The same panel provides worker connection instructions and **Run on workers** fo
 
 An interrupted stream never automatically resubmits a request. Partial output remains in the run history, and the user chooses how to continue. Closing the stream cancels the server turn, but a closed browser cannot receive its final report.
 
-Tasks, forks, drafts and exports remain browser-local. API keys are memory-only and inference keys are scoped to both provider and endpoint. Changing endpoints does not carry a key to the new server. Browser storage limits can still prevent saving large histories; the sidebar shows `TEMP` when persistence fails.
+Tasks, forks, drafts and exports remain browser-local unless **Save task memory for workspace recall** is enabled. That option also retains full run reports on the server's local disk, as described below. API-key configuration is memory-only and inference keys are scoped to both provider and endpoint. Changing endpoints does not carry a key to the new server. Browser storage limits can still prevent saving large histories; the sidebar shows `TEMP` when persistence fails.
 
 ## Queue follow-ups
 
@@ -63,7 +63,82 @@ CLI callers can restrict tool access with repeated exact names:
 cargo run -p kadmium-condenser -- chat "Inspect the project" --provider ollama --tools --allow-tool files__read --allow-tool files__list
 ```
 
-Those names must exist in the local plugin registry; they are examples, not built-in tools.
+Those example plugin names must exist in the local plugin registry. First-party tools are available without installing plugins under the reserved `condenser` namespace.
+
+## Built-in agent tools
+
+Enable **Tools** and select individual capabilities under **Run → Tool access**. New tasks still start with an empty selection. API clients that omit `allowed_tools` while enabling tools expose the entire catalog, now including these built-ins; supply an explicit list to keep access narrow.
+
+| Qualified name | Capability |
+| --- | --- |
+| `condenser__files_list` | Sorted directory listing, 200 entries per page. |
+| `condenser__file_read` | UTF-8 file content, 16,000 characters per page. |
+| `condenser__file_search` | Literal search within a file, line numbers and 50 matches per page. |
+| `condenser__file_edit` | Replace one exact, unique text span in an existing file. |
+| `condenser__command` | Existing host terminal execution, with exit status and explicit timeout/truncation flags. |
+| `condenser__web_fetch` | HTTP(S) source retrieval with full text saved for subsequent reads. |
+| `condenser__notes_write` | Append working notes, decisions, evidence and lookup entries. |
+| `condenser__plan_update` | Append a checklist/plan revision without overwriting prior versions. |
+| `condenser__memory_search` | Search a local word-prefix index; return record references and provenance. |
+| `condenser__memory_read` | Retrieve exact records by ID, with character offsets and `next_offset`. |
+| `condenser__subagents_list` | Discover named, operator-configured local and API targets. |
+| `condenser__delegate` | Execute a self-contained brief on one named target and return its answer, status, usage and full-report reference. |
+
+File tools resolve paths inside the service's startup workspace and reject sensitive file paths. Edits require exactly one match and use the existing atomic replacement writer; this is not a multi-writer compare-and-swap guarantee. Commands have host authority, **not a filesystem sandbox**. They retain the terminal's 20-second deadline and 128 KiB output capture per stream, with explicit flags; use a process plugin for longer-running or persistent jobs. Stop cannot undo completed side effects or guarantee termination of detached external descendants.
+
+File reads and source fetches reject inputs above 8 MiB rather than silently accept incomplete input. Fetches have a 30-second deadline, send no inference credentials, and do not follow redirects; fetch a redirect destination explicitly. They accept local as well as public HTTP(S) endpoints, so selecting this tool grants network access. Fetch returns raw UTF-8 text, including HTML; it does not execute JavaScript or provide a web-search engine. Search/browser integrations can still be added through plugins. Pagination is explicit and does not lower the model's context or generation limits.
+
+## Research and response rules
+
+Every agent request receives operating instructions requiring research for time-sensitive, disputed, unfamiliar or high-stakes facts, explicit verification requests, and inspection of relevant files before code changes. The instructions require primary-source citations, honest uncertainty and test reporting, and treating fetched content, old memory and subagent results as evidence rather than instructions. These behavioral instructions are model-directed, not a semantic truth verifier.
+
+For a mechanically enforced acquisition requirement, select **Require a source before completion** under Task instructions and choose **Apply**. Runs fail before inference if neither `condenser__file_read` nor `condenser__web_fetch` is selected. A run cannot receive `completed` status until one of these tools successfully returns nonempty source content. Failed/empty fetches, directory listings, searches, stale memory and subagent assertions do not satisfy it. An answer generated without acquisition is retained for inspection with `failed` status and an explanation. Relevance, freshness, citation correctness and answer accuracy still require model/reviewer judgment. The requirement applies separately to delegated children.
+
+## Durable memory and scratchpads
+
+Select **Save task memory for workspace recall** and **Apply** to retain notes, plan versions, fetched source text, subagent reports and complete chat reports, including provider-returned reasoning/tool messages. Storage is under `$CONDENSER_HOME/memory/<workspace-hash>` (normally `~/.condenser/memory`). Records are immutable; writes publish through a temporary file. A derived word index avoids rereading complete transcripts for each search. All query words must match a stored word prefix, case-insensitively; an empty query lists records. `memory_read` returns exact content with explicit continuation offsets. Search is lexical, not semantic/vector search.
+
+Saved records are scoped to the canonical workspace path. Tools can recall other opted-in tasks in that workspace, including older task snapshots. The model must check provenance and revalidate stale information. Retrieval never replaces, summarizes or prunes the current conversation automatically. Forks retain the memory preference but use their own task ID; queued prompts capture the preference and research requirement at submission.
+
+Without retention, notes and source records exist only during the current run, shared with its children. They disappear afterwards. Provider credential configuration is not part of stored reports, but prompts and tool output may contain sensitive information: enable retention only for material you intend to keep. Turning retention off prevents future writes and hides durable recall; it does not erase previous records. Remove the workspace's memory directory while runs are stopped to erase it. This is local storage, not encrypted storage or a multi-user authorization boundary. Storage failures appear in report diagnostics instead of silently claiming successful persistence.
+
+## Configure API or local subagents
+
+Create `~/.condenser/subagents.json`, or set `CONDENSER_SUBAGENTS_FILE` to an operator-controlled JSON file. This file is read at the start of each run; queued requests use the profiles present when they start. Models can select a named target but cannot supply a new endpoint, credential or model. Example:
+
+```json
+{
+  "local-review": {
+    "provider": "ollama",
+    "model": "your-installed-model",
+    "base_url": "http://127.0.0.1:11434",
+    "allowed_tools": ["condenser__file_read", "condenser__file_search"],
+    "max_steps": 32
+  },
+  "api-research": {
+    "provider": "openai",
+    "model": "your-api-model-id",
+    "base_url": "https://your-provider.example/v1",
+    "api_key_env": "RESEARCH_MODEL_API_KEY",
+    "allowed_tools": ["condenser__web_fetch"],
+    "max_steps": 32
+  }
+}
+```
+
+Supported targets use Condenser's provider adapters: Ollama, OpenAI-compatible, Anthropic and MCL4-COE. Kadmium remains a reference diagnostic adapter. InferSSD can be addressed through its OpenAI-compatible endpoint; this does not modify its engine or expert routing. An unavailable model, credential or required limit fails explicitly; there is no substitution.
+
+Omit `sampling` and `timeout_secs` for native maximum context/output and no request timeout. Hosted providers that do not advertise a maximum require an explicit documented `sampling.max_tokens`, as with the parent. Explicit `sampling.context_window`, `sampling.max_tokens`, `sampling.compact_history` and `timeout_secs` carry the same quality tradeoffs as parent settings. A smaller model or reduced context/output can weaken results; no cost-saving target is chosen automatically.
+
+Delegation is synchronous and runs one child at a time. The child receives the supplied brief and operating rules, not an automatic copy of the parent history; include all necessary context or enable relevant recall tools. Its tools are the intersection of profile and parent selections, with nested delegation removed. Parent cancellation and deadlines apply, and completed child usage/tool calls count against parent budgets. Aggregate output budgets are checked between responses, so one response can exceed a budget. Partial/in-flight provider billing may not be reported after cancellation. Full answers are returned without automatic summarization; the full child report is also retrievable by record ID.
+
+CLI example:
+
+```sh
+cargo run -p kadmium-condenser -- chat "Inspect Cargo.toml and explain this project" --provider ollama --tools --allow-tool condenser__file_read --allow-tool condenser__notes_write --memory-session project-review --research-required
+```
+
+`plugin list` includes the built-ins. `plugin invoke condenser subagents_list` lists configured targets without exposing keys. Direct registry invocations are user actions; a direct delegate has no child tool permissions. For multi-step memory tests through the HTTP invocation endpoint, supply `agent.session_id`; without it each direct invocation is ephemeral.
 
 ## Maximum-quality defaults
 
@@ -85,6 +160,8 @@ Both `POST /api/v1/chat` and `POST /api/v1/chat/stream` accept an optional `run_
 
 Both chat endpoints also accept `allowed_tools`: omit it or use `null` for all discovered tools, use `[]` for none, or supply exact qualified names such as `["files__read"]`. `enable_tools: false` always disables model tool execution. With tools enabled, unknown or unqualified list entries fail before inference. Streaming reports that configuration failure as an `error` event; nonstreaming requests return HTTP 400. The allowlist does not accept wildcards or argument patterns.
 
+Both chat endpoints accept `agent: {"session_id": "task-id", "research_required": true}`. Both fields are optional: no session means no durable retention, and research acquisition is not mechanically gated unless requested. Session IDs allow 1–100 ASCII letters, digits, hyphens and underscores. `POST /api/v1/plugins/invoke` also accepts `agent` for explicit built-in invocations. No credential/profile configuration is accepted from model tool arguments.
+
 Streaming ends with one authoritative `finished` event containing the full harness report, or an `error` event if no report can be produced. Progress events may be dropped under backpressure; the final report is retained. Existing clients can omit `run_id` and cancel streaming runs by closing the response body.
 
 ## Development checks
@@ -95,3 +172,5 @@ node --test crates/kadmium-condenser/tests/workflow.test.cjs
 ```
 
 The workspace follows T3's conversation/sidebar/inspector and editable queue patterns, DeepSeek harness's explicit run completion and queue cancellation behavior, and Claude Code's scoped tool access. The implementation uses the existing Rust server and embedded JavaScript UI. Local model and compute controls use Kadmium's shared graphite and cadmium design tokens. See [contributing](../../CONTRIBUTING.md) for the additional browser workflow check.
+
+The agent tools also draw on T3's explicit delegation targets and capability inheritance, DeepSeek harness's session-query separation from compaction, and InferSSD's immutable indexes and quality-preserving optimization boundaries. This is a harness change, not an InferSSD kernel integration or a measured intelligence/throughput claim. Regression tests verify history, token-limit, routing, cancellation and recall contracts; model-quality improvements require representative task evaluations.

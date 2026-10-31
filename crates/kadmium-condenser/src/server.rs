@@ -427,11 +427,13 @@ async fn models(
 
 async fn plugins(State(state): State<ServerState>) -> Result<Json<PluginInventory>, ApiError> {
     let manager = PluginManager::new(state.plugin_roots.as_ref().clone());
-    Ok(Json(manager.discover()?))
+    Ok(Json(crate::agent::inventory(&manager)?))
 }
 
 #[derive(Debug, Deserialize)]
 struct PluginInvokeRequest {
+    #[serde(default)]
+    agent: crate::agent::AgentConfig,
     plugin_id: String,
     tool: String,
     #[serde(default)]
@@ -443,6 +445,14 @@ async fn invoke_plugin(
     Json(request): Json<PluginInvokeRequest>,
 ) -> Result<Json<crate::ToolResult>, ApiError> {
     let manager = PluginManager::new(state.plugin_roots.as_ref().clone());
+    if request.plugin_id == "condenser" {
+        let executor = crate::agent::AgentTools::local(manager, request.agent)?;
+        return Ok(Json(
+            executor
+                .invoke_named(&format!("condenser__{}", request.tool), request.arguments)
+                .await?,
+        ));
+    }
     Ok(Json(
         manager
             .invoke(&request.plugin_id, &request.tool, request.arguments)
@@ -452,6 +462,8 @@ async fn invoke_plugin(
 
 #[derive(Debug, Deserialize)]
 struct ChatApiRequest {
+    #[serde(default)]
+    agent: crate::agent::AgentConfig,
     #[serde(default)]
     run_id: Option<String>,
     provider: ProviderConfig,
@@ -530,7 +542,9 @@ async fn chat(
     };
     let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
     let provider_cfg = request.provider;
-    let harness = Harness::new_with_client(provider_cfg, plugins, state.client)?;
+    let provider = ProviderFactory::build_with_client(provider_cfg.clone(), state.client)?;
+    let executor = crate::agent::AgentTools::local(plugins, request.agent)?;
+    let harness = Harness::from_components(provider_cfg, provider, Arc::new(executor))?;
     let report = harness
         .run_with_control(
             request.messages,
@@ -606,7 +620,9 @@ async fn chat_stream(
     };
     let plugins = PluginManager::new(state.plugin_roots.as_ref().clone());
     let provider_cfg = request.provider;
-    let harness = Harness::new_with_client(provider_cfg, plugins, state.client)?;
+    let provider = ProviderFactory::build_with_client(provider_cfg.clone(), state.client)?;
+    let executor = crate::agent::AgentTools::local(plugins, request.agent)?;
+    let harness = Harness::from_components(provider_cfg, provider, Arc::new(executor))?;
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::harness::HarnessEvent>(1024);
     let options = HarnessOptions {
         enable_tools: request.enable_tools,
@@ -667,7 +683,7 @@ async fn chat_stream(
         .into_response())
 }
 
-pub(crate) struct ApiError(CondenserError);
+pub(crate) struct ApiError(pub(crate) CondenserError);
 
 impl<E> From<E> for ApiError
 where
@@ -771,7 +787,8 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert_eq!(plugins["plugins"].as_array().unwrap().len(), 0);
+        assert_eq!(plugins["plugins"].as_array().unwrap().len(), 1);
+        assert_eq!(plugins["plugins"][0]["manifest"]["id"], "condenser");
         let dsv41: Value = client
             .get(format!("http://{address}/api/v1/dsv41/profile"))
             .send()

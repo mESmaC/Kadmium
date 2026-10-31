@@ -20,8 +20,35 @@ use tokio_util::sync::CancellationToken;
 
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    fn start_run(&self) -> Result<Option<tokio::sync::OwnedMutexGuard<()>>> {
+        Ok(None)
+    }
     fn registered_tools(&self) -> Result<(Vec<RegisteredTool>, Vec<PluginDiagnostic>)>;
     async fn execute(&self, tool: &RegisteredTool, arguments: Value) -> Result<ToolResult>;
+    fn instructions(&self) -> Option<String> {
+        None
+    }
+    fn validate_tools(&self, _tools: &[RegisteredTool]) -> Result<()> {
+        Ok(())
+    }
+    fn completion_error(&self) -> Option<String> {
+        None
+    }
+    fn finish_report(&self, _report: &HarnessReport) -> Result<()> {
+        Ok(())
+    }
+    fn take_child_usage(&self) -> (Usage, usize) {
+        (Usage::default(), 0)
+    }
+    async fn execute_controlled(
+        &self,
+        tool: &RegisteredTool,
+        arguments: Value,
+        _control: RunControl,
+        _allowed: &[String],
+    ) -> Result<ToolResult> {
+        self.execute(tool, arguments).await
+    }
 }
 
 #[async_trait]
@@ -223,7 +250,14 @@ pub struct Harness {
 impl Harness {
     pub fn new(config: ProviderConfig, plugins: PluginManager) -> Result<Self> {
         let provider = ProviderFactory::build(config.clone())?;
-        Self::from_components(config, provider, Arc::new(plugins))
+        Self::from_components(
+            config,
+            provider,
+            Arc::new(crate::agent::AgentTools::local(
+                plugins,
+                crate::agent::AgentConfig::default(),
+            )?),
+        )
     }
 
     pub fn new_with_client(
@@ -232,7 +266,14 @@ impl Harness {
         client: reqwest::Client,
     ) -> Result<Self> {
         let provider = ProviderFactory::build_with_client(config.clone(), client)?;
-        Self::from_components(config, provider, Arc::new(plugins))
+        Self::from_components(
+            config,
+            provider,
+            Arc::new(crate::agent::AgentTools::local(
+                plugins,
+                crate::agent::AgentConfig::default(),
+            )?),
+        )
     }
 
     pub fn from_components(
@@ -284,6 +325,7 @@ impl Harness {
             ));
         }
         options.sampling.validate()?;
+        let _executor_run = self.executor.start_run()?;
 
         let (mut tools, diagnostics) = if options.enable_tools {
             self.executor.registered_tools()?
@@ -302,6 +344,7 @@ impl Harness {
             }
             tools.retain(|tool| allowed.contains(&tool.qualified_name));
         }
+        self.executor.validate_tools(&tools)?;
         let registry = ToolRegistry::new(&tools);
         let mut definitions = tools
             .iter()
@@ -355,9 +398,13 @@ impl Harness {
             }
 
             emit(&events, HarnessEvent::ModelStarted { step: index + 1 });
+            let mut request_messages = messages.clone();
+            if let Some(instructions) = self.executor.instructions() {
+                request_messages.insert(0, Message::system(instructions));
+            }
             let request = ChatRequest {
                 model: self.config.model.clone(),
-                messages: messages.clone(),
+                messages: request_messages,
                 sampling: options.sampling.clone(),
                 tools: definitions.clone(),
             };
@@ -523,6 +570,12 @@ impl Harness {
                 );
             }
             if calls.is_empty() {
+                let error = self.executor.completion_error();
+                let status = if error.is_some() {
+                    RunStatus::Failed
+                } else {
+                    RunStatus::Completed
+                };
                 steps.push(step);
                 return self.finish(
                     model,
@@ -531,8 +584,8 @@ impl Harness {
                     steps,
                     usage,
                     diagnostics,
-                    RunStatus::Completed,
-                    None,
+                    status,
+                    error,
                     &events,
                 );
             }
@@ -601,10 +654,14 @@ impl Harness {
                     );
                 }
                 if control
-                    .max_tool_calls
-                    .is_some_and(|limit| tool_call_count >= limit)
+                    .max_output_tokens
+                    .is_some_and(|limit| usage.output_tokens >= limit)
+                    || control
+                        .max_tool_calls
+                        .is_some_and(|limit| tool_call_count >= limit)
                 {
-                    let error = format!("aggregate tool-call budget {} exhausted", tool_call_count);
+                    let error =
+                        "aggregate tool/output budget exhausted (including subagents)".to_string();
                     record_blocked_calls(
                         &calls[call_index..],
                         "tool-call-budget",
@@ -707,8 +764,25 @@ impl Harness {
                     },
                 );
                 tool_call_count += 1;
-                let result = match controlled_wait(&control, self.executor.execute(tool, arguments))
-                    .await
+                let child_control = RunControl {
+                    max_output_tokens: control
+                        .max_output_tokens
+                        .map(|limit| limit.saturating_sub(usage.output_tokens)),
+                    max_tool_calls: control
+                        .max_tool_calls
+                        .map(|limit| limit.saturating_sub(tool_call_count)),
+                    ..control.clone()
+                };
+                let allowed = tools
+                    .iter()
+                    .map(|tool| tool.qualified_name.clone())
+                    .collect::<Vec<_>>();
+                let result = match controlled_wait(
+                    &control,
+                    self.executor
+                        .execute_controlled(tool, arguments, child_control, &allowed),
+                )
+                .await
                 {
                     WaitOutcome::Completed(Ok(result)) => result,
                     WaitOutcome::Completed(Err(error)) => ToolResult::failure(error.to_string()),
@@ -748,6 +822,9 @@ impl Harness {
                         );
                     }
                 };
+                let (child_usage, child_calls) = self.executor.take_child_usage();
+                usage.add_assign(&child_usage);
+                tool_call_count += child_calls;
                 record_tool_result(
                     &tool.plugin_id,
                     call,
@@ -791,7 +868,7 @@ impl Harness {
         error: Option<String>,
         events: &Option<mpsc::Sender<HarnessEvent>>,
     ) -> Result<HarnessReport> {
-        let report = HarnessReport {
+        let mut report = HarnessReport {
             provider: self.config.kind,
             model,
             answer,
@@ -802,6 +879,11 @@ impl Harness {
             status,
             error,
         };
+        if let Err(error) = self.executor.finish_report(&report) {
+            report
+                .diagnostics
+                .push(format!("Local memory was not saved: {error}"));
+        }
         emit(
             events,
             HarnessEvent::Finished {

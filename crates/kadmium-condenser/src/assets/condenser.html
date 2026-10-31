@@ -54,7 +54,7 @@
     <div id="session-list" class="session-list"></div>
     <div class="rail-footer">
       <div class="local-workspace"><span class="status-dot"></span><span>Local workspace</span></div>
-      <p class="caption">Private by default. Tasks stay in this browser profile and API keys remain memory-only.</p>
+      <p class="caption">Tasks stay in this browser profile by default. Optional task memory saves a local copy for recall. API-key settings remain memory-only.</p>
       <p class="caption muted">Kadmium Power Plant · plugin protocol v1</p>
     </div>
     <div id="resize-sessions" class="pane-resizer" role="separator" aria-label="Resize task sidebar" aria-orientation="vertical" aria-controls="session-rail" aria-valuemin="200" aria-valuemax="420" aria-valuenow="264" tabindex="0" title="Drag to resize · Double-click to reset"></div>
@@ -260,6 +260,9 @@
           <section class="inspector-section">
             <div class="inspector-title-row"><div class="inspector-title">Task instructions</div><button id="save-instructions" class="text-btn">Apply</button></div>
             <textarea id="system-prompt" rows="5" placeholder="Guide the agent’s behavior for this task…"></textarea>
+            <label class="caption"><input id="research-required" type="checkbox"> Require a source before completion</label>
+            <label class="caption"><input id="memory-enabled" type="checkbox"> Save task memory for workspace recall</label>
+            <p class="caption muted">Memory saves full chats, notes and source text on this computer. Selected memory tools can recall other saved tasks in this workspace. Subagent targets are configured in ~/.condenser/subagents.json; discover them with the subagents_list tool.</p>
             <p class="caption muted">Applied to the next model request and saved with this task.</p>
           </section>
           <section class="inspector-section">
@@ -356,7 +359,8 @@
           <div class="field"><label for="context-window">Context / input window (Ollama)</label><input id="context-window" type="number" min="1" max="2147483647" step="1" placeholder="Full model context"></div>
           <div class="field"><label for="provider-timeout">Request timeout (seconds)</label><input id="provider-timeout" type="number" min="1" step="1" placeholder="No limit"></div>
         </div>
-        <p class="caption muted">For other providers, context is configured on the server. Condenser sends all input; backend limits still apply. Lower limits only when you choose to. Temperature controls randomness, not model precision.</p>
+          <p class="caption muted">For other providers, context is configured on the server. Condenser sends all input; backend limits still apply. Lower limits only when you choose to. Temperature controls randomness, not model precision.</p>
+          <p class="caption muted">Smaller context can exclude useful information; lower output limits can cut off reasoning or answers. Shorter timeouts and run budgets can leave work incomplete. Memory retrieval adds evidence without shrinking the conversation.</p>
         <button id="quality-maximum" class="text-btn" type="button">Reset to maximum</button>
         <p id="quality-error" class="caption error" role="alert"></p>
       </details>

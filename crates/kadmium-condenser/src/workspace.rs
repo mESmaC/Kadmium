@@ -313,7 +313,7 @@ pub(crate) async fn write_file(
     ))
 }
 
-async fn write_text_file(
+pub(crate) async fn write_text_file(
     root: &Path,
     requested: &str,
     content: &str,
@@ -850,6 +850,13 @@ pub(crate) async fn execute_terminal(
     State(state): State<ServerState>,
     Json(request): Json<TerminalRequest>,
 ) -> Result<Json<TerminalResponse>, ApiError> {
+    run_terminal(state.workspace.root, request).await
+}
+
+pub(crate) async fn run_terminal(
+    root: Arc<PathBuf>,
+    request: TerminalRequest,
+) -> Result<Json<TerminalResponse>, ApiError> {
     let command = request.command.trim();
     let command_chars = request.command.chars().count();
     if command.is_empty() || command_chars > TERMINAL_COMMAND_LIMIT {
@@ -858,7 +865,6 @@ pub(crate) async fn execute_terminal(
         ))
         .into());
     }
-    let root = state.workspace.root.clone();
     let working = resolve_path(root.as_ref(), request.cwd.as_deref().unwrap_or(""))?;
     if !working.is_dir() {
         return Err(bad_request("terminal cwd is not a directory").into());
@@ -1118,7 +1124,7 @@ fn decode_terminal_output(bytes: Vec<u8>) -> String {
     }
 }
 
-fn resolve_path(root: &Path, requested: &str) -> Result<PathBuf, CondenserError> {
+pub(crate) fn resolve_path(root: &Path, requested: &str) -> Result<PathBuf, CondenserError> {
     resolve_path_at(root, root, requested)
 }
 
@@ -1168,7 +1174,7 @@ fn modified_millis(modified: Option<SystemTime>) -> Option<u64> {
         .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
 }
 
-fn is_sensitive_file(name: &str) -> bool {
+pub(crate) fn is_sensitive_file(name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     if name == ".env" || name.starts_with(".env.") {
         return true;

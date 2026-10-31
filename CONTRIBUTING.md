@@ -50,6 +50,7 @@ After that Playwright setup, run Condenser's local checkpoint and distributed co
 ```bash
 cargo build -p kadmium-condenser --locked
 node --test crates/kadmium-condenser/tests/local_compute.test.cjs
+node --test crates/kadmium-condenser/tests/agent_workflow.test.cjs
 ```
 
 The test starts a disposable Condenser library, imports a tiny checkpoint, and checks explicit routing, backend failures and desktop/mobile layout. Screenshots go to `target/checkpoint-smoke`.

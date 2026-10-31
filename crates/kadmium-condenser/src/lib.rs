@@ -5,6 +5,7 @@
 //! Both the CLI and the native UI use this library rather than maintaining
 //! separate inference implementations.
 
+pub mod agent;
 mod compute;
 pub mod dsv41_mcl4;
 pub mod error;

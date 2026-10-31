@@ -109,6 +109,8 @@
       max_output_tokens: null,
       max_tool_calls: null,
       system_prompt: '',
+      research_required: false,
+      memory_enabled: false,
       sampling: {}
     };
   }
@@ -124,6 +126,8 @@
     config.allowed_tools = raw && Array.isArray(raw.allowed_tools) ? [...new Set(raw.allowed_tools.filter(name => typeof name === 'string'))] : null;
     config.interview = Boolean(config.interview);
     config.system_prompt = typeof config.system_prompt === 'string' ? config.system_prompt : '';
+    config.research_required = config.research_required === true;
+    config.memory_enabled = config.memory_enabled === true;
     config.sampling = config.sampling && typeof config.sampling === 'object' ? config.sampling : {};
     config.sampling = JSON.parse(JSON.stringify(config.sampling));
     delete config.api_key;
@@ -1209,6 +1213,8 @@
     });
     renderRunbook(session);
     if (document.activeElement !== $('system-prompt')) $('system-prompt').value = session.config.system_prompt;
+    $('research-required').checked = session.config.research_required;
+    $('memory-enabled').checked = session.config.memory_enabled;
   }
 
   function renderTask() {
@@ -1414,7 +1420,8 @@
       const result = await api('/api/v1/plugins/invoke', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ plugin_id: state.selectedTool.pluginId, tool: state.selectedTool.toolName, arguments: argumentsValue })
+        body: JSON.stringify({ plugin_id: state.selectedTool.pluginId, tool: state.selectedTool.toolName, arguments: argumentsValue,
+          agent: { session_id: currentSession().config.memory_enabled ? currentSession().id : null } })
       });
       showToolResult(result.content, result.is_error);
     } catch (error) {
@@ -2049,6 +2056,7 @@
       timeout_secs: config.timeout_secs || 0
     };
     const requestPayload = {
+      agent: { session_id: config.memory_enabled ? session.id : null, research_required: config.research_required },
       run_id: uid(),
       provider,
       messages,
@@ -2422,6 +2430,8 @@
       const session = currentSession();
       if (!session) return;
       session.config.system_prompt = $('system-prompt').value;
+      session.config.research_required = $('research-required').checked;
+      session.config.memory_enabled = $('memory-enabled').checked;
       session.updatedAt = Date.now();
       saveSessions();
       renderTask();

@@ -132,6 +132,12 @@ impl ProviderArgs {
 
 #[derive(Debug, Clone, Args)]
 struct ChatArgs {
+    /// Save complete runs and working notes for recall under this workspace/session.
+    #[arg(long)]
+    memory_session: Option<String>,
+    /// Refuse completion until a built-in file/web source has been read successfully.
+    #[arg(long)]
+    research_required: bool,
     /// User message to send.
     message: String,
     #[command(flatten)]
@@ -498,7 +504,15 @@ async fn run_chat(args: ChatArgs, roots: Vec<PathBuf>) -> Result<()> {
         None
     };
 
-    let harness = Harness::new(config, PluginManager::new(roots))?;
+    let provider = kadmium_condenser::ProviderFactory::build(config.clone())?;
+    let executor = kadmium_condenser::agent::AgentTools::local(
+        PluginManager::new(roots),
+        kadmium_condenser::agent::AgentConfig {
+            session_id: args.memory_session,
+            research_required: args.research_required,
+        },
+    )?;
+    let harness = Harness::from_components(config, provider, std::sync::Arc::new(executor))?;
     let report = harness
         .run(
             messages,
@@ -566,7 +580,7 @@ async fn run_plugin(command: PluginCommand, roots: Vec<PathBuf>) -> Result<()> {
     let manager = PluginManager::new(roots);
     match command {
         PluginCommand::List { json } => {
-            let inventory = manager.discover()?;
+            let inventory = kadmium_condenser::agent::inventory(&manager)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&inventory)?);
             } else {
@@ -602,7 +616,13 @@ async fn run_plugin(command: PluginCommand, roots: Vec<PathBuf>) -> Result<()> {
             let arguments: Value = serde_json::from_str(&arguments).map_err(|error| {
                 CondenserError::Config(format!("--arguments must be valid JSON: {error}"))
             })?;
-            let result = manager.invoke(&plugin_id, &tool, arguments).await?;
+            let result = if plugin_id == "condenser" {
+                kadmium_condenser::agent::AgentTools::local(manager, Default::default())?
+                    .invoke_named(&format!("condenser__{tool}"), arguments)
+                    .await?
+            } else {
+                manager.invoke(&plugin_id, &tool, arguments).await?
+            };
             println!("{}", result.content);
             if result.is_error {
                 return Err(CondenserError::Plugin(format!(

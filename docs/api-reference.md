@@ -9,6 +9,8 @@ Condenser is included at `/condenser/` in Kadmium and can also run separately on
 
 ## Condenser checkpoints and compute jobs
 
+For first-party tools, durable recall, research acquisition requirements and local/API subagent configuration, see [Condenser agent tools](guides/condenser-workspace.md#built-in-agent-tools). Both chat endpoints accept optional `agent: {"session_id": "task-id", "research_required": true}`. Tools remain opt-in and subject to `allowed_tools`; `GET /api/v1/plugins` includes the reserved `condenser` catalog. `POST /api/v1/plugins/invoke` accepts the same optional `agent` settings for explicit built-in invocations.
+
 These routes run on standalone Condenser's loopback server, with its Host/Origin guard, or under `/condenser` in Kadmium:
 
 | Method and path | Contract |
