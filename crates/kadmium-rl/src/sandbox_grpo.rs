@@ -31,6 +31,8 @@ pub struct SandboxVerificationResult {
     pub fuel_consumed: u32,
     pub timed_out_or_trapped: bool,
     pub verifiable_reward: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compile_error: Option<String>,
 }
 
 /// Deterministic, fuel-metered micro-sandbox for verifying RL code/math rollouts on edge CPUs/SBCs.
@@ -49,6 +51,377 @@ impl Default for WasiMicroSandbox {
 }
 
 impl WasiMicroSandbox {
+    /// Compiles a candidate polynomial/arithmetic expression over `x` (or explicit `SandboxOp`
+    /// sequence) into deterministic `SandboxOp` instructions, or returns a compile/validation error.
+    pub fn compile_candidate_code(code: &str) -> Result<Vec<SandboxOp>, String> {
+        let trimmed = code.trim();
+        if trimmed.is_empty() {
+            return Err("Empty candidate code snippet".into());
+        }
+
+        let forbidden_keywords = [
+            "panic!",
+            "todo!",
+            "unimplemented!",
+            "unreachable!",
+            "unsafe",
+            "loop",
+            "while",
+            "std::process",
+            "std::fs",
+            "std::net",
+        ];
+        for kw in forbidden_keywords {
+            if trimmed.contains(kw) {
+                return Err(format!(
+                    "Forbidden construct '{kw}' in deterministic WasiMicroSandbox candidate"
+                ));
+            }
+        }
+
+        if let Some(ops) = Self::try_parse_stack_dsl(trimmed)? {
+            return Ok(ops);
+        }
+
+        let expr_body = Self::extract_expression_body(trimmed)?;
+        let tokens = Self::tokenize_arith_expr(expr_body)?;
+        if tokens.is_empty() {
+            return Err("Candidate expression produced no executable tokens".into());
+        }
+        let mut cursor = 0usize;
+        let mut ops = Vec::new();
+        Self::parse_add_sub(&tokens, &mut cursor, &mut ops)?;
+        if cursor != tokens.len() {
+            return Err(format!(
+                "Unexpected trailing token '{}' at position {}",
+                tokens[cursor], cursor
+            ));
+        }
+        Ok(ops)
+    }
+
+    fn try_parse_stack_dsl(trimmed: &str) -> Result<Option<Vec<SandboxOp>>, String> {
+        let inner = trimmed
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(trimmed);
+        let first_ident: String = inner
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+            .collect();
+        let looks_like_dsl = matches!(
+            first_ident.as_str(),
+            "PushInputX"
+                | "PushConst"
+                | "Add"
+                | "Sub"
+                | "Mul"
+                | "Dup"
+                | "SandboxOp::PushInputX"
+                | "SandboxOp::PushConst"
+                | "SandboxOp::Add"
+                | "SandboxOp::Sub"
+                | "SandboxOp::Mul"
+                | "SandboxOp::Dup"
+        );
+        if !looks_like_dsl {
+            return Ok(None);
+        }
+
+        let mut ops = Vec::new();
+        for raw_part in inner.split([',', ';', '\n']) {
+            let part = raw_part.trim().trim_start_matches("SandboxOp::").trim();
+            if part.is_empty() {
+                continue;
+            }
+            match part {
+                "PushInputX" => ops.push(SandboxOp::PushInputX),
+                "Add" => ops.push(SandboxOp::Add),
+                "Sub" => ops.push(SandboxOp::Sub),
+                "Mul" => ops.push(SandboxOp::Mul),
+                "Dup" => ops.push(SandboxOp::Dup),
+                _ if part.starts_with("PushConst") => {
+                    let arg = part
+                        .strip_prefix("PushConst")
+                        .unwrap_or("")
+                        .trim()
+                        .strip_prefix('(')
+                        .and_then(|s| s.strip_suffix(')'))
+                        .ok_or_else(|| format!("Malformed PushConst instruction: '{part}'"))?;
+                    let val: i64 = arg
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("Invalid PushConst integer literal: '{arg}'"))?;
+                    ops.push(SandboxOp::PushConst(val));
+                }
+                other => {
+                    return Err(format!("Unknown SandboxOp instruction '{other}'"));
+                }
+            }
+        }
+
+        if ops.is_empty() {
+            return Err("Empty SandboxOp program".into());
+        }
+        Ok(Some(ops))
+    }
+
+    fn extract_expression_body(trimmed: &str) -> Result<&str, String> {
+        let mut s = trimmed;
+        if let Some(open_brace) = s.find('{') {
+            let close_brace = s
+                .rfind('}')
+                .ok_or_else(|| "Unclosed '{' in candidate function body".to_string())?;
+            if close_brace <= open_brace {
+                return Err("Malformed brace block in candidate code".into());
+            }
+            let header = &s[..open_brace];
+            if !header.trim().starts_with("fn ") && !header.trim().starts_with("pub fn ") {
+                return Err(format!(
+                    "Unsupported block header '{}' in candidate code",
+                    header.trim()
+                ));
+            }
+            s = s[open_brace + 1..close_brace].trim();
+        } else if let Some(rest) = s.strip_prefix("|x|") {
+            s = rest.trim();
+        } else if let Some(rest) = s.strip_prefix("|x: i64|") {
+            s = rest.trim();
+        }
+
+        s = s.trim_end_matches(';').trim();
+        if let Some(rest) = s.strip_prefix("return ") {
+            s = rest.trim();
+        }
+        if s.contains(';') {
+            return Err(
+                "Multi-statement imperative blocks are not supported; provide a pure expression over x or SandboxOp list"
+                    .into(),
+            );
+        }
+        Ok(s)
+    }
+
+    fn tokenize_arith_expr(expr: &str) -> Result<Vec<String>, String> {
+        let mut tokens = Vec::new();
+        let chars: Vec<char> = expr.chars().collect();
+        let mut i = 0usize;
+        while i < chars.len() {
+            let c = chars[i];
+            if c.is_whitespace() {
+                i += 1;
+                continue;
+            }
+            match c {
+                '+' | '-' | '(' | ')' => {
+                    tokens.push(c.to_string());
+                    i += 1;
+                }
+                '*' => {
+                    if i + 1 < chars.len() && chars[i + 1] == '*' {
+                        tokens.push("^".to_string());
+                        i += 2;
+                    } else {
+                        tokens.push("*".to_string());
+                        i += 1;
+                    }
+                }
+                '^' => {
+                    tokens.push("^".to_string());
+                    i += 1;
+                }
+                '0'..='9' => {
+                    let start = i;
+                    while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '_') {
+                        i += 1;
+                    }
+                    let num_str: String = chars[start..i]
+                        .iter()
+                        .copied()
+                        .filter(|ch| *ch != '_')
+                        .collect();
+                    tokens.push(num_str);
+                }
+                'a'..='z' | 'A'..='Z' | '_' => {
+                    let start = i;
+                    while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
+                        i += 1;
+                    }
+                    let ident: String = chars[start..i].iter().collect();
+                    if ident != "x" {
+                        return Err(format!(
+                            "Unsupported identifier '{ident}' in candidate expression (only variable 'x' is bound)"
+                        ));
+                    }
+                    tokens.push(ident);
+                }
+                other => {
+                    return Err(format!(
+                        "Unsupported character '{other}' in candidate expression"
+                    ));
+                }
+            }
+        }
+        Ok(tokens)
+    }
+
+    fn parse_add_sub(
+        tokens: &[String],
+        cursor: &mut usize,
+        ops: &mut Vec<SandboxOp>,
+    ) -> Result<(), String> {
+        Self::parse_mul(tokens, cursor, ops)?;
+        while *cursor < tokens.len() {
+            match tokens[*cursor].as_str() {
+                "+" => {
+                    *cursor += 1;
+                    Self::parse_mul(tokens, cursor, ops)?;
+                    ops.push(SandboxOp::Add);
+                }
+                "-" => {
+                    *cursor += 1;
+                    Self::parse_mul(tokens, cursor, ops)?;
+                    ops.push(SandboxOp::Sub);
+                }
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_mul(
+        tokens: &[String],
+        cursor: &mut usize,
+        ops: &mut Vec<SandboxOp>,
+    ) -> Result<(), String> {
+        Self::parse_unary(tokens, cursor, ops)?;
+        while *cursor < tokens.len() && tokens[*cursor] == "*" {
+            *cursor += 1;
+            Self::parse_unary(tokens, cursor, ops)?;
+            ops.push(SandboxOp::Mul);
+        }
+        Ok(())
+    }
+
+    fn parse_unary(
+        tokens: &[String],
+        cursor: &mut usize,
+        ops: &mut Vec<SandboxOp>,
+    ) -> Result<(), String> {
+        if *cursor >= tokens.len() {
+            return Err("Unexpected end of expression".into());
+        }
+        match tokens[*cursor].as_str() {
+            "+" => {
+                *cursor += 1;
+                Self::parse_unary(tokens, cursor, ops)
+            }
+            "-" => {
+                *cursor += 1;
+                ops.push(SandboxOp::PushConst(0));
+                Self::parse_unary(tokens, cursor, ops)?;
+                ops.push(SandboxOp::Sub);
+                Ok(())
+            }
+            _ => Self::parse_power(tokens, cursor, ops),
+        }
+    }
+
+    fn parse_power(
+        tokens: &[String],
+        cursor: &mut usize,
+        ops: &mut Vec<SandboxOp>,
+    ) -> Result<(), String> {
+        Self::parse_primary(tokens, cursor, ops)?;
+        if *cursor < tokens.len() && tokens[*cursor] == "^" {
+            *cursor += 1;
+            if *cursor >= tokens.len() {
+                return Err("Missing exponent after '^'".into());
+            }
+            let exp: u32 = tokens[*cursor]
+                .parse()
+                .map_err(|_| format!("Invalid integer exponent '{}'", tokens[*cursor]))?;
+            *cursor += 1;
+            if exp == 0 {
+                // x^0 == 1: multiply by 0 and add 1
+                ops.push(SandboxOp::PushConst(0));
+                ops.push(SandboxOp::Mul);
+                ops.push(SandboxOp::PushConst(1));
+                ops.push(SandboxOp::Add);
+            } else if exp <= 8 {
+                for _ in 1..exp {
+                    ops.push(SandboxOp::Dup);
+                }
+                for _ in 1..exp {
+                    ops.push(SandboxOp::Mul);
+                }
+            } else {
+                return Err(format!("Exponent {exp} exceeds sandbox unroll limit (8)"));
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_primary(
+        tokens: &[String],
+        cursor: &mut usize,
+        ops: &mut Vec<SandboxOp>,
+    ) -> Result<(), String> {
+        if *cursor >= tokens.len() {
+            return Err("Unexpected end of expression".into());
+        }
+        let tok = &tokens[*cursor];
+        if tok == "(" {
+            *cursor += 1;
+            Self::parse_add_sub(tokens, cursor, ops)?;
+            if *cursor >= tokens.len() || tokens[*cursor] != ")" {
+                return Err("Missing closing ')' in expression".into());
+            }
+            *cursor += 1;
+            Ok(())
+        } else if tok == "x" {
+            *cursor += 1;
+            ops.push(SandboxOp::PushInputX);
+            Ok(())
+        } else if let Ok(val) = tok.parse::<i64>() {
+            *cursor += 1;
+            ops.push(SandboxOp::PushConst(val));
+            Ok(())
+        } else {
+            Err(format!("Unexpected token '{tok}' in expression"))
+        }
+    }
+
+    /// Compiles and verifies a candidate code string against `test_cases`.
+    /// Malformed or non-compilable code returns 0 passed assertions, `timed_out_or_trapped = true`,
+    /// `verifiable_reward = 0.0`, and populates `compile_error`.
+    pub fn verify_candidate_code(
+        &self,
+        rollout_id: impl Into<String>,
+        host_node: impl Into<String>,
+        candidate_code: &str,
+        test_cases: &[(i64, i64)],
+    ) -> SandboxVerificationResult {
+        let rollout_id = rollout_id.into();
+        let host_node = host_node.into();
+        match Self::compile_candidate_code(candidate_code) {
+            Ok(program) => {
+                self.verify_candidate_program(rollout_id, host_node, &program, test_cases)
+            }
+            Err(err) => SandboxVerificationResult {
+                rollout_id,
+                host_node,
+                passed_assertions: 0,
+                total_assertions: test_cases.len().max(1),
+                fuel_consumed: 0,
+                timed_out_or_trapped: true,
+                verifiable_reward: 0.0,
+                compile_error: Some(err),
+            },
+        }
+    }
+
     /// Executes `program` against `input_x` with strict instruction fuel and stack bounds.
     pub fn execute_metered(
         &self,
@@ -150,6 +523,7 @@ impl WasiMicroSandbox {
             fuel_consumed: total_fuel,
             timed_out_or_trapped: trapped,
             verifiable_reward: reward,
+            compile_error: None,
         }
     }
 }

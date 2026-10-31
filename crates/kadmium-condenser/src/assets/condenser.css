@@ -521,8 +521,8 @@ body.context-wide #context-files.has-preview #close-file-preview { visibility: h
   .mobile-only { display: inline-grid !important; }
   .desktop-sidebar-toggle, .pane-resizer { display: none !important; }
   .app-shell, body.context-closed .app-shell, body.sidebar-closed .app-shell, body.sidebar-closed.context-closed .app-shell, body[data-view="capabilities"] .app-shell { grid-template-columns: minmax(0, 1fr); }
-  .session-rail, body.sidebar-closed .session-rail { display: flex; position: fixed; z-index: 60; left: 0; top: var(--topbar-height); bottom: 0; width: 274px; transform: translateX(-100%); transition: transform .18s ease; box-shadow: var(--shadow-lg); }
-  body.sessions-open .session-rail { transform: translateX(0); }
+  .session-rail, body.sidebar-closed .session-rail { display: flex; position: fixed; z-index: 60; left: 0; top: var(--topbar-height); bottom: 0; width: 274px; visibility: hidden; pointer-events: none; transform: translateX(-100%); transition: transform .18s ease, visibility 0s linear .18s; box-shadow: var(--shadow-lg); }
+  body.sessions-open .session-rail { visibility: visible; pointer-events: auto; transform: translateX(0); transition: transform .18s ease; }
   body.sessions-open .session-backdrop { display: block; position: fixed; z-index: 50; inset: var(--topbar-height) 0 0; width: 100%; border: 0; background: #02050b9e; }
   .context-rail { position: fixed; z-index: 55; right: 0; top: var(--topbar-height); bottom: 0; width: min(400px, 100vw); box-shadow: var(--shadow-lg); }
   body.context-closed .context-rail { display: none; }

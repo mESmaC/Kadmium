@@ -567,6 +567,58 @@ mod tests {
     }
 
     #[test]
+    fn candidate_code_compiler_distinguishes_valid_wrong_and_invalid_snippets() {
+        let sandbox = WasiMicroSandbox::default();
+        let cases = [(0, -7), (2, 3), (5, 33), (-3, -7)];
+
+        let valid = sandbox.verify_candidate_code(
+            "rollout-valid",
+            "local-wasi-sandbox",
+            "fn solve(x: i64) -> i64 { x * x + 3 * x - 7 }",
+            &cases,
+        );
+        assert_eq!(valid.passed_assertions, 4);
+        assert_eq!(valid.total_assertions, 4);
+        assert!(!valid.timed_out_or_trapped);
+        assert!(valid.verifiable_reward > 0.9);
+        assert!(valid.compile_error.is_none());
+
+        let wrong = sandbox.verify_candidate_code(
+            "rollout-wrong",
+            "local-wasi-sandbox",
+            "fn solve(x: i64) -> i64 { 0 }",
+            &cases,
+        );
+        assert_eq!(wrong.passed_assertions, 0);
+        assert_eq!(wrong.verifiable_reward, 0.0);
+        assert!(!wrong.timed_out_or_trapped);
+        assert!(wrong.compile_error.is_none());
+
+        let panic_code = sandbox.verify_candidate_code(
+            "rollout-panic",
+            "local-wasi-sandbox",
+            "panic!(\"boom\")",
+            &cases,
+        );
+        assert_eq!(panic_code.passed_assertions, 0);
+        assert!(panic_code.timed_out_or_trapped);
+        assert_eq!(panic_code.verifiable_reward, 0.0);
+        assert!(panic_code.compile_error.is_some());
+
+        let invalid = sandbox.verify_candidate_code(
+            "rollout-invalid",
+            "local-wasi-sandbox",
+            "THIS IS NOT VALID RUST CUDA TRITON OR WASM",
+            &cases,
+        );
+        assert_eq!(invalid.passed_assertions, 0);
+        assert_eq!(invalid.fuel_consumed, 0);
+        assert!(invalid.timed_out_or_trapped);
+        assert_eq!(invalid.verifiable_reward, 0.0);
+        assert!(invalid.compile_error.is_some());
+    }
+
+    #[test]
     fn test_dream_rsi_mcts_puct_converges_to_breakthrough_branch() {
         let tree = DiscoveryTree::sample_gpu_kernel_discovery_tree();
         let mcts = DreamRsiMctsEngine::run_puct_search(&tree, 32, 1.414);

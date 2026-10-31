@@ -468,3 +468,10 @@ Windows Intel AI Boost hardware validation covers rectangular and non-tile-align
 
 Settings: `KADMIUM_EXPERT_CACHE_MB` sizes a worker's expert cache (default a quarter of the ledger's room, at most 256 MiB; `0` turns it off), `KADMIUM_EXPERT_PREFETCH_DEPTH` turns the chain-stage prefetch on (default `0`, off), `KADMIUM_HOST_BUDGET_MB` fixes the envelope where the platform probe should not be trusted.
 
+### 9.20 KIP/1 Interdevice Transfer Protocol (`kadmium-data::interdevice`)
+
+`kadmium-data::interdevice` defines KIP/1, a node-local transfer protocol between `Endpoint { Ram, Vram, Storage }` with directional placement costs, bounded submission windows (`Limits`), and a safe `HostBackend`.
+
+**Current status:** Implemented protocol and host backend; not wired into any execution path; GPU adapters are target only. See the [interdevice protocol guide](guides/interdevice-protocol.md).
+
+

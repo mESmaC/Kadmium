@@ -343,10 +343,7 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/api/v1/update/push", post(post_ota_update_push))
         .route("/join.sh", get(serve_join_sh))
         .route("/join.ps1", get(serve_join_ps1))
-        .route(
-            "/api/v1/fts3/stream",
-            get(post_fts3_live_stream).post(post_fts3_live_stream),
-        )
+        .route("/api/v1/fts3/stream", post(post_fts3_live_stream))
         .route(
             "/api/v1/training/checkpoint",
             get(post_export_training_checkpoint).post(post_export_training_checkpoint),
@@ -1320,16 +1317,30 @@ async fn post_fts3_live_stream(
 
     {
         let mut guard = state.lock().expect("gateway state lock");
-        guard.active_ktb_merkle_root_fnv64 = report.merkle_root_fnv64;
-        for ack in &report.target_receipts {
-            if ack.verified_merkle_proof
-                && let Some(w) = guard.live_workers.get_mut(&ack.target_node_id)
-            {
-                w.ktb_merkle_root_fnv64 = ack.new_merkle_root_fnv64;
+        let completed_nodes: std::collections::BTreeMap<&str, u64> = report
+            .destination_summaries
+            .iter()
+            .filter(|s| s.bank_complete)
+            .filter_map(|s| {
+                s.recomputed_merkle_root_fnv64
+                    .map(|root| (s.target_node_id.as_str(), root))
+            })
+            .collect();
+        if !completed_nodes.is_empty() {
+            guard.active_ktb_merkle_root_fnv64 = report.merkle_root_fnv64;
+        }
+        for (node_id, root) in &completed_nodes {
+            if let Some(w) = guard.live_workers.get_mut(*node_id) {
+                w.ktb_merkle_root_fnv64 = *root;
             }
         }
+        let all_complete = !report.destination_summaries.is_empty()
+            && report.failed_page_count == 0
+            && report.complete_destination_count == report.destination_summaries.len();
         for job in &mut guard.fts3_transfers {
-            job.state = Fts3TransferState::CompletedReady;
+            if completed_nodes.contains_key(job.destination_node.0.as_str()) || all_complete {
+                job.state = Fts3TransferState::CompletedReady;
+            }
         }
         guard.last_fts3_stream_report = Some(report.clone());
     }

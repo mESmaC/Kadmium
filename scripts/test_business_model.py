@@ -81,6 +81,60 @@ class BusinessModelTests(unittest.TestCase):
         scenario["pilot_hours"] = "100"
         self.assertFalse(model.scenario_result(self.inputs, scenario)["within_capacity"])
 
+    def test_half_cent_tie_fulfillment_rounding_matches_exact_rational_oracle(self):
+        from decimal import Decimal, ROUND_HALF_UP
+        from fractions import Fraction
+
+        def rational_round_half_up_cents(num: Fraction) -> Decimal:
+            scaled = num * 100
+            cents = (2 * scaled.numerator + scaled.denominator) // (2 * scaled.denominator)
+            return (Decimal(cents) * Decimal("0.01")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+
+        inputs = copy.deepcopy(self.inputs)
+        inputs["legacy_credit_bundle"]["wholesale_markup"] = 1.8
+        inputs["legacy_credit_bundle"]["included_credit"] = 20.65
+        model.validate(inputs)
+        expected = (Decimal("20.65") / Decimal("2.8")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        self.assertEqual(expected, Decimal("7.38"))
+        prepaid = model.prepaid_bridge(20.65, 20.65, 1.8, inputs["payment"])
+        bundle = model.bundle_result(inputs, 1)
+        self.assertEqual(prepaid["cogs"], expected)
+        self.assertEqual(bundle["fulfillment"], expected)
+
+        # Sweep cent-denominated inputs and markup/redemption sensitivities, including exact ties.
+        for markup_str in ("0.25", "0.4", "0.6", "1.8", "2.0", "2.2", "3.0"):
+            denom = Fraction(1) + Fraction(Decimal(markup_str))
+            for cents in (0, 1, 7, 105, 735, 1435, 2065, 2100, 3000, 4130):
+                face_dec = Decimal(cents) * Decimal("0.01")
+                face_frac = Fraction(cents, 100)
+                oracle_prepaid = rational_round_half_up_cents(face_frac / denom)
+                got_prepaid = model.prepaid_bridge(
+                    face_dec, face_dec, markup_str, inputs["payment"]
+                )["cogs"]
+                self.assertEqual(
+                    got_prepaid,
+                    oracle_prepaid,
+                    f"prepaid mismatch for face={face_dec}, markup={markup_str}",
+                )
+                for redemption_str in ("0", "0.25", "0.5", "0.52", "0.7375", "1"):
+                    red_frac = Fraction(Decimal(redemption_str))
+                    oracle_bundle = rational_round_half_up_cents(
+                        face_frac * red_frac / denom
+                    )
+                    case = copy.deepcopy(self.inputs)
+                    case["legacy_credit_bundle"]["wholesale_markup"] = markup_str
+                    case["legacy_credit_bundle"]["included_credit"] = str(face_dec)
+                    got_bundle = model.bundle_result(case, redemption_str)["fulfillment"]
+                    self.assertEqual(
+                        got_bundle,
+                        oracle_bundle,
+                        f"bundle mismatch for credit={face_dec}, redemption={redemption_str}, markup={markup_str}",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

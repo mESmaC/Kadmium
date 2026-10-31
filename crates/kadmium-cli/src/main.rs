@@ -173,12 +173,24 @@ enum Commands {
         /// Ecosystem URI (e.g., hf://deepseek-ai/DeepSeek-V3@main or gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt)
         #[arg(default_value = "hf://deepseek-ai/DeepSeek-V3@main")]
         uri: String,
+        /// Print an unmounted/unfetched plan preview without requiring a local checkout
+        #[arg(long)]
+        plan: bool,
+        /// Optional path to a local checkout directory for mounting a gh:// repository
+        #[arg(long)]
+        local_path: Option<String>,
+        /// Optional path to a local model.safetensors.index.json file for exact layer-to-shard mapping
+        #[arg(long)]
+        index: Option<String>,
     },
     /// Launch the Kadmium Model Context Protocol (MCP) Server over stdio (or --inspect to view manifest & IDE config)
     Mcp {
         /// Print the MCP Server manifest, tools, resources, prompts, and .mcp.json snippet instead of blocking on stdio
         #[arg(short, long)]
         inspect: bool,
+        /// Seed the stdio MCP server with the 7-node simulated demo fleet instead of live-only unconnected mode
+        #[arg(long)]
+        demo: bool,
     },
     /// Initialize a local Kadmium workspace configuration (`kadmium.toml`) tailored to the probed host
     Init {
@@ -412,8 +424,18 @@ async fn main() {
             steps,
             rows,
         } => run_calibrate(&coordinator, strategy.as_deref(), steps, rows).await,
-        Commands::Pull { uri } => run_pull(&uri),
-        Commands::Mcp { inspect } => run_mcp(inspect),
+        Commands::Pull {
+            uri,
+            plan,
+            local_path,
+            index,
+        } => {
+            if let Err(err) = run_pull(&uri, plan, local_path.as_deref(), index.as_deref()) {
+                eprintln!("kadmium pull: {err}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Mcp { inspect, demo } => run_mcp(inspect, demo),
         Commands::Init { out } => run_init(out.as_deref()),
         Commands::Compile {
             model,

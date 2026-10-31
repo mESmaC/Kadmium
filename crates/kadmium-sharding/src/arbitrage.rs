@@ -25,6 +25,9 @@ pub struct ProviderComputeOffer {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultiProviderArbitragePlan {
     pub target_model_id: String,
+    pub quote_source: String,
+    pub live_provider_quotes: bool,
+    pub simulation_only: bool,
     pub selected_offers: Vec<ProviderComputeOffer>,
     pub total_combined_tflops: f64,
     pub total_combined_vram_gb: f64,
@@ -37,6 +40,7 @@ pub struct MultiProviderArbitragePlan {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailoverShieldSimulation {
     pub direction: FailoverDirection,
+    pub simulation_only: bool,
     pub incident_summary: String,
     pub affected_layers: (u32, u32),
     pub source_environment: String,
@@ -52,7 +56,7 @@ pub struct FailoverShieldSimulation {
 pub struct HybridCloudArbitragePlanner;
 
 impl HybridCloudArbitragePlanner {
-    /// Builds a multi-datacenter arbitrage plan that stitches fragmented, low-cost single-GPU
+    /// Builds a reference multi-datacenter arbitrage plan that stitches fragmented, low-cost single-GPU
     /// spot instances and high-RAM bare-metal servers across 4 different providers using
     /// Kadmium's asymmetric sharding + DeMo/DisTrO low-bandwidth compression.
     pub fn compute_arbitrage_plan(model: &ModelSpec) -> MultiProviderArbitragePlan {
@@ -112,12 +116,15 @@ impl HybridCloudArbitragePlanner {
 
         MultiProviderArbitragePlan {
             target_model_id: model.id.clone(),
+            quote_source: "modelled_reference_catalog".into(),
+            live_provider_quotes: false,
+            simulation_only: true,
             selected_offers: offers,
             total_combined_tflops: (total_tflops * 10.0).round() / 10.0,
             total_combined_vram_gb: (total_vram * 10.0).round() / 10.0,
             kadmium_blended_hourly_usd: (blended_usd * 100.0).round() / 100.0,
             monolithic_hyperscaler_hourly_usd: (hyper_usd * 100.0).round() / 100.0,
-            cost_reduction_pct: (savings_pct * 10.0).round() / 10.0,
+            cost_reduction_pct: (savings_pct * 10.0).round() / 100.0 * 10.0,
         }
     }
 
@@ -129,6 +136,7 @@ impl HybridCloudArbitragePlanner {
         vec![
             FailoverShieldSimulation {
                 direction: FailoverDirection::LocalOutageToCloudStandby,
+                simulation_only: true,
                 incident_summary:
                     "Home ISP fiber drop / power blip on `cameron-main-rig` (Layers L00..L25)"
                         .into(),
@@ -142,6 +150,7 @@ impl HybridCloudArbitragePlanner {
             },
             FailoverShieldSimulation {
                 direction: FailoverDirection::CloudOutageOrPreemptionToLocalAndMultiCloud,
+                simulation_only: true,
                 incident_summary:
                     "30s Spot Eviction Notice on Cloud A100 instance (Layers L26..L55)".into(),
                 affected_layers: (26, 55),
@@ -154,6 +163,7 @@ impl HybridCloudArbitragePlanner {
             },
             FailoverShieldSimulation {
                 direction: FailoverDirection::CloudFailbackToRecoveredLocal,
+                simulation_only: true,
                 incident_summary:
                     "Local ISP & Main PC back online -> draining Cloud Standby back to Local".into(),
                 affected_layers: (0, 25),

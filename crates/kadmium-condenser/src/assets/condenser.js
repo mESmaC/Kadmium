@@ -409,13 +409,86 @@
     });
   }
 
+  function syncSessionRailAccessibility() {
+    const rail = $('session-rail');
+    if (!rail) return;
+    const overlay = overlayPanes();
+    const mobileOpen = overlay && document.body.classList.contains('sessions-open');
+    const desktopOpen = !overlay && !document.body.classList.contains('sidebar-closed');
+    const hidden = !(mobileOpen || desktopOpen);
+    rail.inert = hidden;
+    if (hidden) rail.setAttribute('inert', '');
+    else rail.removeAttribute('inert');
+    rail.setAttribute('aria-hidden', String(hidden));
+    const toggleSessions = $('toggle-sessions');
+    if (toggleSessions) toggleSessions.setAttribute('aria-expanded', String(mobileOpen));
+    const toggleSidebar = $('toggle-sidebar');
+    if (toggleSidebar) toggleSidebar.setAttribute('aria-expanded', String(desktopOpen));
+    if (hidden && rail.contains(document.activeElement)) {
+      const target = overlay ? toggleSessions : toggleSidebar;
+      if (target) target.focus();
+    }
+  }
+
+  function railFocusableElements() {
+    const rail = $('session-rail');
+    if (!rail) return [];
+    return Array.from(rail.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+      .filter((node) => !node.classList.contains('pane-resizer') && !node.closest('[hidden], .hidden'));
+  }
+
+  function openMobileSessions(focusTarget) {
+    document.body.classList.add('sessions-open');
+    syncSessionRailAccessibility();
+    const target = focusTarget || $('new-task') || railFocusableElements()[0];
+    if (target) target.focus();
+  }
+
+  function closeMobileSessions(restoreFocus) {
+    const wasOpen = document.body.classList.contains('sessions-open');
+    document.body.classList.remove('sessions-open');
+    syncSessionRailAccessibility();
+    if (wasOpen && restoreFocus && overlayPanes()) {
+      const toggle = $('toggle-sessions');
+      if (toggle) toggle.focus();
+    }
+  }
+
+  function trapSessionRailFocus(event) {
+    if (event.key !== 'Tab' || !overlayPanes() || !document.body.classList.contains('sessions-open')) return;
+    const focusables = railFocusableElements();
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const rail = $('session-rail');
+    const active = document.activeElement;
+    if (!rail.contains(active)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+      return;
+    }
+    if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
   function setView(name) {
+    const railHadFocus = Boolean($('session-rail') && $('session-rail').contains(document.activeElement));
     document.body.dataset.view = name;
     document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === 'view-' + name));
     document.querySelectorAll('.rail-nav').forEach((button) => button.classList.toggle('active', button.dataset.view === name));
-    document.body.classList.remove('sessions-open');
+    closeMobileSessions(false);
     applyPaneWidths();
-    if (name === 'capabilities') loadPlugins();
+    if (name === 'capabilities') {
+      loadPlugins();
+      if (overlayPanes() && railHadFocus && $('refresh-plugins')) $('refresh-plugins').focus();
+    } else if (overlayPanes() && railHadFocus && $('prompt')) {
+      $('prompt').focus();
+    }
   }
 
   function saveDockLayout() {
@@ -457,6 +530,7 @@
   }
 
   function applyPaneWidths() {
+    syncSessionRailAccessibility();
     if (overlayPanes()) return;
     const railLimits = paneLimits('rail');
     const contextLimits = paneLimits('context');
@@ -2385,22 +2459,32 @@
     $('session-search').addEventListener('input', renderSessions);
     document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => closeLayer(button.dataset.close)));
     document.addEventListener('keydown', (event) => {
+      trapSessionRailFocus(event);
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
-        if (window.matchMedia('(max-width: 980px)').matches) document.body.classList.add('sessions-open');
-        $('session-search').focus();
+        if (overlayPanes()) openMobileSessions($('session-search'));
+        else if (document.body.classList.contains('sidebar-closed')) {
+          document.body.classList.remove('sidebar-closed');
+          applyPaneWidths();
+          $('session-search').focus();
+        } else {
+          $('session-search').focus();
+        }
       }
       if (event.key === 'Escape') {
         closeLayer('settings');
         closeLayer('tool');
-        document.body.classList.remove('sessions-open');
+        closeMobileSessions(true);
       }
     });
     $('toggle-context').addEventListener('click', () => { document.body.classList.toggle('context-closed'); applyPaneWidths(); });
     $('close-context').addEventListener('click', () => { document.body.classList.add('context-closed'); applyPaneWidths(); });
     $('toggle-sidebar').addEventListener('click', () => { document.body.classList.toggle('sidebar-closed'); applyPaneWidths(); });
-    $('toggle-sessions').addEventListener('click', () => document.body.classList.toggle('sessions-open'));
-    $('session-backdrop').addEventListener('click', () => document.body.classList.remove('sessions-open'));
+    $('toggle-sessions').addEventListener('click', () => {
+      if (document.body.classList.contains('sessions-open')) closeMobileSessions(true);
+      else openMobileSessions();
+    });
+    $('session-backdrop').addEventListener('click', () => closeMobileSessions(true));
     bindPaneResizer('rail', $('resize-sessions'));
     bindPaneResizer('context', $('resize-context'));
 
@@ -2535,8 +2619,13 @@
     bindEvents();
     resetJobInputs();
     const paneObserver = new ResizeObserver(() => {
-      if (overlayPanes()) finishPaneDrag();
-      else applyPaneWidths();
+      if (overlayPanes()) {
+        finishPaneDrag();
+        syncSessionRailAccessibility();
+      } else {
+        document.body.classList.remove('sessions-open');
+        applyPaneWidths();
+      }
     });
     paneObserver.observe(document.querySelector('.app-shell'));
     $('toggle-context-width').title = state.contextWide ? 'Collapse dock width' : 'Expand dock';
@@ -2544,6 +2633,7 @@
     setContextPanel(state.contextPanel, false);
     updateBrowserHistory();
     if (window.matchMedia('(max-width: 980px)').matches) document.body.classList.add('context-closed');
+    syncSessionRailAccessibility();
     await loadProviders();
     loadSessions();
     renderAll();
