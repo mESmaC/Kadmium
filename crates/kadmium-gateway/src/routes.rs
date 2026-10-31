@@ -66,6 +66,8 @@ const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 const DOCS_PORTAL_HTML: &str = include_str!("docs_portal.html");
 const MARKETING_SITE_HTML: &str = include_str!("marketing_site.html");
 const COMPANION_APP_HTML: &str = include_str!("companion_app.html");
+const WORKSPACE_CSS: &str = include_str!("workspace.css");
+const WORKSPACE_JS: &str = include_str!("workspace.js");
 const DESIGN_SYSTEM_DEMO_HTML: &str = include_str!("../../../design-system/demo.html");
 
 const DS_TOKENS_CSS: &str = include_str!("../../../design-system/tokens.css");
@@ -266,6 +268,8 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route("/dashboard", get(serve_dashboard))
         .route("/site", get(serve_marketing_site))
         .route("/companion", get(serve_companion_app))
+        .route("/workspace.css", get(serve_workspace_css))
+        .route("/workspace.js", get(serve_workspace_js))
         .route("/docs", get(serve_docs_portal))
         .route("/design-system", get(serve_design_system_demo))
         .route("/tokens.css", get(serve_tokens_css))
@@ -510,6 +514,17 @@ async fn serve_marketing_site() -> Html<&'static str> {
 
 async fn serve_companion_app() -> Html<&'static str> {
     Html(COMPANION_APP_HTML)
+}
+
+async fn serve_workspace_css() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], WORKSPACE_CSS)
+}
+
+async fn serve_workspace_js() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        WORKSPACE_JS,
+    )
 }
 
 async fn serve_docs_portal() -> Html<&'static str> {
