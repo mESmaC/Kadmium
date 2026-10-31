@@ -1691,7 +1691,7 @@
 
   function checkpointControls() {
     const busy = state.localModels.busy;
-    ['checkpoint-path', 'checkpoint-accept-quantized', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded'].forEach(id => { $(id).disabled = busy; });
+    ['checkpoint-path', 'checkpoint-working-directory', 'checkpoint-accept-quantized', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded'].forEach(id => { $(id).disabled = busy; });
     $('checkpoint-load').disabled = busy || !$('checkpoint-select').value;
     $('checkpoint-use').disabled = busy || state.busy || !state.localModels.loaded;
   }
@@ -1737,10 +1737,10 @@
     state.localModels.request += 1;
     state.localModels.loaded = null;
     checkpointControls();
-    $('checkpoint-status').textContent = 'Copying originals, hashing payloads, and writing KTB banks. Large checkpoints can take several minutes.';
+    $('checkpoint-status').textContent = 'Preserving originals and writing KTB banks in the temporary workspace, then publishing the completed package to the model library. Large checkpoints can take several minutes.';
     $('checkpoint-load-status').textContent = 'Normalize, then load in local Ollama. Your task route has not changed.';
     try {
-      const item = await postJson('/api/v1/checkpoints/import', { source_path: $('checkpoint-path').value.trim(), accept_pre_quantized: $('checkpoint-accept-quantized').checked });
+      const item = await postJson('/api/v1/checkpoints/import', { source_path: $('checkpoint-path').value.trim(), working_directory: $('checkpoint-working-directory').value.trim() || null, accept_pre_quantized: $('checkpoint-accept-quantized').checked });
       // Acceptance applies to one import only.
       $('checkpoint-accept-quantized').checked = false;
       await refreshCheckpoints(item.id);

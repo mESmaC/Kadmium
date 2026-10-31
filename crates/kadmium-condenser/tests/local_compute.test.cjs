@@ -31,9 +31,16 @@ test('local checkpoint setup, explicit task routing, recovery and distributed jo
     await page.goto(base);
     await page.locator('#open-model-library').click();
     await page.locator('#checkpoint-path').fill(source);
+    assert.equal(await page.locator('#checkpoint-working-directory').inputValue(), '');
+    const work = path.join(cwd, 'normalization-work'); fs.mkdirSync(work);
+    await page.locator('#checkpoint-working-directory').fill(path.join(cwd, 'missing-work'));
+    await page.locator('#checkpoint-import').click();
+    await page.waitForFunction(()=>document.querySelector('#checkpoint-status').textContent.includes('Cannot open checkpoint working directory'));
+    await page.locator('#checkpoint-working-directory').fill(work);
     await page.locator('#checkpoint-import').click();
     await page.waitForFunction(()=>document.querySelector('#checkpoint-status').textContent.includes('Normalized 1 tensors'));
     const id=await page.locator('#checkpoint-select').inputValue(); assert.match(id,/^[a-f0-9]{64}$/);
+    assert.deepEqual(fs.readdirSync(work), []);
     assert.match(await page.locator('#checkpoint-facts').innerText(),/F32/);
     const before=await page.locator('#header-model').textContent();
     await page.route('**/api/v1/checkpoints/load',route=>route.fulfill({status:502,contentType:'application/json',body:JSON.stringify({error:'Backend changed F32 to F16; task route was not changed'})}));

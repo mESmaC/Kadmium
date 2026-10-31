@@ -347,6 +347,18 @@ impl CheckpointLibrary {
     }
 
     pub fn import_with(&self, source: &Path, options: ImportOptions) -> Result<CheckpointManifest> {
+        self.import_in(source, options, None)
+    }
+
+    /// Normalize beside the source by default, or in an explicitly selected working directory.
+    /// The working directory must exist. Publication into the library remains atomic even
+    /// when the workspace and library are on different filesystems.
+    pub fn import_in(
+        &self,
+        source: &Path,
+        options: ImportOptions,
+        working_directory: Option<&Path>,
+    ) -> Result<CheckpointManifest> {
         let source = source.canonicalize().map_err(io_error)?;
         let paths = source_paths(&source)?;
         // Validate headers before copying a potentially multi-terabyte checkpoint.
@@ -374,13 +386,13 @@ impl CheckpointLibrary {
         )?;
         refuse_unaccepted(&inspected.pre_quantized, options)?;
         fs::create_dir_all(&self.root).map_err(io_error)?;
-        let temporary = self.root.join(format!(
-            ".import-{}-{}",
-            std::process::id(),
-            NEXT_IMPORT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&temporary).map_err(io_error)?;
-        let staging = Staging(temporary);
+        let work_root = import_working_directory(&source, working_directory)?;
+        let staging = Staging::create(&work_root).map_err(|error| {
+            format!(
+                "Cannot create checkpoint workspace in {}: {error}. Choose another working directory explicitly",
+                work_root.display()
+            )
+        })?;
         fs::create_dir(staging.0.join("source")).map_err(io_error)?;
         fs::create_dir(staging.0.join("banks")).map_err(io_error)?;
         let mut source_files = Vec::new();
@@ -470,10 +482,83 @@ impl CheckpointLibrary {
             if target.exists() {
                 return self.verify(&manifest.id);
             }
+            if error.kind() == std::io::ErrorKind::CrossesDevices {
+                return self.publish_copy(&staging.0, &manifest);
+            }
             return Err(io_error(error));
         }
         Ok(manifest)
     }
+
+    /// Copy only a completed package across filesystems. Hash each destination stream against
+    /// the normalized manifest before the destination-local rename makes it visible.
+    fn publish_copy(
+        &self,
+        source: &Path,
+        manifest: &CheckpointManifest,
+    ) -> Result<CheckpointManifest> {
+        let target = self.package_dir(&manifest.id)?;
+        let destination = Staging::create(&self.root)?;
+        for (folder, files) in [
+            ("source", &manifest.source_files),
+            ("banks", &manifest.banks),
+        ] {
+            fs::create_dir(destination.0.join(folder)).map_err(io_error)?;
+            for expected in files {
+                simple_name(&expected.name)?;
+                let mut input =
+                    File::open(source.join(folder).join(&expected.name)).map_err(io_error)?;
+                let mut output = File::create(destination.0.join(folder).join(&expected.name))
+                    .map_err(io_error)?;
+                let (bytes, sha256, _) = copy_hash(&mut input, &mut output, Some(expected.bytes))?;
+                if bytes != expected.bytes
+                    || sha256 != expected.sha256
+                    || input.read(&mut [0u8; 1]).map_err(io_error)? != 0
+                {
+                    return Err(format!(
+                        "Checkpoint changed during publication: {folder}/{}",
+                        expected.name
+                    ));
+                }
+                output.sync_all().map_err(io_error)?;
+            }
+        }
+        let mut file = File::create(destination.0.join("manifest.json")).map_err(io_error)?;
+        file.write_all(&serde_json::to_vec_pretty(manifest).map_err(io_error)?)
+            .map_err(io_error)?;
+        file.sync_all().map_err(io_error)?;
+        drop(file);
+        if let Err(error) = fs::rename(&destination.0, &target) {
+            if target.exists() {
+                return self.verify(&manifest.id);
+            }
+            return Err(io_error(error));
+        }
+        Ok(manifest.clone())
+    }
+}
+
+fn import_working_directory(source: &Path, selected: Option<&Path>) -> Result<PathBuf> {
+    let path = selected
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(if source.is_dir() {
+            source
+        } else {
+            source.parent().ok_or("Checkpoint has no parent")?
+        });
+    let path = path.canonicalize().map_err(|error| {
+        format!(
+            "Cannot open checkpoint working directory {}: {error}",
+            path.display()
+        )
+    })?;
+    if !path.is_dir() {
+        return Err(format!(
+            "Checkpoint working directory is not a directory: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
 }
 
 fn pre_quantized_warning(quantized: &PreQuantizedSource) -> String {
@@ -494,6 +579,17 @@ fn refuse_unaccepted(found: &Option<PreQuantizedSource>, options: ImportOptions)
 }
 
 struct Staging(PathBuf);
+impl Staging {
+    fn create(root: &Path) -> Result<Self> {
+        let path = root.join(format!(
+            ".kadmium-import-{}-{}",
+            std::process::id(),
+            NEXT_IMPORT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&path).map_err(io_error)?;
+        Ok(Self(path))
+    }
+}
 impl Drop for Staging {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -702,4 +798,122 @@ pub(crate) fn unique_tensors(tensors: &[CheckpointTensor]) -> Result<()> {
         return Err("Checkpoint has no tensors".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+
+    fn fixture() -> (Staging, PathBuf) {
+        let root = Staging::create(&std::env::temp_dir()).unwrap();
+        let source = root.0.join("model");
+        fs::create_dir(&source).unwrap();
+        fs::write(
+            source.join("config.json"),
+            br#"{"model_type":"llama","max_position_embeddings":8192}"#,
+        )
+        .unwrap();
+        fs::write(source.join("tokenizer.json"), b"{}").unwrap();
+        fs::write(
+            source.join("model.safetensors"),
+            crate::SafetensorsToKtbTranscoder::build_safetensors_bytes(&[(
+                "model.weight",
+                "F32",
+                vec![2],
+                &[0, 0, 128, 63, 1, 0, 128, 63],
+            )]),
+        )
+        .unwrap();
+        (root, source)
+    }
+
+    #[test]
+    fn workspace_defaults_to_source_filesystem_and_honors_override() {
+        let (root, source) = fixture();
+        let source = source.canonicalize().unwrap();
+        assert_eq!(import_working_directory(&source, None).unwrap(), source);
+        let gguf = source.join("model.gguf");
+        fs::write(&gguf, b"fixture").unwrap();
+        assert_eq!(import_working_directory(&gguf, None).unwrap(), source);
+        assert_eq!(
+            import_working_directory(&source, Some(Path::new(""))).unwrap(),
+            source
+        );
+        let selected = import_working_directory(&source, Some(&root.0)).unwrap();
+        assert_eq!(selected, root.0.canonicalize().unwrap());
+        assert!(import_working_directory(&source, Some(&gguf)).is_err());
+        assert!(import_working_directory(&source, Some(&root.0.join("missing"))).is_err());
+        let staging = Staging::create(&selected).unwrap();
+        let path = staging.0.clone();
+        assert_eq!(path.parent(), Some(selected.as_path()));
+        drop(staging);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn workspace_override_preserves_package_bytes_and_cleans_up() {
+        let (root, source) = fixture();
+        let default = CheckpointLibrary::new(root.0.join("default"));
+        let expected = default.import(&source).unwrap();
+        let selected = root.0.join("selected");
+        fs::create_dir(&selected).unwrap();
+        let other = CheckpointLibrary::new(root.0.join("other"));
+        let actual = other
+            .import_in(&source, ImportOptions::default(), Some(&selected))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&expected).unwrap(),
+            serde_json::to_value(&actual).unwrap()
+        );
+        assert_eq!(other.verify(&actual.id).unwrap().id, expected.id);
+        assert_eq!(fs::read_dir(&selected).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&source).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn cross_filesystem_copy_preserves_bytes_and_rejects_damaged_staging() {
+        let (root, source) = fixture();
+        let original = CheckpointLibrary::new(root.0.join("original"));
+        let manifest = original.import(&source).unwrap();
+        let package = original.package_dir(&manifest.id).unwrap();
+        let copied = CheckpointLibrary::new(root.0.join("copied"));
+        fs::create_dir(copied.root()).unwrap();
+        copied.publish_copy(&package, &manifest).unwrap();
+        copied.verify(&manifest.id).unwrap();
+        for (folder, files) in [
+            ("source", &manifest.source_files),
+            ("banks", &manifest.banks),
+        ] {
+            for file in files {
+                assert_eq!(
+                    fs::read(package.join(folder).join(&file.name)).unwrap(),
+                    fs::read(
+                        copied
+                            .package_dir(&manifest.id)
+                            .unwrap()
+                            .join(folder)
+                            .join(&file.name)
+                    )
+                    .unwrap()
+                );
+            }
+        }
+        // The same path used after EXDEV must never publish incomplete or changed bytes.
+        let bank = package.join("banks").join(&manifest.banks[0].name);
+        let intact = fs::read(&bank).unwrap();
+        let mut changed = intact.clone();
+        changed[PAGE as usize] ^= 1;
+        let mut appended = intact.clone();
+        appended.push(0);
+        for (index, bytes) in [changed, appended, intact[..intact.len() - 1].to_vec()]
+            .into_iter()
+            .enumerate()
+        {
+            fs::write(&bank, bytes).unwrap();
+            let rejected = CheckpointLibrary::new(root.0.join(format!("rejected-{index}")));
+            fs::create_dir(rejected.root()).unwrap();
+            assert!(rejected.publish_copy(&package, &manifest).is_err());
+            assert_eq!(fs::read_dir(rejected.root()).unwrap().count(), 0);
+        }
+    }
 }
