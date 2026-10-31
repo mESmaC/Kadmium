@@ -301,6 +301,9 @@ impl CheckpointLibrary {
             // Record what the source holds so every view labels it; the bytes are unchanged.
             if manifest.schema_version < 3 && manifest.pre_quantized.is_none() {
                 manifest.schema_version = 3;
+                if let Some(quantized) = &pre_quantized {
+                    manifest.warnings.push(pre_quantized_warning(quantized));
+                }
                 manifest.pre_quantized = pre_quantized;
                 if let Ok(bytes) = serde_json::to_vec_pretty(&manifest) {
                     let _ = fs::write(dir.join("manifest.json"), bytes);
@@ -426,10 +429,7 @@ impl CheckpointLibrary {
             "Generation requires a compatible inference backend. KTB banks are not a native language-model runtime or a RepOps parity certification.".into(),
         ];
         if let Some(quantized) = &pre_quantized {
-            warnings.push(format!(
-                "You imported a pre-quantized source: {}. Kadmium keeps these bytes exactly; responses reflect the precision this checkpoint had before import.",
-                quantized.description()
-            ));
+            warnings.push(pre_quantized_warning(quantized));
         } else if tensors.iter().any(|t| {
             !matches!(
                 t.encoding,
@@ -474,6 +474,13 @@ impl CheckpointLibrary {
         }
         Ok(manifest)
     }
+}
+
+fn pre_quantized_warning(quantized: &PreQuantizedSource) -> String {
+    format!(
+        "You imported a pre-quantized source: {}. Kadmium keeps these bytes exactly; responses reflect the precision this checkpoint had before import.",
+        quantized.description()
+    )
 }
 
 fn refuse_unaccepted(found: &Option<PreQuantizedSource>, options: ImportOptions) -> Result<()> {
@@ -523,6 +530,9 @@ fn source_paths(source: &Path) -> Result<Vec<PathBuf>> {
                         | "vocab.json"
                         | "merges.txt"
                         | "chat_template.jinja"
+                        | "chat_template.json"
+                        | "preprocessor_config.json"
+                        | "processor_config.json"
                         | "model.safetensors.index.json"
                         // Quantization parameters that some pre-quantized exports keep
                         // outside config.json (AutoGPTQ, NVIDIA ModelOpt).

@@ -264,6 +264,48 @@ fn declared_and_undeclared_safetensors_quantization_is_detected() {
     let manifest = fp8.library().import_with(&fp8.source(), ACCEPT).unwrap();
     assert_eq!(manifest.pre_quantized.unwrap().method, None);
 
+    // compressed-tensors exports may declare their scheme as `compression_config`.
+    let compressed = Scratch::new();
+    compressed.safetensors(
+        r#"{"model_type":"llama","max_position_embeddings":4096,
+            "compression_config":{"quant_method":"compressed-tensors",
+                "config_groups":{"group_0":{"weights":{"num_bits":4}}}}}"#,
+        &[("model.layers.0.mlp.weight_packed", "I32", vec![1], &[5; 4])],
+    );
+    let refused = compressed
+        .library()
+        .import(&compressed.source())
+        .unwrap_err();
+    assert!(
+        refused.contains("compressed-tensors 4-bit (I32)"),
+        "{refused}"
+    );
+
+    // Integer weights with no declared method are quantized storage too.
+    for (name, dtype) in [
+        ("model.layers.0.mlp.down_proj.weight", "I8"),
+        ("model.layers.0.mlp.qweight", "I32"),
+        ("model.layers.0.mlp.qzeros", "U32"),
+    ] {
+        let bytes = if dtype == "I8" { 4 } else { 16 };
+        let undeclared = Scratch::new();
+        undeclared.safetensors(
+            r#"{"model_type":"llama","max_position_embeddings":4096}"#,
+            &[
+                (name, dtype, vec![4], &[3; 16][..bytes]),
+                ("position_ids", "I64", vec![1], &[0; 8]),
+            ],
+        );
+        let refused = undeclared
+            .library()
+            .import(&undeclared.source())
+            .unwrap_err();
+        assert!(
+            refused.contains(&format!("undeclared method ({dtype})")),
+            "{refused}"
+        );
+    }
+
     // AutoGPTQ's sidecar is copied into the package and read for the method.
     let sidecar = Scratch::new();
     sidecar.safetensors(
@@ -275,18 +317,33 @@ fn declared_and_undeclared_safetensors_quantization_is_detected() {
         br#"{"bits":4,"group_size":128}"#,
     )
     .unwrap();
+    // Chat template and processor files travel with the weights.
+    for name in [
+        "chat_template.json",
+        "preprocessor_config.json",
+        "processor_config.json",
+    ] {
+        fs::write(sidecar.source().join(name), b"{}").unwrap();
+    }
     let lib = sidecar.library();
     let manifest = lib.import_with(&sidecar.source(), ACCEPT).unwrap();
     assert_eq!(
         manifest.pre_quantized.as_ref().unwrap().description(),
         "gptq 4-bit (I32)"
     );
-    assert!(
-        lib.package_dir(&manifest.id)
+    for name in [
+        "quantize_config.json",
+        "chat_template.json",
+        "preprocessor_config.json",
+        "processor_config.json",
+    ] {
+        let copied = lib
+            .package_dir(&manifest.id)
             .unwrap()
-            .join("source/quantize_config.json")
-            .is_file()
-    );
+            .join("source")
+            .join(name);
+        assert!(copied.is_file(), "{name} was not copied");
+    }
 
     // Packed FP4 described by an NVIDIA ModelOpt sidecar.
     let fp4 = Scratch::new();
@@ -331,9 +388,12 @@ fn legacy_packages_record_their_precision_and_current_ones_cannot_hide_it() {
     legacy.pre_quantized = None;
     fs::write(&manifest_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     assert_eq!(lib.list().unwrap()[0].pre_quantized, None);
+    legacy.warnings.retain(|w| !w.contains("pre-quantized"));
+    fs::write(&manifest_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
     let upgraded = lib.verify(&manifest.id).unwrap();
     assert_eq!(upgraded.schema_version, 3);
     assert_eq!(upgraded.pre_quantized, manifest.pre_quantized);
+    assert_eq!(upgraded.warnings, manifest.warnings);
     assert_eq!(lib.list().unwrap()[0].pre_quantized, manifest.pre_quantized);
 
     let mut hidden = manifest.clone();

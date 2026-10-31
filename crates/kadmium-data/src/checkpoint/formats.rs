@@ -132,6 +132,17 @@ pub(super) fn inspect(dir: &Path, files: &[PackageFile]) -> Result<InspectedSour
 /// checkpoint declares a method.
 const SUB_16_BIT_FLOATS: &[&str] = &["F8_E4M3", "F8_E5M2", "F8_E8M0", "F6_E2M3", "F6_E3M2", "F4"];
 const WIDE_FLOATS: &[&str] = &["F64", "F32", "BF16", "F16"];
+const INTEGERS: &[&str] = &["I8", "U8", "I16", "U16", "I32", "U32", "I64", "U64"];
+/// Name suffixes of weight tensors. An integer weight is quantized storage, unlike
+/// integer buffers such as `position_ids`.
+const WEIGHT_SUFFIXES: &[&str] = &["weight", "qweight", "weight_packed", "qzeros"];
+
+fn is_integer_weight(tensor: &CheckpointTensor) -> bool {
+    INTEGERS.contains(&tensor.dtype.as_str())
+        && WEIGHT_SUFFIXES
+            .iter()
+            .any(|suffix| tensor.name.rsplit('.').next() == Some(*suffix))
+}
 
 fn safetensors_pre_quantization(
     dir: &Path,
@@ -144,7 +155,12 @@ fn safetensors_pre_quantization(
         .iter()
         .filter_map(|scope| config.get(*scope))
         .chain([config])
-        .find_map(|scope| scope.get("quantization_config"))
+        .find_map(|scope| {
+            // compressed-tensors (llm-compressor) exports may use `compression_config`.
+            scope
+                .get("quantization_config")
+                .or_else(|| scope.get("compression_config"))
+        })
         .and_then(declared_quantization);
     if declared.is_none() && has("quantize_config.json") {
         let sidecar: Value = read_json(&dir.join("quantize_config.json"))?;
@@ -171,15 +187,14 @@ fn safetensors_pre_quantization(
     }
     let tensor_formats: BTreeSet<String> = tensors
         .iter()
-        .map(|t| t.dtype.as_str())
-        .filter(|dtype| {
+        .filter(|t| {
             if declared.is_some() {
-                !WIDE_FLOATS.contains(dtype)
+                !WIDE_FLOATS.contains(&t.dtype.as_str())
             } else {
-                SUB_16_BIT_FLOATS.contains(dtype)
+                SUB_16_BIT_FLOATS.contains(&t.dtype.as_str()) || is_integer_weight(t)
             }
         })
-        .map(String::from)
+        .map(|t| t.dtype.clone())
         .collect();
     if declared.is_none() && tensor_formats.is_empty() {
         return Ok(None);
