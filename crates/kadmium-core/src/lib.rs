@@ -731,7 +731,12 @@ impl ModelSpec {
 
     /// Resolves a model preset by ID or returns `deepseek_v3_671b_moe()` by default.
     pub fn from_id(id: &str) -> Self {
-        match id {
+        Self::try_from_id(id).unwrap_or_else(Self::deepseek_v3_671b_moe)
+    }
+
+    /// Resolves only known presets and aliases, without silently selecting a default.
+    pub fn try_from_id(id: &str) -> Option<Self> {
+        Some(match id {
             "llama-3.2-3b-instruct" | "llama-3.2-3b" => Self::llama_3_2_3b_instruct(),
             "qwen2.5-coder-7b-instruct" | "qwen2.5-coder-7b" => Self::qwen2_5_coder_7b(),
             "qwen2.5-coder-14b-instruct" | "qwen2.5-coder-14b" => Self::qwen2_5_coder_14b(),
@@ -741,8 +746,9 @@ impl ModelSpec {
             "deepseek-v3-671b-exl3-2.5bpw" | "deepseek-v3-exl3" | "exl3" => {
                 Self::deepseek_v3_671b_exl3()
             }
-            _ => Self::deepseek_v3_671b_moe(),
-        }
+            "deepseek-v3-671b-moe" => Self::deepseek_v3_671b_moe(),
+            _ => return None,
+        })
     }
 }
 

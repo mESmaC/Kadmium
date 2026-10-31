@@ -100,11 +100,18 @@ jobs:
       - name: Run workspace unit, integration & doc tests
         run: cargo test --workspace --locked
 
-      - name: Install Node for embedded UI protocol tests
+      - name: Install Node for UI regression tests
         uses: actions/setup-node@v5
         with:
           node-version: "24"
 
+      - name: Test Control Room keyboard navigation and request recovery
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          npm install --prefix target/ui-test --no-package-lock --no-audit --no-fund playwright@1.64.1
+          node target/ui-test/node_modules/playwright/cli.js install --with-deps chromium
+          cargo build -p kadmium-gateway --example control_room_fixture
+          node --test crates/kadmium-gateway/tests/control_room.test.cjs
       - name: Test Condenser stream and task workflows
         run: node --test crates/kadmium-condenser/tests/workflow.test.cjs
 

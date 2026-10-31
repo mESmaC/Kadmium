@@ -237,6 +237,10 @@ pub struct M4MacMiniExecutionProof {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct M4MacMiniProbeReport {
     pub physical_board_online: bool,
+    /// The LAN worker answered the probe RPC. Local host discovery alone does not
+    /// establish availability of the native worker's benchmark operations.
+    #[serde(default)]
+    pub lan_worker_online: bool,
     pub board_model: String,
     pub lan_endpoint: String,
     pub mac_address_oui: String,
@@ -769,6 +773,7 @@ impl M4MacMiniLanBridge {
 
             return M4MacMiniProbeReport {
                 physical_board_online: true,
+                lan_worker_online: true,
                 board_model,
                 lan_endpoint: addr.clone(),
                 mac_address_oui,
@@ -819,6 +824,7 @@ impl M4MacMiniLanBridge {
             );
             return M4MacMiniProbeReport {
                 physical_board_online: false,
+                lan_worker_online: false,
                 board_model,
                 lan_endpoint: "127.0.0.1 (Local Apple Silicon Host)".to_string(),
                 mac_address_oui: format!(
@@ -851,6 +857,7 @@ impl M4MacMiniLanBridge {
         let hw_node = Self::build_platform_hardware_node(ip, &default_telem);
         M4MacMiniProbeReport {
             physical_board_online: false,
+            lan_worker_online: false,
             board_model:
                 "Apple Mac mini (Mac16,10 · Apple M4 10-Core CPU / 10-Core Metal 4 GPU / 16-Core ANE · 16 GB Unified)"
                     .to_string(),
@@ -1222,4 +1229,59 @@ pub struct AppleM4DeepMetalSuiteReport {
     pub zerocopy_mmap_sample4: Vec<f32>,
     pub zerocopy_mmap_repops_digest: u64,
     pub total_rpc_wall_ms: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn lan_worker_status_requires_a_successful_rpc_even_on_local_apple_silicon() {
+        for worker_online in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = listener.local_addr().unwrap().to_string();
+            let worker = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["op"], "probe");
+                writeln!(
+                    stream,
+                    "{}",
+                    serde_json::json!({
+                        "ok": worker_online,
+                        "telemetry": M4MacMiniTelemetry::default(),
+                    })
+                )
+                .unwrap();
+            });
+            let report = M4MacMiniLanBridge::probe_and_verify(Some(&endpoint));
+            worker.join().unwrap();
+            assert_eq!(report.lan_worker_online, worker_online);
+            assert_eq!(report.physical_board_online, worker_online);
+            assert_eq!(
+                report.execution_proof.executed_on_physical_silicon,
+                worker_online
+            );
+            if !worker_online
+                && let Some(local) = M4MacMiniLanBridge::probe_local_apple_silicon_telemetry()
+            {
+                // Local discovery retains hardware metadata without claiming a live worker.
+                assert_eq!(report.telemetry.hw_model, local.hw_model);
+                assert!(report.lan_endpoint.contains("Local Apple Silicon Host"));
+            }
+            // Older peers did not distinguish local hardware from a live worker.
+            let mut legacy = serde_json::to_value(&report).unwrap();
+            legacy.as_object_mut().unwrap().remove("lan_worker_online");
+            let restored: M4MacMiniProbeReport = serde_json::from_value(legacy).unwrap();
+            assert!(!restored.lan_worker_online);
+        }
+    }
 }
