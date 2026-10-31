@@ -513,7 +513,7 @@ impl ReTerminalCm4LanBridge {
             let carrier = Cm4CarrierFormFactor::detect(&local_board, &local_telem.i2c_peripherals);
             let hw_node = Self::build_platform_hardware_node("127.0.0.1", &local_telem, carrier);
             return ReTerminalCm4ProbeReport {
-                physical_board_online: true,
+                physical_board_online: false,
                 board_model: format!("{} [{}]", local_board, carrier.display_name()),
                 lan_endpoint: "127.0.0.1 (Local Linux ARM64 SBC Host)".to_string(),
                 mac_address_oui: "e4:5f:01:3e:99:50 (ARM64 Linux SBC)".to_string(),
@@ -526,7 +526,7 @@ impl ReTerminalCm4LanBridge {
                 telemetry: local_telem,
                 hardware_node: hw_node,
                 execution_proof: ReTerminalCm4ExecutionProof {
-                    executed_on_physical_silicon: true,
+                    executed_on_physical_silicon: false,
                     endpoint_addr: "127.0.0.1".to_string(),
                     kernel_uname: "Linux Local-ARM64-SBC aarch64".to_string(),
                     lan_round_trip_ms: 0.05,

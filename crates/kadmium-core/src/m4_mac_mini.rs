@@ -818,7 +818,7 @@ impl M4MacMiniLanBridge {
                 local_telem.unified_mem_bw_gbps
             );
             return M4MacMiniProbeReport {
-                physical_board_online: true,
+                physical_board_online: false,
                 board_model,
                 lan_endpoint: "127.0.0.1 (Local Apple Silicon Host)".to_string(),
                 mac_address_oui: format!(
@@ -829,7 +829,7 @@ impl M4MacMiniLanBridge {
                 telemetry: local_telem,
                 hardware_node: hw_node,
                 execution_proof: M4MacMiniExecutionProof {
-                    executed_on_physical_silicon: true,
+                    executed_on_physical_silicon: false,
                     endpoint_addr: "127.0.0.1".to_string(),
                     kernel_uname: "Darwin Local-Apple-Silicon arm64".to_string(),
                     lan_round_trip_ms: 0.05,
