@@ -173,13 +173,11 @@ impl HfByteRangeSlicer {
             let abs_end_inclusive = data_base_offset + rel_end - 1;
             let payload_len = (rel_end - rel_start) as usize;
 
-            let dtype = meta.get("dtype").and_then(|v| v.as_str()).unwrap_or("F16");
-            let target_encoding = match dtype {
-                "BF16" => TensorEncoding::Bf16,
-                "F8_E4M3" => TensorEncoding::Fp8E4M3,
-                "I8" | "U8" => TensorEncoding::Q4KBlock,
-                _ => TensorEncoding::Fp16,
-            };
+            let dtype = meta
+                .get("dtype")
+                .and_then(|v| v.as_str())
+                .ok_or("Missing tensor dtype")?;
+            let (target_encoding, _) = crate::checkpoint::formats::safetensors_encoding(dtype)?;
 
             slices.push(HttpByteRangeSlice {
                 tensor_name: tensor_name.clone(),

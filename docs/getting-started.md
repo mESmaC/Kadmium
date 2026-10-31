@@ -1,6 +1,6 @@
 # Getting Started with Kadmium
 
-This guide covers installing **Kadmium**, inspecting a launch plan, opening the Control Room and connecting local workers. The current gateway runs reference compute and returns diagnostic text and vectors; it does not generate language-model answers.
+This guide covers installing **Kadmium**, opening Condenser and the Control Room, and connecting local workers. The gateway's model routes return diagnostic text and vectors. For language-model answers, use Condenser with a configured provider or the local checkpoint workflow below.
 
 ---
 
@@ -17,6 +17,16 @@ cargo build --release -p kadmium-cli
 ```
 
 The compiled binary will be located at `./target/release/kadmium` (or `.\target\release\kadmium.exe` on Windows).
+
+### Load a local model and start a task
+
+Install and start Ollama separately, then build and start Condenser:
+
+```bash
+cargo run -p kadmium-condenser --locked -- serve
+```
+
+Open `http://127.0.0.1:7856`, choose **Models & compute**, enter your GGUF file or complete SafeTensors directory, and choose **Normalize checkpoint**. Review its precision and context, choose **Load in Ollama**, then **Use in this task**. Normalization preserves source bytes; loading rejects backend tensor changes and never selects a smaller model or context to make it fit. Backend arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for supported inputs, storage needs, CLI commands and compatibility limits.
 
 ### Checked release installers (next tagged release)
 
@@ -154,10 +164,12 @@ curl -X POST http://127.0.0.1:7848/v1/messages \
 
 ---
 
-`GET /v1/models` lists planning presets, not verified loaded models. `/v1/embeddings` produces reference vectors, not pretrained semantic embeddings. There is no external backend relay, backend URL flag or credential setting in this setup change. A relay requires a future owner decision about dependencies and downstream access design.
+`GET /v1/models` lists planning presets, not verified loaded models. `/v1/embeddings` produces reference vectors, not pretrained semantic embeddings. Condenser connects directly to its configured provider; the gateway does not relay these requests to that provider.
 
 ## Next Steps
 
+- Load your own weights with [**Local checkpoints**](./guides/local-checkpoints.md).
+- Run user-supplied matrix jobs on TCP workers and integrate persistent learners with [**Distributed compute**](./guides/distributed-compute.md).
 - Explore every CLI subcommand in the [**CLI Command Reference**](./cli-reference.md).
 - Learn how to combine heterogeneous hardware and `.ktb` shard banks in [**Hardware Setup, Asymmetric Sharding & Polite Governance**](./guides/hardware-and-sharding.md).
 - Run distributed training and **Dream-RSI** offline causal replay in [**Distributed Training, RL & Dream-RSI Evolving Worlds**](./guides/training-and-dream-rsi.md).

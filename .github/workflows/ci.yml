@@ -53,11 +53,18 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm test
+      - name: Build Condenser for checkpoint workflow tests
+        run: cargo build -p kadmium-condenser --locked
+      - name: Test Condenser checkpoint and compute workflows
+        working-directory: .
+        run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: workspace-ui-traces
-          path: crates/kadmium-gateway/tests/ui/test-results
+          path: |
+            crates/kadmium-gateway/tests/ui/test-results
+            target/checkpoint-smoke/*.png
 
   check-and-test:
     name: Test & Lint (${{ matrix.os }})

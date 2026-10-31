@@ -31,6 +31,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Verify and load a normalized checkpoint into local Ollama, preserving source precision.
+    LoadCheckpoint {
+        id: String,
+        #[arg(long)]
+        library: Option<PathBuf>,
+        #[arg(long, default_value = "http://127.0.0.1:11434")]
+        base_url: String,
+    },
     /// Open the Condenser native UI (default command).
     Ui(UiArgs),
     /// Serve the same UI and JSON API on loopback without a native window.
@@ -230,6 +238,19 @@ fn main() {
         cli.plugin_dirs
     };
     let result = match cli.command.unwrap_or(Commands::Ui(UiArgs::default())) {
+        Commands::LoadCheckpoint {
+            id,
+            library,
+            base_url,
+        } => block_on(async move {
+            let library = library
+                .map(kadmium_data::checkpoint::CheckpointLibrary::new)
+                .unwrap_or_default();
+            let loaded =
+                kadmium_condenser::local_models::load_ollama(&library, &id, &base_url).await?;
+            println!("{}", serde_json::to_string_pretty(&loaded)?);
+            Ok(())
+        }),
         Commands::Ui(args) => ui::run(UiOptions {
             port: args.port,
             browser: args.browser,

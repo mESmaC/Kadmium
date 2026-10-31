@@ -1,6 +1,6 @@
 # Guide: Hardware Setup, Asymmetric Sharding & Polite Host Governance
 
-Kadmium profiles heterogeneous machines and computes placement and governance plans. Current model-related execution uses small reference tensors; hardware classification does not imply that every native backend or model-serving path is implemented.
+Kadmium profiles heterogeneous machines and computes placement and governance plans. Native model-related execution uses small reference tensors; hardware classification does not imply that every native backend or model-serving path is implemented. Condenser's [local checkpoint workflow](local-checkpoints.md) provides generation through a separate local backend; [distributed compute](distributed-compute.md) provides supplied FP32 matrix jobs and learner integration guidance.
 
 ---
 
@@ -21,6 +21,8 @@ Nodes are represented with fast accelerator memory, unified memory, system RAM, 
 Native device execution currently covers a specific set of CUDA kernels and one Intel Level Zero NPU MatMul with explicitly approximate FP16 arithmetic. Other backends primarily use host reference math and platform classification. See the [support and execution boundaries](../SPECSHEET_AND_ROADMAP.md#2-hardware-profiles-and-execution-support) and [NPU crate guide](../../crates/kadmium-npu/README.md).
 
 ## 2. Local `.ktb` ingestion
+
+For an actual local model, prefer `kadmium checkpoint normalize <PATH>` or Condenser's **Models & compute** panel. This lossless package path supports GGUF metadata and complete sharded checkpoints, retains originals and tokenizer/config files, and records SHA-256 hashes. See [local checkpoints](local-checkpoints.md). It does not make KTB banks a native inference runtime.
 
 `kadmium import --path <FILE>` is a constrained **local single-file reference importer** for SafeTensors and GGUF v3. The GGUF parser currently accepts only compact streams with zero metadata key-value pairs, which excludes many standard GGUF models. Omitting `--path` synthesizes a reference input file.
 

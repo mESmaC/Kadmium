@@ -6,6 +6,7 @@
 //! grid step cannot be built.
 
 use crate::GatewayState;
+pub mod jobs;
 use axum::{
     Json,
     extract::{Query, State},

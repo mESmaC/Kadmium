@@ -7,6 +7,31 @@ When `kadmium launch` or `kadmium serve` is running, [`kadmium-gateway`](../crat
 
 Condenser runs separately on loopback port `7856`. Its [inference workspace guide](guides/condenser-workspace.md) covers provider routing, compute inspection, task history and run cancellation. Kadmium's read-only `GET /api/v1/inference/workspace?model_id=<catalog-id>` returns fleet and placement context for that workspace without loading a model or changing cluster selection.
 
+## Condenser checkpoints and compute jobs
+
+These routes run on Condenser's loopback server, with its existing Host/Origin guard:
+
+| Method and path | Contract |
+| --- | --- |
+| `GET /api/v1/checkpoints` | Returns `{directory, checkpoints}` from the local package library. Listing is not an integrity check. |
+| `POST /api/v1/checkpoints/import` | `{source_path}` returns a checkpoint summary after lossless normalization and atomic publication. |
+| `POST /api/v1/checkpoints/load` | `{checkpoint_id, base_url}` verifies the package, imports preserved source files into loopback Ollama without requesting quantization, checks tensor metadata and preloads the declared context. Returns `{checkpoint, provider, tensor_metadata_verified, execution}`. |
+| `POST /api/v1/compute/jobs` | `{base_url, api_key?, job}` proxies a job to the coordinator below with a 75-second timeout. Credentials are request-scoped; redirects are disabled. |
+
+Only one import/load runs per server. A load response does not change a task's route; the user explicitly chooses **Use in this task**. KTB banks are storage artifacts, and the external backend's arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for exact formats and failure behavior.
+
+## Live worker jobs
+
+The **coordinator** also exposes `POST /api/v1/compute/jobs`, accepting the job itself:
+
+```json
+{"kind":"matrix_multiply","matrix":{"rows":2,"inner":3,"columns":2,"left":[1,2,3,4,5,6],"right":[7,8,9,10,11,12]}}
+```
+
+Other shapes are `{"kind":"training_preview","step_index":1,"learning_rate":0.01}` and `{"kind":"replay","rollouts":8,"simulations":32}`. Matrix inputs use row-major FP32, dimensions 1–256 (at least two rows), and finite values. The kernel uses RepOps dot/reduction order without quantized transport. Training is a stateless synthetic stage preview, not imported-model learning. Replay uses the bundled in-memory reference world. Learning rate must be in `(0, 1]`; replay accepts 2–64 rollouts and 8–256 simulations. Unknown fields/kinds are rejected.
+
+At least two online `TrustedCore` TCP workers without outstanding approval requirements are required. Matrix row ranges are pinned to distinct workers. Demo and in-process fallback are disabled, including after a worker failure. Responses include `graph_id`, `kind`, `execution`, `success`, `distributed`, `nodes_used`, `wall_ms`, `units_total`, `units_validated`, `traces`, `result` and `error`. A matrix result contains `{rows, columns, values}` in submitted row order. Execution failures can return HTTP 200 with `success:false`; inspect both the status and report. Validation failures return HTTP 400 and the 60-second deadline returns HTTP 504. Dispatches have 15-second per-call deadlines. No monetary credits are issued. See [distributed compute](guides/distributed-compute.md) for setup and real learner integration.
+
 ---
 
 ## 1. Reference API Endpoints
@@ -23,7 +48,7 @@ The coordinator restores model plans, imports, object/anchor metadata, training 
 
 Missing journals start a fresh workspace; corrupt JSON or unsupported schema versions stop startup with an error and preserve the original file for recovery. Unsupported legacy custom imports are skipped with a warning, without deleting their model files. Supported imports and unrelated state still restore. A selected custom model falls back to the startup model plan, and training progress tied to that unsupported model is not restored. New custom IDs remain rejected. Journal replacement writes and syncs a unique temporary file first. Restored plans and imports do not establish that weights are resident or workers are running. Versionless journals from earlier releases are accepted as schema version 1; progress with missing provenance is never treated as live training.
 
-These routes retain their existing behavior. They execute small reference workloads and return diagnostic output, not generated language-model responses. There is no external inference relay or backend URL/key setting. This setup change keeps the existing Cargo dependencies and does not replace these routes with an unconfigured-backend error.
+The gateway's `/v1` routes retain their existing behavior. They execute small reference workloads and return diagnostic output, not generated language-model responses. They do not relay requests to Condenser's inference providers.
 
 The API shapes are useful for inspecting reference execution, but are not a promise of full OpenAI/Anthropic protocol or SDK compatibility. A model ID in a response or `active_loaded` in the catalog is diagnostic state, not evidence that production model weights were loaded. Throughput fields describe reference execution or estimates, not measured language-model generation.
 

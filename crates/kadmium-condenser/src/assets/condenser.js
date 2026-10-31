@@ -27,6 +27,8 @@
     draftTimer: null,
     queueEdit: null,
     compute: { snapshot: null, baseUrl: '', modelId: '', at: null, loading: false },
+    localModels: { items: [], busy: false, loaded: null, request: 0 },
+    computeJobRunning: false,
     selectedTool: null,
     persistence: true,
     contextPanel: 'run',
@@ -545,6 +547,7 @@
     });
     document.querySelectorAll('.context-panel').forEach((panel) => { panel.hidden = panel.id !== 'context-' + name; });
     $('open-compute').setAttribute('aria-pressed', String(name === 'compute'));
+    if (name === 'compute' && !state.localModels.busy) refreshCheckpoints();
     if (name === 'files' && !state.files.loaded) loadWorkspace();
     if (name === 'terminal') setTimeout(() => $('terminal-command').focus(), 0);
     saveDockLayout();
@@ -1224,6 +1227,7 @@
     $('stop-run').disabled = Boolean(state.activeRun && state.activeRun.stopRequested);
     $('stop-run').textContent = state.activeRun && state.activeRun.stopRequested ? 'Stopping…' : 'Stop';
     $('attach-compute').disabled = state.busy || state.compute.loading || !state.compute.snapshot || Boolean(interview);
+    $('checkpoint-use').disabled = state.busy || state.localModels.busy || !state.localModels.loaded;
     $('enable-tools').checked = session.config.enable_tools;
     $('enable-tools').disabled = state.busy;
     $('step-budget').disabled = state.busy;
@@ -1471,6 +1475,7 @@
     if (!session) return;
     const kind = $('provider').value;
     const config = session.config;
+    if (config.kind !== kind || config.base_url !== $('base-url').value.trim() || config.model !== $('model').value.trim()) delete config.checkpoint_id;
     config.kind = kind;
     config.base_url = $('base-url').value.trim();
     config.model = $('model').value.trim();
@@ -1537,6 +1542,126 @@
     }
   }
 
+  function openModelLibrary() {
+    closeLayer('settings');
+    setView('harness');
+    setContextPanel('compute');
+  }
+
+  function checkpointControls() {
+    const busy = state.localModels.busy;
+    ['checkpoint-path', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend'].forEach(id => { $(id).disabled = busy; });
+    $('checkpoint-load').disabled = busy || !$('checkpoint-select').value;
+    $('checkpoint-use').disabled = busy || state.busy || !state.localModels.loaded;
+  }
+
+  function renderCheckpoint() {
+    const selected = state.localModels.items.find(item => item.id === $('checkpoint-select').value);
+    const facts = $('checkpoint-facts');
+    facts.replaceChildren();
+    if (selected) {
+      const pairs = [['Format', selected.source_format], ['Architecture', selected.architecture || 'Unknown'], ['Tensors', selected.tensor_count], ['Source bytes', selected.source_bytes.toLocaleString()], ['KTB bytes', selected.bank_bytes.toLocaleString()], ['Source types', selected.dtypes.join(', ')], ['Context tokens', selected.context_length || 'Not declared'], ['Checkpoint', selected.id]];
+      pairs.forEach(([key, value]) => { const row = element('div'); row.append(element('dt', '', key), element('dd', 'code-sm', value)); facts.append(row); });
+    }
+    $('checkpoint-warnings').textContent = selected ? selected.warnings.join(' ') : '';
+    checkpointControls();
+  }
+
+  async function refreshCheckpoints(wanted) {
+    const request = ++state.localModels.request;
+    try {
+      const list = await api('/api/v1/checkpoints');
+      if (request !== state.localModels.request) return;
+      const selected = wanted || $('checkpoint-select').value;
+      state.localModels.items = list.checkpoints;
+      $('checkpoint-select').replaceChildren(new Option('Select a checkpoint', ''));
+      list.checkpoints.forEach(item => $('checkpoint-select').append(new Option(item.name + ' · ' + item.id.slice(0, 12), item.id)));
+      $('checkpoint-select').value = selected;
+      renderCheckpoint();
+    } catch (error) { if (request === state.localModels.request) $('checkpoint-status').textContent = error.message; }
+  }
+
+  async function importCheckpoint() {
+    if (state.localModels.busy) return;
+    state.localModels.busy = true;
+    state.localModels.request += 1;
+    state.localModels.loaded = null;
+    checkpointControls();
+    $('checkpoint-status').textContent = 'Copying originals, hashing payloads, and writing KTB banks. Large checkpoints can take several minutes.';
+    $('checkpoint-load-status').textContent = 'Normalize, then load in local Ollama. Your task route has not changed.';
+    try {
+      const item = await postJson('/api/v1/checkpoints/import', { source_path: $('checkpoint-path').value.trim() });
+      await refreshCheckpoints(item.id);
+      $('checkpoint-status').textContent = 'Normalized ' + item.tensor_count + ' tensors with source bytes preserved. Select Load in Ollama to prepare inference.';
+    } catch (error) { $('checkpoint-status').textContent = error.message; }
+    finally { state.localModels.busy = false; checkpointControls(); }
+  }
+
+  async function loadCheckpoint() {
+    if (state.localModels.busy || !$('checkpoint-select').value) return;
+    state.localModels.busy = true;
+    state.localModels.loaded = null;
+    checkpointControls();
+    $('checkpoint-load-status').textContent = 'Verifying package, uploading local blobs, checking tensor metadata, and loading the original context size. No smaller model or precision is selected on failure.';
+    try {
+      state.localModels.loaded = await postJson('/api/v1/checkpoints/load', { checkpoint_id: $('checkpoint-select').value, base_url: $('checkpoint-backend').value.trim() });
+      $('checkpoint-load-status').textContent = 'Loaded. Tensor metadata matches. Choose Use in this task to change its provider. ' + state.localModels.loaded.execution;
+    } catch (error) { $('checkpoint-load-status').textContent = error.message; }
+    finally { state.localModels.busy = false; checkpointControls(); }
+  }
+
+  function useCheckpoint() {
+    const loaded = state.localModels.loaded;
+    const session = currentSession();
+    if (!loaded || !session || state.busy || state.localModels.busy) return;
+    session.config.kind = loaded.provider.kind;
+    session.config.model = loaded.provider.model;
+    session.config.base_url = loaded.provider.base_url;
+    session.config.checkpoint_id = loaded.checkpoint.id;
+    delete session.config.sampling.mcl4_coe;
+    session.lastError = null;
+    session.status = 'ready';
+    session.updatedAt = Date.now();
+    saveSessions();
+    renderAll();
+    $('checkpoint-load-status').textContent = 'This task now uses ' + loaded.checkpoint.name + ' through local Ollama. Enter a prompt to run inference.';
+    $('prompt').focus();
+  }
+
+  function resetJobInputs() {
+    const kind = $('compute-job-kind').value;
+    const inputs = kind === 'matrix_multiply' ? { matrix: { rows: 2, inner: 3, columns: 2, left: [1, 2, 3, 4, 5, 6], right: [7, 8, 9, 10, 11, 12] } }
+      : kind === 'training_preview' ? { step_index: 1, learning_rate: 0.01 } : { rollouts: 8, simulations: 32 };
+    $('compute-job-input').value = JSON.stringify(inputs, null, 2);
+    $('compute-job-note').textContent = kind === 'matrix_multiply'
+      ? 'Edit the row-major matrices. Dimensions are 1–256, with at least two rows. CPU workers retain FP32 inputs and use the same reduction order for every row.'
+      : kind === 'training_preview' ? 'Synthetic forward/backward stages and gradient reduction. Each stage resets; this does not train the loaded checkpoint.'
+        : 'Runs the bundled Dream-RSI discovery-tree replay on live workers. This is a reference workload, not model learning.';
+  }
+
+  async function runComputeJob() {
+    if (state.computeJobRunning || state.compute.loading) return;
+    let input;
+    try {
+      input = JSON.parse($('compute-job-input').value);
+      if (!input || Array.isArray(input) || typeof input !== 'object') throw new Error('Job inputs must be a JSON object.');
+    } catch (error) { $('compute-job-status').textContent = error.message; return; }
+    state.computeJobRunning = true;
+    ['compute-job-run','compute-job-kind','compute-job-input','compute-url','compute-key','compute-refresh'].forEach(id => { $(id).disabled = true; });
+    $('compute-job-status').textContent = 'Running on live workers. This request is not automatically retried.';
+    $('compute-job-result').hidden = true;
+    try {
+      const report = await postJson('/api/v1/compute/jobs', { base_url: $('compute-url').value.trim(), api_key: $('compute-key').value || null, job: Object.assign({}, input, { kind: $('compute-job-kind').value }) });
+      $('compute-job-status').textContent = (report.success ? 'Completed' : 'Failed') + ' · ' + report.units_validated + '/' + report.units_total + ' units · ' + report.nodes_used.length + ' workers · ' + report.wall_ms.toFixed(2) + ' ms' + (report.distributed ? '' : ' · execution did not span multiple workers');
+      $('compute-job-result').textContent = JSON.stringify(report, null, 2);
+      $('compute-job-result').hidden = false;
+    } catch (error) { $('compute-job-status').textContent = error.message; }
+    finally {
+      state.computeJobRunning = false;
+      ['compute-job-run','compute-job-kind','compute-job-input','compute-url','compute-key','compute-refresh'].forEach(id => { $(id).disabled = false; });
+    }
+  }
+
   function invalidateCompute() {
     state.compute.snapshot = null;
     $('compute-results').classList.add('hidden');
@@ -1545,7 +1670,7 @@
   }
 
   async function inspectCompute() {
-    if (state.compute.loading) return;
+    if (state.compute.loading || state.computeJobRunning) return;
     const baseUrl = $('compute-url').value.trim().replace(/\/+$/, '');
     const modelId = $('compute-model').value;
     state.compute.loading = true;
@@ -2112,7 +2237,7 @@
   }
 
   function bindEvents() {
-    document.querySelectorAll('.rail-nav').forEach((button) => button.addEventListener('click', () => setView(button.dataset.view)));
+    document.querySelectorAll('.rail-nav[data-view]').forEach((button) => button.addEventListener('click', () => setView(button.dataset.view)));
     $('session-list').addEventListener('click', (event) => {
       const card = event.target.closest('[data-session]');
       if (card) selectSession(card.dataset.session);
@@ -2149,6 +2274,16 @@
       state.draftTimer = setTimeout(saveDraft, 200);
     });
     $('open-compute').addEventListener('click', () => setContextPanel('compute'));
+    $('open-model-library').addEventListener('click', openModelLibrary);
+    $('settings-local-model').addEventListener('click', openModelLibrary);
+    $('checkpoint-form').addEventListener('submit', event => { event.preventDefault(); importCheckpoint(); });
+    $('checkpoint-refresh').addEventListener('click', () => refreshCheckpoints());
+    $('checkpoint-select').addEventListener('change', () => { state.localModels.loaded = null; $('checkpoint-load-status').textContent = 'Load this checkpoint before using it in a task.'; renderCheckpoint(); });
+    $('checkpoint-backend').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Endpoint changed. Load the checkpoint at this endpoint before using it.'; });
+    $('checkpoint-load').addEventListener('click', loadCheckpoint);
+    $('checkpoint-use').addEventListener('click', useCheckpoint);
+    $('compute-job-form').addEventListener('submit', event => { event.preventDefault(); runComputeJob(); });
+    $('compute-job-kind').addEventListener('change', resetJobInputs);
     $('compute-form').addEventListener('submit', (event) => { event.preventDefault(); inspectCompute(); });
     $('compute-url').addEventListener('input', () => { $('compute-key').value = ''; $('compute-model').replaceChildren(new Option("Coordinator's current model", '')); invalidateCompute(); });
     $('compute-model').addEventListener('change', invalidateCompute);
@@ -2398,6 +2533,7 @@
   async function init() {
     loadDockLayout();
     bindEvents();
+    resetJobInputs();
     const paneObserver = new ResizeObserver(() => {
       if (overlayPanes()) finishPaneDrag();
       else applyPaneWidths();

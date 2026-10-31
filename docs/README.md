@@ -1,6 +1,6 @@
 # Kadmium (`Cd-48`) Documentation
 
-Kadmium is an open-source Rust compute-fabric project for heterogeneous machines. The repository contains a control plane, TCP worker transport, planners, and reference workloads. Current model-related kernels run small synthetic tensors; `/v1` routes return diagnostic text and vectors, not language-model generation.
+Kadmium is an open-source Rust compute-fabric project for heterogeneous machines. The repository contains a control plane, TCP worker transport, planners, and reference workloads. Native model kernels run small synthetic tensors; gateway `/v1` routes return diagnostic text and vectors. Condenser can normalize local checkpoints losslessly and hand preserved originals to local Ollama for generation. User-supplied FP32 matrix jobs run on TCP workers.
 
 Documents distinguish **implemented reference behavior**, **modelled/simulated output**, and **target architecture**. Roadmap labels are not release-readiness or performance guarantees. See the [API contract](api-reference.md) and [benchmark ledger](BENCHMARKS_2026-10.md) before relying on a capability or number.
 
@@ -25,6 +25,8 @@ Documents distinguish **implemented reference behavior**, **modelled/simulated o
 | Guide | Description |
 | :--- | :--- |
 | [Condenser inference workspace](guides/condenser-workspace.md) | Provider tasks, placement previews, compute context, bounded runs, and cancellation. |
+| [Local checkpoints](guides/local-checkpoints.md) | Lossless GGUF/SafeTensors packages, integrity verification, and explicit local Ollama loading and task routing. |
+| [Distributed compute](guides/distributed-compute.md) | Connect real workers, execute FP32 matrix jobs, inspect reference workloads, and integrate stateful DiLoCo learners. |
 | [Hardware, sharding, and governance](guides/hardware-and-sharding.md) | Hardware profiles, constrained local `.ktb` import, transfer references, and trust/polite policies. |
 | [Training, RL, and Dream-RSI](guides/training-and-dream-rsi.md) | Stateless stage previews, stateful small-replica DiLoCo, synthetic GRPO, and in-memory replay. |
 | [Subclusters and CloudShield](guides/subclusters-and-cloud-shield.md) | Pool partitioning, local Companion mode state, and fixed cloud/failover scenarios. |

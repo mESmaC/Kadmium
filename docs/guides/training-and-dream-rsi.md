@@ -2,6 +2,8 @@
 
 Kadmium provides reference training and RL mechanisms plus a bounded stateful DiLoCo outer loop for small complete replicas. Pipeline-sharded large-model training and online policy learning are target designs, not current integrated capabilities.
 
+For worker setup, executable jobs in Condenser, and the complete snapshot/local-step/update loop for your learner, start with [distributed compute](distributed-compute.md). Normalizing a [local checkpoint](local-checkpoints.md) preserves its artifacts but does not connect it to a distributed trainer.
+
 ---
 
 ## 1. Training mechanisms
