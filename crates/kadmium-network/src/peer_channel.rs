@@ -597,10 +597,23 @@ impl PeerChannelPool {
         timeout: Duration,
     ) -> Result<WireFrame, String> {
         let frame = WireFrame::new(kind, epoch, payload);
+        self.call_frame_with_connect_timeout(addr, connect_timeout, &frame, timeout)
+            .await
+    }
+
+    /// Borrows a prepared frame for fan-out without copying its payload, preserving the same
+    /// reconnect-once policy as [`PeerChannelPool::call_with_connect_timeout`].
+    pub async fn call_frame_with_connect_timeout(
+        &self,
+        addr: &str,
+        connect_timeout: Duration,
+        frame: &WireFrame,
+        timeout: Duration,
+    ) -> Result<WireFrame, String> {
         let channel = self
             .get_or_connect_with_timeout(addr, connect_timeout)
             .await?;
-        match channel.call_frame(&frame, timeout).await {
+        match channel.call_frame(frame, timeout).await {
             Ok(reply) => Ok(reply),
             // The connection died under this call (peer restart, reset, stale socket): dial once
             // more and resend. A timeout on a healthy channel is not retried, because the peer may
@@ -611,7 +624,7 @@ impl PeerChannelPool {
                     .await
                     .map_err(|e| format!("{first_error}; reconnect failed: {e}"))?;
                 retry
-                    .call_frame(&frame, timeout)
+                    .call_frame(frame, timeout)
                     .await
                     .map_err(|e| format!("{first_error}; retry failed: {e}"))
             }

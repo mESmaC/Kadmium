@@ -59,6 +59,10 @@ pub const WIRE_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Reply deadline for latency-sensitive control calls (heartbeat ping, KV-cache page migration).
 pub const WIRE_CONTROL_CALL_TIMEOUT: Duration = Duration::from_millis(2500);
 
+/// Bounded FTS3 submission window, following InferSSD's eight-reader pool. A completed
+/// request releases its slot immediately, without waiting for the rest of a batch.
+pub const MAX_IN_FLIGHT_FTS3_PAGES: usize = 8;
+
 /// Bound expert-load/read/encode/write work across every worker connection.
 pub const MAX_IN_FLIGHT_EXPERT_LOADS: usize = 2;
 /// Large expert transfers need longer than control calls on consumer links.
@@ -2823,20 +2827,88 @@ impl DistributedLanExecutor {
         worker_tcp_addr: &str,
         req: &LiveFts3ChunkStreamRequest,
     ) -> Result<LiveFts3ChunkStreamAck, String> {
+        let frame = WireFrame::new(
+            WireFrameKind::Fts3KtbChunkStream,
+            req.epoch as u32,
+            serde_json::to_vec(req).expect("serialize LiveFts3ChunkStreamRequest"),
+        );
+        Self::send_fts3_frame_tcp(worker_tcp_addr, req, &frame).await
+    }
+
+    async fn send_fts3_frame_tcp(
+        worker_tcp_addr: &str,
+        req: &LiveFts3ChunkStreamRequest,
+        frame: &WireFrame,
+    ) -> Result<LiveFts3ChunkStreamAck, String> {
         let reply = Self::channel_pool()
-            .call_with_connect_timeout(
+            .call_frame_with_connect_timeout(
                 worker_tcp_addr,
                 Duration::from_millis(3000),
-                WireFrameKind::Fts3KtbChunkStream,
-                req.epoch as u32,
-                serde_json::to_vec(req).expect("serialize LiveFts3ChunkStreamRequest"),
+                frame,
                 WIRE_CALL_TIMEOUT,
             )
             .await
             .map_err(|e| format!("TCP FTS3 stream to {worker_tcp_addr} failed: {e}"))?;
+        if reply.kind != WireFrameKind::Fts3KtbChunkStream || reply.epoch != frame.epoch {
+            return Err(format!("Unexpected FTS3 reply from {worker_tcp_addr}"));
+        }
         let ack: LiveFts3ChunkStreamAck = serde_json::from_slice(&reply.payload)
             .map_err(|e| format!("Malformed LiveFts3ChunkStreamAck: {e}"))?;
+        if ack.transfer_id != req.transfer_id
+            || ack.shard_name != req.shard_name
+            || ack.page_index != req.page_index
+            || ack.patched_bytes != req.page_bytes.len()
+            || !ack.verified_merkle_proof
+            || ack.new_merkle_root_fnv64 != req.expected_merkle_root
+        {
+            return Err(format!(
+                "Unverified or mismatched FTS3 receipt from {worker_tcp_addr}"
+            ));
+        }
         Ok(ack)
+    }
+
+    async fn stream_fts3_pages_tcp(
+        requests: impl Iterator<Item = LiveFts3ChunkStreamRequest>,
+        workers: &[&LiveWorkerRegistration],
+    ) -> Vec<LiveFts3ChunkStreamAck> {
+        if workers.is_empty() {
+            return Vec::new();
+        }
+        let mut pending = tokio::task::JoinSet::new();
+        let mut receipts = Vec::new();
+        for request in requests {
+            let frame = Arc::new(WireFrame::new(
+                WireFrameKind::Fts3KtbChunkStream,
+                request.epoch as u32,
+                serde_json::to_vec(&request).expect("serialize LiveFts3ChunkStreamRequest"),
+            ));
+            let request = Arc::new(request);
+            for (worker_index, worker) in workers.iter().enumerate() {
+                if pending.len() == MAX_IN_FLIGHT_FTS3_PAGES
+                    && let Some(Ok(Some(receipt))) = pending.join_next().await
+                {
+                    receipts.push(receipt);
+                }
+                let frame = Arc::clone(&frame);
+                let request = Arc::clone(&request);
+                let address = worker.worker_tcp_addr.clone();
+                let node_id = worker.node.id.0.clone();
+                pending.spawn(async move {
+                    let ack = Self::send_fts3_frame_tcp(&address, &request, &frame)
+                        .await
+                        .ok()?;
+                    (ack.target_node_id == node_id).then_some((worker_index, ack))
+                });
+            }
+        }
+        while let Some(result) = pending.join_next().await {
+            if let Ok(Some(receipt)) = result {
+                receipts.push(receipt);
+            }
+        }
+        receipts.sort_by_key(|(worker, ack)| (*worker, ack.page_index));
+        receipts.into_iter().map(|(_, ack)| ack).collect()
     }
 
     /// Packs a fresh 64 KiB page-aligned `.ktb` weight shard, computes its `KtbMerkleTree` and
@@ -2866,13 +2938,16 @@ impl DistributedLanExecutor {
             });
 
         let transfer_id = format!("fts3-ktb-e{epoch}-{:08x}", tree.root_hash as u32);
-        let mut target_receipts = Vec::new();
-        let mut total_bytes_streamed = 0usize;
-
-        for worker in live_workers.values().filter(|w| w.online) {
-            for (page_idx, page_slice) in pages.iter().enumerate() {
-                if let Some(proof) = tree.prove_page(page_idx) {
-                    let req = LiveFts3ChunkStreamRequest {
+        let workers: Vec<_> = live_workers
+            .values()
+            .filter(|worker| worker.online)
+            .collect();
+        let requests = pages
+            .iter()
+            .enumerate()
+            .filter_map(|(page_idx, page_slice)| {
+                tree.prove_page(page_idx)
+                    .map(|proof| LiveFts3ChunkStreamRequest {
                         transfer_id: transfer_id.clone(),
                         epoch,
                         source_node_id: source_node_id.clone(),
@@ -2885,18 +2960,16 @@ impl DistributedLanExecutor {
                         page_bytes: page_slice.to_vec(),
                         inclusion_proof: proof,
                         expected_merkle_root: tree.root_hash,
-                    };
-                    if let Ok(ack) = Self::send_fts3_chunk_tcp(&worker.worker_tcp_addr, &req).await
-                    {
-                        total_bytes_streamed += ack.patched_bytes;
-                        target_receipts.push(ack);
-                    }
-                }
-            }
-        }
+                    })
+            });
+        let mut target_receipts = Self::stream_fts3_pages_tcp(requests, &workers).await;
+        let mut total_bytes_streamed = target_receipts
+            .iter()
+            .map(|ack| ack.patched_bytes)
+            .sum::<usize>();
 
         // If no live TCP workers are spawned yet, run an in-memory FTS3 verification pass so the UI always gets a verified receipt
-        if target_receipts.is_empty() {
+        if workers.is_empty() {
             let mut local_target = vec![0u8; ktb_bytes.len()];
             for (page_idx, page_slice) in pages.iter().enumerate() {
                 if let Some(proof) = tree.prove_page(page_idx) {
@@ -4110,6 +4183,336 @@ impl TokenBatchInt8 {
             ));
         }
         Ok(Self { rows, dim, tensor })
+    }
+}
+
+#[cfg(test)]
+mod fts3_transfer_tests {
+    use super::*;
+    use tokio::sync::{mpsc, oneshot};
+
+    type PendingPage = (String, WireFrame, oneshot::Sender<WireFrame>);
+
+    fn registration(node: HardwareNode, address: SocketAddr) -> LiveWorkerRegistration {
+        LiveWorkerRegistration {
+            node,
+            worker_tcp_addr: address.to_string(),
+            worker_lan_ip: address.ip().to_string(),
+            worker_tcp_port: address.port(),
+            os_name: "test".into(),
+            cpu_arch: "test".into(),
+            board_or_model: "test".into(),
+            network_channel: "LocalLAN".into(),
+            installed_version: DEFAULT_KADMIUM_RUNTIME_VERSION.into(),
+            ktb_merkle_root_fnv64: 0,
+            heartbeat_count: 0,
+            registered_at_unix_ms: 0,
+            last_heartbeat_unix_ms: 0,
+            last_measured_rtt_ms: 0.0,
+            executed_forward_stages: 0,
+            executed_training_steps: 0,
+            online: true,
+        }
+    }
+
+    async fn controlled_peer(
+        node: HardwareNode,
+        requests: mpsc::UnboundedSender<PendingPage>,
+    ) -> (LiveWorkerRegistration, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let worker = registration(node, listener.local_addr().unwrap());
+        let node_id = worker.node.id.0.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, write) = stream.into_split();
+            let mut reader = FrameReader::new(tokio::io::BufReader::new(read));
+            let writer = Arc::new(tokio::sync::Mutex::new(FrameWriter::new(write)));
+            let mut replies = tokio::task::JoinSet::new();
+            while let Ok(frame) = reader.read_frame().await {
+                if frame.kind == WireFrameKind::DeltaHello {
+                    accept_delta_hello(
+                        &frame,
+                        &DeltaLinkConfig::from_env(),
+                        &mut reader,
+                        &mut *writer.lock().await,
+                    )
+                    .await
+                    .unwrap();
+                    continue;
+                }
+                let (sender, receiver) = oneshot::channel();
+                requests.send((node_id.clone(), frame, sender)).unwrap();
+                let writer = Arc::clone(&writer);
+                replies.spawn(async move {
+                    if let Ok(reply) = receiver.await {
+                        writer.lock().await.write_frame(&reply).await.unwrap();
+                    }
+                });
+            }
+        });
+        (worker, server)
+    }
+
+    fn requests(bank: &[u8]) -> Vec<LiveFts3ChunkStreamRequest> {
+        let tree = KtbMerkleTree::from_ktb_bytes(bank);
+        bank.chunks(KTB_PAGE_ALIGNMENT_BYTES as usize)
+            .enumerate()
+            .map(|(page_index, bytes)| LiveFts3ChunkStreamRequest {
+                transfer_id: "bounded-transfer".into(),
+                epoch: 7,
+                source_node_id: "source".into(),
+                source_hostname: "source".into(),
+                model_id: "model".into(),
+                shard_name: "test.ktb".into(),
+                page_index,
+                total_pages: tree.leaf_hashes.len(),
+                total_bank_bytes: bank.len(),
+                page_bytes: bytes.to_vec(),
+                inclusion_proof: tree.prove_page(page_index).unwrap(),
+                expected_merkle_root: tree.root_hash,
+            })
+            .collect()
+    }
+
+    fn receipt(node: &str, frame: &WireFrame) -> LiveFts3ChunkStreamAck {
+        let request: LiveFts3ChunkStreamRequest = serde_json::from_slice(&frame.payload).unwrap();
+        assert!(KtbMerkleTree::verify_page(
+            &request.page_bytes,
+            &request.inclusion_proof,
+            request.expected_merkle_root,
+        ));
+        LiveFts3ChunkStreamAck {
+            transfer_id: request.transfer_id,
+            target_node_id: node.into(),
+            target_hostname: node.into(),
+            shard_name: request.shard_name,
+            page_index: request.page_index,
+            patched_bytes: request.page_bytes.len(),
+            verified_merkle_proof: true,
+            new_merkle_root_fnv64: request.expected_merkle_root,
+            patch_exec_ms: 0.0,
+            status_note: "verified".into(),
+        }
+    }
+
+    fn reply(pending: PendingPage) {
+        let (node, frame, sender) = pending;
+        let ack = receipt(&node, &frame);
+        sender
+            .send(
+                WireFrame::new(frame.kind, frame.epoch, serde_json::to_vec(&ack).unwrap())
+                    .with_request_id(frame.request_id),
+            )
+            .unwrap();
+    }
+
+    async fn next_page(receiver: &mut mpsc::UnboundedReceiver<PendingPage>) -> PendingPage {
+        tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+            .await
+            .expect("page request did not arrive")
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fts3_window_is_global_and_refills_before_slow_pages_complete() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let nodes = sample_personal_cluster();
+        let (first, first_server) = controlled_peer(nodes[0].clone(), sender.clone()).await;
+        let (second, second_server) = controlled_peer(nodes[1].clone(), sender).await;
+        let node_ids = [first.node.id.0.clone(), second.node.id.0.clone()];
+        let bank = vec![37; KTB_PAGE_ALIGNMENT_BYTES as usize * 11 + 123];
+        let requests = requests(&bank);
+        let page_count = requests.len();
+        let transfer = tokio::spawn(async move {
+            DistributedLanExecutor::stream_fts3_pages_tcp(requests.into_iter(), &[&first, &second])
+                .await
+        });
+        let mut held = Vec::new();
+        for _ in 0..MAX_IN_FLIGHT_FTS3_PAGES {
+            held.push(next_page(&mut receiver).await);
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), receiver.recv())
+                .await
+                .is_err()
+        );
+        reply(held.pop().unwrap());
+        let refill = next_page(&mut receiver).await;
+        reply(refill);
+        for pending in held.into_iter().rev() {
+            reply(pending);
+        }
+        for _ in MAX_IN_FLIGHT_FTS3_PAGES + 1..page_count * 2 {
+            reply(next_page(&mut receiver).await);
+        }
+        let receipts = tokio::time::timeout(Duration::from_secs(5), transfer)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipts.len(), page_count * 2);
+        assert_eq!(
+            receipts.iter().map(|ack| ack.patched_bytes).sum::<usize>(),
+            bank.len() * 2
+        );
+        for (worker_index, node_id) in node_ids.iter().enumerate() {
+            for page_index in 0..page_count {
+                let ack = &receipts[worker_index * page_count + page_index];
+                assert_eq!(&ack.target_node_id, node_id);
+                assert_eq!(ack.page_index, page_index);
+            }
+        }
+        first_server.abort();
+        second_server.abort();
+    }
+
+    #[tokio::test]
+    async fn fts3_rejects_unverified_or_mismatched_receipts() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (worker, server) = controlled_peer(sample_personal_cluster()[0].clone(), sender).await;
+        let request = requests(&[19; 123]).remove(0);
+        for invalid in 0..9 {
+            let address = worker.worker_tcp_addr.clone();
+            let request = request.clone();
+            let call = tokio::spawn(async move {
+                DistributedLanExecutor::send_fts3_chunk_tcp(&address, &request).await
+            });
+            let (node, frame, sender) = next_page(&mut receiver).await;
+            let mut ack = receipt(&node, &frame);
+            let mut kind = frame.kind;
+            let mut epoch = frame.epoch;
+            match invalid {
+                0 => ack.verified_merkle_proof = false,
+                1 => ack.transfer_id.push('x'),
+                2 => ack.shard_name.push('x'),
+                3 => ack.page_index += 1,
+                4 => ack.patched_bytes += 1,
+                5 => ack.new_merkle_root_fnv64 ^= 1,
+                6 => kind = WireFrameKind::WorkResult,
+                7 => epoch += 1,
+                _ => {}
+            }
+            sender
+                .send(
+                    WireFrame::new(kind, epoch, serde_json::to_vec(&ack).unwrap())
+                        .with_request_id(frame.request_id),
+                )
+                .unwrap();
+            assert_eq!(call.await.unwrap().is_ok(), invalid == 8);
+        }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fts3_does_not_credit_a_receipt_from_another_node() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (worker, server) = controlled_peer(sample_personal_cluster()[0].clone(), sender).await;
+        let requests = requests(&[19; 123]);
+        let transfer = tokio::spawn(async move {
+            DistributedLanExecutor::stream_fts3_pages_tcp(requests.into_iter(), &[&worker]).await
+        });
+        let (_, frame, sender) = next_page(&mut receiver).await;
+        let ack = receipt("another-node", &frame);
+        sender
+            .send(
+                WireFrame::new(frame.kind, frame.epoch, serde_json::to_vec(&ack).unwrap())
+                    .with_request_id(frame.request_id),
+            )
+            .unwrap();
+        assert!(transfer.await.unwrap().is_empty());
+        server.abort();
+    }
+
+    #[tokio::test]
+    #[ignore = "loopback latency experiment; run explicitly in release mode"]
+    async fn fts3_latency_benchmark() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (worker, server) = controlled_peer(sample_personal_cluster()[0].clone(), sender).await;
+        let responder = tokio::spawn(async move {
+            let mut replies = tokio::task::JoinSet::new();
+            while let Some(pending) = receiver.recv().await {
+                replies.spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    reply(pending);
+                });
+                while replies.try_join_next().is_some() {}
+            }
+        });
+        let bank = vec![37; KTB_PAGE_ALIGNMENT_BYTES as usize * 32];
+        let requests = requests(&bank);
+        let started = Instant::now();
+        for request in &requests {
+            DistributedLanExecutor::send_fts3_chunk_tcp(&worker.worker_tcp_addr, request)
+                .await
+                .unwrap();
+        }
+        let sequential = started.elapsed();
+        let started = Instant::now();
+        let receipts =
+            DistributedLanExecutor::stream_fts3_pages_tcp(requests.into_iter(), &[&worker]).await;
+        let pipelined = started.elapsed();
+        assert_eq!(receipts.len(), 32);
+        println!(
+            "FTS3 loopback, 32 x 64 KiB pages, 20 ms simulated reply delay: sequential={sequential:?}, window8={pipelined:?}"
+        );
+        responder.abort();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fts3_live_workers_receive_the_exact_bank_over_one_connection() {
+        let node = sample_personal_cluster()[0].clone();
+        let server = LiveNodeWorkerServer::spawn_auto_port("127.0.0.1", 0, node.clone(), false)
+            .await
+            .unwrap();
+        let worker = registration(node, server.local_addr);
+        let workers = BTreeMap::from([(worker.node.id.0.clone(), worker)]);
+        let report =
+            DistributedLanExecutor::stream_fts3_ktb_shard_tcp("model", "test.ktb", 7, &workers)
+                .await;
+        let (expected, _) = build_initial_resident_ktb_bank("model", 14);
+        assert_eq!(*server.resident_ktb_bank.lock().unwrap(), expected);
+        assert_eq!(report.target_receipts.len(), report.page_count);
+        assert!(
+            report
+                .target_receipts
+                .iter()
+                .all(|ack| ack.verified_merkle_proof)
+        );
+        assert_eq!(server.accepted_connections.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            server.served_fts3_pages.load(Ordering::Relaxed) as usize,
+            report.page_count
+        );
+    }
+
+    #[tokio::test]
+    async fn fts3_remote_failures_are_not_replaced_with_local_receipts() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let worker = registration(
+            sample_personal_cluster()[0].clone(),
+            listener.local_addr().unwrap(),
+        );
+        drop(listener);
+        let workers = BTreeMap::from([(worker.node.id.0.clone(), worker)]);
+        let report =
+            DistributedLanExecutor::stream_fts3_ktb_shard_tcp("model", "test.ktb", 7, &workers)
+                .await;
+        assert!(report.target_receipts.is_empty());
+        assert_eq!(report.aggregate_goodput_mbps, 0.0);
+        let local = DistributedLanExecutor::stream_fts3_ktb_shard_tcp(
+            "model",
+            "test.ktb",
+            7,
+            &BTreeMap::new(),
+        )
+        .await;
+        assert_eq!(local.target_receipts.len(), local.page_count);
+        assert!(
+            local
+                .target_receipts
+                .iter()
+                .all(|ack| ack.verified_merkle_proof)
+        );
     }
 }
 

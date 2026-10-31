@@ -166,6 +166,10 @@ Inspired by **FreeToken (`FTW`)** and **Colibri**:
 In naive distributed systems, the coordinator downloads and forwards weights to workers, becoming a severe bottleneck.
 The current `Fts3TransferScheduler` constructs transfer plans and `Fts3ChunkSlicer` computes chunk manifests/missing-chunk diffs. In the live reference path, the coordinator sends synthesized bank pages to workers over TCP and verifies them.
 
+The TCP sender uses an InferSSD-style completion-driven window of at most eight page requests across the swarm (`io/pool-ring.cpp` and `io/submit-window.h` in InferSSD). It refills a slot as soon as one request finishes rather than waiting one network round trip per page or draining an entire batch. Each page's proof and JSON frame are prepared once and shared across destinations on persistent, request-correlated peer channels. The window bounds retained transfer buffers independently of bank size and worker count; it does not reserve a global budget across separate staging calls. Only matching, verified receipts count toward goodput. Local demonstration receipts are used only when there are no online workers, never to mask failed remote transfers. This optimizes the existing reference transfer, not production NAS-to-worker object storage; no WAN throughput claim is implied.
+
+Reproduce the controlled loopback latency experiment with `cargo test --release --locked -p kadmium-runtime fts3_latency_benchmark -- --ignored --nocapture`. It compares stop-and-wait with the eight-request window over 32 pages and an injected 20 ms reply delay. Both runs reuse the same channel; set `KADMIUM_DELTA_LINK=0` to exclude delta-store warming. This is a latency-isolation experiment, not a disk, WAN, erasure-coded bucket, or production throughput benchmark.
+
 The following remains **target architecture**: a coordinator orders a source peer to open direct multi-stream QUIC transfers to a destination, and both peers report production progress/retry/checksum state. No current FTS3/Davix network service or direct NAS-to-worker stream is established by the planner.
 
 ---
