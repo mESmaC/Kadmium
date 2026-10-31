@@ -181,8 +181,13 @@ impl CheckpointLibrary {
                 }
             }
         }
-        let (format, architecture, context, scaled_context, tensors) =
-            formats::inspect(&dir.join("source"), &manifest.source_files)?;
+        let formats::InspectedSource {
+            format,
+            architecture,
+            context_length: context,
+            scaled_context_length: scaled_context,
+            tensors,
+        } = formats::inspect(&dir.join("source"), &manifest.source_files)?;
         let recorded: Vec<_> = manifest
             .tensors
             .iter()
@@ -307,8 +312,13 @@ impl CheckpointLibrary {
         if target.exists() {
             return self.verify(&id);
         }
-        let (source_format, architecture, context_length, scaled_context_length, mut tensors) =
-            formats::inspect(&staging.0.join("source"), &source_files)?;
+        let formats::InspectedSource {
+            format: source_format,
+            architecture,
+            context_length,
+            scaled_context_length,
+            mut tensors,
+        } = formats::inspect(&staging.0.join("source"), &source_files)?;
         let mut banks = Vec::new();
         // A bounded number of descriptors per bank keeps version-1 Page 0 readable everywhere.
         for (index, batch) in tensors.chunks_mut(64).enumerate() {

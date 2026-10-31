@@ -2,16 +2,15 @@ use super::*;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub(super) fn inspect(
-    dir: &Path,
-    files: &[PackageFile],
-) -> Result<(
-    String,
-    Option<String>,
-    u64,
-    Option<u64>,
-    Vec<CheckpointTensor>,
-)> {
+pub(super) struct InspectedSource {
+    pub format: String,
+    pub architecture: Option<String>,
+    pub context_length: u64,
+    pub scaled_context_length: Option<u64>,
+    pub tensors: Vec<CheckpointTensor>,
+}
+
+pub(super) fn inspect(dir: &Path, files: &[PackageFile]) -> Result<InspectedSource> {
     let safe: Vec<_> = files
         .iter()
         .filter(|f| f.name.ends_with(".safetensors"))
@@ -115,13 +114,13 @@ pub(super) fn inspect(
     }
     unique_tensors(&tensors)?;
     tensors.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok((
+    Ok(InspectedSource {
         format,
         architecture,
         context_length,
         scaled_context_length,
         tensors,
-    ))
+    })
 }
 
 fn tensor(
