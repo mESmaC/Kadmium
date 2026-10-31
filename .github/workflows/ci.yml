@@ -11,6 +11,30 @@ env:
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
+  workspace-ui:
+    name: Workspace browser workflows
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/kadmium-gateway/tests/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: crates/kadmium-gateway/tests/ui/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: workspace-ui-traces
+          path: crates/kadmium-gateway/tests/ui/test-results
+
   check-and-test:
     name: Test & Lint (${{ matrix.os }})
     strategy:

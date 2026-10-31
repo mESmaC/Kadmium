@@ -336,6 +336,7 @@
       .cp-switch, .cp-switch::after, .cp-step .go { transition: none; }
     }
   </style>
+  <link rel="stylesheet" href="/workspace.css">
 </head>
 <body>
 <div id="app"></div>
@@ -344,6 +345,7 @@
 <script src="/components/lib/react.production.min.js"></script>
 <script src="/components/lib/react-dom.production.min.js"></script>
 <script src="/components/bundle.js"></script>
+<script src="/workspace.js"></script>
 <script>
 (() => {
   'use strict';
@@ -718,7 +720,9 @@
       'aria-keyshortcuts': mod + '+' + (PAGES.indexOf(p) + 1), onClick: () => go(p.id)
     }, Icon(p.icon, 20), h('span', null, p.label))));
     return h('nav', { className: 'cp-rail', 'aria-label': 'Companion' },
-      h('img', { className: 'tile', src: '/assets/Logos/kadmium-tile-graphite.svg', alt: 'Kadmium', width: 38, height: 38, draggable: false }),
+      h('div', { className: 'cp-brand' },
+        h('img', { className: 'tile', src: '/assets/Logos/kadmium-tile-graphite.svg', alt: 'Kadmium', width: 38, height: 38, draggable: false }),
+        h('span', { className: 'cp-brand-copy', 'aria-hidden': true }, h('strong', null, 'Kadmium'), h('small', null, 'Desktop companion'))),
       nav(PAGES.slice(0, 5)),
       h('div', { className: 'grow' }),
       nav(PAGES.slice(5)),
@@ -739,6 +743,11 @@
     return h('header', { className: 'cp-top' },
       h('div', { className: 'titles' }, h('h1', { id: 'cp-page-title', tabIndex: -1 }, props.meta.title), h('div', { className: 'sub' }, subtitle(props.meta.id, props.core))),
       h('div', { className: 'spacer' }),
+      h(KadmiumWorkspace.Launcher, { companion: true, onNavigate: target => {
+        if (target.href.startsWith('#')) go(target.href.slice(1));
+        else if (target.href.startsWith('/#/')) openControlRoom(target.href.slice(1));
+        else openExternal(target.href);
+      } }),
       s ? h(K.Badge, { tone: cloud ? 'cloud' : 'local', dot: true }, cloud ? 'Kadmium Cloud' : 'Self-hosted') : null,
       h('span', { className: 'cp-conn' + (props.up ? '' : ' down'), title: props.up ? 'Connected to the coordinator' : 'Trying to reach the coordinator' },
         h('span', { className: 'dot' }), props.up ? location.host : 'reconnecting'),
@@ -795,7 +804,14 @@
       h('div', { className: 'cp-grid2' },
         h(MachineCard, { node }),
         h(WorkCard, { node, mine, inf, loaded })),
-      hook ? h(YieldCard, { hook, on: status.gaming_auto_yield_active }) : null);
+      hook ? h(YieldCard, { hook, on: status.gaming_auto_yield_active }) : null,
+      h('section', { className: 'kw-handoff', 'aria-labelledby': 'kw-handoff-title' },
+        h('span', { className: 'kw-eyebrow' }, 'Beyond this machine'),
+        h('h2', { id: 'kw-handoff-title' }, 'Your whole cluster is one click away.'),
+        h('p', null, 'Use the Control Room for training, shared storage, and cluster-wide controls. These tools open in your browser while the Companion stays with this machine.'),
+        h('div', { className: 'kw-handoff-links' }, [
+          ['gateway', 'API & playground'], ['training', 'Training'], ['rl', 'Reinforcement learning'], ['data/bucket', 'Shared storage'], ['slices', 'Cluster slices'], ['cloud', 'Kadmium Cloud']
+        ].map(([path, label]) => h('button', { key: path, type: 'button', className: path === 'cloud' ? 'cloud' : undefined, onClick: () => openControlRoom('#/' + path), 'aria-label': label + ' (opens in browser)' }, label, ' ↗')))));
   }
   function NextStep(to, icon, title, desc) {
     return h('button', { type: 'button', className: 'cp-step', onClick: () => go(to) },

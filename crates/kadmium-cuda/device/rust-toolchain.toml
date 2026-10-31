@@ -1,0 +1,4 @@
+[toolchain]
+# The toolchain NVIDIA/cuda-rust pins cuda-oxide's rustc backend to at rev 18a0407cc2.
+channel = "1.99.1"
+components = ["rust-src", "rustc-dev", "llvm-tools", "clippy", "rustfmt"]

@@ -450,3 +450,20 @@ The unit tests verify that for both `ExactF32` and `Ue8M0PowerOfTwo` scales, `fo
 | `OLLAMA_FLASH_ATTENTION` + `OLLAMA_KV_CACHE_TYPE` (`f16`, `q8_0`, `q4_0`), GQA, SWA, `GGML_ROPE_TYPE_NEOX` & YaRN | `OllamaKvCacheType` (`F16` 64 B/block, `Q8_0` 34 B/block, `Q4_0` 18 B/block), `QuantizedKvPageBlock`, `PagedGqaAttentionKernel::forward_flash_quantized_kv` and `forward_gqa_multihead_quantized_kv` (evaluating `Q * K^T` directly against quantized 32-element blocks with optional `swa_window` sliding-window attention), plus `RopeLayout::NeoXSplitHalf` and `YarnConfig` in `FusedRmsNormRopeKernel::forward_with_layout` |
 | `EstimateGpuLayout` (`llm/memory.go`) hybrid VRAM + DDR5 split offload | `OllamaSingleBoxBaseline` (`modelled: true`) on `StrategyChoice` (`/api/v1/grid/plan`): evaluates every node in the mesh as a standalone `Q4_K_M` + `q8_0` KV runner that fills fast VRAM/UMA first and streams overflow weights in place from host DDR5 with zero network hops, reporting `single_box_tokens_per_sec`, `distributed_speedup_vs_single_box_q4km` and `beats_single_box_ollama_q4km` side by side with the distributed plan |
 
+
+### 9.17 Native CUDA Kernels in Pure Rust (`kadmium-cuda`, NVIDIA cuda-oxide)
+
+`kadmium-cuda` brings the RepOps contract onto NVIDIA GPUs with kernels written in Rust and compiled to PTX by NVIDIA's cuda-oxide backend (`NVIDIA/cuda-rust`, pinned at rev `18a0407cc2`, toolchain 1.99.1). The workspace crate holds no CUDA code and builds everywhere: its lane math is generic over four rounded operations (`fp::Fp`), so the host instantiates it with Rust's operators and `device/` instantiates it with explicit `add.rn.f32` / `mul.rn.f32` / `div.rn.f32` instructions, which `ptxas` may not contract into an `fma`. The RepOps tree is computed the way a warp can compute it: lane `j` holds leaf `32c + j`, a `shuffle_xor` butterfly at distances 1, 2, 4, 8, 16 joins exactly the canonical tree's sibling subtrees, and a `TreeStack` folds the aligned 32-leaf subtrees left to right. Absent leaves are skipped rather than added as zeros, as in `repops::tree_sum`.
+
+| Kernel | Adapted from (InferSSD CUDA) | Guarantee |
+| :--- | :--- | :--- |
+| `q8k_quantize` | `activation-quant-reuse.cu`: quantize once per token, reuse for every routed expert | Bit-identical to `Q8KBlockVector::quantize` |
+| `q4k_q8k_matvec` | `mmvq-q8k.cu`: fixed-order `Q4_K` x `Q8_K` (`dp4a` + `prmt` block dots) | Bit-identical to `Q4KBlockTensor::matvec_q8k` |
+| `mxfp4_matvec` | `ssd/mxfp4-kernels.cuh`: GGUF `MXFP4` routed experts (`E2M1` codes, `E8M0` scale) | Bit-identical to the RepOps dot of the dequantized row |
+| `swiglu` | (none) | Bit-identical to `MulMatIdExpertBank::swiglu_split` |
+| `moe_top_k` | `top-k.cu`: NaN as `-f32::MAX`, ties to the lower expert id | Exact |
+| `row_mask` | `row-mask.cu` | Exact |
+
+The chain of evidence has two links. `device/` runs every kernel on the GPU and compares its output with `kadmium_cuda::reference` bit for bit (`cargo oxide run`). The runtime's `cuda_parity` tests compare that reference with the runtime's own `Q8KBlockVector`, `Q4KBlockTensor`, `repops::exp` and `repops::silu`. Every NaN counts as one value: IEEE 754 lets the hardware choose a NaN's payload, and x86 returns `0xffc00000` for `inf - inf` where an NVIDIA GPU returns `0x7fffffff`; whether a result is NaN is still exact. `HardwareKernelTarget::native_cuda_kernels` lists the kernels a CUDA node runs natively.
+
+Measured on an RTX 5070 (sm_120, CUDA 13.3, driver 616.92, WSL2): all cases bit-identical; at 4096 x 4096, `q4k_q8k_matvec` takes 33-38 us per launch (330-380 GB/s of weights) and `mxfp4_matvec` 100-110 us (81-88 GB/s) across runs. The generated PTX holds no `fma`: every `f32` operation is an explicit `add`, `sub`, `mul` or `div` `.rn`. The `MXFP4` kernel makes every product a leaf of the tree, so it is bound by the reduction rather than by memory; a `MXFP4` x `Q8_K` integer block dot, as in InferSSD's own expert path, would move it onto the `Q4_K` kernel's shape and is the next step.

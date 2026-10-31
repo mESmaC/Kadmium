@@ -458,16 +458,20 @@ impl<'a> KtbBankReader<'a> {
     }
 }
 
+pub mod expert;
 pub mod importer;
 pub mod integrations;
 pub mod merkle;
+pub mod moe_expert_pack;
 pub mod range_pull;
 pub mod safetensors_manifest;
 pub mod transcoder;
 
+pub use expert::*;
 pub use importer::*;
 pub use integrations::*;
 pub use merkle::*;
+pub use moe_expert_pack::*;
 pub use range_pull::*;
 pub use safetensors_manifest::*;
 pub use transcoder::*;
