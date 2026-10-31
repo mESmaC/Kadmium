@@ -456,7 +456,8 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         )
         .route(
             "/api/v1/storage/pool-bucket/upload",
-            post(post_storage_pool_bucket_upload),
+            post(post_storage_pool_bucket_upload)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route(
             "/api/v1/storage/pool-bucket/download",
@@ -948,7 +949,12 @@ async fn get_dataflow_comparison(
 ) -> Json<DataflowComparisonReport> {
     let guard = state.lock().expect("gateway state lock");
     let effective_model = guard.effective_inference_model();
-    let seq_len = 512.min(guard.quality_limits.effective_max_output_tokens().max(1));
+    let seq_len = 512.min(
+        guard
+            .quality_limits
+            .effective_context_window_tokens()
+            .max(1),
+    );
     Json(DataflowStreamPlanner::evaluate_dataflows(
         &effective_model,
         &guard.nodes,
@@ -1746,15 +1752,19 @@ async fn get_mcp_manifest() -> Json<KadmiumMcpManifest> {
 
 async fn post_mcp_rpc(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
     Json(req): Json<McpJsonRpcRequest>,
-) -> Json<McpJsonRpcResponse> {
-    let resp = tokio::task::spawn_blocking(move || {
-        let mut guard = state.lock().expect("gateway state lock");
-        KadmiumMcpServer::handle_request(&mut guard, req)
-    })
-    .await
-    .expect("mcp rpc blocking task");
-    Json(resp)
+) -> Result<Json<McpJsonRpcResponse>, ApiError> {
+    {
+        let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+    }
+    let resp =
+        tokio::task::spawn_blocking(move || KadmiumMcpServer::handle_request_shared(&state, req))
+            .await
+            .expect("mcp rpc blocking task");
+    Ok(Json(resp))
 }
 
 async fn get_prometheus_metrics(
@@ -2206,36 +2216,95 @@ fn estimate_messages_input_tokens(messages: &[serde_json::Value]) -> u32 {
     ((total_chars.max(1) as u32).div_ceil(4)).max(1)
 }
 
+fn resolve_request_quality_limits(
+    guard: &GatewayState,
+    requested_model_id: Option<&str>,
+) -> ModelQualityLimits {
+    if let Some(model_id) = requested_model_id
+        && let Some(spec) = guard.resolve_model(model_id)
+    {
+        if spec.id == guard.inference_model.id {
+            let mut limits = guard.quality_limits.clone();
+            limits.sync_native_with_model(&spec);
+            return limits;
+        }
+        let mut limits = ModelQualityLimits::for_model(&spec);
+        let eff_ctx = limits.native_max_context_window_tokens;
+        limits.user_override_context_window_tokens = guard
+            .quality_limits
+            .user_override_context_window_tokens
+            .map(|v| v.clamp(1, eff_ctx.max(1)));
+        let active_ctx = limits.effective_context_window_tokens();
+        limits.user_override_max_input_tokens = guard
+            .quality_limits
+            .user_override_max_input_tokens
+            .map(|v| v.clamp(1, active_ctx.max(1)));
+        limits.user_override_max_output_tokens = guard
+            .quality_limits
+            .user_override_max_output_tokens
+            .map(|v| v.clamp(1, active_ctx.max(1)));
+        if spec.is_moe {
+            limits.user_override_active_experts_per_token = guard
+                .quality_limits
+                .user_override_active_experts_per_token
+                .map(|v| v.clamp(1, limits.native_active_experts_per_token.max(1)));
+        }
+        return limits;
+    }
+    let mut limits = guard.quality_limits.clone();
+    limits.sync_native_with_model(&guard.inference_model);
+    limits
+}
+
+fn validate_chat_request_limits(
+    messages: &[serde_json::Value],
+    req_max_tokens: Option<u32>,
+    quality_limits: &ModelQualityLimits,
+) -> Result<(), ApiError> {
+    let estimated_input_tokens = estimate_messages_input_tokens(messages);
+    let max_input = quality_limits.effective_max_input_tokens();
+    let max_ctx = quality_limits.effective_context_window_tokens();
+    if estimated_input_tokens > max_input || estimated_input_tokens > max_ctx {
+        return Err(invalid_request(format!(
+            "Input prompt (~{estimated_input_tokens} tokens) exceeds active quality limit (max_input_tokens={max_input}, context_window_tokens={max_ctx}). Increase limits via POST /api/v1/models/quality-tradeoffs."
+        )));
+    }
+    if let Some(req_max_out) = req_max_tokens {
+        if req_max_out == 0 {
+            return Err(invalid_request("max_tokens must be at least 1"));
+        }
+        if let Some(max_output) = quality_limits.effective_max_output_tokens()
+            && req_max_out > max_output
+        {
+            return Err(invalid_request(format!(
+                "Requested max_tokens ({req_max_out}) exceeds active max_output_tokens limit ({max_output}). Increase limits via POST /api/v1/models/quality-tradeoffs."
+            )));
+        }
+        if req_max_out > max_ctx {
+            return Err(invalid_request(format!(
+                "Requested max_tokens ({req_max_out}) exceeds active context_window_tokens limit ({max_ctx})."
+            )));
+        }
+    }
+    Ok(())
+}
+
 async fn openai_chat_completions(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> axum::response::Response {
     let (epoch, plan, workers, quality_limits) = {
         let guard = state.lock().expect("gateway state lock");
+        let limits = resolve_request_quality_limits(&guard, req.model.as_deref());
         (
             guard.epoch,
             guard.inference_plan.clone(),
             guard.live_workers.clone(),
-            guard.quality_limits.clone(),
+            limits,
         )
     };
-    let estimated_input_tokens = estimate_messages_input_tokens(&req.messages);
-    let max_input = quality_limits.effective_max_input_tokens();
-    let max_ctx = quality_limits.effective_context_window_tokens();
-    if estimated_input_tokens > max_input || estimated_input_tokens > max_ctx {
-        return invalid_request(format!(
-            "Input prompt (~{estimated_input_tokens} tokens) exceeds active quality limit (max_input_tokens={max_input}, context_window_tokens={max_ctx}). Increase limits via POST /api/v1/models/quality-tradeoffs."
-        ))
-        .into_response();
-    }
-    let max_output = quality_limits.effective_max_output_tokens();
-    if let Some(req_max_out) = req.max_tokens
-        && req_max_out > max_output
-    {
-        return invalid_request(format!(
-            "Requested max_tokens ({req_max_out}) exceeds active max_output_tokens limit ({max_output}). Increase limits via POST /api/v1/models/quality-tradeoffs."
-        ))
-        .into_response();
+    if let Err(err) = validate_chat_request_limits(&req.messages, req.max_tokens, &quality_limits) {
+        return err.into_response();
     }
 
     let model_name = req.model.unwrap_or_else(|| plan.model_id.clone());
@@ -2343,30 +2412,16 @@ async fn anthropic_messages(
 ) -> axum::response::Response {
     let (epoch, plan, workers, quality_limits) = {
         let guard = state.lock().expect("gateway state lock");
+        let limits = resolve_request_quality_limits(&guard, req.model.as_deref());
         (
             guard.epoch,
             guard.inference_plan.clone(),
             guard.live_workers.clone(),
-            guard.quality_limits.clone(),
+            limits,
         )
     };
-    let estimated_input_tokens = estimate_messages_input_tokens(&req.messages);
-    let max_input = quality_limits.effective_max_input_tokens();
-    let max_ctx = quality_limits.effective_context_window_tokens();
-    if estimated_input_tokens > max_input || estimated_input_tokens > max_ctx {
-        return invalid_request(format!(
-            "Input prompt (~{estimated_input_tokens} tokens) exceeds active quality limit (max_input_tokens={max_input}, context_window_tokens={max_ctx}). Increase limits via POST /api/v1/models/quality-tradeoffs."
-        ))
-        .into_response();
-    }
-    let max_output = quality_limits.effective_max_output_tokens();
-    if let Some(req_max_out) = req.max_tokens
-        && req_max_out > max_output
-    {
-        return invalid_request(format!(
-            "Requested max_tokens ({req_max_out}) exceeds active max_output_tokens limit ({max_output}). Increase limits via POST /api/v1/models/quality-tradeoffs."
-        ))
-        .into_response();
+    if let Err(err) = validate_chat_request_limits(&req.messages, req.max_tokens, &quality_limits) {
+        return err.into_response();
     }
 
     let model_name = req.model.unwrap_or_else(|| plan.model_id.clone());
@@ -2641,7 +2696,7 @@ fn unauthorized_request(message: impl Into<String>) -> ApiError {
 fn is_loopback_host_header(host: &str) -> bool {
     let h = host.trim();
     if h.is_empty() {
-        return true;
+        return false;
     }
     let host_only = if let Some(rest) = h.strip_prefix('[') {
         rest.split(']').next().unwrap_or(h)
@@ -2651,14 +2706,38 @@ fn is_loopback_host_header(host: &str) -> bool {
     host_only.eq_ignore_ascii_case("localhost") || host_only == "127.0.0.1" || host_only == "::1"
 }
 
-fn authorize_bucket_mutation(headers: &HeaderMap, expected_token: &str) -> Result<(), ApiError> {
-    if headers
+#[derive(Debug, Clone, Copy)]
+struct MaybePeerAddr(Option<std::net::SocketAddr>);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for MaybePeerAddr {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let addr = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0);
+        Ok(Self(addr))
+    }
+}
+
+fn authorize_local_or_token(
+    maybe_peer: Option<std::net::SocketAddr>,
+    headers: &HeaderMap,
+    expected_token: &str,
+) -> Result<(), ApiError> {
+    if let Some(sfs) = headers
         .get("sec-fetch-site")
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|s| s.eq_ignore_ascii_case("cross-site"))
+        .map(str::trim)
+        && !sfs.eq_ignore_ascii_case("same-origin")
+        && !sfs.eq_ignore_ascii_case("none")
     {
         return Err(forbidden_request(
-            "Cross-site bucket mutation requests are forbidden",
+            "Cross-site requests to coordinator bucket and control endpoints are forbidden",
         ));
     }
 
@@ -2669,7 +2748,8 @@ fn authorize_bucket_mutation(headers: &HeaderMap, expected_token: &str) -> Resul
             .trim();
         let allowed = if let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) {
             let host = host.trim();
-            origin == format!("http://{host}") || origin == format!("https://{host}")
+            !host.is_empty()
+                && (origin == format!("http://{host}") || origin == format!("https://{host}"))
         } else {
             origin.starts_with("http://127.0.0.1")
                 || origin.starts_with("http://localhost")
@@ -2677,7 +2757,7 @@ fn authorize_bucket_mutation(headers: &HeaderMap, expected_token: &str) -> Resul
         };
         if !allowed {
             return Err(forbidden_request(
-                "Cross-origin bucket mutation requests are forbidden",
+                "Cross-origin requests to coordinator bucket and control endpoints are forbidden",
             ));
         }
     }
@@ -2695,8 +2775,8 @@ fn authorize_bucket_mutation(headers: &HeaderMap, expected_token: &str) -> Resul
         });
 
     if let Some(tok) = provided_token {
-        if tok != expected_token {
-            return Err(unauthorized_request("Invalid bucket write token"));
+        if !kadmium_data::constant_time_eq(tok, expected_token) {
+            return Err(unauthorized_request("Invalid Kadmium access token"));
         }
         return Ok(());
     }
@@ -2707,15 +2787,30 @@ fn authorize_bucket_mutation(headers: &HeaderMap, expected_token: &str) -> Resul
         == Some("1")
     {
         return Err(unauthorized_request(
-            "Bucket mutation requires X-Kadmium-Token or Authorization Bearer token",
+            "Request requires X-Kadmium-Token or Authorization Bearer token",
         ));
     }
 
-    if let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok())
-        && !is_loopback_host_header(host)
+    if let Some(peer_addr) = maybe_peer
+        && !peer_addr.ip().is_loopback()
     {
         return Err(forbidden_request(
-            "Non-loopback bucket mutation requires a valid X-Kadmium-Token or Authorization Bearer token",
+            "Non-loopback peer requires a valid X-Kadmium-Token or Authorization Bearer token",
+        ));
+    }
+
+    if let Some(host_val) = headers.get(header::HOST) {
+        let host = host_val
+            .to_str()
+            .map_err(|_| forbidden_request("Invalid Host header"))?;
+        if !is_loopback_host_header(host) {
+            return Err(forbidden_request(
+                "Non-loopback Host header requires a valid X-Kadmium-Token or Authorization Bearer token",
+            ));
+        }
+    } else if maybe_peer.is_some() {
+        return Err(forbidden_request(
+            "Missing Host header on network request without access token",
         ));
     }
 
@@ -2724,9 +2819,11 @@ fn authorize_bucket_mutation(headers: &HeaderMap, expected_token: &str) -> Resul
 
 async fn get_storage_pool_bucket_report(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
     Query(query): Query<StorageBucketRequest>,
     req: Option<Json<StorageBucketRequest>>,
-) -> Json<DecentralizedStoragePoolReport> {
+) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
     let body = req.map(|Json(r)| r).unwrap_or_default();
     let explicit_pool_size = body.pool_size.or(query.pool_size);
     let tier = body
@@ -2743,13 +2840,14 @@ async fn get_storage_pool_bucket_report(
     });
 
     if let Some(sz) = mapped_pool_size {
-        return Json(DecentralizedStoragePoolEngine::run_pool_storage_benchmark(
-            sz,
+        return Ok(Json(
+            DecentralizedStoragePoolEngine::run_pool_storage_benchmark(sz),
         ));
     }
 
     let (nodes, imported_models, mut bucket_objects, bucket_anchors, store) = {
         let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         (
             guard.nodes.clone(),
             guard.imported_models.clone(),
@@ -2769,25 +2867,27 @@ async fn get_storage_pool_bucket_report(
         }
     }
     bucket_objects.sort_by(|a, b| a.object_uri.cmp(&b.object_uri));
-    Json(
+    Ok(Json(
         DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
             &nodes,
             &imported_models,
             &bucket_objects,
             &bucket_anchors,
         ),
-    )
+    ))
 }
 
 async fn post_storage_pool_bucket_object(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
     headers: HeaderMap,
     Json(req): Json<StorageBucketPutObjectRequest>,
 ) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
-    {
+    let store_for_delete = {
         let guard = state.lock().expect("gateway state lock");
-        authorize_bucket_mutation(&headers, &guard.bucket_write_token)?;
-    }
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+        guard.bucket_store()
+    };
     DecentralizedStoragePoolEngine::validate_shard_counts(
         req.data_shards_k.unwrap_or(8),
         req.parity_shards_m.unwrap_or(2),
@@ -2802,15 +2902,21 @@ async fn post_storage_pool_bucket_object(
         None
     };
 
-    let (nodes, imported_models, bucket_objects, bucket_anchors, store_for_delete) = {
+    if let Some((_, ref norm_uri)) = delete_target {
+        let norm_for_io = norm_uri.clone();
+        tokio::task::spawn_blocking(move || store_for_delete.delete_object(&norm_for_io))
+            .await
+            .map_err(|e| invalid_request(format!("Bucket delete task failed: {e}")))?
+            .map_err(persistence_error)?;
+    }
+
+    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
         let previous = guard.bucket_objects.clone();
-        let mut store_opt = None;
         if let Some((ref raw_del, ref norm_del)) = delete_target {
             guard
                 .bucket_objects
                 .retain(|o| &o.object_uri != raw_del && &o.object_uri != norm_del);
-            store_opt = Some((guard.bucket_store(), norm_del.clone()));
         } else {
             let (uri, name, kind, size_gb, merkle) = match req.preset.as_deref() {
                 Some("active-model") => {
@@ -2878,13 +2984,8 @@ async fn post_storage_pool_bucket_object(
             guard.imported_models.clone(),
             guard.bucket_objects.clone(),
             guard.bucket_anchors.clone(),
-            store_opt,
         )
     };
-
-    if let Some((store, norm_uri)) = store_for_delete {
-        let _ = tokio::task::spawn_blocking(move || store.delete_object(&norm_uri)).await;
-    }
 
     Ok(Json(
         DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
@@ -2898,12 +2999,13 @@ async fn post_storage_pool_bucket_object(
 
 async fn post_storage_pool_bucket_anchor(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
     headers: HeaderMap,
     Json(req): Json<StorageBucketAnchorRequest>,
 ) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
     let (nodes, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
-        authorize_bucket_mutation(&headers, &guard.bucket_write_token)?;
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         let previous = guard.bucket_anchors.clone();
         let kind = match req.anchor_kind.as_deref() {
             Some("LocalNasZfsVault") | Some("nas") => BucketGroundingAnchorKind::LocalNasZfsVault,
@@ -3037,6 +3139,7 @@ pub struct StorageBucketVerifyRequest {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelQualityLimitsUpdateRequest {
     pub model_id: Option<String>,
     #[serde(alias = "reset_to_native_maximum")]
@@ -3045,7 +3148,6 @@ pub struct ModelQualityLimitsUpdateRequest {
     pub max_input_tokens: Option<u32>,
     pub max_output_tokens: Option<u32>,
     pub active_experts_per_token: Option<u32>,
-    pub compact_history: Option<bool>,
 }
 
 fn manifest_to_bucket_entry(m: &StoredBucketObjectManifest) -> PoolBucketObjectEntry {
@@ -3085,7 +3187,7 @@ fn manifest_to_bucket_entry(m: &StoredBucketObjectManifest) -> PoolBucketObjectE
         total_64mb_superblocks: superblocks,
         merkle_root_fnv64: m.merkle_root_fnv64,
         sample_stripe_holder_nodes: holders,
-        parallel_read_bandwidth_gbps: 12.5,
+        parallel_read_bandwidth_gbps: 0.0,
         stored_size_bytes: Some(m.logical_size_bytes),
         sha256: Some(m.sha256.clone()),
         stored_on_disk: true,
@@ -3197,9 +3299,12 @@ fn sanitize_ascii_filename(raw_uri: &str) -> String {
 
 async fn get_storage_pool_bucket_mediums(
     State(state): State<Arc<Mutex<GatewayState>>>,
-) -> Json<StorageBucketMediumsResponse> {
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
+) -> Result<Json<StorageBucketMediumsResponse>, ApiError> {
     let (nodes, anchors, store, coord_url) = {
         let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         (
             guard.nodes.clone(),
             guard.bucket_anchors.clone(),
@@ -3222,20 +3327,23 @@ async fn get_storage_pool_bucket_mediums(
     let access_guide = store
         .access_guide("kdm://pool-bucket/workspace/artifact.ktb", &coord_url)
         .expect("canonical access guide");
-    Json(StorageBucketMediumsResponse {
+    Ok(Json(StorageBucketMediumsResponse {
         store_root: "local_coordinator_bucket_store".to_string(),
         coordinator_http_url: coord_url,
         cluster_mediums,
         node_mediums,
         access_guide,
-    })
+    }))
 }
 
 async fn get_storage_pool_bucket_objects(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
 ) -> Result<Json<StorageBucketObjectsResponse>, ApiError> {
     let (nodes, imported_models, mut bucket_objects, bucket_anchors, store, coord_url) = {
         let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         (
             guard.nodes.clone(),
             guard.imported_models.clone(),
@@ -3281,6 +3389,7 @@ async fn get_storage_pool_bucket_objects(
 
 async fn post_storage_pool_bucket_upload(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
     headers: HeaderMap,
     Json(req): Json<StorageBucketUploadRequest>,
 ) -> Result<Json<StorageBucketUploadResponse>, ApiError> {
@@ -3312,14 +3421,15 @@ async fn post_storage_pool_bucket_upload(
         ));
     };
 
-    let (nodes, store, coord_url) = {
+    let (live_nodes, store, coord_url) = {
         let guard = state.lock().expect("gateway state lock");
-        authorize_bucket_mutation(&headers, &guard.bucket_write_token)?;
-        (
-            guard.nodes.clone(),
-            guard.bucket_store(),
-            guard.coordinator_http_url(),
-        )
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+        let nodes = if guard.live_only_mode {
+            guard.nodes.clone()
+        } else {
+            Vec::new()
+        };
+        (nodes, guard.bucket_store(), guard.coordinator_http_url())
     };
 
     let receipt = tokio::task::spawn_blocking(move || {
@@ -3330,7 +3440,7 @@ async fn post_storage_pool_bucket_upload(
             &payload,
             k,
             m,
-            &nodes,
+            &live_nodes,
             Some(&coord_url),
         )
     })
@@ -3374,16 +3484,25 @@ async fn post_storage_pool_bucket_upload(
 
 async fn get_storage_pool_bucket_raw(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
     headers: HeaderMap,
     Query(mut query): Query<StorageBucketDownloadRequest>,
     body: Option<Json<Option<StorageBucketDownloadRequest>>>,
 ) -> Result<axum::response::Response, ApiError> {
     query.raw = Some(true);
-    get_or_post_storage_pool_bucket_download(State(state), headers, Query(query), body).await
+    get_or_post_storage_pool_bucket_download(
+        State(state),
+        MaybePeerAddr(maybe_peer),
+        headers,
+        Query(query),
+        body,
+    )
+    .await
 }
 
 async fn get_or_post_storage_pool_bucket_download(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
     headers: HeaderMap,
     Query(query): Query<StorageBucketDownloadRequest>,
     body: Option<Json<Option<StorageBucketDownloadRequest>>>,
@@ -3405,6 +3524,7 @@ async fn get_or_post_storage_pool_bucket_download(
 
     let (store, coord_url) = {
         let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         (guard.bucket_store(), guard.coordinator_http_url())
     };
 
@@ -3419,7 +3539,6 @@ async fn get_or_post_storage_pool_bucket_download(
         let total = manifest.logical_size_bytes;
 
         let resolved_range: ResolvedByteRange = match parsed_range {
-            ParsedHttpRange::Invalid => return Err(Ok(total)),
             ParsedHttpRange::FromTo(start, end_incl) => {
                 if total == 0 || start >= total {
                     return Err(Ok(total));
@@ -3443,33 +3562,49 @@ async fn get_or_post_storage_pool_bucket_download(
                 let end = total - 1;
                 Some((start, take, end))
             }
-            ParsedHttpRange::Full => match (explicit_offset, explicit_length) {
-                (Some(off), Some(len)) => {
-                    if len == 0 || (total > 0 && off >= total) || (total == 0 && off > 0) {
-                        return Err(Ok(total));
+            // Per RFC 9110 §14.2, ignore syntactically invalid or unsupported Range headers
+            // and serve the full representation (or explicit query offset/length if provided).
+            ParsedHttpRange::Full | ParsedHttpRange::Invalid => {
+                match (explicit_offset, explicit_length) {
+                    (Some(off), Some(len)) => {
+                        if len == 0 || (total > 0 && off >= total) || (total == 0 && off > 0) {
+                            return Err(Ok(total));
+                        }
+                        if total == 0 {
+                            None
+                        } else {
+                            let take = len.min(total.saturating_sub(off));
+                            let end = off + take.saturating_sub(1);
+                            Some((off, take, end))
+                        }
                     }
-                    let take = len.min(total.saturating_sub(off));
-                    let end = off + take.saturating_sub(1);
-                    Some((off, take, end))
-                }
-                (Some(off), None) => {
-                    if (total > 0 && off >= total) || (total == 0 && off > 0) {
-                        return Err(Ok(total));
+                    (Some(off), None) => {
+                        if (total > 0 && off >= total) || (total == 0 && off > 0) {
+                            return Err(Ok(total));
+                        }
+                        if total == 0 {
+                            None
+                        } else {
+                            let take = total.saturating_sub(off);
+                            let end = total.saturating_sub(1);
+                            Some((off, take, end))
+                        }
                     }
-                    let take = total.saturating_sub(off);
-                    let end = total.saturating_sub(1);
-                    Some((off, take, end))
-                }
-                (None, Some(len)) => {
-                    if len == 0 {
-                        return Err(Ok(total));
+                    (None, Some(len)) => {
+                        if len == 0 {
+                            return Err(Ok(total));
+                        }
+                        if total == 0 {
+                            None
+                        } else {
+                            let take = len.min(total);
+                            let end = take.saturating_sub(1);
+                            Some((0, take, end))
+                        }
                     }
-                    let take = len.min(total);
-                    let end = take.saturating_sub(1);
-                    Some((0, take, end))
+                    (None, None) => None,
                 }
-                (None, None) => None,
-            },
+            }
         };
 
         let byte_range = resolved_range.map(|(off, len, _)| (off, len));
@@ -3556,10 +3691,13 @@ async fn get_or_post_storage_pool_bucket_download(
 
 async fn post_storage_pool_bucket_verify(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
     Json(req): Json<StorageBucketVerifyRequest>,
 ) -> Result<Json<BucketObjectVerificationReport>, ApiError> {
     let store = {
         let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         guard.bucket_store()
     };
     let uri = req.object_uri;
@@ -3584,9 +3722,12 @@ async fn get_model_quality_tradeoffs(
 
 async fn post_model_quality_tradeoffs(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
     Json(req): Json<ModelQualityLimitsUpdateRequest>,
 ) -> Result<Json<QualityTradeoffReport>, ApiError> {
     let mut guard = state.lock().expect("gateway state lock");
+    authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
     let model = if let Some(ref model_id) = req.model_id {
         guard
             .resolve_model(model_id)
@@ -3610,16 +3751,8 @@ async fn post_model_quality_tradeoffs(
         guard.quality_limits = native;
         guard.user_lowered_quality_limits = false;
     } else {
-        let mut updated = if guard.quality_limits.native_max_context_window_tokens
-            != native.native_max_context_window_tokens
-            || guard.quality_limits.native_max_output_tokens != native.native_max_output_tokens
-            || guard.quality_limits.native_active_experts_per_token
-                != native.native_active_experts_per_token
-        {
-            native.clone()
-        } else {
-            guard.quality_limits.clone()
-        };
+        let mut updated = guard.quality_limits.clone();
+        updated.sync_native_with_model(&model);
         if let Some(ctx) = req.context_window_tokens {
             if ctx == 0 || ctx > native.native_max_context_window_tokens {
                 return Err(invalid_request(format!(
@@ -3647,14 +3780,23 @@ async fn post_model_quality_tradeoffs(
             updated.user_override_max_input_tokens = Some(eff_ctx);
         }
         if let Some(max_out) = req.max_output_tokens {
-            if max_out == 0 || max_out > native.native_max_output_tokens {
+            let max_allowed_out = native
+                .native_max_output_tokens
+                .unwrap_or(eff_ctx)
+                .min(eff_ctx);
+            if max_out == 0 || max_out > max_allowed_out {
                 return Err(invalid_request(format!(
-                    "max_output_tokens must be between 1 and {}",
-                    native.native_max_output_tokens
+                    "max_output_tokens must be between 1 and {max_allowed_out}"
                 )));
             }
-            updated.user_override_max_output_tokens =
-                (max_out < native.native_max_output_tokens).then_some(max_out);
+            updated.user_override_max_output_tokens = match native.native_max_output_tokens {
+                Some(nat) => (max_out < nat).then_some(max_out),
+                None => Some(max_out),
+            };
+        } else if let Some(prev_out) = updated.user_override_max_output_tokens
+            && prev_out > eff_ctx
+        {
+            updated.user_override_max_output_tokens = Some(eff_ctx);
         }
         if let Some(experts) = req.active_experts_per_token {
             let max_exp = native.native_active_experts_per_token.max(1);

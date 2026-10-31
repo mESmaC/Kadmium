@@ -255,24 +255,24 @@ pub struct QualityTradeoffReport {
     pub overall_severity: QualityTradeoffSeverity,
     pub effective_context_window_tokens: u32,
     pub effective_max_input_tokens: u32,
-    pub effective_max_output_tokens: u32,
+    pub effective_max_output_tokens: Option<u32>,
     pub effective_active_experts_per_token: u32,
     pub context_retention_pct: f64,
-    pub estimated_quality_retention_pct: f64,
     pub estimated_kv_cache_savings_pct: f64,
-    pub estimated_prefill_speedup_x: f64,
     pub kv_cache_memory_reduction_pct: f64,
     pub tradeoffs: Vec<QualityTradeoffDimension>,
     pub summary_banner: String,
 }
 
 /// User-configurable model quality and context limits.
-/// Defaults to `None` on every override field, which means **100% uncompromised native model maxima**.
+/// Defaults to `None` on every override field, which means **100% uncompromised native model maxima**
+/// and no artificial cap on output tokens unless explicitly requested by the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelQualityLimits {
     pub native_max_context_window_tokens: u32,
     pub native_max_input_tokens: u32,
-    pub native_max_output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_max_output_tokens: Option<u32>,
     pub native_active_experts_per_token: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_override_context_window_tokens: Option<u32>,
@@ -286,17 +286,11 @@ pub struct ModelQualityLimits {
 
 impl ModelQualityLimits {
     /// Returns the uncompromised native maxima for a given `ModelSpec`.
+    /// Native context window is derived directly from `ModelSpec::try_native_max_context_tokens()`.
+    /// Where no maximum output token limit is advertised on `ModelSpec`, `native_max_output_tokens`
+    /// is `None` so output generation is never artificially capped by default.
     pub fn for_model(model: &ModelSpec) -> Self {
-        let id_lower = model.id.to_ascii_lowercase();
-        let (native_ctx, native_out) = if id_lower.contains("deepseek-v3") {
-            (163_840u32, 64_000u32)
-        } else if id_lower.contains("qwen2.5-coder") {
-            (32_768u32, 8_192u32)
-        } else if id_lower.contains("qwen3-235b") {
-            (40_960u32, 16_384u32)
-        } else {
-            (131_072u32, 16_384u32)
-        };
+        let native_ctx = model.try_native_max_context_tokens().unwrap_or(131_072);
         let native_experts = if model.is_moe {
             model.active_experts_per_token.max(1)
         } else {
@@ -305,12 +299,41 @@ impl ModelQualityLimits {
         Self {
             native_max_context_window_tokens: native_ctx,
             native_max_input_tokens: native_ctx,
-            native_max_output_tokens: native_out,
+            native_max_output_tokens: None,
             native_active_experts_per_token: native_experts,
             user_override_context_window_tokens: None,
             user_override_max_input_tokens: None,
             user_override_max_output_tokens: None,
             user_override_active_experts_per_token: None,
+        }
+    }
+
+    /// Re-anchors the `native_*` fields to `model`'s authoritative `ModelSpec` while clamping
+    /// any existing user overrides to the model's native bounds.
+    pub fn sync_native_with_model(&mut self, model: &ModelSpec) {
+        let fresh = Self::for_model(model);
+        self.native_max_context_window_tokens = fresh.native_max_context_window_tokens;
+        self.native_max_input_tokens = fresh.native_max_input_tokens;
+        self.native_max_output_tokens = fresh.native_max_output_tokens;
+        self.native_active_experts_per_token = fresh.native_active_experts_per_token;
+        if let Some(ctx) = self.user_override_context_window_tokens {
+            self.user_override_context_window_tokens =
+                Some(ctx.clamp(1, self.native_max_context_window_tokens.max(1)));
+        }
+        let eff_ctx = self.effective_context_window_tokens();
+        if let Some(inp) = self.user_override_max_input_tokens {
+            self.user_override_max_input_tokens = Some(inp.clamp(1, eff_ctx.max(1)));
+        }
+        if let Some(out) = self.user_override_max_output_tokens {
+            self.user_override_max_output_tokens = Some(out.clamp(1, eff_ctx.max(1)));
+        }
+        if model.is_moe {
+            if let Some(exp) = self.user_override_active_experts_per_token {
+                self.user_override_active_experts_per_token =
+                    Some(exp.clamp(1, self.native_active_experts_per_token.max(1)));
+            }
+        } else {
+            self.user_override_active_experts_per_token = None;
         }
     }
 
@@ -327,11 +350,22 @@ impl ModelQualityLimits {
             .unwrap_or_else(|| self.native_max_input_tokens.min(ctx))
     }
 
-    pub fn effective_max_output_tokens(&self) -> u32 {
-        let ctx = self.effective_context_window_tokens();
-        self.user_override_max_output_tokens
-            .map(|v| v.clamp(1, self.native_max_output_tokens.min(ctx).max(1)))
-            .unwrap_or_else(|| self.native_max_output_tokens.min(ctx))
+    /// Returns an output token limit only when explicitly configured (`user_override_max_output_tokens`
+    /// or `native_max_output_tokens`). Returns `None` by default so output length is bounded only
+    /// by the effective context window.
+    pub fn effective_max_output_tokens(&self) -> Option<u32> {
+        let ctx = self.effective_context_window_tokens().max(1);
+        match (
+            self.user_override_max_output_tokens,
+            self.native_max_output_tokens,
+        ) {
+            (Some(user_cap), Some(native_cap)) => {
+                Some(user_cap.clamp(1, native_cap.min(ctx).max(1)))
+            }
+            (Some(user_cap), None) => Some(user_cap.clamp(1, ctx)),
+            (None, Some(native_cap)) => Some(native_cap.min(ctx)),
+            (None, None) => None,
+        }
     }
 
     pub fn effective_active_experts_per_token(&self) -> u32 {
@@ -349,9 +383,18 @@ impl ModelQualityLimits {
     }
 
     pub fn is_uncompromised(&self) -> bool {
+        let out_uncompromised = match (
+            self.effective_max_output_tokens(),
+            self.native_max_output_tokens,
+        ) {
+            (None, None) => true,
+            (Some(eff), Some(nat)) => eff >= nat,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+        };
         self.effective_context_window_tokens() >= self.native_max_context_window_tokens
             && self.effective_max_input_tokens() >= self.native_max_input_tokens
-            && self.effective_max_output_tokens() >= self.native_max_output_tokens
+            && out_uncompromised
             && self.effective_active_experts_per_token()
                 >= self.native_active_experts_per_token.max(1)
     }
@@ -365,7 +408,11 @@ impl ModelQualityLimits {
         let ctx_ratio =
             (eff_ctx as f64 / self.native_max_context_window_tokens.max(1) as f64) * 100.0;
         let in_ratio = (eff_in as f64 / self.native_max_input_tokens.max(1) as f64) * 100.0;
-        let out_ratio = (eff_out as f64 / self.native_max_output_tokens.max(1) as f64) * 100.0;
+        let out_baseline = self.native_max_output_tokens.unwrap_or(eff_ctx.max(1));
+        let out_ratio = match eff_out {
+            Some(cap) => ((cap as f64 / out_baseline.max(1) as f64) * 100.0).min(100.0),
+            None => 100.0,
+        };
         let exp_ratio =
             (eff_exp as f64 / self.native_active_experts_per_token.max(1) as f64) * 100.0;
 
@@ -381,7 +428,11 @@ impl ModelQualityLimits {
 
         let ctx_sev = classify(ctx_ratio);
         let in_sev = classify(in_ratio);
-        let out_sev = classify(out_ratio);
+        let out_sev = if eff_out.is_none() {
+            QualityTradeoffSeverity::Uncompromised
+        } else {
+            classify(out_ratio)
+        };
         let exp_sev = if model.is_moe {
             classify(exp_ratio)
         } else {
@@ -443,15 +494,20 @@ impl ModelQualityLimits {
             QualityTradeoffDimension {
                 parameter: "max_output_tokens".to_string(),
                 label: "Max output tokens".to_string(),
-                native_maximum: format!("{} tokens", self.native_max_output_tokens),
-                active_setting: format!("{} tokens", eff_out),
-                manually_lowered: eff_out < self.native_max_output_tokens,
+                native_maximum: match self.native_max_output_tokens {
+                    Some(nat) => format!("{nat} tokens"),
+                    None => "Uncapped (bounded by context window)".to_string(),
+                },
+                active_setting: match eff_out {
+                    Some(cap) => format!("{cap} tokens"),
+                    None => "Uncapped (bounded by context window)".to_string(),
+                },
+                manually_lowered: self.user_override_max_output_tokens.is_some(),
                 retained_ratio_pct: (out_ratio * 10.0).round() / 10.0,
                 severity: out_sev,
-                resource_tradeoff: if out_ratio < 99.9 {
-                    format!("Bounds decode generation horizon to {} tokens", eff_out)
-                } else {
-                    "Full native long-horizon generation & reasoning budget enabled".to_string()
+                resource_tradeoff: match eff_out {
+                    Some(cap) => format!("Bounds decode generation horizon to {cap} tokens"),
+                    None => "No artificial output token cap; full context window available".to_string(),
                 },
                 quality_impact: match out_sev {
                     QualityTradeoffSeverity::Uncompromised => "Full chain-of-thought and whole-file code generation supported without early stop.".to_string(),
@@ -497,22 +553,20 @@ impl ModelQualityLimits {
             .max()
             .unwrap_or(QualityTradeoffSeverity::Uncompromised);
         let is_uncompromised = overall_severity == QualityTradeoffSeverity::Uncompromised;
-        let avg_retention = (tradeoffs.iter().map(|d| d.retained_ratio_pct).sum::<f64>()
-            / (tradeoffs.len().max(1) as f64)
-            * 10.0)
-            .round()
-            / 10.0;
-        let prefill_speedup = ((100.0 / in_ratio.max(5.0)).clamp(1.0, 8.0) * 10.0).round() / 10.0;
+        let out_desc = match eff_out {
+            Some(cap) => format!("{cap} out tokens"),
+            None => "uncapped out tokens".to_string(),
+        };
 
         let summary_banner = if is_uncompromised {
             format!(
-                "UNCOMPROMISED MAXIMUM QUALITY: {} is running at 100% native context ({} tokens), max input ({} tokens), max output ({} tokens), and full expert routing.",
-                model.display_name, eff_ctx, eff_in, eff_out
+                "UNCOMPROMISED MAXIMUM QUALITY: {} is running at 100% native context ({} tokens), max input ({} tokens), {}, and full expert routing.",
+                model.display_name, eff_ctx, eff_in, out_desc
             )
         } else {
             format!(
-                "MANUAL USER TRADEOFF ACTIVE ({:?}): {} limits manually lowered to {} ctx / {} in / {} out tokens ({:.1}% KV memory saved).",
-                overall_severity, model.display_name, eff_ctx, eff_in, eff_out, kv_reduction_pct
+                "MANUAL USER TRADEOFF ACTIVE ({:?}): {} limits manually lowered to {} ctx / {} in / {} ({:.1}% KV memory saved).",
+                overall_severity, model.display_name, eff_ctx, eff_in, out_desc, kv_reduction_pct
             )
         };
 
@@ -526,9 +580,7 @@ impl ModelQualityLimits {
             effective_max_output_tokens: eff_out,
             effective_active_experts_per_token: eff_exp,
             context_retention_pct: (ctx_ratio * 10.0).round() / 10.0,
-            estimated_quality_retention_pct: avg_retention,
             estimated_kv_cache_savings_pct: kv_reduction_pct,
-            estimated_prefill_speedup_x: prefill_speedup,
             kv_cache_memory_reduction_pct: kv_reduction_pct,
             tradeoffs,
             summary_banner,
@@ -609,7 +661,7 @@ impl GatewayState {
         let bucket_write_token = std::env::var("KADMIUM_BUCKET_TOKEN")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| format!("kdm_bkt_local_{}_{instance_id}", std::process::id()));
+            .unwrap_or_else(kadmium_data::generate_csprng_access_token);
 
         Self {
             persistent_state_dir: std::path::PathBuf::from("target/kadmium-state"),
@@ -1045,8 +1097,8 @@ impl GatewayState {
         } else {
             resolve(&journal.training_model_id)?
         };
-        for object in &journal.bucket_objects {
-            kadmium_data::DecentralizedStoragePoolEngine::create_bucket_object(
+        journal.bucket_objects.retain(|object| {
+            match kadmium_data::DecentralizedStoragePoolEngine::create_bucket_object(
                 &object.object_uri,
                 &object.display_name,
                 &object.object_kind,
@@ -1055,8 +1107,18 @@ impl GatewayState {
                 object.parity_shards_m,
                 None,
                 &[],
-            )?;
-        }
+            ) {
+                Ok(_) => true,
+                Err(reason) => {
+                    tracing::warn!(
+                        object_uri = %object.object_uri,
+                        %reason,
+                        "Skipping invalid bucket object entry from journal; journal file is unchanged"
+                    );
+                    false
+                }
+            }
+        });
         self.epoch = journal.epoch;
         self.inference_model = inference;
         self.training_model = training;
@@ -1077,12 +1139,10 @@ impl GatewayState {
         self.imported_models = journal.imported_models;
         self.bucket_objects = journal.bucket_objects;
         self.bucket_anchors = journal.bucket_anchors;
-        if let Some(limits) = journal.quality_limits {
+        if let Some(mut limits) = journal.quality_limits {
+            limits.sync_native_with_model(&self.inference_model);
             self.quality_limits = limits;
-            self.user_lowered_quality_limits = !self
-                .quality_limits
-                .evaluate_tradeoffs(&self.inference_model)
-                .is_uncompromised_maximum_quality;
+            self.user_lowered_quality_limits = !self.quality_limits.is_uncompromised();
         } else {
             self.quality_limits = ModelQualityLimits::for_model(&self.inference_model);
             self.user_lowered_quality_limits = false;
@@ -1100,11 +1160,19 @@ impl GatewayState {
         }
         if self.live_only_mode && !self.user_selected_model {
             let recommended = ModelSpec::recommended_for_cluster(&self.nodes);
+            let model_changed = self.inference_model.id != recommended.id;
             self.inference_model = recommended.clone();
             self.training_model = recommended;
+            if model_changed {
+                self.user_lowered_quality_limits = false;
+            }
         }
         if !self.user_lowered_quality_limits {
             self.quality_limits = ModelQualityLimits::for_model(&self.inference_model);
+        } else {
+            self.quality_limits
+                .sync_native_with_model(&self.inference_model);
+            self.user_lowered_quality_limits = !self.quality_limits.is_uncompromised();
         }
         let effective_inf_model = self.effective_inference_model();
         self.coordinator_quorum = CoordinatorFailoverQuorum::from_cluster(&self.nodes);

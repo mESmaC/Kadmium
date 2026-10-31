@@ -701,6 +701,135 @@ async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() 
         "bytes */68"
     );
 
+    // Malformed Range header must be ignored per RFC 9110 §14.2 and serve 200 OK full payload
+    for ignored_range in ["bytes=invalid", "items=0-5", "bytes=10-5"] {
+        let ignored_resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin")
+                    .header("range", ignored_range)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ignored_resp.status().as_u16(), 200, "range={ignored_range}");
+    }
+
+    // 0-byte object without Range header serves 200 OK; with Range: bytes=0-0 returns 416
+    let (status, empty_body) = request(
+        &app,
+        "POST",
+        "/api/v1/storage/pool-bucket/upload",
+        json!({
+            "object_uri": "kdm://pool-bucket/tests/empty.bin",
+            "content_utf8": ""
+        }),
+    )
+    .await;
+    assert_eq!(status, 200, "{empty_body}");
+    let empty_get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/empty.bin")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty_get.status().as_u16(), 200);
+    assert!(
+        to_bytes(empty_get.into_body(), 1024)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let empty_range_416 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/empty.bin")
+                .header("range", "bytes=0-0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(empty_range_416.status().as_u16(), 416);
+    assert_eq!(
+        empty_range_416
+            .headers()
+            .get("content-range")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "bytes */0"
+    );
+
+    // Payload > 2 MiB (Axum's default limit) succeeds on /api/v1/storage/pool-bucket/upload
+    let large_payload = "A".repeat(2 * 1024 * 1024 + 128 * 1024);
+    let (large_status, large_body) = request(
+        &app,
+        "POST",
+        "/api/v1/storage/pool-bucket/upload",
+        json!({
+            "object_uri": "kdm://pool-bucket/tests/large-2m.bin",
+            "content_utf8": large_payload
+        }),
+    )
+    .await;
+    assert_eq!(large_status, 200, "{large_body}");
+
+    // Non-loopback peer socket (even with spoofed Host: localhost:7848 or empty Host) must be rejected without token
+    let remote_peer: std::net::SocketAddr = "198.51.100.42:54321".parse().unwrap();
+    for (method, uri, host_hdr) in [
+        (
+            "GET",
+            "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin",
+            "localhost:7848",
+        ),
+        ("GET", "/api/v1/storage/pool-bucket/objects", ""),
+        ("POST", "/api/v1/models/quality-tradeoffs", "127.0.0.1:7848"),
+        ("POST", "/mcp", "localhost"),
+    ] {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("host", host_hdr)
+            .header("content-type", "application/json")
+            .body(Body::from(if uri == "/mcp" {
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#
+            } else {
+                "{}"
+            }))
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(remote_peer));
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status().as_u16(), 403, "{method} {uri}");
+    }
+
+    // With valid bearer token, remote peer is authorized
+    let token = state.lock().unwrap().bucket_write_token.clone();
+    let mut authed_req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/storage/pool-bucket/objects")
+        .header("host", "example.com")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    authed_req
+        .extensions_mut()
+        .insert(axum::extract::ConnectInfo(remote_peer));
+    let authed_resp = app.clone().oneshot(authed_req).await.unwrap();
+    assert_eq!(authed_resp.status().as_u16(), 200);
+
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -714,7 +843,9 @@ async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeo
     assert_eq!(report["is_uncompromised_maximum_quality"], true);
     assert_eq!(report["effective_context_window_tokens"], 163_840);
     assert_eq!(report["effective_max_input_tokens"], 163_840);
-    assert_eq!(report["effective_max_output_tokens"], 64_000);
+    assert!(report["effective_max_output_tokens"].is_null());
+    assert!(report.get("estimated_quality_retention_pct").is_none());
+    assert!(report.get("estimated_prefill_speedup_x").is_none());
     assert!(
         report["tradeoffs"]
             .as_array()
@@ -722,6 +853,47 @@ async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeo
             .iter()
             .all(|t| t["manually_lowered"] == false)
     );
+
+    // By default (uncapped output tokens), requesting 100,000 max_tokens within the 163,840 context window succeeds
+    let (chat_ok, chat_ok_body) = request(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        json!({
+            "model": "deepseek-ai/DeepSeek-V3",
+            "max_tokens": 100_000,
+            "messages": [{"role": "user", "content": "Hello"}]
+        }),
+    )
+    .await;
+    assert_eq!(chat_ok, 200, "{chat_ok_body}");
+
+    // Baseline dataflow seq_len depends on context window, not max_output_tokens
+    let (_, df_before_body) = request(&app, "GET", "/api/v1/dataflow", json!(null)).await;
+    let df_before: Value = serde_json::from_str(&df_before_body).unwrap();
+
+    // Lower only max_output_tokens and verify dataflow report is unchanged
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/v1/models/quality-tradeoffs",
+        json!({ "max_output_tokens": 2_048 }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    let (_, df_after_body) = request(&app, "GET", "/api/v1/dataflow", json!(null)).await;
+    let df_after: Value = serde_json::from_str(&df_after_body).unwrap();
+    assert_eq!(df_before["profiles"], df_after["profiles"]);
+
+    // Unknown fields such as compact_history must be rejected (400/422)
+    let (unknown_status, _) = request(
+        &app,
+        "POST",
+        "/api/v1/models/quality-tradeoffs",
+        json!({ "compact_history": true }),
+    )
+    .await;
+    assert!((400..500).contains(&unknown_status));
 
     let (status, body) = request(
         &app,
@@ -738,6 +910,7 @@ async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeo
     assert_eq!(status, 200, "{body}");
     let lowered: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(lowered["is_uncompromised_maximum_quality"], false);
+    assert_eq!(lowered["effective_max_output_tokens"], 4_096);
     assert_eq!(
         lowered["tradeoffs"]
             .as_array()
@@ -771,4 +944,20 @@ async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeo
     assert_eq!(status, 200, "{body}");
     let restored: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(restored["is_uncompromised_maximum_quality"], true);
+    assert!(restored["effective_max_output_tokens"].is_null());
+
+    // Switching the active inference model syncs native context window limits
+    let (switch_status, _) = request(
+        &app,
+        "POST",
+        "/api/v1/cluster/model",
+        json!({"inference_model_id": "llama-3.2-3b-instruct"}),
+    )
+    .await;
+    assert_eq!(switch_status, 200);
+    let (_, switched_q_body) =
+        request(&app, "GET", "/api/v1/models/quality-tradeoffs", json!(null)).await;
+    let switched_q: Value = serde_json::from_str(&switched_q_body).unwrap();
+    assert_eq!(switched_q["model_id"], "llama-3.2-3b-instruct");
+    assert_eq!(switched_q["effective_context_window_tokens"], 131_072);
 }

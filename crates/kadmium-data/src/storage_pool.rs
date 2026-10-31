@@ -2018,12 +2018,45 @@ pub struct BucketExternalAccessGuide {
 }
 
 static STAGING_NONCE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+static BUCKET_STORE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Generates a 256-bit (64-hex-character) token from the OS CSPRNG (`getrandom`).
+pub fn generate_csprng_access_token() -> String {
+    let mut bytes = [0u8; 32];
+    if getrandom::fill(&mut bytes).is_err() {
+        panic!("OS CSPRNG unavailable for Kadmium bucket access token");
+    }
+    let mut hex = String::with_capacity(72);
+    hex.push_str("kdm_bkt_");
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
+}
+
+/// Constant-time string comparison to prevent timing side-channel leaks on access tokens.
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
 
 /// Resolves the shared OS state directory used by both the Coordinator Gateway and CLI.
+/// Matches `coordinator_journal_directory()` across Windows, macOS, and Linux.
 pub fn default_kadmium_state_directory() -> PathBuf {
+    if let Some(directory) = std::env::var_os("KADMIUM_STATE_DIR") {
+        let path = PathBuf::from(directory);
+        if path.is_absolute() {
+            return path;
+        }
+    }
+
     #[cfg(target_os = "windows")]
     if let Some(dir) = std::env::var_os("LOCALAPPDATA").filter(|v| !v.is_empty()) {
-        return PathBuf::from(dir).join("kadmium").join("state");
+        return PathBuf::from(dir).join("Kadmium").join("state");
     }
 
     #[cfg(target_os = "macos")]
@@ -2031,14 +2064,16 @@ pub fn default_kadmium_state_directory() -> PathBuf {
         return PathBuf::from(home)
             .join("Library")
             .join("Application Support")
-            .join("kadmium")
-            .join("state");
+            .join("Kadmium");
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        if let Some(dir) = std::env::var_os("XDG_STATE_HOME").filter(|v| !v.is_empty()) {
-            return PathBuf::from(dir).join("kadmium");
+        if let Some(dir) = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+        {
+            return dir.join("kadmium");
         }
         if let Some(home) = std::env::var_os("HOME").filter(|v| !v.is_empty()) {
             return PathBuf::from(home)
@@ -2097,7 +2132,7 @@ impl BucketObjectStore {
         self.root_dir.join("bucket-access-token")
     }
 
-    /// Loads or initializes the local bucket access token used to authenticate write/delete HTTP calls.
+    /// Loads or initializes the local bucket access token using the OS CSPRNG (`getrandom`).
     pub fn load_or_create_access_token(&self) -> String {
         if let Ok(env_tok) = std::env::var("KADMIUM_BUCKET_TOKEN") {
             let trimmed = env_tok.trim();
@@ -2105,24 +2140,18 @@ impl BucketObjectStore {
                 return trimmed.to_string();
             }
         }
+        let _guard = BUCKET_STORE_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path = self.access_token_path();
         if let Ok(existing) = std::fs::read_to_string(&path) {
             let trimmed = existing.trim();
-            if trimmed.len() >= 16 {
+            if trimmed.len() >= 32 {
                 return trimmed.to_string();
             }
         }
         let _ = std::fs::create_dir_all(&self.root_dir);
-        let seed = format!(
-            "kadmium-bucket-token-{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-            STAGING_NONCE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        );
-        let token = format!("kdm_bkt_{}", &compute_sha256_hex(seed.as_bytes())[..32]);
+        let token = generate_csprng_access_token();
         let _ = std::fs::write(&path, &token);
         #[cfg(unix)]
         {
@@ -2160,9 +2189,22 @@ impl BucketObjectStore {
             .join(Self::object_dir_name(normalized_uri))
     }
 
+    fn cleanup_stale_dot_dirs(&self) {
+        let objects_dir = self.objects_root();
+        if let Ok(entries) = std::fs::read_dir(&objects_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with(".staging-") || name_str.starts_with(".old-") {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+    }
+
     /// Encodes `payload` into `$k + m$` erasure-coded shards, enforces per-object and total store
-    /// quotas, writes all shard files and `manifest.json` atomically via a temporary staging directory,
-    /// and returns a `StoredBucketObjectReceipt`.
+    /// quotas under a serialized write lock, writes all shard files and `manifest.json` atomically
+    /// via a temporary staging directory, and returns a `StoredBucketObjectReceipt`.
     #[allow(clippy::too_many_arguments)]
     pub fn put_bytes(
         &self,
@@ -2189,6 +2231,12 @@ impl BucketObjectStore {
                 max_obj
             ));
         }
+
+        // Serialize quota checks and directory commits across concurrent writers
+        let _write_guard = BUCKET_STORE_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.cleanup_stale_dot_dirs();
 
         let shard_size_est = if payload.is_empty() {
             1
@@ -2277,7 +2325,9 @@ impl BucketObjectStore {
             data_shards_k,
             parity_shards_m,
         );
-        let default_local_medium = nodes
+        // Every shard written by `BucketObjectStore` is persisted on the coordinator's local disk;
+        // never claim on-disk `.kds` shard files reside in GPU VRAM or Unified Memory.
+        let local_disk_medium = nodes
             .first()
             .map(DecentralizedStoragePoolEngine::classify_persistent_medium)
             .unwrap_or(StorageMediumKind::PcieNvmeSsd);
@@ -2314,9 +2364,6 @@ impl BucketObjectStore {
                 merkle_hasher_bytes.extend_from_slice(&shard_fnv.to_le_bytes());
 
                 let placement_opt = placements.get(idx);
-                let medium = placement_opt
-                    .map(|p| p.storage_medium)
-                    .unwrap_or(default_local_medium);
 
                 shard_descriptors.push(StoredBucketShardDescriptor {
                     shard_index: idx,
@@ -2328,8 +2375,8 @@ impl BucketObjectStore {
                     storage_location: "local_coordinator_store".to_string(),
                     modelled_node_id: placement_opt.map(|p| p.node_id.clone()),
                     modelled_hostname: placement_opt.map(|p| p.hostname.clone()),
-                    storage_medium: medium,
-                    storage_tier: medium.default_tier(),
+                    storage_medium: local_disk_medium,
+                    storage_tier: local_disk_medium.default_tier(),
                 });
             }
 
@@ -2386,10 +2433,20 @@ impl BucketObjectStore {
             }
         };
 
-        // Atomically replace any existing object directory so no stale shards remain
+        // Atomically replace any existing object directory without ever deleting the existing object
+        // before the backup rotation succeeds.
         let backup_dir = objects_root.join(format!(".old-{dir_name}-{nonce}"));
-        if final_obj_dir.exists() && std::fs::rename(&final_obj_dir, &backup_dir).is_err() {
-            let _ = std::fs::remove_dir_all(&final_obj_dir);
+        if final_obj_dir.exists() {
+            if backup_dir.exists() {
+                let _ = std::fs::remove_dir_all(&backup_dir);
+            }
+            if std::fs::rename(&final_obj_dir, &backup_dir).is_err() {
+                let _ = std::fs::remove_dir_all(&staging_dir);
+                return Err(
+                    "Failed rotating existing bucket object directory; existing object preserved"
+                        .to_string(),
+                );
+            }
         }
         if std::fs::rename(&staging_dir, &final_obj_dir).is_err() {
             let _ = std::fs::remove_dir_all(&staging_dir);
@@ -2420,7 +2477,7 @@ impl BucketObjectStore {
             manifest.shards.iter().map(|s| s.storage_medium).collect();
         assigned_mediums.sort();
         assigned_mediums.dedup();
-        let parallel_bw = if total_seed_uplink_gbps > 0.0 {
+        let parallel_bw = if total_seed_uplink_gbps > 0.0 && !sample_holders.is_empty() {
             (total_seed_uplink_gbps * 0.72).min((data_shards_k as f64) * 12.5)
         } else {
             0.0
@@ -2809,6 +2866,10 @@ impl BucketObjectStore {
     /// Deletes a stored object and its shard directory from `BucketObjectStore`.
     pub fn delete_object(&self, object_uri: &str) -> Result<bool, String> {
         let normalized_uri = DecentralizedStoragePoolEngine::normalize_bucket_uri(object_uri)?;
+        let _write_guard = BUCKET_STORE_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.cleanup_stale_dot_dirs();
         let obj_dir = self.object_dir(&normalized_uri);
         if !obj_dir.exists() {
             return Ok(false);

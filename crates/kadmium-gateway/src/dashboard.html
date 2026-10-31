@@ -1315,12 +1315,12 @@
         h('div', { className: 'cr-stats' },
           h(Stat, { label: 'Context window', value: fmt.num(quality.effective_context_window_tokens), unit: 'tokens', meta: 'native max ' + (qTradeoffs[0] ? qTradeoffs[0].native_maximum : fmt.num(quality.effective_context_window_tokens)) + ' (' + fmt.pct(quality.context_retention_pct, 1) + ')', tone: quality.is_uncompromised_maximum_quality ? 'cadmium' : '' }),
           h(Stat, { label: 'Max input tokens', value: fmt.num(quality.effective_max_input_tokens), unit: 'tokens', meta: 'native max ' + (qTradeoffs[1] ? qTradeoffs[1].native_maximum : fmt.num(quality.effective_max_input_tokens)) }),
-          h(Stat, { label: 'Max output tokens', value: fmt.num(quality.effective_max_output_tokens), unit: 'tokens', meta: 'native max ' + (qTradeoffs[2] ? qTradeoffs[2].native_maximum : fmt.num(quality.effective_max_output_tokens)) }),
-          h(Stat, { label: 'Quality retention', value: fmt.pct(quality.estimated_quality_retention_pct, 1), meta: fmt.pct(quality.estimated_kv_cache_savings_pct, 1) + ' KV saved \u00b7 ' + fmt.num(quality.estimated_prefill_speedup_x, 1) + '\u00d7 prefill' })),
+          h(Stat, { label: 'Max output tokens', value: quality.effective_max_output_tokens != null ? fmt.num(quality.effective_max_output_tokens) : 'Uncapped', unit: quality.effective_max_output_tokens != null ? 'tokens' : '', meta: 'native max ' + (qTradeoffs[2] ? qTradeoffs[2].native_maximum : 'Uncapped') }),
+          h(Stat, { label: 'KV cache savings', value: fmt.pct(quality.estimated_kv_cache_savings_pct, 1), meta: quality.is_uncompromised_maximum_quality ? 'full native context retained' : fmt.pct(quality.context_retention_pct, 1) + ' context window retained' })),
         h('div', { className: 'cr-form', style: { marginTop: '10px' } },
           h(K.Input, { label: 'Manual context window', mono: true, placeholder: String(quality.effective_context_window_tokens), value: qForm.ctx, onChange: e => setQForm(Object.assign({}, qForm, { ctx: e.target.value.replace(/[^0-9]/g, '') })) }),
           h(K.Input, { label: 'Manual max input', mono: true, placeholder: String(quality.effective_max_input_tokens), value: qForm.maxIn, onChange: e => setQForm(Object.assign({}, qForm, { maxIn: e.target.value.replace(/[^0-9]/g, '') })) }),
-          h(K.Input, { label: 'Manual max output', mono: true, placeholder: String(quality.effective_max_output_tokens), value: qForm.maxOut, onChange: e => setQForm(Object.assign({}, qForm, { maxOut: e.target.value.replace(/[^0-9]/g, '') })) }),
+          h(K.Input, { label: 'Manual max output', mono: true, placeholder: quality.effective_max_output_tokens != null ? String(quality.effective_max_output_tokens) : 'Uncapped', value: qForm.maxOut, onChange: e => setQForm(Object.assign({}, qForm, { maxOut: e.target.value.replace(/[^0-9]/g, '') })) }),
           h(K.Input, { label: 'Manual active experts', mono: true, placeholder: String(quality.effective_active_experts_per_token || 1), value: qForm.experts, onChange: e => setQForm(Object.assign({}, qForm, { experts: e.target.value.replace(/[^0-9]/g, '') })) }),
           h(K.Button, { size: 'sm', variant: 'quiet', onClick: () => applyQualityLimits(false) }, 'Apply manual limits')),
         qTradeoffs.length ? h(Table, { label: 'Active quality tradeoffs', rows: qTradeoffs, rowKey: t => t.parameter, cols: [
@@ -1669,7 +1669,7 @@
     const base = (workers && workers.coordinator_http_url) || window.location.origin;
     const uploadBytes = () => {
       const uri = 'kdm://pool-bucket/' + upForm.uri.trim().replace(/^kdm:\/\/pool-bucket\//, '').replace(/^\/+/, '');
-      act(post('/api/v1/storage/pool-bucket/upload', { object_uri: uri, storage_class: upForm.storageClass, content_utf8: upForm.content }, { refresh: C.CLUSTER_PATHS.concat([bucketPath]) }), r => 'Uploaded & erasure-coded ' + r.manifest.object_uri + ' across ' + (r.manifest.shards || []).length + ' storage medium slices', 'ok').then(setInspectResult).catch(() => {});
+      act(post('/api/v1/storage/pool-bucket/upload', { object_uri: uri, storage_class: upForm.storageClass, content_utf8: upForm.content }, { refresh: C.CLUSTER_PATHS.concat([bucketPath]) }), r => 'Uploaded & erasure-coded ' + r.manifest.object_uri + ' (' + (r.manifest.shards || []).length + ' local Reed-Solomon shards)', 'ok').then(setInspectResult).catch(() => {});
     };
     const verifyObj = uri => act(post('/api/v1/storage/pool-bucket/verify', { uri }, { refresh: [bucketPath] }), r => r.bit_identical_verified ? 'Verified ' + r.intact_shards_on_disk + '/' + r.total_shards + ' erasure-coded shards' : 'Verification failed', 'ok').then(setInspectResult).catch(() => {});
     const downloadObj = uri => act(post('/api/v1/storage/pool-bucket/download', { uri }, { refresh: [] }), 'Downloaded & verified ' + uri, 'ok').then(setInspectResult).catch(() => {});
@@ -1692,7 +1692,7 @@
         h(Stat, { label: C.T('fts3', 'Copies in flight'), value: tx.length, unit: tx.length === 1 ? 'transfer' : 'transfers', meta: tx.length ? fmt.gb(totalGb) + ' between machines' : (overview.imported_models || []).length + ' compiled .ktb file' + ((overview.imported_models || []).length === 1 ? '' : 's') + ' on this machine' })),
       h(K.Tabs, { label: 'Storage views', value: tab, onChange: setTab, items: [{ id: 'bucket', label: 'Files', count: objs.length || undefined }, { id: 'transfers', label: 'Copies between machines', count: tx.length || undefined }, { id: 'sources', label: 'Sources', count: integ ? integ.connectors.length : undefined }, { id: 'hf', label: 'Hugging Face' }, { id: 'gh', label: 'GitHub' }] }),
       tab === 'bucket' ? h(C.TabPanel, { id: 'bucket', label: 'Files' },
-        mediums.length ? h(Panel, { title: 'All storage mediums across systems', sub: mediums.length + ' hardware tiers inventoried across ' + (bucket ? bucket.total_participating_nodes : 0) + ' machines', flush: true, desc: 'Multi-medium HRW placement scores every available tier (Discrete GPU VRAM, Apple Silicon / LPDDR Unified Memory, System DDR4/DDR5 RAM, PCIe NVMe SSD, UFS 3.0-4.0 / eMMC / SD Flash on Phone Farm Boxes & SBCs, and Dedicated NAS ZFS/RAID Vaults) by bandwidth, endurance, and failure domain.' },
+        mediums.length ? h(Panel, { title: 'All storage mediums across systems', sub: mediums.length + ' hardware tiers modelled across ' + (bucket ? bucket.total_participating_nodes : 0) + ' machines', flush: true, desc: 'Multi-medium HRW placement models and scores every hardware tier across cluster node profiles (Discrete GPU VRAM, Apple Silicon / LPDDR Unified Memory, System DDR4/DDR5 RAM, PCIe NVMe SSD, UFS 3.0-4.0 / eMMC / SD Flash on Phone Farm Boxes & SBCs, and Dedicated NAS ZFS/RAID Vaults) by bandwidth, endurance, and failure domain.' },
           h(Table, { label: 'All storage mediums across systems', rows: mediums, rowKey: m => m.medium_kind, cols: [
             { key: 'm', label: 'storage medium', render: m => h('span', { className: 'sans', style: { fontWeight: 600 } }, m.medium_label) },
             { key: 'n', label: 'nodes', num: true, render: m => m.contributing_nodes },
@@ -1702,7 +1702,7 @@
             { key: 'u', label: 'optimal usage', cls: 'wrap sans', render: m => m.optimal_usage }
           ] })) : null,
         h('div', { className: 'cr-two' },
-          h(Panel, { title: 'Upload & verify real erasure-coded payload', sub: 'GF(2^8) Reed-Solomon k=8 + m=2 shards on disk', desc: 'Writes actual erasure-coded data + parity shard files across storage medium slices and verifies Merkle / parity reconstruction.' },
+          h(Panel, { title: 'Upload & verify real erasure-coded payload', sub: 'GF(2^8) Reed-Solomon k=8 + m=2 shards on disk', desc: 'Writes erasure-coded data + parity shard files in the local coordinator bucket store and verifies Merkle / parity reconstruction.' },
             h('div', { className: 'cr-form' },
               h(K.Input, { label: 'Object URI path', mono: true, prefix: 'kdm://pool-bucket/', className: 'wide', value: upForm.uri, onChange: e => setUpForm(Object.assign({}, upForm, { uri: e.target.value })) }),
               h(K.Input, { label: 'UTF-8 payload content', mono: true, className: 'wide', value: upForm.content, onChange: e => setUpForm(Object.assign({}, upForm, { content: e.target.value })) }),
