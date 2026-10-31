@@ -62,6 +62,8 @@ kadmium desktop --control-room
 | `--control-room` | off | Also open the Control Room in the browser. |
 | `--check-only` | off | Print hardware and desktop-app discovery information, then exit. |
 
+You can also launch the installed app directly with `kadmium-desktop --port 7848` (or `cargo run -p kadmium-desktop --locked -- --port 7848` from a checkout).
+
 The app is searched for next to `kadmium`, then on `PATH`. Linux uses the browser by default; a native WebView requires the `linux-native` feature and WebKitGTK 4.1/GTK 3 development packages.
 
 ## Hardware and placement
@@ -90,8 +92,21 @@ kadmium plan --workload dream-rsi
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `-m`, `--model <ID>` | `deepseek-v3-671b-moe` | Preset: `deepseek-v3-671b-moe`, `qwen3-235b-moe`, or `llama-3-70b-lora`. |
+| `-m`, `--model <ID>` | `deepseek-v3-671b-moe` | Known preset ID or alias (listed below); unknown IDs fall back to `deepseek-v3-671b-moe`. |
 | `-w`, `--workload <MODE>` | `inference` | `inference`, `training`, `batch`, `rl`, or `dream-rsi`. |
+
+The eight presets and accepted aliases are:
+
+| Preset | Aliases |
+| :--- | :--- |
+| `llama-3.2-3b-instruct` | `llama-3.2-3b` |
+| `qwen2.5-coder-7b-instruct` | `qwen2.5-coder-7b` |
+| `qwen2.5-coder-14b-instruct` | `qwen2.5-coder-14b` |
+| `qwen2.5-coder-32b-instruct` | `qwen2.5-coder-32b` |
+| `qwen3-235b-moe` | none |
+| `llama-3-70b-lora` | `llama-3.3-70b-instruct` |
+| `deepseek-v3-671b-exl3-2.5bpw` | `deepseek-v3-exl3`, `exl3` |
+| `deepseek-v3-671b-moe` | none |
 
 RL and Dream-RSI use the dedicated RL topology planner; the other modes use `ShardPlanner`. Estimates, staging streams, and fit reports are modelled. Usage/calibration records are loaded from `target/kadmium-state` when present.
 
@@ -132,6 +147,8 @@ kadmium diloco --inner-steps 20 --rounds 25 --islands 3 --json
 | `--rounds <N>` | `25` | Outer rounds, `1..=1000`. |
 | `--islands <N>` | `3` | Independent learners, `2..=64`. |
 | `--json` | off | Emit the full JSON report. |
+
+The inner AdamW optimizer uses learning rate `0.02`, betas `0.9`/`0.999`, epsilon `1e-8`, and weight decay `0.01`. The outer Nesterov optimizer uses learning rate `0.7` and momentum `0.9`.
 
 Total local work is capped at two million steps. The default report compares 25 outer synchronizations with a 500-sync per-step baseline; payload estimates are not measured network savings. This is not LLM, GPU, WAN, or distributed pipeline training. Each CLI run starts fresh.
 
@@ -220,6 +237,8 @@ kadmium join --offer-ram-gb 24 --offer-fast-gb 10 --slots 2 --require-approval
 
 The worker measures memory streaming with a 64 MiB single-thread copy before registration. Tickets use an unkeyed FNV-1a integrity checksum, not HMAC or a signature; registration does not authenticate the ticket or enforce its slice/trust fields. Remote joining requires reachable HTTP/TCP addresses through a LAN, VPN, or port forwarding, not automatic QUIC/NAT traversal.
 
+Set `KADMIUM_USBC_BRIDGE_BIND` (for example `0.0.0.0:7871`) on a joining worker to also accept [USB-C delta bridge](guides/usbc-delta-bridge.md) sessions. A coordinator can then use a `kdbr://` address with one lane per path; lane failover preserves the delta-link stores. This is separate from join-ticket authentication, which remains unimplemented.
+
 ### `kadmium pull`
 
 Prints an `hf://` selective-pull plan or a simulated `gh://` slice evaluation. It performs no download, repository mount, dataset stream, checkpoint push, webhook, or GitHub Check Run.
@@ -230,8 +249,6 @@ kadmium pull gh://zhengkid/Dream-RSI@main#worlds/gpu_kernel_opt
 ```
 
 The optional URI defaults to `hf://deepseek-ai/DeepSeek-V3@main`. See the [integration guide](guides/integrations-hf-github.md).
-
-Set `KADMIUM_USBC_BRIDGE_BIND` (for example `0.0.0.0:7871`) on a joining worker to also accept [USB-C delta bridge](guides/usbc-delta-bridge.md) sessions. A coordinator can then use a `kdbr://` address with one lane per path; lane failover preserves the delta-link stores. This is separate from join-ticket authentication, which remains unimplemented.
 
 ### `kadmium mcp`
 
@@ -253,12 +270,12 @@ kadmium mcp
 Imports one local SafeTensors or compact zero-metadata GGUF v3 file into `.ktb`. Typical GGUF files with metadata are outside the current parser's support. Without `--path`, the command synthesizes a reference input under `target/kadmium-models/`.
 
 ```bash
-kadmium import --model example --path ./model.safetensors --start-layer 0 --end-layer 3
+kadmium import --model qwen2.5-coder-7b --path ./model.safetensors --start-layer 0 --end-layer 3
 ```
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `-m`, `--model <ID>` | `qwen2.5-coder-32b-instruct` | Output model identifier. |
+| `-m`, `--model <ID>` | `qwen2.5-coder-32b-instruct` | Known model preset ID or alias; unknown IDs are rejected (custom architecture metadata is not supported). |
 | `-p`, `--path <PATH>` | synthesize input | Local `.gguf` or `.safetensors` file. |
 | `-f`, `--format <FORMAT>` | `gguf` | Synthesized-input hint: `gguf` or `safetensors`. |
 | `--start-layer <N>` | `0` | Inclusive first layer. |

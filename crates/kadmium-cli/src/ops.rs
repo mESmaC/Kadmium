@@ -488,7 +488,9 @@ pub fn run_probe() {
         vec![0x3C; 96_000],
     );
 
-    let ktb_bytes = packer.pack_to_bytes();
+    let ktb_bytes = packer
+        .pack_to_bytes()
+        .expect("bounded reference KTB fixture");
     let reader = KtbBankReader::from_slice(&ktb_bytes).expect("parse packed KTB image");
     println!(
         "\n--- 📦 Binary .ktb (Kadmium Tensor Bank) 64 KiB Page-Aligned Verification ({} bytes total) ---",
@@ -1245,7 +1247,9 @@ pub fn run_compile(model: &str, start_layer: u32, end_layer: u32, out_path: Opti
         }
     }
 
-    let ktb_bytes = packer.pack_to_bytes();
+    let ktb_bytes = packer
+        .pack_to_bytes()
+        .expect("bounded reference KTB fixture");
     let merkle = KtbMerkleTree::from_ktb_bytes(&ktb_bytes);
     let reader = KtbBankReader::from_slice(&ktb_bytes).expect("valid compiled .ktb image");
 
@@ -1297,7 +1301,9 @@ pub fn run_inspect(path: Option<&str>) {
         );
         (
             "in-memory sample (.ktb)".to_string(),
-            packer.pack_to_bytes(),
+            packer
+                .pack_to_bytes()
+                .expect("bounded reference KTB fixture"),
         )
     };
 

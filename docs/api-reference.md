@@ -11,6 +11,18 @@ Condenser runs separately on loopback port `7856`. Its [inference workspace guid
 
 ## 1. Reference API Endpoints
 
+### Validation, imports and saved state
+
+`POST /api/v1/cluster/model` accepts known preset IDs/aliases or IDs with an imported manifest. Unknown or empty IDs return HTTP 400 with `{"error":{"type":"invalid_request_error","message":"..."}}`. Both inference and training IDs are validated before changing either plan, the epoch, or diagnostic state.
+
+`POST /api/v1/models/import` requires a readable `source_path`. Missing, unreadable, truncated or malformed files return a structured HTTP 400 error without updating active/imported model state. To intentionally generate a small synthetic reference fixture, omit `source_path` and explicitly set `demo_fixture: true`. The returned manifest includes `synthetic_fixture`; compiling such a file does not import real model weights. EXL3 conversion currently supports synthetic fixtures only. The Companion requires an existing path; the Control Room's **Compile reference fixture** action explicitly requests demo data.
+
+`POST /api/v1/storage/pool-bucket/object` requires positive data/parity shard counts whose checked sum is at most 256 (defaults: 8 + 2). Invalid counts return structured HTTP 400 errors before shared state is changed. Entries record metadata and planned placement, not uploaded object bytes. Live storage reports use `report_kind: "live_placement_estimate"`, `durability_verified: false`, and a `protection_status` explaining unverified protection or insufficient distinct holders. Configured anchors have zero verified coverage until byte synchronization and independent failure domains can be verified. Synthetic recovery exercises remain separate in the benchmark reports (`report_kind: "synthetic_benchmark"`).
+
+The coordinator restores model plans, imports, object/anchor metadata, training progress, checkpoint step and runtime version before serving requests. CLI and desktop coordinators store `cluster_state.json` (live) and `cluster_state.demo.json` (demo) separately, so demo saves cannot overwrite live progress. The journal directory is `%LOCALAPPDATA%\Kadmium\state` on Windows, `~/Library/Application Support/Kadmium` on macOS, and `$XDG_STATE_HOME/kadmium` (or `~/.local/state/kadmium`) on Linux. Set `KADMIUM_STATE_DIR` to an absolute writable directory to use a separate workspace. Without that override, the first launch migrates a journal found under `target/kadmium-state` in the working directory, leaving the original file intact. Launch once from the old working directory when upgrading. Other model/checkpoint and diagnostic artifact paths are unchanged.
+
+Missing journals start a fresh workspace; corrupt JSON or unsupported schema versions stop startup with an error and preserve the original file for recovery. Unsupported legacy custom imports are skipped with a warning, without deleting their model files. Supported imports and unrelated state still restore. A selected custom model falls back to the startup model plan, and training progress tied to that unsupported model is not restored. New custom IDs remain rejected. Journal replacement writes and syncs a unique temporary file first. Restored plans and imports do not establish that weights are resident or workers are running. Versionless journals from earlier releases are accepted as schema version 1; progress with missing provenance is never treated as live training.
+
 These routes retain their existing behavior. They execute small reference workloads and return diagnostic output, not generated language-model responses. There is no external inference relay or backend URL/key setting. This setup change keeps the existing Cargo dependencies and does not replace these routes with an unconfigured-backend error.
 
 The API shapes are useful for inspecting reference execution, but are not a promise of full OpenAI/Anthropic protocol or SDK compatibility. A model ID in a response or `active_loaded` in the catalog is diagnostic state, not evidence that production model weights were loaded. Throughput fields describe reference execution or estimates, not measured language-model generation.
@@ -82,7 +94,7 @@ Accepts the same limited request structure as the chat route and returns a fixed
 | Endpoint | Current behavior |
 | :--- | :--- |
 | `GET /v1/models` | Returns Kadmium's planning catalog and reference activity metadata, not a list of loaded language models. |
-| `POST /v1/embeddings` | Takes string input or an array of strings, optional `model` and `dimensions` (default `64`), and returns reference hidden-state vectors with telemetry. These are not pretrained semantic embeddings. |
+| `POST /v1/embeddings` | Takes a non-empty string or non-empty array of non-empty strings, optional `model` and `dimensions` (default `64`), and returns reference hidden-state vectors with telemetry. Invalid or omitted input returns a structured HTTP 400 error; batches are accepted in full or rejected, preserving input indices. These are not pretrained semantic embeddings. |
 
 Client API keys do not authenticate access to these routes. Keep the all-interface coordinator on a trusted network or provide external access controls. A future external inference relay requires a separate dependency and downstream-access design decision; none is included here. The MCP endpoint remains separately available at `/mcp`.
 

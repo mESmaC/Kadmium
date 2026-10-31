@@ -4,6 +4,29 @@
 use crate::{KtbBankPacker, TensorEncoding, compute_fnv1a64_checksum};
 use serde::{Deserialize, Serialize};
 
+fn take<'a>(bytes: &'a [u8], cursor: &mut usize, len: usize) -> Result<&'a [u8], String> {
+    let end = cursor.checked_add(len).ok_or("Binary offset overflow")?;
+    let value = bytes.get(*cursor..end).ok_or("Truncated binary field")?;
+    *cursor = end;
+    Ok(value)
+}
+
+fn read_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, String> {
+    Ok(u64::from_le_bytes(
+        take(bytes, cursor, 8)?.try_into().unwrap(),
+    ))
+}
+
+fn read_u32(bytes: &[u8], cursor: &mut usize) -> Result<u32, String> {
+    Ok(u32::from_le_bytes(
+        take(bytes, cursor, 4)?.try_into().unwrap(),
+    ))
+}
+
+fn read_size(bytes: &[u8], cursor: &mut usize) -> Result<usize, String> {
+    usize::try_from(read_u64(bytes, cursor)?).map_err(|_| "Binary length too large".into())
+}
+
 /// Parsed descriptor of a single tensor inside a HuggingFace `.safetensors` binary file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SafetensorFieldSpec {
@@ -78,12 +101,10 @@ impl SafetensorsToKtbTranscoder {
         if safetensors_bytes.len() < 8 {
             return Err("Safetensors buffer too short (< 8 bytes)".into());
         }
-        let header_len = u64::from_le_bytes(
-            safetensors_bytes[0..8]
-                .try_into()
-                .map_err(|_| "Invalid header length bytes")?,
-        ) as usize;
-        let data_base = 8 + header_len;
+        let header_len = read_size(safetensors_bytes, &mut 0)?;
+        let data_base = 8usize
+            .checked_add(header_len)
+            .ok_or("Header length overflow")?;
         if safetensors_bytes.len() < data_base {
             return Err("Safetensors header exceeds buffer length".into());
         }
@@ -106,15 +127,19 @@ impl SafetensorsToKtbTranscoder {
                 .map_err(|e| format!("Invalid tensor entry {key}: {e}"))?;
 
             let (layer_idx, expert_idx) = Self::parse_layer_and_expert(key);
-            if layer_idx < start_layer || layer_idx > end_layer {
-                continue;
-            }
 
             let [start_off, end_off] = spec.data_offsets;
-            let abs_start = data_base + start_off;
-            let abs_end = data_base + end_off;
+            let abs_start = data_base
+                .checked_add(start_off)
+                .ok_or("Tensor offset overflow")?;
+            let abs_end = data_base
+                .checked_add(end_off)
+                .ok_or("Tensor offset overflow")?;
             if abs_end > safetensors_bytes.len() || abs_start > abs_end {
                 return Err(format!("Out-of-bounds tensor offsets for {key}"));
+            }
+            if layer_idx < start_layer || layer_idx > end_layer {
+                continue;
             }
 
             let encoding = match spec.dtype.as_str() {
@@ -133,7 +158,7 @@ impl SafetensorsToKtbTranscoder {
             );
         }
 
-        Ok(packer.pack_to_bytes())
+        packer.pack_to_bytes()
     }
 }
 
@@ -231,43 +256,40 @@ impl GgufToKtbTranscoder {
         if version != 3 {
             return Err(format!("Unsupported GGUF version {version} (expected v3)"));
         }
-        let tensor_count = u64::from_le_bytes(gguf_bytes[8..16].try_into().unwrap()) as usize;
-        let kv_count = u64::from_le_bytes(gguf_bytes[16..24].try_into().unwrap()) as usize;
+        let tensor_count = read_size(gguf_bytes, &mut 8)?;
+        let kv_count = read_u64(gguf_bytes, &mut 16)?;
         if kv_count != 0 {
             return Err("Expected compact 0-KV GGUF stream".into());
         }
 
         let mut cursor = 24usize;
-        let mut parsed_descriptors = Vec::with_capacity(tensor_count);
+        // Even an empty name and zero-dimensional descriptor needs 24 bytes.
+        if tensor_count > (gguf_bytes.len() - cursor) / 24 {
+            return Err("GGUF tensor count exceeds available descriptors".into());
+        }
+        let mut parsed_descriptors = Vec::new();
+        parsed_descriptors
+            .try_reserve(tensor_count)
+            .map_err(|e| e.to_string())?;
 
         for _ in 0..tensor_count {
-            if cursor + 8 > gguf_bytes.len() {
-                return Err("Truncated GGUF tensor name length".into());
-            }
-            let name_len =
-                u64::from_le_bytes(gguf_bytes[cursor..cursor + 8].try_into().unwrap()) as usize;
-            cursor += 8;
-            let name = std::str::from_utf8(&gguf_bytes[cursor..cursor + name_len])
+            let name_len = read_size(gguf_bytes, &mut cursor)?;
+            let name = std::str::from_utf8(take(gguf_bytes, &mut cursor, name_len)?)
                 .map_err(|e| format!("Invalid UTF-8 tensor name: {e}"))?
                 .to_string();
-            cursor += name_len;
-
-            let n_dims =
-                u32::from_le_bytes(gguf_bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
-            cursor += 4;
-            for _ in 0..n_dims {
-                cursor += 8;
-            }
-            let ggml_code = u32::from_le_bytes(gguf_bytes[cursor..cursor + 4].try_into().unwrap());
-            cursor += 4;
-            let rel_offset =
-                u64::from_le_bytes(gguf_bytes[cursor..cursor + 8].try_into().unwrap()) as usize;
-            cursor += 8;
+            let n_dims = read_u32(gguf_bytes, &mut cursor)? as usize;
+            let dims_len = n_dims.checked_mul(8).ok_or("GGUF dimension overflow")?;
+            take(gguf_bytes, &mut cursor, dims_len)?;
+            let ggml_code = read_u32(gguf_bytes, &mut cursor)?;
+            let rel_offset = read_size(gguf_bytes, &mut cursor)?;
 
             parsed_descriptors.push((name, GgmlTypeCode::from_u32(ggml_code), rel_offset));
         }
 
-        let data_base = cursor.div_ceil(32) * 32;
+        let data_base = cursor.checked_add(31).ok_or("GGUF alignment overflow")? / 32 * 32;
+        let data = gguf_bytes
+            .get(data_base..)
+            .ok_or("Truncated GGUF data alignment")?;
         let mut packer = KtbBankPacker::new(model_id);
 
         for i in 0..parsed_descriptors.len() {
@@ -278,23 +300,24 @@ impl GgufToKtbTranscoder {
                 gguf_bytes.len().saturating_sub(data_base)
             };
 
+            let payload = data
+                .get(rel_start..rel_end)
+                .ok_or("Invalid GGUF tensor offsets")?;
             let (layer_idx, expert_idx) = SafetensorsToKtbTranscoder::parse_layer_and_expert(name);
             if layer_idx < start_layer || layer_idx > end_layer {
                 continue;
             }
 
-            let abs_start = data_base + rel_start;
-            let abs_end = data_base + rel_end;
             packer.add_tensor_bank(
                 name.clone(),
                 layer_idx,
                 expert_idx,
                 ggml_type.to_ktb_encoding(),
-                gguf_bytes[abs_start..abs_end].to_vec(),
+                payload.to_vec(),
             );
         }
 
-        Ok(packer.pack_to_bytes())
+        packer.pack_to_bytes()
     }
 }
 

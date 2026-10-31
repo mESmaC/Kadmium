@@ -14,14 +14,14 @@ Run the relevant checks for your change. The full host-workspace sequence is:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
 On Linux with the native-WebView dependencies installed, also run:
 
 ```bash
-cargo clippy -p kadmium-desktop -p kadmium-condenser --features linux-native --all-targets --locked
+cargo clippy -p kadmium-desktop -p kadmium-condenser --features linux-native --all-targets --locked -- -D warnings
 ```
 
 `cargo test --workspace --locked` covers host Rust unit, integration, and documentation tests. It does not cover the excluded CUDA device harness, Node workflows, browser tests, installer fixtures, or Python business-model checks.
@@ -44,6 +44,17 @@ npm test
 ```
 
 See `crates/kadmium-gateway/tests/ui/README.md` for browser-test configuration and artifacts.
+
+The separate Control Room navigation and request-recovery regressions use a router fixture. From the repository root:
+
+```bash
+npm install --prefix target/ui-test --no-package-lock --no-audit --no-fund playwright@1.64.1
+node target/ui-test/node_modules/playwright/cli.js install --with-deps chromium
+cargo build -p kadmium-gateway --example control_room_fixture --locked
+node --test crates/kadmium-gateway/tests/control_room.test.cjs
+```
+
+The fixture test uses installed Edge on Windows and Chromium elsewhere. For the workspace suite on Windows, set `KADMIUM_TEST_BROWSER=msedge` to use installed Edge.
 
 Python business-model checks use Python 3.12:
 

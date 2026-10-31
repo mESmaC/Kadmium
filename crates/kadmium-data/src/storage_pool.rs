@@ -173,6 +173,12 @@ pub struct BucketGroundingReport {
 /// Complete snapshot and benchmark report of the Decentralized Pool Storage Bucket (`kdm://pool-bucket/`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecentralizedStoragePoolReport {
+    /// Live reports model placement only; benchmarks exercise synthetic bytes.
+    pub report_kind: String,
+    pub durability_verified: bool,
+    pub protection_status: String,
+    pub distinct_placement_nodes: usize,
+
     pub bucket_uri: String,
     pub total_participating_nodes: usize,
     /// Aggregate Wire-Resident RAM Carousel capacity across the pool (`GiB`).
@@ -196,6 +202,17 @@ pub struct DecentralizedStoragePoolReport {
 pub struct DecentralizedStoragePoolEngine;
 
 impl DecentralizedStoragePoolEngine {
+    /// Bound placement work and reject invalid counts before arithmetic or state mutation.
+    pub fn validate_shard_counts(k: usize, m: usize) -> Result<usize, String> {
+        let total = k.checked_add(m).ok_or("Shard count overflow")?;
+        if k == 0 || m == 0 || total > 256 {
+            return Err(
+                "data_shards_k and parity_shards_m must be positive, with a total of at most 256"
+                    .into(),
+            );
+        }
+        Ok(total)
+    }
     /// Computes a deterministic 64-bit Rendezvous Hash (`HRW`) score weighted by a node's pledged disk capacity.
     ///
     /// Why Rendezvous Hashing (`HRW`) beats plain modulo hashing:
@@ -501,17 +518,29 @@ impl DecentralizedStoragePoolEngine {
         parity_shards_m: usize,
         merkle_root_fnv64: Option<u64>,
         nodes: &[HardwareNode],
-    ) -> PoolBucketObjectEntry {
+    ) -> Result<PoolBucketObjectEntry, String> {
+        let total_shards = Self::validate_shard_counts(data_shards_k, parity_shards_m)?;
+        if !logical_size_gb.is_finite() || logical_size_gb <= 0.0 {
+            return Err("logical_size_gb must be finite and positive".into());
+        }
         let normalized_uri = if object_uri.starts_with("kdm://") {
             object_uri.to_string()
         } else {
             format!("kdm://pool-bucket/{}", object_uri.trim_start_matches('/'))
         };
-        let k = data_shards_k.max(1);
-        let m = parity_shards_m.max(1);
+        let k = data_shards_k;
+        let m = parity_shards_m;
         let size_gb = (logical_size_gb.max(0.01) * 100.0).round() / 100.0;
         let phys_gb = ((size_gb * ((k + m) as f64 / (k as f64))) * 100.0).round() / 100.0;
-        let superblocks = ((size_gb * 1024.0) / 64.0).ceil().max(1.0) as usize;
+        let block_count = (size_gb * 16.0).ceil().max(1.0);
+        // Keep block and shard counts exactly representable on every supported platform.
+        if !size_gb.is_finite()
+            || !phys_gb.is_finite()
+            || block_count > (u32::MAX as usize / total_shards) as f64
+        {
+            return Err("logical_size_gb exceeds the supported block/shard count".into());
+        }
+        let superblocks = block_count as usize;
 
         let merkle = merkle_root_fnv64.unwrap_or_else(|| {
             let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -545,10 +574,11 @@ impl DecentralizedStoragePoolEngine {
             });
         }
 
-        let holders = Self::select_hrw_shard_holders(&normalized_uri, 0, &contributions, k + m);
+        let holders =
+            Self::select_hrw_shard_holders(&normalized_uri, 0, &contributions, total_shards);
         let parallel_bw = (total_seed_uplink_gbps * 0.72).min((k as f64) * 12.5);
 
-        PoolBucketObjectEntry {
+        Ok(PoolBucketObjectEntry {
             object_uri: normalized_uri,
             display_name: display_name.to_string(),
             object_kind: object_kind.to_string(),
@@ -560,7 +590,7 @@ impl DecentralizedStoragePoolEngine {
             merkle_root_fnv64: merkle,
             sample_stripe_holder_nodes: holders.into_iter().take(6).collect(),
             parallel_read_bandwidth_gbps: (parallel_bw * 10.0).round() / 10.0,
-        }
+        })
     }
 
     /// Evaluates the live session's Decentralized Pool Storage Bucket grounded in real cluster
@@ -571,10 +601,6 @@ impl DecentralizedStoragePoolEngine {
         custom_objects: &[PoolBucketObjectEntry],
         custom_anchors: &[GroundingAnchorTarget],
     ) -> DecentralizedStoragePoolReport {
-        if nodes.is_empty() {
-            return Self::run_pool_storage_benchmark(9);
-        }
-
         let mut contributions = Vec::with_capacity(nodes.len());
         let mut total_wire_ram_gb = 0.0f64;
         let mut total_disk_gb = 0.0f64;
@@ -613,8 +639,7 @@ impl DecentralizedStoragePoolEngine {
             if custom_objects.iter().any(|o| o.object_uri == uri) {
                 continue;
             }
-            let size_gb =
-                (m.derived_model_spec.total_weight_footprint_gb() * 100.0).round() / 100.0;
+            let size_gb = m.ktb_size_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
             let k = 8usize;
             let parity_m = 2usize;
             let phys_gb =
@@ -652,8 +677,11 @@ impl DecentralizedStoragePoolEngine {
         }
 
         for obj in custom_objects {
-            let k = obj.data_shards_k.max(1);
-            let parity_m = obj.parity_shards_m.max(1);
+            let k = obj.data_shards_k;
+            let parity_m = obj.parity_shards_m;
+            if Self::validate_shard_counts(k, parity_m).is_err() {
+                continue;
+            }
             let phys_gb = ((obj.logical_size_gb * ((k + parity_m) as f64 / (k as f64))) * 100.0)
                 .round()
                 / 100.0;
@@ -689,45 +717,38 @@ impl DecentralizedStoragePoolEngine {
             });
         }
 
-        let ec_report = Self::verify_k_plus_m_erasure_coding(8, 65_536);
-        let mut grounding_report =
-            Self::verify_bucket_grounding_and_mass_dropout_recovery(8, 16_384);
-
-        let mut live_anchors = Vec::new();
-        for (idx, nd) in nodes.iter().enumerate() {
-            if nd.memory.nvme_cache_gb >= 16.0 || idx == 0 {
-                live_anchors.push(GroundingAnchorTarget {
-                    anchor_id: format!("anchor-local-{}", nd.hostname.to_lowercase()),
-                    anchor_uri: format!("kdm-vault://{}/nvme-pool-store", nd.hostname),
-                    anchor_kind: if nd.device_kind == DeviceKind::HomeNas {
-                        BucketGroundingAnchorKind::LocalNasZfsVault
-                    } else {
-                        BucketGroundingAnchorKind::DedicatedStorageServer
-                    },
-                    sync_policy: GroundingSyncPolicy::AsyncWriteBehindMerkleDelta,
-                    priority_tier: (idx as u8).saturating_add(1),
-                    capacity_tb: ((nd.memory.nvme_cache_gb / 1024.0) * 100.0)
-                        .round()
-                        .max(1.0)
-                        / 100.0,
-                    sustained_bandwidth_gbps: ((nd.memory.nvme_read_bw_gbps * 8.0) * 10.0).round()
-                        / 10.0,
-                    egress_cost_per_gb_usd: 0.0,
-                    merkle_grounded_coverage_pct: 100.0,
-                });
-            }
-        }
-        for custom in custom_anchors {
-            if !live_anchors
-                .iter()
-                .any(|a| a.anchor_uri == custom.anchor_uri)
-            {
-                live_anchors.push(custom.clone());
-            }
-        }
-        if !live_anchors.is_empty() {
-            grounding_report.configured_anchors = live_anchors;
-        }
+        // No object-byte placement or anchor sync receipts exist yet. Never promote
+        // the synthetic RS recovery benchmark into live data-protection evidence.
+        let ec_report = ErasureCodingVerificationReport {
+            data_shards_k: 8,
+            parity_shards_m: 2,
+            shard_size_bytes: 0,
+            storage_overhead_ratio: 1.25,
+            simulated_dropped_shard_indices: vec![],
+            exact_bit_identical_recovery: false,
+            reconstruction_max_byte_diff: 0,
+        };
+        let live_anchors = custom_anchors
+            .iter()
+            .cloned()
+            .map(|mut a| {
+                a.merkle_grounded_coverage_pct = 0.0;
+                a
+            })
+            .collect::<Vec<_>>();
+        let grounding_report = BucketGroundingReport {
+            grounding_enabled: !live_anchors.is_empty(),
+            configured_anchors: live_anchors,
+            async_write_behind_foreground_stall_ms: 0.0,
+            simulated_mass_dropout_indices: vec![],
+            ungrounded_survives_mass_dropout: false,
+            grounded_survives_mass_dropout: false,
+            grounded_recovery_max_byte_diff: 0,
+            steady_state_p2p_swarm_read_share_pct: 0.0,
+            steady_state_ground_spillover_share_pct: 0.0,
+            p99_tail_read_latency_reduction_pct: 0.0,
+            swarm_fanout_ground_egress_multiplier_x: 0.0,
+        };
 
         let central_nas_gbps = 2.5;
         let carousel_gbps = (total_seed_uplink_gbps * 0.78 * 10.0).round() / 10.0;
@@ -741,41 +762,41 @@ impl DecentralizedStoragePoolEngine {
             centralized_nas_bottleneck_gbps: central_nas_gbps,
             decentralized_pool_carousel_gbps: carousel_gbps,
             bandwidth_scaling_multiplier_x: bw_mult,
-            centralized_data_stall_ms_per_step: 412.5,
+            centralized_data_stall_ms_per_step: 0.0,
             wire_carousel_data_stall_ms_per_step: 0.0,
-            pre_staged_on_wire_hit_rate_pct: 99.6,
+            pre_staged_on_wire_hit_rate_pct: 0.0,
         };
 
+        let distinct_nodes = nodes
+            .iter()
+            .filter(|n| n.memory.nvme_cache_gb > 0.0)
+            .map(|n| &n.id.0)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let required = objects
+            .iter()
+            .map(|o| o.data_shards_k + o.parity_shards_m)
+            .max()
+            .unwrap_or(10);
+        let protection_status = if distinct_nodes < required {
+            format!(
+                "Unverified: insufficient distinct holders ({distinct_nodes}/{required}) for planned k+m placement. No stored-byte or independent anchor sync receipts."
+            )
+        } else {
+            "Unverified: placement is modelled, with no stored-byte or independent anchor sync receipts. No node-loss tolerance is established.".to_string()
+        };
         let scorecard = format!(
-            "╔══════════════════════════════════════════════════════════════════════════════╗\n\
-             ║ KADMIUM (Cd-48) LIVE CLUSTER STORAGE BUCKET & WIRE CAROUSEL                  ║\n\
-             ╠══════════════════════════════════════════════════════════════════════════════╣\n\
-             ║ Bucket URI: {:<38} Participating Nodes: {:<4} ║\n\
-             ║ * Pooled NVMe/UFS/NAS Capacity : {:>8.1} GiB ({:>5.2} TiB Shared Cloud Drive) ║\n\
-             ║ * Wire-Resident RAM Carousel   : {:>8.1} GiB (In-Flight Token Ring Buffer)  ║\n\
-             ║ * Erasure Coding (RS k=8, m=2) : {:>5.2}x Overhead | 2-Node Loss Err = {} B      ║\n\
-             ║ * Bucket Grounding Anchors     : {} Anchors | 50% Mass-Drop Recovery Err={} B  ║\n\
-             ║ * Staged Bucket Objects (.ktb) : {} Objects ({:.2} GiB logical)              ║\n\
-             ║ * Pool Disk Read Bandwidth     : {:>8.1} GB/s Aggregate Local NVMe/UFS      ║\n\
-             ║ * P2P Wire Carousel Bandwidth  : {:>8.1} Gbps (vs 2.5 Gbps NAS = {:>5.1}x)    ║\n\
-             ╚══════════════════════════════════════════════════════════════════════════════╝",
-            "kdm://pool-bucket/",
-            nodes.len(),
-            total_disk_gb,
-            total_disk_gb / 1024.0,
-            total_wire_ram_gb,
-            ec_report.storage_overhead_ratio,
-            ec_report.reconstruction_max_byte_diff,
-            grounding_report.configured_anchors.len(),
-            grounding_report.grounded_recovery_max_byte_diff,
+            "LIVE STORAGE PLACEMENT ESTIMATE: {} objects, {:.2} GiB. {}",
             objects.len(),
             total_logical_gb,
-            total_disk_bw_gbps,
-            carousel_gbps,
-            bw_mult
+            protection_status
         );
 
         DecentralizedStoragePoolReport {
+            report_kind: "live_placement_estimate".into(),
+            durability_verified: false,
+            protection_status,
+            distinct_placement_nodes: distinct_nodes,
             bucket_uri: "kdm://pool-bucket/".to_string(),
             total_participating_nodes: nodes.len(),
             total_wire_ram_carousel_gb: (total_wire_ram_gb * 10.0).round() / 10.0,
@@ -976,6 +997,11 @@ impl DecentralizedStoragePoolEngine {
         );
 
         DecentralizedStoragePoolReport {
+            report_kind: "synthetic_benchmark".into(),
+            durability_verified: false,
+            protection_status:
+                "Synthetic recovery self-test; not verification of user objects or copies".into(),
+            distinct_placement_nodes: nodes.len(),
             bucket_uri: "kdm://pool-bucket/".to_string(),
             total_participating_nodes: nodes.len(),
             total_wire_ram_carousel_gb: (total_wire_ram_gb * 10.0).round() / 10.0,

@@ -308,14 +308,19 @@ impl KtbBankPacker {
     /// Packs all added tensors into a 64 KiB page-aligned `.ktb` binary image.
     /// Page 0 (`0..65536`) contains the `"KDTB"` magic, version, and JSON header directory;
     /// subsequent 64 KiB pages hold each aligned tensor bank.
-    pub fn pack_to_bytes(&self) -> Vec<u8> {
+    pub fn pack_to_bytes(&self) -> Result<Vec<u8>, String> {
         let page_size = KTB_PAGE_ALIGNMENT_BYTES as usize;
         let mut current_offset = page_size as u64; // Page 0 reserved for header directory
         let mut entries = Vec::with_capacity(self.tensors.len());
 
         for t in &self.tensors {
             let payload_len = t.data.len();
-            let padded_len = align_to_64kb_page(payload_len.max(1));
+            let padded_len = payload_len
+                .max(1)
+                .checked_add(page_size - 1)
+                .ok_or("KTB tensor size overflow")?
+                / page_size
+                * page_size;
             let checksum = compute_fnv1a64_checksum(&t.data);
 
             entries.push(KtbPageAlignedTensorEntry {
@@ -329,7 +334,9 @@ impl KtbBankPacker {
                 checksum_fnv64: checksum,
             });
 
-            current_offset += padded_len as u64;
+            current_offset = current_offset
+                .checked_add(padded_len as u64)
+                .ok_or("KTB archive size overflow")?;
         }
 
         let header = KtbBinaryArchiveHeader {
@@ -339,13 +346,17 @@ impl KtbBankPacker {
             entries,
         };
 
-        let header_json = serde_json::to_vec(&header).expect("serialize KtbBinaryArchiveHeader");
-        assert!(
-            10 + header_json.len() <= page_size,
-            "KTB header directory exceeds 64 KiB Page 0"
-        );
+        let header_json = serde_json::to_vec(&header).map_err(|e| e.to_string())?;
+        if header_json.len() > page_size - 10 {
+            return Err(
+                "KTB header directory exceeds 64 KiB Page 0; import fewer tensors per shard".into(),
+            );
+        }
 
-        let mut out = Vec::with_capacity(current_offset as usize);
+        let capacity = usize::try_from(current_offset).map_err(|_| "KTB archive too large")?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(capacity)
+            .map_err(|e| format!("Cannot allocate KTB archive: {e}"))?;
         // Write Page 0: Magic (4B) + Version (2B) + JSON len (4B) + JSON + 0x00 padding to 64 KiB
         out.extend_from_slice(&KTB_MAGIC_BYTES);
         out.extend_from_slice(&1u16.to_le_bytes());
@@ -363,7 +374,7 @@ impl KtbBankPacker {
             }
         }
 
-        out
+        Ok(out)
     }
 }
 
@@ -383,10 +394,37 @@ impl<'a> KtbBankReader<'a> {
             return Err("Invalid KTB magic header (expected 'KDTB')".into());
         }
         let json_len = u32::from_le_bytes([raw[6], raw[7], raw[8], raw[9]]) as usize;
-        let header: KtbBinaryArchiveHeader = serde_json::from_slice(&raw[10..10 + json_len])
-            .map_err(|e| format!("Invalid KTB header JSON: {e}"))?;
-
+        let header_end = 10usize
+            .checked_add(json_len)
+            .filter(|end| *end <= KTB_PAGE_ALIGNMENT_BYTES as usize)
+            .ok_or("KTB header exceeds Page 0 bounds")?;
+        let header: KtbBinaryArchiveHeader =
+            serde_json::from_slice(raw.get(10..header_end).ok_or("Truncated KTB header")?)
+                .map_err(|e| format!("Invalid KTB header JSON: {e}"))?;
+        for entry in &header.entries {
+            Self::tensor_range(entry, raw.len())?;
+        }
         Ok(Self { raw, header })
+    }
+
+    fn tensor_range(
+        entry: &KtbPageAlignedTensorEntry,
+        archive_len: usize,
+    ) -> Result<std::ops::Range<usize>, String> {
+        let start = usize::try_from(entry.page_offset_bytes)
+            .map_err(|_| "Tensor offset exceeds address space")?;
+        let len = usize::try_from(entry.payload_bytes)
+            .map_err(|_| "Tensor length exceeds address space")?;
+        let end = start.checked_add(len).ok_or("Tensor range overflow")?;
+        if start < KTB_PAGE_ALIGNMENT_BYTES as usize
+            || end > archive_len
+            || !entry
+                .page_offset_bytes
+                .is_multiple_of(KTB_PAGE_ALIGNMENT_BYTES)
+        {
+            return Err("Tensor slice exceeds KTB archive bounds or alignment".into());
+        }
+        Ok(start..end)
     }
 
     /// Returns a zero-copy slice to the requested tensor/expert entry after verifying 64 KiB
@@ -404,12 +442,11 @@ impl<'a> KtbBankReader<'a> {
                 entry.tensor_name, entry.page_offset_bytes
             ));
         }
-        let start = entry.page_offset_bytes as usize;
-        let end = start + (entry.payload_bytes as usize);
-        if end > self.raw.len() {
-            return Err("Tensor slice exceeds KTB archive bounds".into());
-        }
-        let slice = &self.raw[start..end];
+        let range = Self::tensor_range(entry, self.raw.len())?;
+        let slice = self
+            .raw
+            .get(range)
+            .ok_or("Tensor slice exceeds KTB archive bounds")?;
         let actual_hash = compute_fnv1a64_checksum(slice);
         if actual_hash != entry.checksum_fnv64 {
             return Err(format!(
@@ -484,7 +521,9 @@ mod tests {
             vec![0xCC; 32_768],
         );
 
-        let image = packer.pack_to_bytes();
+        let image = packer
+            .pack_to_bytes()
+            .expect("bounded reference KTB fixture");
         // Total image size must be an exact multiple of 64 KiB (65,536 bytes).
         assert_eq!(image.len() % (KTB_PAGE_ALIGNMENT_BYTES as usize), 0);
 
@@ -628,7 +667,9 @@ mod tests {
                 vec![(i as u8).wrapping_add(0x30); 65_536],
             );
         }
-        let ktb_image = packer.pack_to_bytes();
+        let ktb_image = packer
+            .pack_to_bytes()
+            .expect("bounded reference KTB fixture");
         let tree = KtbMerkleTree::from_ktb_bytes(&ktb_image);
         assert_eq!(tree.leaf_hashes.len(), 5); // 1 header page + 4 tensor pages
 

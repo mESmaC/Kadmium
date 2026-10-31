@@ -25,7 +25,7 @@ Native device execution currently covers a specific set of CUDA kernels and one 
 `kadmium import --path <FILE>` is a constrained **local single-file reference importer** for SafeTensors and GGUF v3. The GGUF parser currently accepts only compact streams with zero metadata key-value pairs, which excludes many standard GGUF models. Omitting `--path` synthesizes a reference input file.
 
 ```bash
-kadmium import --model example --path ./model.safetensors --start-layer 0 --end-layer 3
+kadmium import --model qwen2.5-coder-7b --path ./model.safetensors --start-layer 0 --end-layer 3
 kadmium inspect <PATH_PRINTED_BY_IMPORT>
 ```
 

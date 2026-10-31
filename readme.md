@@ -3,10 +3,10 @@
 > **"In a nuclear reactor, cadmium control rods regulate, balance, and direct high-energy reactions. In AI/ML, Kadmium ([kadmium.ai](https://kadmium.ai)) aggregates, shards, and orchestrates frontier training, reinforcement learning, and inference across all the compute you already own."**
 
 [![Website: kadmium.ai](https://img.shields.io/badge/Website-kadmium.ai-0284c7.svg)](https://kadmium.ai)
-[![Phase: v0.4 Platform-Generalized Fabric & Control Room](https://img.shields.io/badge/Phase-v0.4_Active_Development-f59e0b.svg)](#current-development-phase--roadmap)
+[![Phase: v0.4 Platform-Generalized Fabric & Control Room](https://img.shields.io/badge/Phase-v0.4_Active_Development-f59e0b.svg)](#-current-development-phase--roadmap)
 [![Language: 100% Pure Rust](https://img.shields.io/badge/Language-100%25_Rust-orange.svg)](https://www.rust-lang.org/)
-[![License: MIT/Apache-2.0](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-blue.svg)](#license)
-[![Workloads: Inference | Training | RL | Dream-RSI](https://img.shields.io/badge/Workloads-Inference%20%7C%20Training%20%7C%20RL%20%7C%20Dream--RSI-success.svg)](#core-capabilities)
+[![License: MIT/Apache-2.0](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-blue.svg)](#-license)
+[![Workloads: Inference | Training | RL | Dream-RSI](https://img.shields.io/badge/Workloads-Inference%20%7C%20Training%20%7C%20RL%20%7C%20Dream--RSI-success.svg)](#-core-capabilities)
 
 > **Commercial status — 30 October 2026:** The [marketing and business review](docs/MARKETING_BUSINESS_REVIEW_2026-10-30.md) proposes a focused design-partner pilot with product and financial gates. Managed burst, host payouts, regulated-office packages and hardware are not established as live offerings by this repository. Consult the current API and guides for execution boundaries.
 
@@ -228,11 +228,27 @@ cargo run --bin kadmium -- plan --workload rl
 cargo run --bin kadmium -- dream
 ```
 
-### 5. Run the Rust workspace tests
+### 5. Run the Full Workspace Verification Suite
+
+The repository and CI pin Rust **1.99.0** in `rust-toolchain.toml` and `.github/workflows/ci.yml`. Update both together when upgrading, and run formatting, Clippy and tests before changing the pin.
+
 ```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 This covers host Rust tests only. CI separately runs formatting, Clippy (including Linux native WebView), Condenser Node tests, Playwright workflows, installer fixtures, and Python business-model checks. The CUDA device harness is excluded from the host workspace. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+Control Room browser regressions run on Ubuntu CI. To run locally (Chromium on Linux/macOS, installed Edge on Windows):
+
+```bash
+npm install --prefix target/ui-test --no-package-lock --no-audit --no-fund playwright@1.64.1
+node target/ui-test/node_modules/playwright/cli.js install chromium
+cargo build -p kadmium-gateway --example control_room_fixture
+node --test crates/kadmium-gateway/tests/control_room.test.cjs
+```
+
+The fixture uses an ephemeral loopback port and a disposable working directory, without discovering or contacting live workers.
 
 ---
 

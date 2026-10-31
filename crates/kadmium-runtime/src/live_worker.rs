@@ -102,7 +102,9 @@ pub fn build_initial_resident_ktb_bank(model_id: &str, seed_tag: u64) -> (Vec<u8
         qlora_adapter_bytes,
     );
 
-    let ktb_bytes = packer.pack_to_bytes();
+    let ktb_bytes = packer
+        .pack_to_bytes()
+        .expect("bounded reference KTB fixture");
     let tree = KtbMerkleTree::from_ktb_bytes(&ktb_bytes);
     (ktb_bytes, tree.root_hash)
 }
