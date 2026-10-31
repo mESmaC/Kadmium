@@ -823,7 +823,7 @@ impl M4MacMiniLanBridge {
                 local_telem.unified_mem_bw_gbps
             );
             return M4MacMiniProbeReport {
-                physical_board_online: true,
+                physical_board_online: false,
                 lan_worker_online: false,
                 board_model,
                 lan_endpoint: "127.0.0.1 (Local Apple Silicon Host)".to_string(),
@@ -835,7 +835,7 @@ impl M4MacMiniLanBridge {
                 telemetry: local_telem,
                 hardware_node: hw_node,
                 execution_proof: M4MacMiniExecutionProof {
-                    executed_on_physical_silicon: true,
+                    executed_on_physical_silicon: false,
                     endpoint_addr: "127.0.0.1".to_string(),
                     kernel_uname: "Darwin Local-Apple-Silicon arm64".to_string(),
                     lan_round_trip_ms: 0.05,
@@ -1265,11 +1265,17 @@ mod tests {
             let report = M4MacMiniLanBridge::probe_and_verify(Some(&endpoint));
             worker.join().unwrap();
             assert_eq!(report.lan_worker_online, worker_online);
-            if worker_online {
-                assert!(report.physical_board_online);
-            } else if M4MacMiniLanBridge::probe_local_apple_silicon_telemetry().is_some() {
-                // The macOS CI case: local silicon is present, but the LAN worker isn't.
-                assert!(report.physical_board_online);
+            assert_eq!(report.physical_board_online, worker_online);
+            assert_eq!(
+                report.execution_proof.executed_on_physical_silicon,
+                worker_online
+            );
+            if !worker_online
+                && let Some(local) = M4MacMiniLanBridge::probe_local_apple_silicon_telemetry()
+            {
+                // Local discovery retains hardware metadata without claiming a live worker.
+                assert_eq!(report.telemetry.hw_model, local.hw_model);
+                assert!(report.lan_endpoint.contains("Local Apple Silicon Host"));
             }
             // Older peers did not distinguish local hardware from a live worker.
             let mut legacy = serde_json::to_value(&report).unwrap();

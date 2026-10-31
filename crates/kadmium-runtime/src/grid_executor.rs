@@ -1567,6 +1567,7 @@ impl<'a> GridRunner<'a> {
             .queue
             .dispatch_push(self.workers, self.catalog, now_unix_ms());
         let count = assigned.len();
+        let batch_dispatched_at_ms = ms_since(self.config.clock_origin);
         for instance in assigned {
             let unit = match self.queue.status(&instance.unit_id) {
                 Some(status) => status.unit.clone(),
@@ -1612,13 +1613,13 @@ impl<'a> GridRunner<'a> {
                 instance.node_id.clone(),
             );
             let origin = self.config.clock_origin;
+            let dispatched_at_ms = batch_dispatched_at_ms;
 
             if let Some(reg) = self.live_workers.get(&node_id.0).filter(|w| w.online) {
                 let addr = reg.worker_tcp_addr.clone();
                 let bytes = payload.to_le_bytes();
                 let timeout = self.config.call_timeout;
                 let epoch = self.config.epoch as u32;
-                let dispatched_at_ms = ms_since(origin);
                 self.in_flight.spawn(async move {
                     let t0 = Instant::now();
                     let result = DistributedLanExecutor::channel_pool()
@@ -1640,7 +1641,6 @@ impl<'a> GridRunner<'a> {
             } else if let Some(local) = self.local {
                 let registry = local.registry.clone();
                 let ctx = local.ctx.clone();
-                let dispatched_at_ms = ms_since(origin);
                 self.in_flight.spawn(async move {
                     let t0 = Instant::now();
                     let result = tokio::task::spawn_blocking(move || {
