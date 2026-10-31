@@ -1533,7 +1533,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "clap",
  "futures-util",
  "jsonschema",
  "kadmium-core",
@@ -1542,10 +1541,23 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tao",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "kadmium-condenser-app"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "kadmium-condenser",
+ "kadmium-core",
+ "kadmium-data",
+ "reqwest",
+ "serde_json",
+ "tao",
+ "tokio",
  "wry",
 ]
 

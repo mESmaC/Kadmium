@@ -54,7 +54,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm test
       - name: Build Condenser for checkpoint workflow tests
-        run: cargo build -p kadmium-condenser --locked
+        run: cargo build -p kadmium-condenser-app --locked
       - name: Test Condenser checkpoint and compute workflows
         working-directory: .
         run: node --test crates/kadmium-condenser/tests/local_compute.test.cjs crates/kadmium-condenser/tests/agent_workflow.test.cjs
@@ -107,7 +107,7 @@ jobs:
 
       - name: Run Clippy lints for Linux native WebView feature path
         if: runner.os == 'Linux'
-        run: cargo clippy -p kadmium-desktop -p kadmium-condenser --features linux-native --all-targets --locked
+        run: cargo clippy -p kadmium-desktop -p kadmium-condenser-app --features linux-native --all-targets --locked
 
       - name: Run workspace unit, integration & doc tests
         run: cargo test --workspace --locked

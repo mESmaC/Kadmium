@@ -21,7 +21,7 @@ cargo test --workspace --locked
 On Linux with the native-WebView dependencies installed, also run:
 
 ```bash
-cargo clippy -p kadmium-desktop -p kadmium-condenser --features linux-native --all-targets --locked -- -D warnings
+cargo clippy -p kadmium-desktop -p kadmium-condenser-app --features linux-native --all-targets --locked -- -D warnings
 ```
 
 `cargo test --workspace --locked` covers host Rust unit, integration, and documentation tests. It does not cover the excluded CUDA device harness, Node workflows, browser tests, installer fixtures, or Python business-model checks.
@@ -48,7 +48,7 @@ See `crates/kadmium-gateway/tests/ui/README.md` for browser-test configuration a
 After that Playwright setup, run Condenser's local checkpoint and distributed compute workflow from the repository root:
 
 ```bash
-cargo build -p kadmium-condenser --locked
+cargo build -p kadmium-condenser-app --locked
 node --test crates/kadmium-condenser/tests/local_compute.test.cjs
 node --test crates/kadmium-condenser/tests/agent_workflow.test.cjs
 ```

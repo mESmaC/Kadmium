@@ -23,7 +23,7 @@ The compiled binary will be located at `./target/release/kadmium` (or `.\target\
 Install and start Ollama separately, then build and start Condenser:
 
 ```bash
-cargo run -p kadmium-condenser --locked -- serve
+cargo run -p kadmium-condenser-app --locked -- serve
 ```
 
 Open `http://127.0.0.1:7856`, choose **Models & compute**, enter your GGUF file or complete SafeTensors directory, and choose **Normalize checkpoint**. Review its precision and context, choose **Load in Ollama**, then **Use in this task**. Normalization preserves source bytes; loading rejects backend tensor changes and never selects a smaller model or context to make it fit. Backend arithmetic is not RepOps-certified. See [local checkpoints](guides/local-checkpoints.md) for supported inputs, storage needs, CLI commands and compatibility limits.

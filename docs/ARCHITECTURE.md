@@ -199,7 +199,7 @@ The self-hosted repository provides planners, local interfaces, reference execut
 
 - **Self-hosted:** local coordinator, hardware profiles, reference workloads, and simulations need no cloud account.
 - **Cloud-managed mode:** `POST /api/v1/companion/mode` only stores local mode fields. There is no `kadmium login` command, managed coordinator connection, automatic WAN relay, enforced tenant RBAC, or encrypted remote mirroring in this path.
-- **Embedded Condenser:** `kadmium-gateway` depends on `kadmium-condenser` as a library, with default features off, and mounts its router at `/condenser/`. Condenser's native window (`wry`/`tao`) sits behind its `native-window` feature (default on for the standalone binary) and `linux-native`, so the headless coordinator and `kadmium` CLI link no webview stack. The mount requires a loopback peer, same-origin requests and a per-launch access secret. Its workspace root is an explicit per-user directory, never the coordinator's working directory.
+- **Embedded Condenser:** `kadmium-gateway` depends on the GUI-free `kadmium-condenser` library and mounts its router at `/condenser/`. The `kadmium-condenser` command and its native window (`wry`/`tao`, plus `clap`) live in the separate `kadmium-condenser-app` package, so the headless coordinator and `kadmium` CLI link no webview stack. The mount requires a loopback peer, same-origin requests and a per-launch access secret. Its workspace root is an explicit per-user directory, never the coordinator's working directory.
 
 ### 8.2 Spot-arbitrage simulation
 

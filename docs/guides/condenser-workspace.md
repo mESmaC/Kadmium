@@ -7,7 +7,7 @@ Because Condenser can read and write files and run commands, each coordinator la
 A separate launch is optional; standalone Condenser uses the directory it is started from:
 
 ```sh
-cargo run -p kadmium-condenser -- serve --port 7856
+cargo run -p kadmium-condenser-app -- serve --port 7856
 ```
 
 Open `http://127.0.0.1:7856`. Configure the task's provider, base URL and model using **Provider settings**. Kadmium currently returns reference diagnostics; Ollama, OpenAI-compatible, Anthropic and MCL4-COE adapters use the endpoint you configure. Selecting Kadmium never silently switches the task to another provider.
@@ -64,7 +64,7 @@ The runtime filters both the model's tool catalog and the execution registry. A 
 CLI callers can restrict tool access with repeated exact names:
 
 ```sh
-cargo run -p kadmium-condenser -- chat "Inspect the project" --provider ollama --tools --allow-tool files__read --allow-tool files__list
+cargo run -p kadmium-condenser-app -- chat "Inspect the project" --provider ollama --tools --allow-tool files__read --allow-tool files__list
 ```
 
 Those example plugin names must exist in the local plugin registry. First-party tools are available without installing plugins under the reserved `condenser` namespace.
@@ -139,7 +139,7 @@ Delegation is synchronous and runs one child at a time. The child receives the s
 CLI example:
 
 ```sh
-cargo run -p kadmium-condenser -- chat "Inspect Cargo.toml and explain this project" --provider ollama --tools --allow-tool condenser__file_read --allow-tool condenser__notes_write --memory-session project-review --research-required
+cargo run -p kadmium-condenser-app -- chat "Inspect Cargo.toml and explain this project" --provider ollama --tools --allow-tool condenser__file_read --allow-tool condenser__notes_write --memory-session project-review --research-required
 ```
 
 `plugin list` includes the built-ins. `plugin invoke condenser subagents_list` lists configured targets without exposing keys. Direct registry invocations are user actions; a direct delegate has no child tool permissions. For multi-step memory tests through the HTTP invocation endpoint, supply `agent.session_id`; without it each direct invocation is ephemeral.

@@ -37,8 +37,8 @@ Each package has a content-derived SHA-256 ID. A completed import becomes visibl
 cargo run -p kadmium-cli -- checkpoint normalize /models/model.gguf
 cargo run -p kadmium-cli -- checkpoint list
 cargo run -p kadmium-cli -- checkpoint verify CHECKPOINT_ID
-cargo run -p kadmium-condenser -- load-checkpoint CHECKPOINT_ID
-cargo run -p kadmium-condenser -- chat "Explain this algorithm" --provider ollama --model kadmium-CHECKPOINT_ID:latest
+cargo run -p kadmium-condenser-app -- load-checkpoint CHECKPOINT_ID
+cargo run -p kadmium-condenser-app -- chat "Explain this algorithm" --provider ollama --model kadmium-CHECKPOINT_ID:latest
 ```
 
 Replace `CHECKPOINT_ID` with the complete ID printed by normalization. The load command prints the exact provider URL and model name to use. Quote filesystem paths containing spaces. This workflow does not download a replacement model.

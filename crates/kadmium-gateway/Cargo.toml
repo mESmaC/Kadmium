@@ -13,8 +13,7 @@ kadmium-runtime.workspace = true
 kadmium-rl.workspace = true
 kadmium-network.workspace = true
 kadmium-grid.workspace = true
-# Library only: no Condenser window, so the headless coordinator links no webview.
-kadmium-condenser = { workspace = true, default-features = false }
+kadmium-condenser.workspace = true
 axum.workspace = true
 tokio.workspace = true
 serde.workspace = true

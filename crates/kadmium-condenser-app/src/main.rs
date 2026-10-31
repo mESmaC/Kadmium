@@ -7,12 +7,14 @@ use kadmium_condenser::plugin::{PluginManager, default_plugin_roots, scaffold_pl
 use kadmium_condenser::provider::ProviderFactory;
 use kadmium_condenser::server::{self, ServerOptions};
 use kadmium_condenser::types::{Message, ProviderConfig, ProviderKind, SamplingParams};
-use kadmium_condenser::ui::{self, UiOptions};
 use kadmium_condenser::{CondenserError, DEFAULT_HTTP_PORT, Harness, HarnessOptions, Result};
 use kadmium_core::LiveHardwareProfiler;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::str::FromStr;
+use ui::UiOptions;
+
+mod ui;
 
 #[derive(Parser)]
 #[command(
