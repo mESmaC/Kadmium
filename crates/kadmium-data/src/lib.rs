@@ -39,6 +39,23 @@ pub enum TensorEncoding {
     Uint8,
     /// Raw signed bytes, without an implied quantization scale.
     Int8,
+    Fp64,
+    Fp8E5M2,
+    /// Power-of-two scale bytes used by microscaling (MX) block formats.
+    Fp8E8M0,
+    /// Six-bit floats packed without padding (four elements per three bytes).
+    Fp6E2M3,
+    Fp6E3M2,
+    /// Four-bit floats packed two per byte (SafeTensors `F4`).
+    Fp4E2M1,
+    Bool,
+    Int16,
+    Uint16,
+    Int32,
+    Uint32,
+    Int64,
+    Uint64,
+    Complex64,
 }
 
 /// Metadata descriptor for a pre-merged **Kadmium Tensor Bank (`.ktb`)** shard file.

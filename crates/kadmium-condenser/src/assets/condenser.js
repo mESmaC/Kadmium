@@ -1691,9 +1691,16 @@
 
   function checkpointControls() {
     const busy = state.localModels.busy;
-    ['checkpoint-path', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded'].forEach(id => { $(id).disabled = busy; });
+    ['checkpoint-path', 'checkpoint-accept-quantized', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded'].forEach(id => { $(id).disabled = busy; });
     $('checkpoint-load').disabled = busy || !$('checkpoint-select').value;
     $('checkpoint-use').disabled = busy || state.busy || !state.localModels.loaded;
+  }
+
+  function preQuantizedLabel(source) {
+    let text = source.method || 'undeclared method';
+    if (source.bits) text += ' ' + source.bits + '-bit';
+    if (source.tensor_formats.length) text += ' (' + source.tensor_formats.join(', ') + ')';
+    return text;
   }
 
   function renderCheckpoint() {
@@ -1701,7 +1708,7 @@
     const facts = $('checkpoint-facts');
     facts.replaceChildren();
     if (selected) {
-      const pairs = [['Format', selected.source_format], ['Architecture', selected.architecture || 'Unknown'], ['Tensors', selected.tensor_count], ['Normalized shards', selected.bank_count], ['Source bytes', selected.source_bytes.toLocaleString()], ['KTB bytes', selected.bank_bytes.toLocaleString()], ['Source types', selected.dtypes.join(', ')], ['Maximum context tokens', selected.context_length || 'Not declared'], ['Checkpoint', selected.id], ['Shard folder', state.localModels.directory + '/' + selected.id + '/banks']];
+      const pairs = [['Format', selected.source_format], ['Architecture', selected.architecture || 'Unknown'], ['Tensors', selected.tensor_count], ['Normalized shards', selected.bank_count], ['Source bytes', selected.source_bytes.toLocaleString()], ['KTB bytes', selected.bank_bytes.toLocaleString()], ['Source types', selected.dtypes.join(', ')], ['Source precision', selected.pre_quantized ? 'Pre-quantized before import: ' + preQuantizedLabel(selected.pre_quantized) : '16-bit or wider, as published'], ['Maximum context tokens', selected.context_length || 'Not declared'], ['Checkpoint', selected.id], ['Shard folder', state.localModels.directory + '/' + selected.id + '/banks']];
       pairs.forEach(([key, value]) => { const row = element('div'); row.append(element('dt', '', key), element('dd', 'code-sm', value)); facts.append(row); });
     }
     $('checkpoint-warnings').textContent = selected ? selected.warnings.join(' ') : '';
@@ -1718,7 +1725,7 @@
       $('checkpoint-directory').textContent = list.directory;
       state.localModels.directory = list.directory;
       $('checkpoint-select').replaceChildren(new Option('Select a checkpoint', ''));
-      list.checkpoints.forEach(item => $('checkpoint-select').append(new Option(item.name + ' · ' + item.id.slice(0, 12), item.id)));
+      list.checkpoints.forEach(item => $('checkpoint-select').append(new Option(item.name + ' · ' + item.id.slice(0, 12) + (item.pre_quantized ? ' · pre-quantized' : ''), item.id)));
       $('checkpoint-select').value = selected;
       renderCheckpoint();
     } catch (error) { if (request === state.localModels.request) $('checkpoint-status').textContent = error.message; }
@@ -1733,9 +1740,11 @@
     $('checkpoint-status').textContent = 'Copying originals, hashing payloads, and writing KTB banks. Large checkpoints can take several minutes.';
     $('checkpoint-load-status').textContent = 'Normalize, then load in local Ollama. Your task route has not changed.';
     try {
-      const item = await postJson('/api/v1/checkpoints/import', { source_path: $('checkpoint-path').value.trim() });
+      const item = await postJson('/api/v1/checkpoints/import', { source_path: $('checkpoint-path').value.trim(), accept_pre_quantized: $('checkpoint-accept-quantized').checked });
+      // Acceptance applies to one import only.
+      $('checkpoint-accept-quantized').checked = false;
       await refreshCheckpoints(item.id);
-      $('checkpoint-status').textContent = 'Normalized ' + item.tensor_count + ' tensors with source bytes preserved. Select Load in Ollama to prepare inference.';
+      $('checkpoint-status').textContent = 'Normalized ' + item.tensor_count + ' tensors with source bytes preserved' + (item.pre_quantized ? ', kept at the pre-quantized precision you accepted (' + preQuantizedLabel(item.pre_quantized) + ')' : '') + '. Select Load in Ollama to prepare inference.';
     } catch (error) { $('checkpoint-status').textContent = error.message; }
     finally { state.localModels.busy = false; checkpointControls(); }
   }
@@ -1749,7 +1758,8 @@
     $('checkpoint-load-status').textContent = 'Verifying package, uploading local blobs, checking tensor metadata, and loading the requested context (maximum by default). No smaller model or precision is selected on failure.';
     try {
       state.localModels.loaded = await postJson('/api/v1/checkpoints/load', { checkpoint_id: $('checkpoint-select').value, base_url: $('checkpoint-backend').value.trim(), context_length: $('checkpoint-context').value === '' ? null : Number($('checkpoint-context').value) });
-      $('checkpoint-load-status').textContent = 'Loaded at ' + state.localModels.loaded.context_length + ' context tokens. Tensor metadata matches. Choose Use in this task to change its provider. ' + state.localModels.loaded.execution;
+      const quantized = state.localModels.loaded.checkpoint && state.localModels.loaded.checkpoint.pre_quantized;
+      $('checkpoint-load-status').textContent = 'Loaded at ' + state.localModels.loaded.context_length + ' context tokens. Tensor metadata matches' + (quantized ? ', at the pre-quantized source precision you accepted (' + preQuantizedLabel(quantized) + ')' : '') + '. Choose Use in this task to change its provider. ' + state.localModels.loaded.execution;
     } catch (error) { $('checkpoint-load-status').textContent = error.message; }
     finally { state.localModels.busy = false; checkpointControls(); }
   }
@@ -1771,7 +1781,7 @@
     session.updatedAt = Date.now();
     saveSessions();
     renderAll();
-    $('checkpoint-load-status').textContent = 'This task now uses ' + loaded.checkpoint.name + ' through local Ollama. Enter a prompt to run inference.';
+    $('checkpoint-load-status').textContent = 'This task now uses ' + loaded.checkpoint.name + (loaded.checkpoint.pre_quantized ? ', a pre-quantized source (' + preQuantizedLabel(loaded.checkpoint.pre_quantized) + '),' : '') + ' through local Ollama. Enter a prompt to run inference.';
     $('prompt').focus();
   }
 
