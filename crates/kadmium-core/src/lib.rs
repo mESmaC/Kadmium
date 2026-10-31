@@ -750,6 +750,63 @@ impl ModelSpec {
             _ => return None,
         })
     }
+
+    /// Native full-attention maximum context window (in tokens) supported by a known model preset's
+    /// pretrained RoPE / positional embedding configuration without uncalibrated extrapolation.
+    /// Returns `None` for unknown model IDs.
+    pub fn try_native_max_context_tokens(&self) -> Option<u32> {
+        match self.id.as_str() {
+            "deepseek-v3-671b-moe"
+            | "deepseek-v3-671b-exl3-2.5bpw"
+            | "deepseek-v3-exl3"
+            | "exl3" => Some(163_840),
+            "llama-3.2-3b-instruct" | "llama-3.2-3b" | "llama-3.3-70b-instruct" => Some(131_072),
+            "llama-3-70b-lora" => Some(8_192),
+            "qwen2.5-coder-7b-instruct"
+            | "qwen2.5-coder-7b"
+            | "qwen2.5-coder-14b-instruct"
+            | "qwen2.5-coder-14b"
+            | "qwen2.5-coder-32b-instruct"
+            | "qwen2.5-coder-32b"
+            | "qwen3-235b-moe" => Some(32_768),
+            _ => None,
+        }
+    }
+
+    /// Native full-attention maximum context window (in tokens) supported by the model's
+    /// pretrained RoPE / positional embedding configuration without uncalibrated extrapolation.
+    pub fn native_max_context_tokens(&self) -> u32 {
+        self.try_native_max_context_tokens().unwrap_or(32_768)
+    }
+
+    /// Per-token, per-layer KV cache footprint in bytes at FP16/BF16 precision
+    /// ($2 \times n_{\text{kv\_heads}} \times d_{\text{head}} \times 2\text{ bytes}$, or MLA
+    /// compressed latent cache `(kv_lora_rank + qk_rope_head_dim) * 2` for DeepSeek-V3).
+    pub fn fp16_kv_bytes_per_token_per_layer(&self) -> u64 {
+        match self.id.as_str() {
+            // DeepSeek-V3 MLA: (kv_lora_rank 512 + qk_rope_head_dim 64) * 2 bytes = 1152 B/token/layer
+            "deepseek-v3-671b-moe"
+            | "deepseek-v3-671b-exl3-2.5bpw"
+            | "deepseek-v3-exl3"
+            | "exl3" => 1_152,
+            // GQA 8 KV heads * 128 head_dim * 2 (K+V) * 2 bytes = 4096 B/token/layer
+            "llama-3.2-3b-instruct"
+            | "llama-3.2-3b"
+            | "qwen2.5-coder-14b-instruct"
+            | "qwen2.5-coder-14b"
+            | "qwen2.5-coder-32b-instruct"
+            | "qwen2.5-coder-32b"
+            | "llama-3-70b-lora"
+            | "llama-3.3-70b-instruct" => 4_096,
+            // GQA 4 KV heads * 128 head_dim * 2 (K+V) * 2 bytes = 2048 B/token/layer
+            "qwen2.5-coder-7b-instruct" | "qwen2.5-coder-7b" | "qwen3-235b-moe" => 2_048,
+            _ => {
+                let bytes =
+                    ((self.kv_cache_per_layer_gb * 1_073_741_824.0) / 32_768.0).round() as u64;
+                bytes.max(512)
+            }
+        }
+    }
 }
 
 /// Builds a representative personal + home lab cluster matching real-world heterogeneous hardware:

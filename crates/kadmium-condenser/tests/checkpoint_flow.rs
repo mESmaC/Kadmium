@@ -71,7 +71,8 @@ async fn import_verify_load_and_chat_rejects_backend_precision_changes() {
         }))
         .route("/prefix/api/chat",post(|Json(body):Json<Value>|async move{
             assert!(body["model"].as_str().unwrap().starts_with("kadmium-"));
-            assert_eq!(body["options"]["num_ctx"],8192);
+            // Full context comes from the created model's `num_ctx` parameter (asserted above).
+            assert!(body["options"].get("num_ctx").is_none());
             assert_eq!(body["options"]["num_predict"],-1);
             assert_eq!(body["truncate"],false);
             Json(json!({"model":body["model"],"message":{"role":"assistant","content":"Checkpoint answer"},"done":true,"eval_count":2,"prompt_eval_count":3}))

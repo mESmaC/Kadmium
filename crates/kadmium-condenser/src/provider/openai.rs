@@ -178,12 +178,20 @@ fn parse_models(value: Value) -> Result<Vec<ModelInfo>> {
     Ok(models
         .iter()
         .filter_map(|model| {
-            model["id"]
+            let id = model["id"]
                 .as_str()
                 .or_else(|| model["name"].as_str())
-                .or_else(|| model["model"].as_str())
+                .or_else(|| model["model"].as_str())?;
+            let display_name = model["display_name"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| Some(id.to_string()));
+            Some(ModelInfo {
+                id: id.to_string(),
+                display_name,
+                context_length: super::advertised_context_length(model),
+            })
         })
-        .map(ModelInfo::new)
         .collect())
 }
 

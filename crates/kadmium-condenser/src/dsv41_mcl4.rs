@@ -1478,7 +1478,7 @@ pub struct Mcl4CoeKnobs {
     pub answer_prefix: Option<String>,
     #[serde(default)]
     pub lock_thought: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub strip_prior_thoughts_in_multiturn: bool,
     #[serde(default = "default_max_tool_result_chars")]
     pub prune_old_tool_results_chars: usize,
@@ -1517,7 +1517,7 @@ fn default_tabu_penalty() -> f32 {
     0.35
 }
 fn default_max_tool_result_chars() -> usize {
-    4096
+    usize::MAX
 }
 fn default_reasoning_effort() -> String {
     "high".to_string()
@@ -1568,8 +1568,8 @@ impl Mcl4CoeKnobs {
             thought_prefix: None,
             answer_prefix: None,
             lock_thought: false,
-            strip_prior_thoughts_in_multiturn: true,
-            prune_old_tool_results_chars: 4096,
+            strip_prior_thoughts_in_multiturn: false,
+            prune_old_tool_results_chars: usize::MAX,
             reasoning_effort: "high".to_string(),
             swiglu_limit: 10.0,
             hc_sinkhorn_iters: 20,

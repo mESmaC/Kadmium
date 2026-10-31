@@ -7,15 +7,22 @@ use crate::types::{
 use crate::{CondenserError, Result};
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 pub(crate) struct OllamaProvider {
     config: ProviderConfig,
     client: reqwest::Client,
+    native_ctx_cache: Mutex<HashMap<String, u32>>,
 }
 
 impl OllamaProvider {
     pub fn new(config: ProviderConfig, client: reqwest::Client) -> Self {
-        Self { config, client }
+        Self {
+            config,
+            client,
+            native_ctx_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     fn authorize(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -24,6 +31,56 @@ impl OllamaProvider {
             None => builder,
         }
     }
+
+    async fn fetch_native_context(&self, model: &str) -> Result<Option<u32>> {
+        if let Some(cached) = self
+            .native_ctx_cache
+            .lock()
+            .expect("ollama native_ctx_cache lock")
+            .get(model)
+            .copied()
+        {
+            return Ok(Some(cached));
+        }
+
+        let url = endpoint(self.config.base_url(), "api/show");
+        let response = self
+            .authorize(self.client.post(url).json(&json!({"model": model})))
+            .send()
+            .await
+            .map_err(|error| CondenserError::provider("Ollama", error.to_string()))?;
+        let shown: Value = decode_json(ProviderKind::Ollama, response).await?;
+        let native = native_context(&shown);
+        if let Some(ctx) = native {
+            self.native_ctx_cache
+                .lock()
+                .expect("ollama native_ctx_cache lock")
+                .insert(model.to_string(), ctx);
+        }
+        Ok(native)
+    }
+}
+
+fn native_context(shown: &Value) -> Option<u32> {
+    if let Some(arch) = shown
+        .pointer("/model_info/general.architecture")
+        .and_then(|v| v.as_str())
+    {
+        let key = format!("/model_info/{arch}.context_length");
+        if let Some(ctx) = shown
+            .pointer(&key)
+            .and_then(super::parse_positive_u64)
+            .and_then(|v| u32::try_from(v).ok())
+        {
+            return Some(ctx);
+        }
+    }
+    shown
+        .pointer("/model_info/context_length")
+        .or_else(|| shown.pointer("/details/context_length"))
+        .or_else(|| shown.get("context_length"))
+        .and_then(super::parse_positive_u64)
+        .and_then(|v| u32::try_from(v).ok())
 }
 
 #[async_trait]
@@ -45,33 +102,30 @@ impl InferenceProvider for OllamaProvider {
             .ok_or_else(|| CondenserError::provider("Ollama", "missing `models` list"))?;
         Ok(models
             .iter()
-            .filter_map(|model| model["model"].as_str().or_else(|| model["name"].as_str()))
-            .map(ModelInfo::new)
+            .filter_map(|model| {
+                let id = model["model"].as_str().or_else(|| model["name"].as_str())?;
+                Some(ModelInfo {
+                    id: id.to_string(),
+                    display_name: Some(id.to_string()),
+                    context_length: super::advertised_context_length(model),
+                })
+            })
             .collect())
     }
 
     async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse> {
         self.config.validate()?;
-        let shown = self
-            .authorize(
-                self.client
-                    .post(endpoint(self.config.base_url(), "api/show"))
-                    .json(&json!({"model":request.model})),
-            )
-            .send()
-            .await
-            .map_err(|e| CondenserError::provider("Ollama", e.to_string()))?;
-        let shown: Value = decode_json(ProviderKind::Ollama, shown).await?;
-        let maximum = native_context(&shown)?;
-        let mut resolved = request.clone();
-        let context = request.sampling.context_window.unwrap_or(maximum);
-        if context > maximum {
+        request.sampling.validate()?;
+        if let Some(requested_ctx) = request.sampling.context_window
+            && let Some(native_ctx) = self.fetch_native_context(&request.model).await?
+            && requested_ctx > native_ctx
+        {
             return Err(CondenserError::Config(format!(
-                "Requested context {context} exceeds model maximum {maximum}"
+                "requested context_window ({requested_ctx}) exceeds model `{}` native context length ({native_ctx})",
+                request.model
             )));
         }
-        resolved.sampling.context_window = Some(context);
-        let body = request_body(&resolved)?;
+        let body = request_body(request)?;
         let url = endpoint(self.config.base_url(), "api/chat");
         let response = self
             .authorize(self.client.post(url).json(&body))
@@ -83,20 +137,17 @@ impl InferenceProvider for OllamaProvider {
     }
 }
 
-fn native_context(shown: &Value) -> Result<u32> {
-    let info = &shown["model_info"];
-    let architecture = info["general.architecture"].as_str().unwrap_or("");
-    info[format!("{architecture}.context_length")].as_u64()
-        .or_else(|| info["context_length"].as_u64())
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0 && *value <= i32::MAX as u32)
-        .ok_or_else(|| CondenserError::Config("Ollama did not report the model's native context length; refusing to use a smaller backend default".into()))
-}
-
 fn request_body(request: &ChatRequest) -> Result<Value> {
     request.sampling.validate()?;
     let sampling = &request.sampling;
     let mut options = serde_json::Map::new();
+    options.insert(
+        "num_predict".into(),
+        sampling.max_tokens.map_or_else(|| json!(-1), |v| json!(v)),
+    );
+    if let Some(ctx) = sampling.context_window {
+        options.insert("num_ctx".into(), json!(ctx));
+    }
     if let Some(value) = sampling.temperature {
         options.insert("temperature".into(), json!(value));
     }
@@ -105,13 +156,6 @@ fn request_body(request: &ChatRequest) -> Result<Value> {
     }
     if let Some(value) = sampling.top_k {
         options.insert("top_k".into(), json!(value));
-    }
-    options.insert(
-        "num_predict".into(),
-        sampling.max_tokens.map_or(json!(-1), |value| json!(value)),
-    );
-    if let Some(value) = sampling.context_window {
-        options.insert("num_ctx".into(), json!(value));
     }
     if let Some(value) = sampling.seed {
         options.insert("seed".into(), json!(value));
@@ -248,6 +292,7 @@ mod tests {
             messages: vec![Message::user("hello")],
             sampling: SamplingParams {
                 max_tokens: Some(32),
+                context_window: Some(65_536),
                 seed: Some(7),
                 top_k: Some(8),
                 ..SamplingParams::default()
@@ -256,9 +301,32 @@ mod tests {
         };
         let body = request_body(&request).unwrap();
         assert_eq!(body["options"]["num_predict"], 32);
+        assert_eq!(body["options"]["num_ctx"], 65_536);
+        assert_eq!(body["truncate"], false);
+        assert_eq!(body["shift"], false);
         assert_eq!(body["options"]["seed"], 7);
         assert_eq!(body["options"]["top_k"], 8);
         assert_eq!(body["stream"], false);
+
+        let default_req = ChatRequest {
+            model: "local".into(),
+            messages: vec![Message::user("hello")],
+            sampling: SamplingParams::default(),
+            tools: Vec::new(),
+        };
+        let default_body = request_body(&default_req).unwrap();
+        assert_eq!(default_body["options"]["num_predict"], -1);
+        assert_eq!(default_body["truncate"], false);
+        assert_eq!(default_body["shift"], false);
+
+        let shown = json!({
+            "model_info": {
+                "general.architecture": "qwen2",
+                "qwen2.context_length": 131072,
+                "llama.context_length": 4096
+            }
+        });
+        assert_eq!(native_context(&shown), Some(131_072));
     }
 
     #[test]

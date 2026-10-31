@@ -129,7 +129,8 @@ impl ToolResult {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SamplingParams {
-    /// Local Ollama input/context allocation. None resolves the model's native maximum.
+    /// Ollama `num_ctx`. None keeps the server/Modelfile setting; an explicit value is
+    /// validated against the model's native maximum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
     /// Explicit opt-in to MCL4 conversation pruning; maximum-quality runs preserve history.
@@ -182,6 +183,11 @@ impl SamplingParams {
         if self.max_tokens == Some(0) {
             return Err(CondenserError::Config(
                 "max_tokens must be at least 1 when supplied".into(),
+            ));
+        }
+        if self.context_window == Some(0) {
+            return Err(CondenserError::Config(
+                "context_window must be at least 1 when supplied".into(),
             ));
         }
         if self.stop.iter().any(|value| value.is_empty()) {

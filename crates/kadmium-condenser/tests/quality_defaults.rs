@@ -15,7 +15,7 @@ async fn providers_use_advertised_maxima_and_keep_explicit_limits() {
     let app = Router::new()
         .route("/api/show", post(|| async { Json(json!({"model_info":{"general.architecture":"llama","llama.context_length":131072}})) }))
         .route("/v1/models", get(|| async { Json(json!({"data":[{"id":"model","max_output_tokens":64000}]})) }))
-        .route("/v1/models/model", get(|| async { Json(json!({"id":"model","capabilities":{"max_tokens":64000}})) }))
+        .route("/v1/models/model", get(|| async { Json(json!({"id":"model","max_tokens":64000})) }))
         .route("/api/chat", post(|State(requests): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
             requests.lock().unwrap().push(body);
             Json(json!({"model":"model","message":{"role":"assistant","content":"ok"},"done":true}))
@@ -51,7 +51,8 @@ async fn providers_use_advertised_maxima_and_keep_explicit_limits() {
         provider.complete(&request).await.unwrap();
         let body = requests.lock().unwrap().last().unwrap().clone();
         if kind == ProviderKind::Ollama {
-            assert_eq!(body["options"]["num_ctx"], 131072);
+            // The Modelfile parameter carries the full context; only an explicit choice is sent.
+            assert!(body["options"].get("num_ctx").is_none(), "{body}");
             assert_eq!(body["options"]["num_predict"], -1);
             assert_eq!(body["truncate"], false);
             assert_eq!(body["shift"], false);
@@ -93,6 +94,10 @@ async fn missing_maximum_never_submits_a_small_default() {
             "/v1/models/unknown",
             get(|| async { Json(json!({"id":"unknown"})) }),
         )
+        .route("/api/chat", post(|State(requests): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+            requests.lock().unwrap().push(body);
+            Json(json!({"model":"unknown","message":{"role":"assistant","content":"ok"},"done":true}))
+        }))
         .route("/v1/chat/completions", post(|State(requests): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
             requests.lock().unwrap().push(body);
             Json(json!({"model":"unknown","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}))
@@ -121,7 +126,13 @@ async fn missing_maximum_never_submits_a_small_default() {
             .unwrap()
             .complete(&request)
             .await;
-        if matches!(kind, ProviderKind::OpenAi | ProviderKind::Mcl4Coe) {
+        if kind == ProviderKind::Ollama {
+            // Unlimited generation and the model's own context; no small guess is sent.
+            result.unwrap();
+            let body = requests.lock().unwrap().last().unwrap().clone();
+            assert_eq!(body["options"]["num_predict"], -1);
+            assert!(body["options"].get("num_ctx").is_none(), "{body}");
+        } else if matches!(kind, ProviderKind::OpenAi | ProviderKind::Mcl4Coe) {
             // Omitting max_tokens is these APIs' own maximum, so nothing is guessed.
             result.unwrap();
             let body = requests.lock().unwrap().last().unwrap().clone();

@@ -200,8 +200,9 @@ pub async fn load_ollama_with_context(
     if manifest.context_length == 0 || manifest.context_length > i32::MAX as u64 {
         return Err(CondenserError::Config("Checkpoint lacks a supported native context length; refusing to choose a smaller context automatically".into()));
     }
-    let context_length = context_length.unwrap_or(manifest.context_length as u32);
-    if context_length == 0 || u64::from(context_length) > manifest.context_length {
+    // An explicit owner choice wins; otherwise the native (or supported scaled) maximum.
+    let requested = context_length.map(u64::from);
+    if requested.is_some_and(|c| c == 0 || c > manifest.context_length) {
         return Err(CondenserError::Config(
             "Context must be between 1 and the checkpoint's declared maximum".into(),
         ));
@@ -262,7 +263,7 @@ pub async fn load_ollama_with_context(
         .post(endpoint(&base, "create"))
         .json(&json!({
             "model":model, "files":files, "stream":false,
-            "parameters":{"num_ctx":context_length}
+            "parameters":{"num_ctx":requested.unwrap_or(manifest.context_length)}
         }))
         .send()
         .await
@@ -284,11 +285,32 @@ pub async fn load_ollama_with_context(
         .map_err(backend_error)?;
     let shown: Value = decode_json(ProviderKind::Ollama, response).await?;
     verify_backend_tensors(&manifest, &shown)?;
+    let has_backend_rope_scaling = shown
+        .get("model_info")
+        .and_then(Value::as_object)
+        .is_some_and(|info| info.keys().any(|k| k.contains(".rope.scaling.")));
+    let backend_ctx = crate::provider::advertised_context_length(&shown);
+    if let Some(ctx) = backend_ctx
+        && ctx < manifest.context_length
+    {
+        return Err(backend_error(
+            "backend reported a context length smaller than the checkpoint native context length",
+        ));
+    }
+    let active_context = match (requested, manifest.scaled_context_length) {
+        (Some(chosen), _) => chosen,
+        (None, Some(scaled))
+            if has_backend_rope_scaling && backend_ctx.is_some_and(|ctx| ctx >= scaled) =>
+        {
+            scaled
+        }
+        _ => manifest.context_length,
+    };
     // Empty generate preloads the actual model. A create success alone does not prove it fits.
     let response = client
         .post(endpoint(&base, "generate"))
         .json(&json!({
-            "model":model,"stream":false,"keep_alive":"5m","options":{"num_ctx":context_length}
+            "model":model,"stream":false,"keep_alive":"5m","options":{"num_ctx":active_context}
         }))
         .send()
         .await
@@ -308,7 +330,7 @@ pub async fn load_ollama_with_context(
             (entry["name"] == model || entry["model"] == model)
                 && entry["context_length"]
                     .as_u64()
-                    .is_some_and(|length| length >= u64::from(context_length))
+                    .is_some_and(|length| length >= active_context)
         })
     });
     if !full_context {
@@ -323,7 +345,7 @@ pub async fn load_ollama_with_context(
         checkpoint: manifest.summary(),
         provider,
         tensor_metadata_verified: true,
-        context_length,
+        context_length: u32::try_from(active_context).map_err(backend_error)?,
         execution: "Local Ollama using preserved source files; KTB banks are storage artifacts. Backend arithmetic and KV precision are not RepOps-certified.",
     })
 }

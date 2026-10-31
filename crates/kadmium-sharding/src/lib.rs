@@ -710,6 +710,23 @@ mod tests {
         for kv in &kv_allocs {
             assert_eq!(kv.page_size_tokens, 16);
             assert!(kv.max_context_tokens_supported >= 2048);
+            assert!(kv.max_context_tokens_supported <= model.native_max_context_tokens());
+            assert!(
+                kv.max_tiered_context_tokens_supported >= kv.max_context_tokens_supported
+                    && kv.max_tiered_context_tokens_supported <= model.native_max_context_tokens()
+            );
         }
+
+        let ctx_report =
+            DistributedPagedKvPlanner::plan_cluster_context_capacity(&plan, &model, &cluster);
+        assert_eq!(
+            ctx_report.model_native_context_tokens,
+            model.try_native_max_context_tokens()
+        );
+        assert!(ctx_report.cluster_in_memory_context_tokens <= model.native_max_context_tokens());
+        assert!(
+            ctx_report.cluster_max_full_attention_context_tokens
+                <= model.native_max_context_tokens()
+        );
     }
 }

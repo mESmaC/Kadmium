@@ -7,17 +7,24 @@ use crate::types::{
 use crate::{CondenserError, Result};
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 pub(crate) struct AnthropicProvider {
     config: ProviderConfig,
     client: reqwest::Client,
+    max_output_cache: Mutex<HashMap<String, u32>>,
 }
 
 impl AnthropicProvider {
     pub fn new(config: ProviderConfig, client: reqwest::Client) -> Self {
-        Self { config, client }
+        Self {
+            config,
+            client,
+            max_output_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     fn authorize(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -28,6 +35,58 @@ impl AnthropicProvider {
             )
             .header("anthropic-version", ANTHROPIC_VERSION)
     }
+
+    async fn resolve_max_tokens(&self, model: &str) -> Result<u32> {
+        if let Some(cached) = self
+            .max_output_cache
+            .lock()
+            .expect("anthropic max_output_cache lock")
+            .get(model)
+            .copied()
+        {
+            return Ok(cached);
+        }
+
+        let encoded_model = encode_path_segment(model);
+        let url = versioned_endpoint(self.config.base_url(), &format!("models/{encoded_model}"));
+        let response = self
+            .authorize(self.client.get(url))
+            .send()
+            .await
+            .map_err(|error| CondenserError::provider("Anthropic", error.to_string()))?;
+        let value: Value = decode_json(ProviderKind::Anthropic, response).await?;
+        let resolved = extract_anthropic_max_output(&value).ok_or_else(|| {
+            CondenserError::Config(format!(
+                "Anthropic model `{model}` did not advertise `max_output_tokens` or `max_tokens`; supply `sampling.max_tokens` explicitly"
+            ))
+        })?;
+        self.max_output_cache
+            .lock()
+            .expect("anthropic max_output_cache lock")
+            .insert(model.to_string(), resolved);
+        Ok(resolved)
+    }
+}
+
+fn extract_anthropic_max_output(model: &Value) -> Option<u32> {
+    super::maximum_output(model).or_else(|| {
+        model
+            .get("max_tokens")
+            .and_then(super::parse_positive_u64)
+            .and_then(|v| u32::try_from(v).ok())
+    })
+}
+
+fn encode_path_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b':') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 #[async_trait]
@@ -47,13 +106,21 @@ impl InferenceProvider for AnthropicProvider {
         let models = value["data"]
             .as_array()
             .ok_or_else(|| CondenserError::provider("Anthropic", "missing `data` model list"))?;
+        let mut cache = self
+            .max_output_cache
+            .lock()
+            .expect("anthropic max_output_cache lock");
         Ok(models
             .iter()
             .filter_map(|model| {
-                model["id"].as_str().map(|id| ModelInfo {
+                let id = model["id"].as_str()?;
+                if let Some(max_out) = extract_anthropic_max_output(model) {
+                    cache.insert(id.to_string(), max_out);
+                }
+                Some(ModelInfo {
                     id: id.to_string(),
                     display_name: model["display_name"].as_str().map(str::to_string),
-                    context_length: None,
+                    context_length: super::advertised_context_length(model),
                 })
             })
             .collect())
@@ -61,29 +128,22 @@ impl InferenceProvider for AnthropicProvider {
 
     async fn complete(&self, request: &ChatRequest) -> Result<ChatResponse> {
         self.config.validate()?;
+        request.sampling.validate()?;
         super::reject_context_override(request, "Anthropic")?;
-        let mut resolved = request.clone();
-        if resolved.sampling.max_tokens.is_none() {
-            let mut url =
-                reqwest::Url::parse(&versioned_endpoint(self.config.base_url(), "models/"))
-                    .map_err(|e| CondenserError::Config(e.to_string()))?;
-            url.path_segments_mut()
-                .map_err(|_| CondenserError::Config("Invalid model metadata URL".into()))?
-                .pop_if_empty()
-                .push(&request.model);
-            let response = self
-                .authorize(self.client.get(url))
-                .send()
-                .await
-                .map_err(|e| CondenserError::provider("Anthropic", e.to_string()))?;
-            let model: Value = decode_json(ProviderKind::Anthropic, response).await?;
-            resolved.sampling.max_tokens =
-                Some(super::require_output_maximum(&model, "Anthropic")?);
-        }
-        let body = request_body(&resolved)?;
+        let max_tokens = match request.sampling.max_tokens {
+            Some(tokens) => tokens,
+            None => self.resolve_max_tokens(&request.model).await?,
+        };
+        let body = request_body(request, max_tokens)?;
         let url = versioned_endpoint(self.config.base_url(), "messages");
-        let response = self
-            .authorize(self.client.post(url).json(&body))
+        let mut req_builder = self.authorize(self.client.post(url).json(&body));
+        // Only lengthens an owner-set timeout; `0` (the default) stays unlimited.
+        if self.config.timeout_secs != 0 && max_tokens > 16_384 {
+            req_builder = req_builder.timeout(std::time::Duration::from_secs(
+                self.config.timeout_secs.max(1800),
+            ));
+        }
+        let response = req_builder
             .send()
             .await
             .map_err(|error| CondenserError::provider("Anthropic", error.to_string()))?;
@@ -92,7 +152,7 @@ impl InferenceProvider for AnthropicProvider {
     }
 }
 
-fn request_body(request: &ChatRequest) -> Result<Value> {
+fn request_body(request: &ChatRequest, max_tokens: u32) -> Result<Value> {
     request.sampling.validate()?;
     if request.sampling.seed.is_some() {
         return Err(CondenserError::UnsupportedOption {
@@ -116,7 +176,7 @@ fn request_body(request: &ChatRequest) -> Result<Value> {
     let mut body = json!({
         "model": request.model,
         "messages": messages,
-        "max_tokens": request.sampling.max_tokens.ok_or_else(|| CondenserError::Config("Resolve the model's maximum output tokens before generation".into()))?
+        "max_tokens": max_tokens
     });
     let object = body.as_object_mut().expect("request object");
     if !system.is_empty() {
@@ -307,10 +367,19 @@ mod tests {
             sampling: SamplingParams::default(),
             tools: Vec::new(),
         };
-        assert!(request_body(&request).is_err());
-        let mut request = request;
-        request.sampling.max_tokens = Some(64000);
-        assert_eq!(request_body(&request).unwrap()["max_tokens"], 64000);
+        let model_meta = json!({
+            "id": "claude-test",
+            "max_output_tokens": 8192,
+            "max_input_tokens": 200000
+        });
+        let max_out = extract_anthropic_max_output(&model_meta).unwrap();
+        assert_eq!(max_out, 8192);
+        assert_eq!(
+            super::super::advertised_context_length(&model_meta),
+            Some(200_000)
+        );
+        let body = request_body(&request, max_out).unwrap();
+        assert_eq!(body["max_tokens"], 8192);
     }
 
     #[test]
@@ -332,7 +401,7 @@ mod tests {
                 }),
             }],
         };
-        let body = request_body(&request).unwrap();
+        let body = request_body(&request, 4096).unwrap();
         assert_eq!(
             body["tools"],
             json!([{

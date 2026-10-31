@@ -172,9 +172,12 @@ struct ChatArgs {
     top_k: Option<u32>,
     #[arg(long)]
     max_tokens: Option<u32>,
-    /// Ollama context/input window. Omit to use the model's full declared context.
+    /// Optional active context window override in tokens (`num_ctx` for Ollama).
     #[arg(long)]
     context_window: Option<u32>,
+    /// Explicitly compact prior reasoning/tool history (disabled by default to preserve full attention).
+    #[arg(long)]
+    compact_history: bool,
     #[arg(long)]
     seed: Option<u64>,
     /// MCL4-COE / DeepSeek-V4.1 cognitive mode: uta, coe, dream_rl, or ncm.
@@ -535,12 +538,12 @@ async fn run_chat(args: ChatArgs, roots: Vec<PathBuf>) -> Result<()> {
                 max_steps: args.max_steps,
                 max_calls_per_step: 16,
                 sampling: SamplingParams {
-                    context_window: args.context_window,
-                    compact_history: false,
                     temperature: args.temperature,
                     top_p: args.top_p,
                     top_k: args.top_k,
                     max_tokens: args.max_tokens,
+                    context_window: args.context_window,
+                    compact_history: args.compact_history,
                     seed: args.seed,
                     stop: Vec::new(),
                     mcl4_coe,
