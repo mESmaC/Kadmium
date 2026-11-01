@@ -24,4 +24,5 @@ import KadmiumFormal.Native.AttentionWindow
 import KadmiumFormal.Native.ModelText
 import KadmiumFormal.Native.ShardSelection
 import KadmiumFormal.Native.Generation
+import KadmiumFormal.Native.SessionWire
 import KadmiumFormal.Audit

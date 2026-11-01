@@ -26,13 +26,15 @@
 //! `linear_is_identical_at_every_thread_count` pins 1 to 1,000 threads.
 //!
 //! Status: reference execution on the CPU, with byte-exact multi-machine layer placement
-//! ([`plan_checkpoint_placement`]). `native_generation` generates across a chain of slices in one
-//! process. No wire protocol or Condenser route uses it yet, and its speed has not been measured.
+//! ([`plan_checkpoint_placement`]) and authenticated `KDNS` session frames over the worker
+//! connection (`WireFrameKind::NativeDecoderSession`). `native_generation` generates across a
+//! chain of slices in one process, and speed has not been measured.
 
 mod config;
 pub mod math;
 mod model;
 mod placement;
+pub mod session;
 pub mod staging;
 
 pub use config::{Architecture, DecoderConfig, RopeScaling};
@@ -45,6 +47,18 @@ pub use placement::{
     DecoderPlacementPlan, PlannedDecoderSlice, checkpoint_memory_profile,
     plan_checkpoint_placement, plan_checkpoint_placement_with_budgets,
     plan_placement_from_manifest, plan_placement_with_budgets,
+};
+pub use session::{
+    DEFAULT_MAX_ACTIVE_NATIVE_SESSIONS, DEFAULT_MAX_NATIVE_SESSION_FRAME_BYTES,
+    DEFAULT_MAX_NATIVE_SESSION_METADATA_BYTES, DEFAULT_MAX_NATIVE_SESSION_PAYLOAD_BYTES,
+    ForwardInput, ForwardOutput, MAX_IN_FLIGHT_NATIVE_SESSION_FRAMES, NATIVE_SESSION_HEADER_BYTES,
+    NATIVE_SESSION_MAC_BYTES, NATIVE_SESSION_MAGIC, NATIVE_SESSION_MAX_MODEL_ID_BYTES,
+    NATIVE_SESSION_MAX_SESSION_ID_BYTES, NATIVE_SESSION_MIN_KEY_BYTES, NATIVE_SESSION_VERSION,
+    NativeSessionHost, NativeSessionLimits, SessionAuthKey, SessionCancelRequest,
+    SessionCancelResponse, SessionCloseRequest, SessionCloseResponse, SessionForwardRequest,
+    SessionForwardResponse, SessionOpenRequest, SessionOpenResponse, SessionRequest,
+    SessionResponse, decode_envelope, decode_f32_tensor, decode_u32_slice, encode_envelope,
+    encode_f32_tensor, encode_u32_slice, fnv1a64_f32_le, hmac_sha256, is_priority_control_frame,
 };
 
 use kadmium_data::SafetensorsManifestError;
@@ -86,6 +100,16 @@ pub enum NativeDecoderError {
     CachePosition { expected: usize, actual: usize },
     #[error("could not allocate {bytes} bytes for the KV cache")]
     Memory { bytes: usize },
+    #[error("native decoder session authentication failed: {0}")]
+    Authentication(String),
+    #[error("native decoder session frame is {actual} bytes; the limit is {limit} bytes")]
+    FrameTooLarge { actual: usize, limit: usize },
+    #[error("native decoder session frame: {0}")]
+    Wire(String),
+    #[error("native decoder session `{0}` was cancelled")]
+    Cancelled(String),
+    #[error("native decoder session: {0}")]
+    Session(String),
     #[error("{0}")]
     Shape(String),
     #[error(transparent)]

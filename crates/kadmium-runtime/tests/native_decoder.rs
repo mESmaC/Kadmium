@@ -8,17 +8,25 @@
 
 use kadmium_core::{
     ComputeBackend, DeviceKind, HardwareNode, MemoryTierProfile, NodeId, NodeRole, NodeTrustTier,
-    PoliteState, ResourceOffer,
+    PoliteState, ResourceOffer, sample_personal_cluster,
 };
 use kadmium_data::SafetensorsManifest;
+use kadmium_network::WireFrameKind;
 use kadmium_runtime::native_decoder::{
-    Activations, DecoderConfig, DecoderSlice, KvCache, LayerPlacementError, MachineMemoryBudget,
-    NativeDecoderError, SlicePlan, checkpoint_memory_profile, plan_checkpoint_placement,
-    plan_checkpoint_placement_with_budgets,
+    Activations, DecoderConfig, DecoderSlice, ForwardInput, ForwardOutput, KvCache,
+    LayerPlacementError, MachineMemoryBudget, NATIVE_SESSION_HEADER_BYTES, NativeDecoderError,
+    NativeSessionHost, NativeSessionLimits, SessionAuthKey, SessionForwardRequest,
+    SessionForwardResponse, SessionOpenRequest, SessionRequest, SessionResponse, SlicePlan,
+    checkpoint_memory_profile, decode_f32_tensor, encode_f32_tensor, fnv1a64_f32_le,
+    plan_checkpoint_placement, plan_checkpoint_placement_with_budgets,
 };
+use kadmium_runtime::{DistributedLanExecutor, LiveNodeWorkerServer};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 const FIXTURES: [&str; 5] = [
     "llama3_bf16",
@@ -875,4 +883,507 @@ fn placement_fails_when_machines_cannot_hold_model_and_full_context() {
     assert_eq!(cluster_plan.stages.len(), 1);
     assert_eq!(cluster_plan.stages[0].plan, SlicePlan::whole(&config));
     assert_eq!(cluster_plan.total_bytes, whole_bytes);
+}
+
+fn test_auth_key(label: &[u8]) -> SessionAuthKey {
+    SessionAuthKey::new(label).unwrap()
+}
+
+fn sample_worker_node(id: &str) -> HardwareNode {
+    let mut node = sample_personal_cluster().into_iter().next().unwrap();
+    node.id = NodeId(id.to_string());
+    node.hostname = format!("{id}.lan");
+    node
+}
+
+#[test]
+fn session_wire_preserves_every_f32_bit_pattern() {
+    let key = test_auth_key(b"kadmium-test-secret-key-0001");
+    let limits = NativeSessionLimits::default();
+    let special_bits: [u32; 12] = [
+        0x0000_0000, // +0.0
+        0x8000_0000, // -0.0
+        0x0000_0001, // smallest positive subnormal
+        0x8000_0001, // smallest negative subnormal
+        0x007f_ffff, // largest positive subnormal
+        0x0080_0000, // smallest positive normal
+        0x3f80_0000, // +1.0
+        0xbf80_0000, // -1.0
+        0x7f7f_ffff, // f32::MAX
+        0x7f80_0000, // +inf
+        0xff80_0000, // -inf
+        0x7fc0_1234, // quiet NaN with custom payload bits
+    ];
+    let values: Vec<f32> = special_bits.iter().copied().map(f32::from_bits).collect();
+    let act = Activations::new(7, 4, values.clone()).unwrap();
+    let req = SessionRequest::Forward(SessionForwardRequest {
+        session_id: "sess-bit-exact".to_string(),
+        input: ForwardInput::Activations(act),
+        emit_logits: false,
+    });
+    let wire = req.encode(&key, &limits).unwrap();
+    let decoded = SessionRequest::decode(&wire, &key, &limits).unwrap();
+    let SessionRequest::Forward(decoded_req) = decoded else {
+        panic!("expected Forward request");
+    };
+    let ForwardInput::Activations(decoded_act) = decoded_req.input else {
+        panic!("expected Activations input");
+    };
+    assert_eq!(decoded_act.start_position(), 7);
+    assert_eq!(decoded_act.rows(), 3);
+    assert_eq!(decoded_act.hidden_size(), 4);
+    assert_eq!(bits(decoded_act.data()), special_bits.to_vec());
+
+    let resp = SessionResponse::Forward(SessionForwardResponse {
+        session_id: "sess-bit-exact".to_string(),
+        output: ForwardOutput::Logits {
+            start_position: 7,
+            rows: 3,
+            vocab_size: 4,
+            data: values,
+        },
+        cache_positions: 10,
+        kv_cache_bytes: 128,
+        repops_digest_fnv1a: fnv1a64_f32_le(&special_bits.map(f32::from_bits)),
+    });
+    let resp_wire = resp.encode(&key, &limits).unwrap();
+    let decoded_resp = SessionResponse::decode(&resp_wire, &key, &limits).unwrap();
+    let SessionResponse::Forward(decoded_fwd) = decoded_resp else {
+        panic!("expected Forward response");
+    };
+    let ForwardOutput::Logits { data, .. } = decoded_fwd.output else {
+        panic!("expected Logits output");
+    };
+    assert_eq!(bits(&data), special_bits.to_vec());
+}
+
+#[test]
+fn session_authentication_rejects_missing_wrong_tampered_and_replayed_frames() {
+    let limits = NativeSessionLimits::default();
+    let key_a = test_auth_key(b"kadmium-session-key-alpha-1234");
+    let key_b = test_auth_key(b"kadmium-session-key-bravo-5678");
+
+    // Keys shorter than 16 bytes are refused at construction.
+    assert!(matches!(
+        SessionAuthKey::new(b"short-key"),
+        Err(NativeDecoderError::Authentication(_))
+    ));
+    // Debug formatting redacts key material.
+    assert!(
+        !format!("{key_a:?}").contains("alpha"),
+        "Debug leaked secret material"
+    );
+
+    let open = SessionRequest::Open(SessionOpenRequest {
+        session_id: "sess-auth".to_string(),
+        model_id: "llama3_bf16".to_string(),
+        start_layer: 0,
+        end_layer: 1,
+        embedding: true,
+        head: false,
+    });
+    let wire = open.encode(&key_a, &limits).unwrap();
+
+    // Wrong key is rejected.
+    assert!(matches!(
+        SessionRequest::decode(&wire, &key_b, &limits),
+        Err(NativeDecoderError::Authentication(_))
+    ));
+
+    // Replaying a signed request frame into SessionResponse::decode fails domain separation.
+    assert!(matches!(
+        SessionResponse::decode(&wire, &key_a, &limits),
+        Err(NativeDecoderError::Authentication(_))
+    ));
+
+    // Flipping a bit in the metadata or payload or tag is rejected before parsing JSON.
+    for idx in [5usize, 14, NATIVE_SESSION_HEADER_BYTES] {
+        let mut tampered = wire.clone();
+        tampered[idx] ^= 0x01;
+        assert!(
+            matches!(
+                SessionRequest::decode(&tampered, &key_a, &limits),
+                Err(NativeDecoderError::Authentication(_))
+            ),
+            "tampered byte at offset {idx} was not rejected as unauthenticated"
+        );
+    }
+
+    // A worker without an auth key configured refuses the frame.
+    let unconfigured = NativeSessionHost::new();
+    unconfigured.clear_auth_key();
+    let (reply_bytes, counted) = unconfigured.handle_frame_payload(&wire);
+    assert!(!counted);
+    assert!(matches!(
+        SessionResponse::decode(&reply_bytes, &key_a, &limits),
+        Err(NativeDecoderError::Authentication(_))
+    ));
+}
+
+#[test]
+fn session_wire_enforces_size_limits_and_rejects_dimension_overflow() {
+    let key = test_auth_key(b"kadmium-bounds-check-secret-99");
+    let tight = NativeSessionLimits {
+        max_frame_bytes: 256,
+        max_metadata_bytes: 180,
+        max_payload_bytes: 64,
+        max_active_sessions: 2,
+    };
+
+    // Payload larger than max_payload_bytes is rejected on encode and decode.
+    let big_act = Activations::new(0, 8, vec![1.0f32; 32]).unwrap(); // 128 B > 64 B
+    let big_req = SessionRequest::Forward(SessionForwardRequest {
+        session_id: "sess-big".to_string(),
+        input: ForwardInput::Activations(big_act),
+        emit_logits: false,
+    });
+    assert!(matches!(
+        big_req.encode(&key, &tight),
+        Err(NativeDecoderError::FrameTooLarge {
+            actual: 128,
+            limit: 64
+        })
+    ));
+
+    // A frame encoded with default limits is rejected by a receiver with tighter frame limits.
+    let default_wire = big_req
+        .encode(&key, &NativeSessionLimits::default())
+        .unwrap();
+    assert!(matches!(
+        SessionRequest::decode(&default_wire, &key, &tight),
+        Err(NativeDecoderError::FrameTooLarge { .. })
+    ));
+
+    // Overflowing dimensions (2^31 * 2^31 * 4 wraps 64-bit arithmetic to 0) are rejected.
+    let half = 1usize << 31;
+    assert!(matches!(
+        encode_f32_tensor(half, half, &[], usize::MAX),
+        Err(NativeDecoderError::Wire(_))
+    ));
+    assert!(matches!(
+        decode_f32_tensor(half, half, &[], usize::MAX),
+        Err(NativeDecoderError::Wire(_))
+    ));
+
+    // Truncated or trailing tensor bytes are rejected.
+    assert!(matches!(
+        decode_f32_tensor(2, 4, &[0u8; 28], 1024),
+        Err(NativeDecoderError::Wire(_))
+    ));
+}
+
+#[test]
+fn cancelling_an_in_flight_forward_stops_between_layers_and_rolls_back_kv_cache() {
+    let slice = whole("llama3_bf16");
+    let mut cache = slice.new_cache();
+    let prefill = slice.embed(&[1, 2], 0).unwrap();
+    slice.forward(&prefill, &mut cache).unwrap();
+    assert_eq!(cache.positions(), 2);
+
+    // Pre-cancelled flag aborts before completing the slice and rolls KV cache back to 2 positions.
+    let cancelled = AtomicBool::new(true);
+    let step = slice.embed(&[3, 4], 2).unwrap();
+    let err = slice
+        .forward_until(&step, &mut cache, &cancelled)
+        .unwrap_err();
+    assert!(matches!(err, NativeDecoderError::Cancelled(_)));
+    assert_eq!(
+        cache.positions(),
+        2,
+        "cancelled forward must roll back appended KV positions"
+    );
+
+    // Host-level cancel removes the session and reports released KV bytes.
+    let host = NativeSessionHost::new();
+    host.register_model_dir("llama3_bf16", fixture("llama3_bf16"));
+    let SessionResponse::Open(opened) = host.execute(SessionRequest::Open(SessionOpenRequest {
+        session_id: "sess-cancel".to_string(),
+        model_id: "llama3_bf16".to_string(),
+        start_layer: 0,
+        end_layer: 2,
+        embedding: true,
+        head: false,
+    })) else {
+        panic!("expected OpenResponse");
+    };
+    assert_eq!(opened.hidden_size, 32);
+    assert_eq!(host.active_session_count(), 1);
+
+    let SessionResponse::Forward(fwd) =
+        host.execute(SessionRequest::Forward(SessionForwardRequest {
+            session_id: "sess-cancel".to_string(),
+            input: ForwardInput::Tokens {
+                start_position: 0,
+                tokens: vec![1, 2, 3],
+            },
+            emit_logits: false,
+        }))
+    else {
+        panic!("expected ForwardResponse");
+    };
+    assert_eq!(fwd.cache_positions, 3);
+    assert!(fwd.kv_cache_bytes > 0);
+
+    let SessionResponse::Cancel(cancelled_resp) = host.execute(SessionRequest::Cancel(
+        kadmium_runtime::native_decoder::SessionCancelRequest {
+            session_id: "sess-cancel".to_string(),
+        },
+    )) else {
+        panic!("expected CancelResponse");
+    };
+    assert_eq!(cancelled_resp.released_kv_bytes, fwd.kv_cache_bytes);
+    assert_eq!(host.active_session_count(), 0);
+}
+
+#[tokio::test]
+async fn live_worker_tcp_chain_is_bit_identical_to_unsplit_and_supports_cancel() {
+    let key = test_auth_key(b"kadmium-live-tcp-chain-auth-key-2026");
+    let limits = NativeSessionLimits::default();
+
+    let mut workers = Vec::new();
+    for idx in 0..3 {
+        let server = LiveNodeWorkerServer::spawn_auto_port(
+            "127.0.0.1",
+            0,
+            sample_worker_node(&format!("node-native-slice-{idx}")),
+            false,
+        )
+        .await
+        .unwrap();
+        server.native_sessions.set_auth_key(key.clone());
+        for name in FIXTURES {
+            server
+                .native_sessions
+                .register_model_dir(name, fixture(name));
+        }
+        workers.push(server);
+    }
+
+    for (epoch, name) in FIXTURES.iter().enumerate() {
+        let epoch = (epoch + 1) as u64;
+        let reference = reference(name);
+        let unsplit = whole(name);
+        let n = unsplit.config().num_layers;
+        assert_eq!(n, 3);
+        let expected = run_chain(&[unsplit], &reference.tokens, 4);
+
+        let s0 = format!("{name}-stage-0");
+        let s1 = format!("{name}-stage-1");
+        let s2 = format!("{name}-stage-2");
+
+        let addr0 = workers[0].local_addr.to_string();
+        let addr1 = workers[1].local_addr.to_string();
+        let addr2 = workers[2].local_addr.to_string();
+
+        DistributedLanExecutor::open_native_session_tcp(
+            &addr0,
+            epoch,
+            SessionOpenRequest {
+                session_id: s0.clone(),
+                model_id: (*name).to_string(),
+                start_layer: 0,
+                end_layer: 1,
+                embedding: true,
+                head: false,
+            },
+            &key,
+            &limits,
+        )
+        .await
+        .unwrap();
+        DistributedLanExecutor::open_native_session_tcp(
+            &addr1,
+            epoch,
+            SessionOpenRequest {
+                session_id: s1.clone(),
+                model_id: (*name).to_string(),
+                start_layer: 1,
+                end_layer: 2,
+                embedding: false,
+                head: false,
+            },
+            &key,
+            &limits,
+        )
+        .await
+        .unwrap();
+        DistributedLanExecutor::open_native_session_tcp(
+            &addr2,
+            epoch,
+            SessionOpenRequest {
+                session_id: s2.clone(),
+                model_id: (*name).to_string(),
+                start_layer: 2,
+                end_layer: n,
+                embedding: false,
+                head: true,
+            },
+            &key,
+            &limits,
+        )
+        .await
+        .unwrap();
+
+        let run_remote_step = |tokens: Vec<u32>, start_position: usize| {
+            let addr0 = addr0.clone();
+            let addr1 = addr1.clone();
+            let addr2 = addr2.clone();
+            let s0 = s0.clone();
+            let s1 = s1.clone();
+            let s2 = s2.clone();
+            let key = key.clone();
+            async move {
+                let r0 = DistributedLanExecutor::forward_native_session_tcp(
+                    &addr0,
+                    epoch,
+                    SessionForwardRequest {
+                        session_id: s0,
+                        input: ForwardInput::Tokens {
+                            start_position,
+                            tokens,
+                        },
+                        emit_logits: false,
+                    },
+                    &key,
+                    &limits,
+                )
+                .await
+                .unwrap();
+                let ForwardOutput::Activations(a0) = r0.output else {
+                    panic!("stage 0 must return activations");
+                };
+
+                let r1 = DistributedLanExecutor::forward_native_session_tcp(
+                    &addr1,
+                    epoch,
+                    SessionForwardRequest {
+                        session_id: s1,
+                        input: ForwardInput::Activations(a0),
+                        emit_logits: false,
+                    },
+                    &key,
+                    &limits,
+                )
+                .await
+                .unwrap();
+                let ForwardOutput::Activations(a1) = r1.output else {
+                    panic!("stage 1 must return activations");
+                };
+
+                let r2 = DistributedLanExecutor::forward_native_session_tcp(
+                    &addr2,
+                    epoch,
+                    SessionForwardRequest {
+                        session_id: s2,
+                        input: ForwardInput::Activations(a1),
+                        emit_logits: true,
+                    },
+                    &key,
+                    &limits,
+                )
+                .await
+                .unwrap();
+                let ForwardOutput::Logits { data, .. } = r2.output else {
+                    panic!("stage 2 must return logits");
+                };
+                data
+            }
+        };
+
+        let prefill = 4usize;
+        let mut remote_logits = run_remote_step(reference.tokens[..prefill].to_vec(), 0).await;
+        for (i, &tok) in reference.tokens[prefill..].iter().enumerate() {
+            remote_logits.extend(run_remote_step(vec![tok], prefill + i).await);
+        }
+
+        assert_eq!(
+            bits(&remote_logits),
+            bits(&expected),
+            "{name}: 3-worker TCP chain differed from unsplit execution"
+        );
+
+        let closed0 =
+            DistributedLanExecutor::close_native_session_tcp(&addr0, epoch, &s0, &key, &limits)
+                .await
+                .unwrap();
+        let closed1 =
+            DistributedLanExecutor::close_native_session_tcp(&addr1, epoch, &s1, &key, &limits)
+                .await
+                .unwrap();
+        let closed2 =
+            DistributedLanExecutor::close_native_session_tcp(&addr2, epoch, &s2, &key, &limits)
+                .await
+                .unwrap();
+        assert_eq!(closed0.final_positions, reference.tokens.len());
+        assert_eq!(closed1.final_positions, reference.tokens.len());
+        assert_eq!(closed2.final_positions, reference.tokens.len());
+        assert!(closed0.released_kv_bytes > 0);
+    }
+
+    // Verify that Cancel bypasses a saturated forward semaphore on the worker connection.
+    let addr = workers[0].local_addr.to_string();
+    DistributedLanExecutor::open_native_session_tcp(
+        &addr,
+        99,
+        SessionOpenRequest {
+            session_id: "sess-priority-cancel".to_string(),
+            model_id: "llama3_bf16".to_string(),
+            start_layer: 0,
+            end_layer: 1,
+            embedding: true,
+            head: false,
+        },
+        &key,
+        &limits,
+    )
+    .await
+    .unwrap();
+
+    // Hold all native_session_slots permits on worker 0 so any non-priority frame would block.
+    let all_permits = Arc::clone(&workers[0].native_session_slots)
+        .acquire_many_owned(
+            kadmium_runtime::native_decoder::MAX_IN_FLIGHT_NATIVE_SESSION_FRAMES as u32,
+        )
+        .await
+        .unwrap();
+
+    let cancel_ack = tokio::time::timeout(
+        Duration::from_secs(2),
+        DistributedLanExecutor::cancel_native_session_tcp(
+            &addr,
+            99,
+            "sess-priority-cancel",
+            &key,
+            &limits,
+        ),
+    )
+    .await
+    .expect("Cancel frame must bypass saturated native_session_slots")
+    .unwrap();
+    assert_eq!(cancel_ack.session_id, "sess-priority-cancel");
+    drop(all_permits);
+
+    // Wrong key over TCP is rejected with NativeDecoderError::Authentication.
+    let bad_key = test_auth_key(b"kadmium-wrong-tcp-auth-key-00000");
+    let auth_err = DistributedLanExecutor::open_native_session_tcp(
+        &addr,
+        100,
+        SessionOpenRequest {
+            session_id: "sess-unauth".to_string(),
+            model_id: "llama3_bf16".to_string(),
+            start_layer: 0,
+            end_layer: 1,
+            embedding: true,
+            head: false,
+        },
+        &bad_key,
+        &limits,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(auth_err, NativeDecoderError::Authentication(_)),
+        "expected Authentication error, got {auth_err:?}"
+    );
+    let _ = WireFrameKind::NativeDecoderSession;
 }

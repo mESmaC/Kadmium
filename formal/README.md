@@ -56,7 +56,7 @@ Fixtures: the FNV-1a vectors are checked by `crates/kadmium-data/tests/fnv1a_lea
 | Theorem | Statement | Rust item |
 | :--- | :--- | :--- |
 | `Network.decode_encode`, `Network.decode_encodeLegacy` | A frame with a legal kind, an epoch below `2^32`, a request id below `2^64` and at most `2^30` payload bytes decodes back to itself from any byte string that starts with its encoding; a legacy `KDMF` frame decodes with request id `0`. | `WireFrame::encode_with_request_id`, `WireFrame::decode` |
-| `Network.decode_shortMagic`, `decode_badMagic`, `decode_shortHeader`, `decode_badKind`, `decode_oversize`, `decode_truncated` | A short input, an unknown magic, a short header, a kind byte outside `1 ..= 15`, a declared length above `2^30` and a payload shorter than declared are rejected. The oversize rejection holds for every payload, so the length is refused before any payload byte is read or allocated. | `WireFrame::decode`, `WireFrame::parse_header`, `WireFrame::read_from_stream` |
+| `Network.decode_shortMagic`, `decode_badMagic`, `decode_shortHeader`, `decode_badKind`, `decode_oversize`, `decode_truncated` | A short input, an unknown magic, a short header, a kind byte outside `1 ..= 16`, a declared length above `2^30` and a payload shorter than declared are rejected. The oversize rejection holds for every payload, so the length is refused before any payload byte is read or allocated. | `WireFrame::decode`, `WireFrame::parse_header`, `WireFrame::read_from_stream` |
 | `Network.decode_ok_payload_le` | Whatever decodes carries at most `2^30` payload bytes. | `WireFrame::decode` |
 | `Network.encode_not_total` | A frame with more than `2^30` payload bytes never round-trips: `encode` writes `payload.len() as u32` and does not check the cap. See Findings. | `WireFrame::encode_with_request_id` |
 
@@ -280,6 +280,18 @@ Streamed-text holdback is **Proved (model)** with a differential fixture: `lake 
 | `Native.Generation.generate_chain_eq_whole` | For any selection function and stopping rule, generating over a chain of slices with aligned caches gives exactly the tokens of generating over one slice that holds all their layers. | `native_generation::generate`, `Chain::step` |
 | `Native.Generation.emitLen_mono`, `Native.Generation.emitted_prefix` | When the text grows, the number of bytes sent never decreases, and what was sent before is a prefix of what is sent after. | `native_generation::held_back_len`, `text::TextStream::push` |
 | `Native.Generation.emitLen_le_stop` | If the text so far holds no whole stop string and its continuation completes one at offset `p`, nothing from `p` on was sent. | `text::TextStream::push` |
+
+### Native decoder session wire frames (`Native/SessionWire.lean`)
+
+**Proved (model)**, about a model only: there is no differential fixture. `f32` values are modelled by their exact 32-bit IEEE 754 bit patterns (`UInt32`), and HMAC-SHA256 is parameterized as an abstract `MacFn`. The Rust tests in `crates/kadmium-runtime/tests/native_decoder.rs` check multi-worker TCP chain execution across checkpoint layouts, special IEEE 754 float bit preservation (`-0.0`, subnormals, infinities, NaN payloads), authentication failures, and overflow/size-limit rejections. Modelling choices are listed in `KadmiumFormal/Native/SessionWire.lean`.
+
+| Theorem | Statement | Rust item |
+| :--- | :--- | :--- |
+| `Native.SessionWire.decodeEnvelope_encodeEnvelope` | Every `KDNS` frame accepted by `encodeEnvelope` decodes under the same domain and key back to its exact `(kind, metadata, payload)` triple. | `native_decoder::encode_envelope`, `decode_envelope` |
+| `Native.SessionWire.decodeEnvelope_bounds` | `decodeEnvelope` succeeds only when the frame, metadata and payload lengths satisfy `NativeSessionLimits` and match the declared header lengths. | `native_decoder::decode_envelope` |
+| `Native.SessionWire.decodeEnvelope_authenticated`, `decodeEnvelope_rejects_wrong_key`, `decodeEnvelope_rejects_domain_swap` | `decodeEnvelope` succeeds only when the wire tag equals the expected MAC for `(domain, key)`, and rejects frames signed with a different key or replayed across request/response domains whenever the MAC distinguishes them. | `native_decoder::decode_envelope`, `SessionAuthKey` |
+| `Native.SessionWire.decodeTensor_encodeTensor`, `decodeTensor_exact` | `encode_f32_tensor` and `decode_f32_tensor` preserve every 32-bit float word without rounding and accept a payload if and only if its byte length is `rows * width * 4` within `max_payload_bytes`. | `native_decoder::encode_f32_tensor`, `decode_f32_tensor` |
+| `Native.SessionWire.wrapped_tensor_overflow`, `checked_rejects_tensor_overflow` | Unchecked 64-bit multiplication wraps `2^31 * 2^31 * 4` to `0` bytes; `checkedTensorBytes64` rejects the overflow and returns `some n` only when `n = rows * width * 4`. | `native_decoder::encode_f32_tensor`, `decode_f32_tensor` |
 
 Modelling assumptions shared by these results:
 

@@ -1619,6 +1619,11 @@ pub struct WorkerFrameContext {
     pub expert_cache: Arc<Mutex<ExpertCache>>,
     /// The host memory envelope the cache and the delta-link stores live under.
     pub host_ledger: Arc<Mutex<HostMemoryLedger>>,
+    /// Authenticated native decoder slice sessions (`WireFrameKind::NativeDecoderSession`).
+    pub native_sessions: crate::native_decoder::NativeSessionHost,
+    /// Bounds concurrent `Open` / `Forward` native decoder session frames on this worker;
+    /// `Close` and `Cancel` frames bypass this semaphore so cancellation can preempt a full queue.
+    pub native_session_slots: Arc<tokio::sync::Semaphore>,
     /// Remote address of the connection the frame arrived on (console logging only).
     pub peer_addr: SocketAddr,
     pub log_console: bool,
@@ -2303,6 +2308,18 @@ pub fn handle_worker_frame(frame: WireFrame, ctx: &WorkerFrameContext) -> Option
                 br#"{"error":"no executor registered"}"#.to_vec(),
             ));
         }
+        WireFrameKind::NativeDecoderSession => {
+            let (reply_payload, counted_forward) =
+                ctx.native_sessions.handle_frame_payload(&frame.payload);
+            if counted_forward {
+                ctx.served_forward_stages.fetch_add(1, Ordering::Relaxed);
+            }
+            return Some(WireFrame::new(
+                WireFrameKind::NativeDecoderSession,
+                frame.epoch,
+                reply_payload,
+            ));
+        }
         // CRDT gossip is exchanged between coordinators; the worker port does not serve it.
         WireFrameKind::ShardPlanEpochUpdate => {}
         // Delta links are negotiated and unwrapped by `serve_worker_connection`; neither kind
@@ -2525,6 +2542,18 @@ where
         } else {
             None
         };
+        let native_session_permit = if frame.kind == WireFrameKind::NativeDecoderSession
+            && !crate::native_decoder::is_priority_control_frame(&frame.payload)
+        {
+            Some(
+                Arc::clone(&ctx.native_session_slots)
+                    .acquire_owned()
+                    .await
+                    .expect("native session slots are never closed"),
+            )
+        } else {
+            None
+        };
         let ctx = ctx.clone();
         let writer = Arc::clone(&writer);
         let connection_failed = Arc::clone(&connection_failed);
@@ -2532,11 +2561,13 @@ where
             let (kind, epoch, request_id) = (frame.kind, frame.epoch, frame.request_id);
             let _expert_load_permit = expert_load_permit;
             let _fts3_permit = fts3_permit;
+            let _native_session_permit = native_session_permit;
             let reply = if matches!(
                 kind,
                 WireFrameKind::ExpertLoad
                     | WireFrameKind::WorkDispatch
                     | WireFrameKind::Fts3KtbChunkStream
+                    | WireFrameKind::NativeDecoderSession
             ) {
                 let blocking_ctx = ctx.clone();
                 tokio::task::spawn_blocking(move || handle_worker_frame(frame, &blocking_ctx))
@@ -2654,6 +2685,10 @@ pub struct LiveNodeWorkerServer {
     pub expert_cache: Arc<Mutex<ExpertCache>>,
     /// The host memory envelope the cache and the delta-link stores live under.
     pub host_ledger: Arc<Mutex<HostMemoryLedger>>,
+    /// Authenticated native decoder slice sessions (`WireFrameKind::NativeDecoderSession`).
+    pub native_sessions: crate::native_decoder::NativeSessionHost,
+    /// Bounds concurrent `Open` / `Forward` native decoder session frames on this worker.
+    pub native_session_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl LiveNodeWorkerServer {
@@ -2725,6 +2760,10 @@ impl LiveNodeWorkerServer {
         let expert_loader = ExpertLoader::default();
         let expert_load_slots = Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_EXPERT_LOADS));
         let fts3_slots = Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT_FTS3_PAGES));
+        let native_sessions = crate::native_decoder::NativeSessionHost::new();
+        let native_session_slots = Arc::new(tokio::sync::Semaphore::new(
+            crate::native_decoder::MAX_IN_FLIGHT_NATIVE_SESSION_FRAMES,
+        ));
 
         let (host_ledger, expert_cache) =
             build_host_ledger_and_expert_cache(expert_loader.stats().cached_bytes as u64);
@@ -2757,6 +2796,8 @@ impl LiveNodeWorkerServer {
             served_work_units: Arc::clone(&work_counter),
             expert_cache: Arc::clone(&expert_cache),
             host_ledger: Arc::clone(&host_ledger),
+            native_sessions: native_sessions.clone(),
+            native_session_slots: Arc::clone(&native_session_slots),
             peer_addr: local_addr,
             log_console,
         };
@@ -2792,6 +2833,8 @@ impl LiveNodeWorkerServer {
             served_work_units: work_counter,
             expert_cache,
             host_ledger,
+            native_sessions,
+            native_session_slots,
         })
     }
 }
@@ -2833,6 +2876,8 @@ impl LiveNodeWorkerServer {
             served_work_units: Arc::clone(&self.served_work_units),
             expert_cache: Arc::clone(&self.expert_cache),
             host_ledger: Arc::clone(&self.host_ledger),
+            native_sessions: self.native_sessions.clone(),
+            native_session_slots: Arc::clone(&self.native_session_slots),
             peer_addr: local_addr,
             log_console,
         };
@@ -3545,6 +3590,198 @@ impl DistributedLanExecutor {
         let resp: LiveStageTrainingResponse = serde_json::from_slice(&reply.payload)
             .map_err(|e| format!("Malformed LiveStageTrainingResponse: {e}"))?;
         Ok((resp, wall_ms.max(0.1)))
+    }
+
+    /// Sends an authenticated `KDNS` native decoder session request over the pooled
+    /// [`kadmium_network::PeerChannel`] connection (`WireFrameKind::NativeDecoderSession`) and
+    /// verifies the worker's response tag and size bounds.
+    pub async fn send_native_session_tcp(
+        worker_tcp_addr: &str,
+        epoch: u64,
+        request: &crate::native_decoder::SessionRequest,
+        auth_key: &crate::native_decoder::SessionAuthKey,
+        limits: &crate::native_decoder::NativeSessionLimits,
+    ) -> crate::native_decoder::Result<crate::native_decoder::SessionResponse> {
+        let payload = request.encode(auth_key, limits)?;
+        let timeout = match request {
+            crate::native_decoder::SessionRequest::Close(_)
+            | crate::native_decoder::SessionRequest::Cancel(_) => WIRE_CONTROL_CALL_TIMEOUT,
+            crate::native_decoder::SessionRequest::Open(_)
+            | crate::native_decoder::SessionRequest::Forward(_) => WIRE_CALL_TIMEOUT,
+        };
+        let reply = Self::channel_pool()
+            .call_with_connect_timeout(
+                worker_tcp_addr,
+                Duration::from_millis(2500),
+                WireFrameKind::NativeDecoderSession,
+                epoch as u32,
+                payload,
+                timeout,
+            )
+            .await
+            .map_err(|e| {
+                crate::native_decoder::NativeDecoderError::Wire(format!(
+                    "TCP native decoder session call to {worker_tcp_addr} failed: {e}"
+                ))
+            })?;
+        if reply.kind != WireFrameKind::NativeDecoderSession || reply.epoch != epoch as u32 {
+            return Err(crate::native_decoder::NativeDecoderError::Wire(format!(
+                "unexpected native decoder session reply header from {worker_tcp_addr}: kind={:?} epoch={}",
+                reply.kind, reply.epoch
+            )));
+        }
+        crate::native_decoder::SessionResponse::decode(&reply.payload, auth_key, limits)?
+            .into_result()
+    }
+
+    /// Opens a native decoder slice session on `worker_tcp_addr` over the pooled worker connection.
+    pub async fn open_native_session_tcp(
+        worker_tcp_addr: &str,
+        epoch: u64,
+        request: crate::native_decoder::SessionOpenRequest,
+        auth_key: &crate::native_decoder::SessionAuthKey,
+        limits: &crate::native_decoder::NativeSessionLimits,
+    ) -> crate::native_decoder::Result<crate::native_decoder::SessionOpenResponse> {
+        let expected_id = request.session_id.clone();
+        match Self::send_native_session_tcp(
+            worker_tcp_addr,
+            epoch,
+            &crate::native_decoder::SessionRequest::Open(request),
+            auth_key,
+            limits,
+        )
+        .await?
+        {
+            crate::native_decoder::SessionResponse::Open(resp)
+                if resp.session_id == expected_id =>
+            {
+                Ok(resp)
+            }
+            crate::native_decoder::SessionResponse::Open(resp) => {
+                Err(crate::native_decoder::NativeDecoderError::Wire(format!(
+                    "open_native_session_tcp session_id mismatch: expected `{expected_id}`, got `{}`",
+                    resp.session_id
+                )))
+            }
+            other => Err(crate::native_decoder::NativeDecoderError::Wire(format!(
+                "unexpected response to OpenRequest: {other:?}"
+            ))),
+        }
+    }
+
+    /// Runs one native decoder forward pass on `worker_tcp_addr` over the pooled worker connection,
+    /// carrying token IDs or exact `f32` activations and returning exact `f32` activations or logits.
+    pub async fn forward_native_session_tcp(
+        worker_tcp_addr: &str,
+        epoch: u64,
+        request: crate::native_decoder::SessionForwardRequest,
+        auth_key: &crate::native_decoder::SessionAuthKey,
+        limits: &crate::native_decoder::NativeSessionLimits,
+    ) -> crate::native_decoder::Result<crate::native_decoder::SessionForwardResponse> {
+        let expected_id = request.session_id.clone();
+        match Self::send_native_session_tcp(
+            worker_tcp_addr,
+            epoch,
+            &crate::native_decoder::SessionRequest::Forward(request),
+            auth_key,
+            limits,
+        )
+        .await?
+        {
+            crate::native_decoder::SessionResponse::Forward(resp)
+                if resp.session_id == expected_id =>
+            {
+                Ok(resp)
+            }
+            crate::native_decoder::SessionResponse::Forward(resp) => {
+                Err(crate::native_decoder::NativeDecoderError::Wire(format!(
+                    "forward_native_session_tcp session_id mismatch: expected `{expected_id}`, got `{}`",
+                    resp.session_id
+                )))
+            }
+            other => Err(crate::native_decoder::NativeDecoderError::Wire(format!(
+                "unexpected response to ForwardRequest: {other:?}"
+            ))),
+        }
+    }
+
+    /// Closes an open native decoder slice session on `worker_tcp_addr` and releases its KV cache.
+    pub async fn close_native_session_tcp(
+        worker_tcp_addr: &str,
+        epoch: u64,
+        session_id: impl Into<String>,
+        auth_key: &crate::native_decoder::SessionAuthKey,
+        limits: &crate::native_decoder::NativeSessionLimits,
+    ) -> crate::native_decoder::Result<crate::native_decoder::SessionCloseResponse> {
+        let expected_id = session_id.into();
+        match Self::send_native_session_tcp(
+            worker_tcp_addr,
+            epoch,
+            &crate::native_decoder::SessionRequest::Close(
+                crate::native_decoder::SessionCloseRequest {
+                    session_id: expected_id.clone(),
+                },
+            ),
+            auth_key,
+            limits,
+        )
+        .await?
+        {
+            crate::native_decoder::SessionResponse::Close(resp)
+                if resp.session_id == expected_id =>
+            {
+                Ok(resp)
+            }
+            crate::native_decoder::SessionResponse::Close(resp) => {
+                Err(crate::native_decoder::NativeDecoderError::Wire(format!(
+                    "close_native_session_tcp session_id mismatch: expected `{expected_id}`, got `{}`",
+                    resp.session_id
+                )))
+            }
+            other => Err(crate::native_decoder::NativeDecoderError::Wire(format!(
+                "unexpected response to CloseRequest: {other:?}"
+            ))),
+        }
+    }
+
+    /// Cancels a native decoder slice session on `worker_tcp_addr`, interrupting any in-flight
+    /// forward pass and releasing its KV cache.
+    pub async fn cancel_native_session_tcp(
+        worker_tcp_addr: &str,
+        epoch: u64,
+        session_id: impl Into<String>,
+        auth_key: &crate::native_decoder::SessionAuthKey,
+        limits: &crate::native_decoder::NativeSessionLimits,
+    ) -> crate::native_decoder::Result<crate::native_decoder::SessionCancelResponse> {
+        let expected_id = session_id.into();
+        match Self::send_native_session_tcp(
+            worker_tcp_addr,
+            epoch,
+            &crate::native_decoder::SessionRequest::Cancel(
+                crate::native_decoder::SessionCancelRequest {
+                    session_id: expected_id.clone(),
+                },
+            ),
+            auth_key,
+            limits,
+        )
+        .await?
+        {
+            crate::native_decoder::SessionResponse::Cancel(resp)
+                if resp.session_id == expected_id =>
+            {
+                Ok(resp)
+            }
+            crate::native_decoder::SessionResponse::Cancel(resp) => {
+                Err(crate::native_decoder::NativeDecoderError::Wire(format!(
+                    "cancel_native_session_tcp session_id mismatch: expected `{expected_id}`, got `{}`",
+                    resp.session_id
+                )))
+            }
+            other => Err(crate::native_decoder::NativeDecoderError::Wire(format!(
+                "unexpected response to CancelRequest: {other:?}"
+            ))),
+        }
     }
 
     /// Executes a complete multi-stage forward pass across `plan`.

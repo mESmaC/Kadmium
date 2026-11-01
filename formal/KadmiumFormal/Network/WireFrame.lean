@@ -9,7 +9,7 @@ Models `WireFrame::encode_with_request_id`, `WireFrame::parse_header` and `WireF
 ```text
 offset  size  field
      0     4  magic "KDM2"
-     4     1  kind (WireFrameKind as u8, 1 ..= 15)
+     4     1  kind (WireFrameKind as u8, 1 ..= 16)
      5     4  epoch, u32 LE
      9     8  request_id, u64 LE
     17     4  payload length, u32 LE, at most 2^30
@@ -28,7 +28,7 @@ Results:
   id `0`.
 * `decode_shortMagic`, `decode_badMagic`, `decode_shortHeader`, `decode_badKind`,
   `decode_oversize`, `decode_truncated`: the decoder rejects a short input, an unknown magic, a
-  short header, a kind byte outside `1 ..= 15`, a declared length above `2^30` and a payload
+  short header, a kind byte outside `1 ..= 16`, a declared length above `2^30` and a payload
   shorter than declared. `decode_oversize` holds for every payload, so an oversize length is
   refused before any payload byte is looked at.
 * `decode_ok_payload_le`: whatever decodes carries at most `2^30` payload bytes.
@@ -77,8 +77,8 @@ inductive DecodeError where
   | truncated
   deriving DecidableEq, Repr
 
-/-- `WireFrameKind::from_u8` accepts `1 ..= 15`. -/
-def kindOk (k : Nat) : Bool := 1 ≤ k && k ≤ 15
+/-- `WireFrameKind::from_u8` accepts `1 ..= 16`. -/
+def kindOk (k : Nat) : Bool := 1 ≤ k && k ≤ 16
 
 /-- `WireFrame::encode_with_request_id`. The length field is `payload.len() as u32`. -/
 def encode (f : Frame) : List Nat :=

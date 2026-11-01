@@ -25,6 +25,7 @@ import KadmiumFormal.Native.ModelText
 import KadmiumFormal.Native.ShardSelection
 import KadmiumFormal.Grid.StagingStorage
 import KadmiumFormal.Native.Generation
+import KadmiumFormal.Native.SessionWire
 
 /-!
 # Axiom audit
@@ -217,3 +218,12 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Native.Generation.emitLen_mono
 #assert_standard_axioms Kadmium.Native.Generation.emitted_prefix
 #assert_standard_axioms Kadmium.Native.Generation.emitLen_le_stop
+#assert_standard_axioms Kadmium.Native.SessionWire.decodeEnvelope_encodeEnvelope
+#assert_standard_axioms Kadmium.Native.SessionWire.decodeEnvelope_bounds
+#assert_standard_axioms Kadmium.Native.SessionWire.decodeEnvelope_authenticated
+#assert_standard_axioms Kadmium.Native.SessionWire.decodeEnvelope_rejects_wrong_key
+#assert_standard_axioms Kadmium.Native.SessionWire.decodeEnvelope_rejects_domain_swap
+#assert_standard_axioms Kadmium.Native.SessionWire.decodeTensor_encodeTensor
+#assert_standard_axioms Kadmium.Native.SessionWire.decodeTensor_exact
+#assert_standard_axioms Kadmium.Native.SessionWire.wrapped_tensor_overflow
+#assert_standard_axioms Kadmium.Native.SessionWire.checked_rejects_tensor_overflow
