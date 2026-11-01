@@ -25,7 +25,7 @@ fn workspace_url(base: &str, model_id: Option<&str>) -> Result<reqwest::Url> {
     Ok(url)
 }
 
-fn coordinator_url(base: &str, route: &str) -> Result<reqwest::Url> {
+pub(crate) fn coordinator_url(base: &str, route: &str) -> Result<reqwest::Url> {
     let mut url = reqwest::Url::parse(base.trim())
         .map_err(|_| CondenserError::Config("Enter a valid coordinator URL".into()))?;
     if !matches!(url.scheme(), "http" | "https")

@@ -97,6 +97,95 @@ test('model preparation, local and remote coordinator routing, quality tradeoffs
     assert.match(await page.locator('#header-provider').textContent(),/Ollama/);
     await page.unroute('**/api/v1/checkpoints/publish*');
 
+    // Split across my machines: verify full-context refusal and stage-by-stage machine holdings.
+    await page.locator('#open-model-library').click();
+    await page.locator('label:has(#destination-split)').click();
+    assert.equal(await page.locator('#destination-split-panel').isVisible(),true);
+    await page.locator('#split-endpoint').fill('https://coordinator.example:7848');
+    await page.locator('#split-key').fill('split-key');
+    let splitAttempt=0;
+    await page.route('**/api/v1/checkpoints/split',route=>{
+      const body=route.request().postDataJSON();
+      assert.deepEqual(body,{checkpoint_id:id,endpoint:'https://coordinator.example:7848',api_key:'split-key'});
+      splitAttempt+=1;
+      if(splitAttempt===1){
+        return route.fulfill({status:422,contentType:'application/json',body:JSON.stringify({error:'the 1 eligible machine(s) cannot hold all 32 layers plus the 8192-position KV cache; refusing to shorten the context or use a smaller model'})});
+      }
+      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({
+        checkpoint_id:id,
+        checkpoint_name:'source',
+        architecture:'LlamaForCausalLM',
+        source_format:'safetensors',
+        num_layers:32,
+        context_length:8192,
+        tie_word_embeddings:false,
+        is_split:true,
+        machine_count:2,
+        eligible_machine_count:2,
+        total_weight_bytes:12884901888,
+        total_kv_bytes:1073741824,
+        total_bytes:13958643712,
+        embedding_bytes:536870912,
+        final_norm_bytes:16384,
+        lm_head_bytes:536870912,
+        kv_bytes_per_layer:33554432,
+        stages:[
+          {
+            stage_index:0,
+            node_id:'node-a',
+            hostname:'alpha-workstation',
+            trust_tier:'TrustedCore',
+            online:true,
+            start_layer:0,
+            end_layer:16,
+            layer_count:16,
+            embedding:true,
+            head:false,
+            shares_tied_embedding:false,
+            holdings:['Token embedding (model.embed_tokens.weight)','Decoder layers 0..16 (L0-L15, 16 layers)','Full-context f32 KV cache (8192 positions)'],
+            weight_bytes:6442450944,
+            kv_bytes:536870912,
+            total_bytes:6979321856,
+            capacity_bytes:8589934592,
+            free_bytes:1610612736,
+            residency_tier:'Vram',
+            requires_approval:false
+          },
+          {
+            stage_index:1,
+            node_id:'node-b',
+            hostname:'beta-workstation',
+            trust_tier:'TrustedCore',
+            online:true,
+            start_layer:16,
+            end_layer:32,
+            layer_count:16,
+            embedding:false,
+            head:true,
+            shares_tied_embedding:false,
+            holdings:['Decoder layers 16..32 (L16-L31, 16 layers)','Final norm + LM head (model.norm.weight, lm_head.weight)','Full-context f32 KV cache (8192 positions)'],
+            weight_bytes:6442450944,
+            kv_bytes:536870912,
+            total_bytes:6979321856,
+            capacity_bytes:8589934592,
+            free_bytes:1610612736,
+            residency_tier:'SystemRam',
+            requires_approval:false
+          }
+        ]
+      })});
+    });
+    await page.locator('#split-plan').click();
+    await page.getByText(/refusing to shorten the context or use a smaller model/).waitFor();
+    assert.equal(await page.locator('#split-results').isVisible(),false);
+    await page.locator('#split-plan').click();
+    await page.locator('#split-stages .split-stage-card').first().waitFor();
+    assert.equal(await page.locator('#split-stages .split-stage-card').count(),2);
+    assert.match(await page.locator('#split-status').textContent(),/Split across 2 machines at full context \(8,192 tokens\)/);
+    assert.match(await page.locator('#split-stages').textContent(),/alpha-workstation/);
+    assert.match(await page.locator('#split-stages').textContent(),/beta-workstation/);
+    await page.unroute('**/api/v1/checkpoints/split');
+
     // Quality controls start at maximum and explain each reduction.
     await page.locator('#provider-button').click();
     assert.match(await page.locator('#quality-summary').textContent(),/Maximum quality/);

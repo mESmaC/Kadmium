@@ -3,6 +3,7 @@
 //! Large payloads are copied with bounded buffers, never loaded as a whole checkpoint.
 
 pub(crate) mod formats;
+pub mod placement;
 mod selection;
 pub mod transport;
 
@@ -107,7 +108,7 @@ pub struct CheckpointManifest {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointSummary {
     pub id: String,
     pub name: String,
@@ -121,8 +122,9 @@ pub struct CheckpointSummary {
     pub bank_bytes: u64,
     pub bank_count: usize,
     pub dtypes: BTreeSet<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pre_quantized: Option<PreQuantizedSource>,
+    #[serde(default)]
     pub warnings: Vec<String>,
 }
 
