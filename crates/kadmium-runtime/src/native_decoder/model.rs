@@ -8,7 +8,7 @@
 //! decoding one token at a time gives the same bits as a prefill of the whole sequence.
 
 use super::config::{DecoderConfig, RopeScaling};
-use super::math::{self, Matrix, WeightData};
+use super::math::{self, MAX_ANGLE, Matrix, WeightData};
 use super::{NativeDecoderError, Result};
 use crate::repops;
 use kadmium_data::{SafetensorsDtype, SafetensorsManifest};
@@ -373,7 +373,56 @@ fn single_matrix(manifest: &SafetensorsManifest, name: &str, shape: [usize; 2]) 
     .matrix()
 }
 
-/// RoPE inverse frequencies, `f64` then rounded once to `f32`.
+/// Ties the config's layer count and attention widths to tensors the checkpoint stores, before
+/// anything sized by the config is allocated. A stored layer the config does not count is an
+/// error, because running the config's layers would silently skip it. The q, k and v projections
+/// of the lowest stored layer must have the shapes the config implies, which bounds
+/// `num_attention_heads * head_dim` and `num_key_value_heads * head_dim` by real tensor sizes.
+/// A manifest that holds only some layers, such as one staged for a single slice, is accepted.
+fn check_against_checkpoint(manifest: &SafetensorsManifest, c: &DecoderConfig) -> Result<()> {
+    let mut lowest: Option<usize> = None;
+    for tensor in manifest.tensors() {
+        let Some(index) = tensor
+            .name
+            .strip_prefix("model.layers.")
+            .and_then(|rest| rest.split_once('.'))
+            .and_then(|(index, _)| index.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        if index >= c.num_layers {
+            return Err(NativeDecoderError::Config(format!(
+                "the checkpoint stores layer {index}; `num_hidden_layers` is {}",
+                c.num_layers
+            )));
+        }
+        lowest = Some(lowest.map_or(index, |l| l.min(index)));
+    }
+    if let Some(layer) = lowest {
+        for (part, rows) in [
+            ("q_proj", c.q_width()),
+            ("k_proj", c.kv_width()),
+            ("v_proj", c.kv_width()),
+        ] {
+            let name = format!("model.layers.{layer}.self_attn.{part}.weight");
+            let descriptor = manifest
+                .tensor(&name)
+                .ok_or_else(|| NativeDecoderError::MissingTensor(name.clone()))?;
+            if descriptor.shape != [rows as u64, c.hidden_size as u64] {
+                return Err(NativeDecoderError::TensorShape {
+                    tensor: name,
+                    expected: vec![rows, c.hidden_size],
+                    actual: descriptor.shape.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// RoPE inverse frequencies, `f64` then rounded once to `f32`. Allocates `head_dim / 2` values;
+/// [`DecoderSlice::load_from`] calls it only after the checkpoint's tensors have confirmed
+/// `head_dim`.
 pub fn inverse_frequencies(config: &DecoderConfig) -> Vec<f32> {
     let d = config.head_dim;
     let ln_theta = math::ln_f64(config.rope_theta);
@@ -425,6 +474,7 @@ impl DecoderSlice {
                 layers: config.num_layers,
             });
         }
+        check_against_checkpoint(manifest, &config)?;
         let embed_shape = [config.vocab_size, config.hidden_size];
         let embedding = if plan.embedding {
             Some(Arc::new(single_matrix(
@@ -435,7 +485,9 @@ impl DecoderSlice {
         } else {
             None
         };
-        let mut blocks = Vec::with_capacity(plan.layers.len());
+        // Not presized: the range comes from the config, and each layer is checked against the
+        // checkpoint as it loads.
+        let mut blocks = Vec::new();
         for layer in plan.layers.clone() {
             blocks.push(load_block(manifest, &config, layer)?);
         }
@@ -461,7 +513,20 @@ impl DecoderSlice {
         } else {
             None
         };
-        let inverse_frequencies = inverse_frequencies(&config);
+        // Only layers use RoPE, and by now their q and k tensors have confirmed `head_dim`.
+        let inverse_frequencies = if blocks.is_empty() {
+            Vec::new()
+        } else {
+            inverse_frequencies(&config)
+        };
+        if let Some(fastest) = inverse_frequencies.iter().copied().reduce(f32::max)
+            && f64::from(fastest) * config.max_position_embeddings as f64 > MAX_ANGLE
+        {
+            return Err(NativeDecoderError::Unsupported(format!(
+                "RoPE angles up to {} at the native context; they are reduced accurately only up to {MAX_ANGLE}",
+                f64::from(fastest) * config.max_position_embeddings as f64
+            )));
+        }
         Ok(Self {
             config,
             plan,

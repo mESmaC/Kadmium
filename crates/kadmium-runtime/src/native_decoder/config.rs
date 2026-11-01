@@ -324,7 +324,9 @@ fn rope(json: &Value) -> Result<(f64, RopeScaling)> {
             let low_freq_factor = number(scaling, "low_freq_factor")?;
             let high_freq_factor = number(scaling, "high_freq_factor")?;
             let original = number(scaling, "original_max_position_embeddings")?;
-            if factor <= 0.0
+            // A factor below 1 would raise frequencies above 1 and RoPE angles past the bound
+            // the context check relies on; Llama 3.1 and later use 8 or 32.
+            if factor < 1.0
                 || low_freq_factor <= 0.0
                 || high_freq_factor <= low_freq_factor
                 || original <= 0.0
@@ -422,6 +424,11 @@ mod tests {
             ("hidden_size", json!(0)),
             ("rms_norm_eps", json!(-1.0)),
             ("vocab_size", json!("many")),
+            (
+                "rope_scaling",
+                json!({"rope_type": "llama3", "factor": 0.001, "low_freq_factor": 1.0,
+                       "high_freq_factor": 4.0, "original_max_position_embeddings": 16}),
+            ),
         ] {
             let mut config = llama();
             config[key] = value;
