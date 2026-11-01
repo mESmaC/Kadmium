@@ -14,6 +14,7 @@ import KadmiumFormal.Grid.Eviction
 import KadmiumFormal.Sharding.RowShare
 import KadmiumFormal.Runtime.Bisect
 import KadmiumFormal.Runtime.BatchCodec
+import KadmiumFormal.StoragePool
 import KadmiumFormal.Transport.ChunkMap
 import KadmiumFormal.Transport.Publish
 import KadmiumFormal.Audit

@@ -15,7 +15,7 @@ An optimality theorem names its cost model, such as the number of additions, the
 
 ## Results
 
-All results are **Proved (model)**. Three executables write the differential fixtures: `lake exe repops_vectors` writes `crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt`, checked by `crates/kadmium-runtime/tests/repops_lean_vectors.rs`; `lake exe transport_vectors` writes `crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt`, checked by `crates/kadmium-data/tests/transport_lean_vectors.rs`; `lake exe kadmium_vectors <repository root>` writes every `crates/*/tests/fixtures/*_lean_vectors.txt`, each checked by the Rust test of the same stem in that crate's `tests/` directory.
+All results in the tables below are **Proved (model)**. Four executables write the differential fixtures: `lake exe repops_vectors` writes `crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt`, checked by `crates/kadmium-runtime/tests/repops_lean_vectors.rs`; `lake exe transport_vectors` writes `crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt`, checked by `crates/kadmium-data/tests/transport_lean_vectors.rs`; `lake exe storage_pool_vectors` writes `crates/kadmium-data/tests/fixtures/storage_pool_vectors.txt`, checked by `crates/kadmium-data/tests/storage_pool_lean_vectors.rs`; `lake exe kadmium_vectors <repository root>` writes every `crates/*/tests/fixtures/*_lean_vectors.txt`, each checked by the Rust test of the same stem in that crate's `tests/` directory.
 
 ### RepOps reductions (`KadmiumFormal/Pow2.lean`, `RepOps/TreeSum.lean`, `RepOps/TreeReducer.lean`)
 
@@ -90,6 +90,21 @@ Every RepOps tree theorem holds for an arbitrary addition `add : α → α → �
 | `Data.coalesce_valid` | Every request fetches no run of more than `max_gap_bytes` unrequested bytes. | `HfByteRangeSlicer::coalesce_range_requests` |
 | `Data.coalesce_optimal` | **Fewest requests.** Any list of requests, each containing the slices it serves and fetching no run of more than `max_gap_bytes` unrequested bytes, whose members together cover every slice, has at least as many requests as the loop produces. Cost model: the number of HTTP requests, subject to the gap bound. The model covers one URL; slices of different URLs never merge. | `HfByteRangeSlicer::coalesce_range_requests` |
 
+### Storage pool (`KadmiumFormal/StoragePool.lean`)
+
+| Theorem | Statement | Rust item |
+| :--- | :--- | :--- |
+| `StoragePool.validateShardCounts_spec`, `StoragePool.validateStoredShardCounts_spec` | `validate_shard_counts` accepts `(k, m)` iff `1 ≤ k`, `1 ≤ m`, and `k + m ≤ 256`; `validate_stored_shard_counts` accepts `(k, m)` iff `1 ≤ k ≤ 16`, `1 ≤ m ≤ 8`, `k + m ≤ 20`, and `m ≤ max(k, 2)`. | `DecentralizedStoragePoolEngine::{validate_shard_counts, validate_stored_shard_counts}` |
+| `StoragePool.storedShardOverhead_le_three`, `StoragePool.cauchyNodes_disjoint` | For every `(k, m)` accepted by `validate_stored_shard_counts`, total shards satisfy `k + m ≤ 3 * k` (`(k + m) / k ≤ 3` storage overhead bound), and Cauchy evaluation points `x_p = k + p` (`p < m`) and `y_j = j` (`j < k`) are pairwise distinct in `0 .. 256`. | `DecentralizedStoragePoolEngine::validate_stored_shard_counts`, `systematic_cauchy_row` |
+| `StoragePool.shardSize_pos`, `StoragePool.payloadLen_le_k_mul_shardSize` | For `k ≥ 1`, `shardSize payloadLen k ≥ 1` and `payloadLen ≤ k * shardSize payloadLen k`, so `k` equal-sized data shards cover every payload byte without truncation. | `encode_erasure_coded_shards` |
+| `StoragePool.checkStoreQuota_spec` | The store quota check accepts a write iff the post-write object count is at most `maxObjects` and total physical bytes are at most `maxTotalBytes`. | `BucketObjectStore::put_bytes` |
+| `StoragePool.swapStep_preserves_durable`, `StoragePool.runSwap_preserves_durable`, `StoragePool.overwrite_durable`, `StoragePool.recover_restores_final`, `StoragePool.rotate_then_recover_restores_original` | Across any sequence of staging, rotation, commit, rollback, crash, and recovery events under the store lock, a committed object is never lost (`Durable`), and `recover_interrupted_writes` always restores `objects/<dir>` (`final ≠ none`). | `BucketObjectStore::{put_bytes, recover_interrupted_writes}` |
+| `StoragePool.medium_respects_offer` | Available medium capacity `mediumAvailable offer hw` is at most `min(offer, hw)`, pledged bucket capacity `mediumPledged` is at most available capacity (and therefore at most `offer`), and a zero offer (`offer = 0`, e.g. `PoliteState::Draining`) pledges zero capacity (`RespectsOffer`). | `DecentralizedStoragePoolEngine::{compute_medium_availability_and_pledge_tenths, compute_medium_availability_and_pledge, inspect_node_storage_mediums_with_offer}` |
+| `StoragePool.qualityLimitsCtx_unknown` | When a model is unknown (`known = none`) and no manual user override is set (`override = none`), no context window is fabricated (`qualityLimitsCtx none none = none`). | `ModelQualityLimits::{for_model, effective_context_window_tokens}` |
+
+Conjectures stated in `formal/KadmiumFormal/StoragePool.lean` (**Conjecture**):
+- `Kadmium.StoragePool.CauchyMdsConjecture` (**Conjecture**): Every `k × k` submatrix of the `(k + m) × k` systematic Cauchy matrix over `GF(2^8)` (for `(k, m)` accepted by `validate_stored_shard_counts`) is invertible under Gaussian elimination, so any `k` surviving shards out of `k + m` reconstruct the original `k` data shards bit for bit.
+
 ### Transport chunk maps (`Transport/ChunkMap.lean`)
 
 The differential fixture is `crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt`, checked by `crates/kadmium-data/tests/transport_lean_vectors.rs` against both Rust functions, including short reads. Modelling choices are listed in `KadmiumFormal/Transport/ChunkMap.lean`: byte counts are unbounded `Nat`, digests are not modelled, and a read returns 0 only at end of file.
@@ -146,9 +161,10 @@ Modelling assumptions shared by these results:
 - Indices, byte counts and offsets are unbounded natural numbers. Where the Rust uses `checked_*` arithmetic the model covers every call that does not fail; where it casts with `as`, the model writes the truncation explicitly (`Bytes.decodeLE_encodeLE_mod`).
 - Byte strings are lists of naturals below 256. An `f32` or `f64` in a codec is its four or eight little-endian bytes; the models move bytes and never interpret them, as the Rust codecs do.
 - The reducer's `Vec<Option<T>>` is a function from index to `Option`. The proofs track that every index the algorithm touches is below `2 * capacity`.
-- Error strings are modelled as the constructors of an error type per module.
+- Error strings are modelled as the constructors of an error type per module, such as `ReduceError` and `ShardCountError`.
 - `Summand::add` is a function of its two operands, which holds for `f32`, `f64` and `i64`.
 - Sorting is a modelling boundary: `coalesce_range_requests` sorts its input with a stable `sort_by` before the loop, and the model takes the sorted order as a hypothesis.
+- Directory states in `BucketObjectStore` are modelled per object slot as `(final, old, staging)` version tags serialized by `<root>/.store.lock`.
 
 ## Findings
 
@@ -165,14 +181,15 @@ cd formal
 lake build --wfail
 lake exe repops_vectors ../crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt
 lake exe transport_vectors ../crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt
+lake exe storage_pool_vectors ../crates/kadmium-data/tests/fixtures/storage_pool_vectors.txt
 lake exe kadmium_vectors ..
 cd ..
 cargo test --locked -p kadmium-runtime --test repops_lean_vectors
-cargo test --locked -p kadmium-data --test transport_lean_vectors
+cargo test --locked -p kadmium-data --test transport_lean_vectors --test storage_pool_lean_vectors
 cargo test --locked -p kadmium-runtime -p kadmium-network -p kadmium-data -p kadmium-grid -p kadmium-sharding -- lean_vectors
 ```
 
-`lake build --wfail` checks every proof and turns warnings, including `declaration uses 'sorry'`, into errors. `KadmiumFormal/Audit.lean` fails the build if a listed theorem depends on any axiom other than `propext`, `Classical.choice` and `Quot.sound`, which rules out `sorry`, `native_decide` and project-local axioms. CI runs all three executables and fails if any regenerated fixture differs from the committed one.
+`lake build --wfail` checks every proof and turns warnings, including `declaration uses 'sorry'`, into errors. `KadmiumFormal/Audit.lean` fails the build if a listed theorem depends on any axiom other than `propext`, `Classical.choice` and `Quot.sound`, which rules out `sorry`, `native_decide` and project-local axioms. CI runs all four executables and fails if any regenerated fixture differs from the committed one.
 
 ## Adding a result
 

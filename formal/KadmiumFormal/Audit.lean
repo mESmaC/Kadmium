@@ -15,6 +15,7 @@ import KadmiumFormal.Grid.Eviction
 import KadmiumFormal.Sharding.RowShare
 import KadmiumFormal.Runtime.Bisect
 import KadmiumFormal.Runtime.BatchCodec
+import KadmiumFormal.StoragePool
 import KadmiumFormal.Transport.ChunkMap
 import KadmiumFormal.Transport.Publish
 
@@ -134,6 +135,22 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Runtime.decodePart_exact
 #assert_standard_axioms Kadmium.Runtime.wrapped_accepts_header_only_part
 #assert_standard_axioms Kadmium.Runtime.checked_rejects_header_only_part
+
+-- Storage pool
+#assert_standard_axioms Kadmium.StoragePool.validateShardCounts_spec
+#assert_standard_axioms Kadmium.StoragePool.validateStoredShardCounts_spec
+#assert_standard_axioms Kadmium.StoragePool.storedShardOverhead_le_three
+#assert_standard_axioms Kadmium.StoragePool.cauchyNodes_disjoint
+#assert_standard_axioms Kadmium.StoragePool.shardSize_pos
+#assert_standard_axioms Kadmium.StoragePool.payloadLen_le_k_mul_shardSize
+#assert_standard_axioms Kadmium.StoragePool.checkStoreQuota_spec
+#assert_standard_axioms Kadmium.StoragePool.swapStep_preserves_durable
+#assert_standard_axioms Kadmium.StoragePool.runSwap_preserves_durable
+#assert_standard_axioms Kadmium.StoragePool.overwrite_durable
+#assert_standard_axioms Kadmium.StoragePool.recover_restores_final
+#assert_standard_axioms Kadmium.StoragePool.rotate_then_recover_restores_original
+#assert_standard_axioms Kadmium.StoragePool.medium_respects_offer
+#assert_standard_axioms Kadmium.StoragePool.qualityLimitsCtx_unknown
 
 -- Checkpoint transport
 #assert_standard_axioms Kadmium.Transport.readLoop_eq_chunkPlan
