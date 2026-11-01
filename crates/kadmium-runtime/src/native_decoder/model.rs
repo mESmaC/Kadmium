@@ -170,35 +170,70 @@ pub struct DecoderSlice {
     inverse_frequencies: Vec<f32>,
 }
 
-struct Spec {
-    name: String,
-    shape: Vec<usize>,
+pub(super) struct Spec {
+    pub(super) name: String,
+    pub(super) shape: Vec<usize>,
+}
+
+/// Validates a tensor's existence, dtype (`F32`, `F16` or `BF16`) and shape against `manifest`
+/// and returns the in-memory bytes [`DecoderSlice`] holds for it (1-D norm and bias vectors are
+/// widened to `f32`; 2-D weight matrices stay in their stored dtype).
+pub(super) fn stored_spec_bytes(manifest: &SafetensorsManifest, spec: &Spec) -> Result<u64> {
+    let descriptor = manifest
+        .tensor(&spec.name)
+        .ok_or_else(|| NativeDecoderError::MissingTensor(spec.name.clone()))?;
+    if !matches!(
+        descriptor.dtype,
+        SafetensorsDtype::F32 | SafetensorsDtype::F16 | SafetensorsDtype::Bf16
+    ) {
+        return Err(NativeDecoderError::UnsupportedDtype {
+            tensor: spec.name.clone(),
+            dtype: descriptor.dtype.as_str(),
+        });
+    }
+    let expected: Vec<u64> = spec.shape.iter().map(|&d| d as u64).collect();
+    if descriptor.shape != expected {
+        return Err(NativeDecoderError::TensorShape {
+            tensor: spec.name.clone(),
+            expected: spec.shape.clone(),
+            actual: descriptor.shape.clone(),
+        });
+    }
+    let elements: u64 = expected
+        .iter()
+        .try_fold(1u64, |acc, &d| acc.checked_mul(d))
+        .ok_or_else(|| {
+            NativeDecoderError::Shape(format!("tensor `{}` size overflows", spec.name))
+        })?;
+    let width: u64 = if descriptor.dtype == SafetensorsDtype::F32 {
+        4
+    } else {
+        2
+    };
+    let expected_stored = elements.checked_mul(width).ok_or_else(|| {
+        NativeDecoderError::Shape(format!("tensor `{}` byte size overflows", spec.name))
+    })?;
+    if descriptor.byte_len != expected_stored {
+        return Err(NativeDecoderError::TensorShape {
+            tensor: spec.name.clone(),
+            expected: spec.shape.clone(),
+            actual: vec![descriptor.byte_len / width],
+        });
+    }
+    if spec.shape.len() == 1 {
+        elements.checked_mul(4).ok_or_else(|| {
+            NativeDecoderError::Shape(format!("tensor `{}` f32 size overflows", spec.name))
+        })
+    } else {
+        Ok(expected_stored)
+    }
 }
 
 /// Reads tensors in one batched pass, checking each one's dtype and shape before any byte is
 /// read. Only F32, F16 and BF16 are accepted; they are kept as stored.
 fn fetch(manifest: &SafetensorsManifest, specs: &[Spec]) -> Result<Vec<WeightData>> {
     for spec in specs {
-        let descriptor = manifest
-            .tensor(&spec.name)
-            .ok_or_else(|| NativeDecoderError::MissingTensor(spec.name.clone()))?;
-        if !matches!(
-            descriptor.dtype,
-            SafetensorsDtype::F32 | SafetensorsDtype::F16 | SafetensorsDtype::Bf16
-        ) {
-            return Err(NativeDecoderError::UnsupportedDtype {
-                tensor: spec.name.clone(),
-                dtype: descriptor.dtype.as_str(),
-            });
-        }
-        let expected: Vec<u64> = spec.shape.iter().map(|&d| d as u64).collect();
-        if descriptor.shape != expected {
-            return Err(NativeDecoderError::TensorShape {
-                tensor: spec.name.clone(),
-                expected: spec.shape.clone(),
-                actual: descriptor.shape.clone(),
-            });
-        }
+        let _ = stored_spec_bytes(manifest, spec)?;
     }
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
     let (payloads, _) = manifest.read_tensors(&names)?;
@@ -279,7 +314,7 @@ fn fetch_all(manifest: &SafetensorsManifest, specs: Vec<Spec>) -> Result<Fetched
     })
 }
 
-fn load_block(manifest: &SafetensorsManifest, c: &DecoderConfig, layer: usize) -> Result<Block> {
+pub(super) fn block_specs(c: &DecoderConfig, layer: usize) -> Vec<Spec> {
     let prefix = format!("model.layers.{layer}.");
     let (h, q, kv, d, i) = (
         c.hidden_size,
@@ -327,6 +362,11 @@ fn load_block(manifest: &SafetensorsManifest, c: &DecoderConfig, layer: usize) -
             add(&format!("mlp.{name}.bias"), &shape[..1]);
         }
     }
+    specs
+}
+
+fn load_block(manifest: &SafetensorsManifest, c: &DecoderConfig, layer: usize) -> Result<Block> {
+    let specs = block_specs(c, layer);
     let mut f = fetch_all(manifest, specs)?;
     let input_norm = f.vector()?;
     let post_norm = f.vector()?;
@@ -379,7 +419,10 @@ fn single_matrix(manifest: &SafetensorsManifest, name: &str, shape: [usize; 2]) 
 /// of the lowest stored layer must have the shapes the config implies, which bounds
 /// `num_attention_heads * head_dim` and `num_key_value_heads * head_dim` by real tensor sizes.
 /// A manifest that holds only some layers, such as one staged for a single slice, is accepted.
-fn check_against_checkpoint(manifest: &SafetensorsManifest, c: &DecoderConfig) -> Result<()> {
+pub(super) fn check_against_checkpoint(
+    manifest: &SafetensorsManifest,
+    c: &DecoderConfig,
+) -> Result<()> {
     let mut lowest: Option<usize> = None;
     for tensor in manifest.tensors() {
         let Some(index) = tensor
