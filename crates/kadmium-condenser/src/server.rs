@@ -25,6 +25,7 @@ const CONDENSER_CSS: &str = include_str!("assets/condenser.css");
 const CONDENSER_JS: &str = include_str!("assets/condenser.js");
 const WORKFLOW_JS: &str = include_str!("assets/workflow.js");
 const KADMIUM_TOKENS: &str = include_str!("../../../design-system/tokens.css");
+const KADMIUM_GLASS: &str = include_str!("../../../design-system/glass.css");
 const LOCAL_COMPUTE_CSS: &str = include_str!("assets/local-compute.css");
 const CONDENSER_MARK: &str = include_str!("assets/condenser-mark.svg");
 const CONDENSER_FAVICON: &str = include_str!("assets/condenser-favicon.svg");
@@ -63,6 +64,7 @@ impl Default for ServerOptions {
 pub(crate) struct ServerState {
     pub(crate) model_library: kadmium_data::checkpoint::CheckpointLibrary,
     pub(crate) model_operations: Arc<tokio::sync::Semaphore>,
+    pub(crate) publish: crate::model_transport::SharedProgress,
     plugin_roots: Arc<Vec<PathBuf>>,
     client: reqwest::Client,
     turn_permits: Arc<tokio::sync::Semaphore>,
@@ -118,6 +120,7 @@ pub fn build_router(options: ServerOptions) -> Result<Router> {
     let state = ServerState {
         model_library: kadmium_data::checkpoint::CheckpointLibrary::new(options.model_library),
         model_operations: Arc::new(tokio::sync::Semaphore::new(1)),
+        publish: Default::default(),
         plugin_roots: Arc::new(options.plugin_roots),
         client,
         turn_permits: Arc::new(tokio::sync::Semaphore::new(options.max_concurrent_turns)),
@@ -161,6 +164,14 @@ fn router(state: ServerState) -> Router {
             post(crate::local_models::import),
         )
         .route("/api/v1/checkpoints/load", post(crate::local_models::load))
+        .route(
+            "/api/v1/checkpoints/transport",
+            post(crate::model_transport::transport),
+        )
+        .route(
+            "/api/v1/checkpoints/publish",
+            get(crate::model_transport::publish_status).post(crate::model_transport::publish),
+        )
         .route("/api/v1/runs/{id}/cancel", post(cancel_run))
         .route("/api/v1/files/list", post(crate::workspace::list_files))
         .route("/api/v1/files/read", post(crate::workspace::read_file))
@@ -179,6 +190,10 @@ fn router(state: ServerState) -> Router {
         .route(
             "/kadmium-tokens.css",
             get(|| async { text_asset("text/css; charset=utf-8", KADMIUM_TOKENS) }),
+        )
+        .route(
+            "/kadmium-glass.css",
+            get(|| async { text_asset("text/css; charset=utf-8", KADMIUM_GLASS) }),
         )
         .route(
             "/local-compute.css",

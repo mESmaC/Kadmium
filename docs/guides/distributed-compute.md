@@ -5,7 +5,7 @@ For scheduler admission details and design gaps, see
 [lease/data-plane/adapter target design](../ARCHITECTURE.md#921-local-aggregate-compute-target)
 does not change the supported live workloads described here.
 
-Condenser's **Models & compute** panel connects to a Kadmium coordinator and runs bounded jobs on live TCP workers. Model inference through Ollama and Kadmium grid work are separate routes: connecting workers does not distribute a loaded Ollama model or train an imported checkpoint.
+Condenser's compute dock (chip icon beside the dock tabs) connects to a Kadmium coordinator and runs bounded jobs on live TCP workers. Model inference through Ollama and Kadmium grid work are separate routes: connecting workers does not distribute a loaded Ollama model or train an imported checkpoint.
 
 ## Connect your machines
 

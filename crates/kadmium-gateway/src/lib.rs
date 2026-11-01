@@ -41,6 +41,7 @@ pub mod docs;
 pub mod grid_api;
 mod inference_workspace;
 pub mod mcp;
+pub mod model_transport;
 pub mod routes;
 
 pub use checkpoints::{TrainingCheckpoint, TrainingCheckpointList, TrainingResumeReport};
@@ -2075,8 +2076,9 @@ mod tests {
 
         // Verify embedded public documentation catalog from `docs/`
         let docs = build_documentation_catalog();
-        assert_eq!(docs.len(), 21);
+        assert_eq!(docs.len(), 22);
         assert!(docs.iter().any(|page| page.slug == "condenser-workspace"));
+        assert!(docs.iter().any(|page| page.slug == "model-transport"));
         assert!(docs.iter().any(|page| page.slug == "usbc-delta-bridge"));
         assert!(docs.iter().any(|page| page.slug == "npu-kernels"));
         assert!(docs.iter().any(|page| page.slug == "launch-guide"));

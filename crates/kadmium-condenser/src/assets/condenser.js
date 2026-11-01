@@ -28,7 +28,7 @@
     draftTimer: null,
     queueEdit: null,
     compute: { snapshot: null, baseUrl: '', modelId: '', at: null, loading: false },
-    localModels: { items: [], busy: false, loaded: null, request: 0 },
+    localModels: { items: [], busy: false, loaded: null, request: 0, cloud: null, transport: null },
     computeJobRunning: false,
     selectedTool: null,
     persistence: true,
@@ -56,7 +56,10 @@
 
   const $ = (id) => document.getElementById(id);
   // Relative assets and requests work both standalone and mounted at /condenser/.
-  const apiPath = (path) => new URL(path.replace(/^\//, ''), document.baseURI).pathname;
+  const apiPath = (path) => {
+    const url = new URL(path.replace(/^\//, ''), document.baseURI);
+    return url.pathname + url.search;
+  };
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -512,6 +515,7 @@
     } else if (overlayPanes() && railHadFocus && $('prompt')) {
       $('prompt').focus();
     }
+    if (name === 'models') refreshCheckpoints();
   }
 
   function saveDockLayout() {
@@ -1588,6 +1592,7 @@
     $('compact-history').checked = session.config.sampling.compact_history === true;
     $('quality-error').textContent = '';
     $('provider-timeout').value = session.config.timeout_secs || '';
+    renderQualityHints();
     const mcl4 = session.config.sampling.mcl4_coe || {};
     if ($('mcl4-mode')) $('mcl4-mode').value = mcl4.mode || 'uta';
     if ($('mcl4-effort')) $('mcl4-effort').value = mcl4.reasoning_effort || 'high';
@@ -1678,22 +1683,80 @@
     }
   }
 
-  function openModelLibrary() {
+  function formatBytes(value) {
+    const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+    let size = Number(value) || 0;
+    let unit = 0;
+    while (size >= 1000 && unit < units.length - 1) { size /= 1000; unit += 1; }
+    return (unit ? size.toFixed(size >= 100 ? 0 : 1) : size) + ' ' + units[unit];
+  }
+
+  function formatTokens(value) { return Number(value).toLocaleString() + ' tokens'; }
+
+  function selectedCheckpoint() {
+    return state.localModels.items.find(item => item.id === $('checkpoint-select').value) || null;
+  }
+
+  // Plain-language tradeoff for a reduced context window; blank always means the model maximum.
+  function contextTradeoff(input, hint) {
+    const selected = selectedCheckpoint();
+    const maximum = selected && selected.context_length;
+    const raw = $(input).value;
+    if (raw === '') {
+      setTradeoff(hint, 'ok', maximum ? 'Maximum — ' + formatTokens(maximum) + ', the model’s full context.' : 'Maximum — the model’s full context.');
+    } else if (!$(input).checkValidity() || (maximum && Number(raw) > maximum)) {
+      setTradeoff(hint, 'error', maximum ? 'Enter 1 to ' + Number(maximum).toLocaleString() + ', or leave blank for the maximum.' : 'Enter a positive whole number, or leave blank for the maximum.');
+    } else if (maximum && Number(raw) === maximum) {
+      setTradeoff(hint, 'ok', 'Maximum — ' + formatTokens(maximum) + '.');
+    } else {
+      const share = maximum ? ' (' + Math.max(1, Math.round(Number(raw) / maximum * 100)) + '% of ' + Number(maximum).toLocaleString() + ')' : '';
+      setTradeoff(hint, 'warn', 'Reduced to ' + formatTokens(raw) + share + '. Uses less memory and loads faster, but the model forgets messages and files beyond this limit, so long tasks lose detail.');
+    }
+  }
+
+  function setTradeoff(id, tone, text) {
+    $(id).dataset.tone = tone;
+    $(id).textContent = text;
+  }
+
+  function setStep(id, value) {
+    if (value) $(id).dataset.state = value; else delete $(id).dataset.state;
+  }
+
+  function renderModelSteps() {
+    const selected = selectedCheckpoint();
+    const running = state.localModels.loaded || (state.localModels.cloud && state.localModels.cloud.state === 'ready');
+    setStep('step-choose', selected || $('checkpoint-path').value.trim() ? 'done' : 'current');
+    setStep('step-prepare', selected ? 'done' : ($('checkpoint-path').value.trim() ? 'current' : ''));
+    setStep('step-run', running ? 'done' : (selected ? 'current' : ''));
+  }
+
+  function setDestination(value) {
+    const cloud = value === 'cloud';
+    $('destination-cloud').checked = cloud;
+    $('destination-local').checked = !cloud;
+    $('destination-local-panel').hidden = cloud;
+    $('destination-cloud-panel').hidden = !cloud;
+  }
+
+  function openModelLibrary(destination) {
     closeLayer('settings');
-    setView('harness');
-    setContextPanel('compute');
-    state.contextWide = true;
-    state.contextWidth = state.expandedContextWidth;
-    document.body.classList.add('context-wide');
-    applyPaneWidths();
-    $('checkpoint-path').focus();
+    setView('models');
+    if (destination === 'cloud') setDestination('cloud');
+    refreshCheckpoints();
+    $('checkpoint-path').focus({ preventScroll: true });
   }
 
   function checkpointControls() {
     const busy = state.localModels.busy;
-    ['checkpoint-path', 'checkpoint-working-directory', 'checkpoint-accept-quantized', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded'].forEach(id => { $(id).disabled = busy; });
-    $('checkpoint-load').disabled = busy || !$('checkpoint-select').value;
+    const cloud = state.localModels.cloud;
+    const sending = cloud && ['preparing', 'uploading', 'verifying', 'loading'].includes(cloud.state);
+    ['checkpoint-path', 'checkpoint-working-directory', 'checkpoint-accept-quantized', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded', 'cloud-endpoint', 'cloud-key', 'cloud-context'].forEach(id => { $(id).disabled = busy || sending; });
+    $('checkpoint-load').disabled = busy || sending || !$('checkpoint-select').value;
     $('checkpoint-use').disabled = busy || state.busy || !state.localModels.loaded;
+    $('cloud-send').disabled = busy || sending || !$('checkpoint-select').value;
+    $('cloud-use').disabled = busy || state.busy || !(cloud && cloud.state === 'ready' && cloud.checkpoint_id === $('checkpoint-select').value);
+    renderModelSteps();
   }
 
   function preQuantizedLabel(source) {
@@ -1704,14 +1767,26 @@
   }
 
   function renderCheckpoint() {
-    const selected = state.localModels.items.find(item => item.id === $('checkpoint-select').value);
+    const selected = selectedCheckpoint();
     const facts = $('checkpoint-facts');
     facts.replaceChildren();
     if (selected) {
-      const pairs = [['Format', selected.source_format], ['Architecture', selected.architecture || 'Unknown'], ['Tensors', selected.tensor_count], ['Normalized shards', selected.bank_count], ['Source bytes', selected.source_bytes.toLocaleString()], ['KTB bytes', selected.bank_bytes.toLocaleString()], ['Source types', selected.dtypes.join(', ')], ['Source precision', selected.pre_quantized ? 'Pre-quantized before import: ' + preQuantizedLabel(selected.pre_quantized) : '16-bit or wider, as published'], ['Maximum context tokens', selected.context_length || 'Not declared'], ['Checkpoint', selected.id], ['Shard folder', state.localModels.directory + '/' + selected.id + '/banks']];
-      pairs.forEach(([key, value]) => { const row = element('div'); row.append(element('dt', '', key), element('dd', 'code-sm', value)); facts.append(row); });
+      const transport = state.localModels.transport && state.localModels.transport.checkpoint_id === selected.id ? state.localModels.transport : null;
+      const pairs = [
+        ['Format', selected.source_format],
+        ['Architecture', selected.architecture || 'Not declared'],
+        ['Maximum context', selected.context_length ? formatTokens(selected.context_length) : 'Not declared'],
+        ['Precision', (selected.pre_quantized ? 'Pre-quantized before import: ' + preQuantizedLabel(selected.pre_quantized) : selected.dtypes.join(', ')) + ' · unchanged'],
+        ['Size', formatBytes(selected.source_bytes)],
+        ['Tensors', Number(selected.tensor_count).toLocaleString()],
+        ['Transport', transport ? transport.chunk_count + ' verified chunks · ' + (transport.alignment_bytes / 1024) + ' KiB aligned' : selected.bank_count + ' aligned shards'],
+        ['Model ID', selected.id.slice(0, 12) + '…']
+      ];
+      pairs.forEach(([key, value]) => { const row = element('div'); const dd = element('dd', key === 'Model ID' ? 'code-sm' : '', value); if (key === 'Model ID') dd.title = selected.id; row.append(element('dt', '', key), dd); facts.append(row); });
     }
     $('checkpoint-warnings').textContent = selected ? selected.warnings.join(' ') : '';
+    contextTradeoff('checkpoint-context', 'checkpoint-context-hint');
+    contextTradeoff('cloud-context', 'cloud-context-hint');
     checkpointControls();
   }
 
@@ -1724,9 +1799,10 @@
       state.localModels.items = list.checkpoints;
       $('checkpoint-directory').textContent = list.directory;
       state.localModels.directory = list.directory;
-      $('checkpoint-select').replaceChildren(new Option('Select a checkpoint', ''));
-      list.checkpoints.forEach(item => $('checkpoint-select').append(new Option(item.name + ' · ' + item.id.slice(0, 12) + (item.pre_quantized ? ' · pre-quantized' : ''), item.id)));
-      $('checkpoint-select').value = selected;
+      $('nav-model-count').textContent = String(list.checkpoints.length);
+      $('checkpoint-select').replaceChildren(new Option(list.checkpoints.length ? 'Select a prepared model' : 'No prepared models yet', ''));
+      list.checkpoints.forEach(item => $('checkpoint-select').append(new Option(item.name + ' · ' + formatBytes(item.source_bytes) + (item.pre_quantized ? ' · pre-quantized' : '') + ' · ' + item.id.slice(0, 8), item.id)));
+      $('checkpoint-select').value = list.checkpoints.some(item => item.id === selected) ? selected : (list.checkpoints.length === 1 ? list.checkpoints[0].id : '');
       renderCheckpoint();
     } catch (error) { if (request === state.localModels.request) $('checkpoint-status').textContent = error.message; }
   }
@@ -1737,14 +1813,15 @@
     state.localModels.request += 1;
     state.localModels.loaded = null;
     checkpointControls();
-    $('checkpoint-status').textContent = 'Preserving originals and writing KTB banks in the temporary workspace, then publishing the completed package to the model library. Large checkpoints can take several minutes.';
-    $('checkpoint-load-status').textContent = 'Normalize, then load in local Ollama. Your task route has not changed.';
+    $('checkpoint-status').textContent = 'Preparing… copying originals, verifying every byte, and writing aligned shards. Large models can take several minutes.';
+    $('checkpoint-load-status').textContent = 'Your current task is unchanged until you choose Use in current task.';
     try {
       const item = await postJson('/api/v1/checkpoints/import', { source_path: $('checkpoint-path').value.trim(), working_directory: $('checkpoint-working-directory').value.trim() || null, accept_pre_quantized: $('checkpoint-accept-quantized').checked });
       // Acceptance applies to one import only.
       $('checkpoint-accept-quantized').checked = false;
+      state.localModels.transport = item.transport || null;
       await refreshCheckpoints(item.id);
-      $('checkpoint-status').textContent = 'Normalized ' + item.tensor_count + ' tensors with source bytes preserved' + (item.pre_quantized ? ', kept at the pre-quantized precision you accepted (' + preQuantizedLabel(item.pre_quantized) + ')' : '') + '. Select Load in Ollama to prepare inference.';
+      $('checkpoint-status').textContent = 'Normalized ' + item.tensor_count + ' tensors with source bytes preserved' + (item.transport ? ' · ' + item.transport.chunk_count + ' verified transport chunks' : '') + (item.pre_quantized ? ' · kept at the pre-quantized precision you accepted (' + preQuantizedLabel(item.pre_quantized) + ')' : '') + '. Next: choose where to run it.';
     } catch (error) { $('checkpoint-status').textContent = error.message; }
     finally { state.localModels.busy = false; checkpointControls(); }
   }
@@ -1755,34 +1832,107 @@
     state.localModels.busy = true;
     state.localModels.loaded = null;
     checkpointControls();
-    $('checkpoint-load-status').textContent = 'Verifying package, uploading local blobs, checking tensor metadata, and loading the requested context (maximum by default). No smaller model or precision is selected on failure.';
+    $('checkpoint-load-status').textContent = 'Loading… verifying the package, handing the original files to Ollama, and confirming every tensor’s precision. If it can’t load at full quality, it stops and tells you — it never falls back to a smaller model.';
     try {
       state.localModels.loaded = await postJson('/api/v1/checkpoints/load', { checkpoint_id: $('checkpoint-select').value, base_url: $('checkpoint-backend').value.trim(), context_length: $('checkpoint-context').value === '' ? null : Number($('checkpoint-context').value) });
       const quantized = state.localModels.loaded.checkpoint && state.localModels.loaded.checkpoint.pre_quantized;
-      $('checkpoint-load-status').textContent = 'Loaded at ' + state.localModels.loaded.context_length + ' context tokens. Tensor metadata matches' + (quantized ? ', at the pre-quantized source precision you accepted (' + preQuantizedLabel(quantized) + ')' : '') + '. Choose Use in this task to change its provider. ' + state.localModels.loaded.execution;
+      $('checkpoint-load-status').textContent = 'Loaded with ' + (state.localModels.loaded.context_length ? formatTokens(state.localModels.loaded.context_length) : 'its full context') + '. Precision verified' + (quantized ? ' at the pre-quantized precision you accepted (' + preQuantizedLabel(quantized) + ')' : '') + '. Choose Use in current task to start. ' + state.localModels.loaded.execution;
     } catch (error) { $('checkpoint-load-status').textContent = error.message; }
     finally { state.localModels.busy = false; checkpointControls(); }
   }
 
-  function useCheckpoint() {
-    const loaded = state.localModels.loaded;
+  function routeTask(provider, checkpoint, contextLength, apiKey) {
     const session = currentSession();
-    if (!loaded || !session || state.busy || state.localModels.busy) return;
-    session.config.kind = loaded.provider.kind;
-    session.config.model = loaded.provider.model;
-    session.config.base_url = loaded.provider.base_url;
-    session.config.checkpoint_id = loaded.checkpoint.id;
+    if (!session || state.busy || state.localModels.busy) return false;
+    session.config.kind = provider.kind;
+    session.config.model = provider.model;
+    session.config.base_url = provider.base_url;
+    session.config.checkpoint_id = checkpoint.id;
     delete session.config.sampling.mcl4_coe;
     delete session.config.sampling.compact_history;
     delete session.config.sampling.context_window;
-    if (loaded.context_length < loaded.checkpoint.context_length) session.config.sampling.context_window = loaded.context_length;
+    if (provider.kind === 'ollama' && contextLength && checkpoint.context_length && contextLength < checkpoint.context_length) session.config.sampling.context_window = contextLength;
+    if (apiKey) state.credentials[workflow.credentialKey(provider.kind, provider.base_url)] = apiKey;
     session.lastError = null;
     session.status = 'ready';
     session.updatedAt = Date.now();
     saveSessions();
     renderAll();
-    $('checkpoint-load-status').textContent = 'This task now uses ' + loaded.checkpoint.name + (loaded.checkpoint.pre_quantized ? ', a pre-quantized source (' + preQuantizedLabel(loaded.checkpoint.pre_quantized) + '),' : '') + ' through local Ollama. Enter a prompt to run inference.';
+    return true;
+  }
+
+  function useCheckpoint() {
+    const loaded = state.localModels.loaded;
+    if (!loaded || !routeTask(loaded.provider, loaded.checkpoint, loaded.context_length)) return;
+    $('checkpoint-load-status').textContent = 'This task now runs ' + loaded.checkpoint.name + (loaded.checkpoint.pre_quantized ? ', a pre-quantized model (' + preQuantizedLabel(loaded.checkpoint.pre_quantized) + '),' : '') + ' on this computer. Enter a prompt to start.';
+    setView('harness');
     $('prompt').focus();
+  }
+
+  function renderCloud(progress) {
+    state.localModels.cloud = progress;
+    const active = ['preparing', 'uploading', 'verifying', 'loading'].includes(progress.state);
+    const total = progress.total_bytes || 0;
+    const done = Math.min(total, (progress.sent_bytes || 0) + (progress.skipped_bytes || 0));
+    const percent = total ? Math.round(done / total * 100) : (progress.state === 'ready' ? 100 : 0);
+    $('cloud-progress-wrap').hidden = progress.state === 'idle';
+    $('cloud-progress').classList.toggle('indeterminate', active && progress.state !== 'uploading');
+    $('cloud-progress').style.setProperty('--value', percent + '%');
+    $('cloud-progress').setAttribute('aria-valuenow', String(percent));
+    $('cloud-progress-label').textContent = total ? formatBytes(done) + ' of ' + formatBytes(total) + (progress.skipped_bytes ? ' · ' + formatBytes(progress.skipped_bytes) + ' already on the coordinator' : '') : '';
+    $('cloud-status').textContent = progress.state === 'ready' && progress.result
+      ? 'Ready in the Kadmium coordinator\u2019s Ollama with ' + formatTokens(progress.result.context_length) + ' of context. Choose Use in current task to start.'
+      : progress.message;
+    checkpointControls();
+  }
+
+  async function sendToCloud() {
+    if (!$('checkpoint-select').value || !$('cloud-endpoint').reportValidity() || !$('cloud-context').reportValidity()) return;
+    const request = { checkpoint_id: $('checkpoint-select').value, endpoint: $('cloud-endpoint').value.trim(), api_key: $('cloud-key').value || null, context_length: $('cloud-context').value === '' ? null : Number($('cloud-context').value) };
+    try {
+      renderCloud(await postJson('/api/v1/checkpoints/publish', request));
+      state.localModels.cloudKey = request.api_key;
+      while (state.localModels.cloud && ['preparing', 'uploading', 'verifying', 'loading'].includes(state.localModels.cloud.state)) {
+        await new Promise(resolve => setTimeout(resolve, 400));
+        renderCloud(await api('/api/v1/checkpoints/publish?checkpoint_id=' + encodeURIComponent(request.checkpoint_id)));
+      }
+    } catch (error) {
+      renderCloud({ state: 'failed', message: error.message });
+    }
+  }
+
+  function useCloud() {
+    const cloud = state.localModels.cloud;
+    if (!cloud || cloud.state !== 'ready' || !cloud.result) return;
+    if (!routeTask(cloud.result.provider, cloud.result.checkpoint, cloud.result.context_length, state.localModels.cloudKey)) return;
+    $('cloud-status').textContent = 'This task now runs ' + cloud.result.checkpoint.name + ' on the Kadmium coordinator. Enter a prompt to start.';
+    setView('harness');
+    $('prompt').focus();
+  }
+
+  // Live explanations for the quality controls in Model & quality.
+  function renderQualityHints() {
+    const reduced = [];
+    const output = $('max-tokens').value;
+    if (output === '') setTradeoff('max-tokens-hint', 'ok', 'Maximum — responses can be as long as the model allows.');
+    else {
+      setTradeoff('max-tokens-hint', 'warn', 'Capped at ' + formatTokens(output) + '. Long answers, code, and reasoning may stop mid-way. Saves time and cost.');
+      reduced.push('responses capped at ' + Number(output).toLocaleString() + ' tokens');
+    }
+    const context = $('context-window').value;
+    if (context === '') setTradeoff('context-window-hint', 'ok', 'Maximum — the model sees your whole task. Applies to Ollama; other providers set context on their server.');
+    else {
+      setTradeoff('context-window-hint', 'warn', 'Limited to ' + formatTokens(context) + '. Uses less memory, but anything older than this in the task is forgotten.');
+      reduced.push('context limited to ' + Number(context).toLocaleString() + ' tokens');
+    }
+    const timeout = $('provider-timeout').value;
+    if (timeout === '') setTradeoff('provider-timeout-hint', 'ok', 'No limit — long answers are never cut off by a timer.');
+    else {
+      setTradeoff('provider-timeout-hint', 'warn', 'Requests stop after ' + Number(timeout).toLocaleString() + ' s, which can cut off long answers.');
+      reduced.push(Number(timeout).toLocaleString() + ' s time limit');
+    }
+    if ($('compact-history').checked) reduced.push('history compaction on');
+    setTradeoff('quality-summary', reduced.length ? 'warn' : 'ok', reduced.length ? 'Reduced quality — ' + reduced.join(', ') + '.' : 'Maximum quality — full context, full output, no time limit.');
   }
 
   async function chooseCheckpoint(folder) {
@@ -2477,10 +2627,17 @@
       state.draftTimer = setTimeout(saveDraft, 200);
     });
     $('open-compute').addEventListener('click', () => setContextPanel('compute'));
-    $('open-model-library').addEventListener('click', openModelLibrary);
-    $('settings-local-model').addEventListener('click', openModelLibrary);
+    $('settings-local-model').addEventListener('click', () => openModelLibrary());
+    $('compute-open-models').addEventListener('click', () => openModelLibrary());
+    $('destination-local').addEventListener('change', () => setDestination('local'));
+    $('destination-cloud').addEventListener('change', () => setDestination('cloud'));
+    $('checkpoint-path').addEventListener('input', renderModelSteps);
+    $('cloud-context').addEventListener('input', () => contextTradeoff('cloud-context', 'cloud-context-hint'));
+    $('cloud-send').addEventListener('click', sendToCloud);
+    $('cloud-use').addEventListener('click', useCloud);
+    ['max-tokens', 'context-window', 'provider-timeout', 'compact-history'].forEach(id => $(id).addEventListener('input', renderQualityHints));
     $('checkpoint-form').addEventListener('submit', event => { event.preventDefault(); importCheckpoint(); });
-    $('quality-maximum').addEventListener('click', () => { $('max-tokens').value = ''; $('context-window').value = ''; $('compact-history').checked = false; $('provider-timeout').value = ''; $('quality-error').textContent = ''; });
+    $('quality-maximum').addEventListener('click', () => { $('max-tokens').value = ''; $('context-window').value = ''; $('compact-history').checked = false; $('provider-timeout').value = ''; $('quality-error').textContent = ''; renderQualityHints(); });
     $('checkpoint-browse').addEventListener('click', () => chooseCheckpoint(false));
     $('checkpoint-browse-folder').addEventListener('click', () => chooseCheckpoint(true));
     $('checkpoint-parent').addEventListener('click', () => { if (state.localModels.browse) browseCheckpoints(state.localModels.browse.parent); });
@@ -2501,10 +2658,10 @@
         if (visible) loadFiles(state.files.path);
       });
     }
-    $('checkpoint-context').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Context changed. Load again to verify this allocation.'; });
+    $('checkpoint-context').addEventListener('input', () => { state.localModels.loaded = null; contextTradeoff('checkpoint-context', 'checkpoint-context-hint'); checkpointControls(); $('checkpoint-load-status').textContent = 'Context changed. Load again to apply it.'; });
     $('checkpoint-refresh').addEventListener('click', () => refreshCheckpoints());
-    $('checkpoint-select').addEventListener('change', () => { state.localModels.loaded = null; $('checkpoint-load-status').textContent = 'Load this checkpoint before using it in a task.'; renderCheckpoint(); });
-    $('checkpoint-backend').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Endpoint changed. Load the checkpoint at this endpoint before using it.'; });
+    $('checkpoint-select').addEventListener('change', () => { state.localModels.loaded = null; $('checkpoint-load-status').textContent = 'Load this model before using it in a task.'; renderCheckpoint(); });
+    $('checkpoint-backend').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Address changed. Load the model at this address before using it.'; });
     $('checkpoint-load').addEventListener('click', loadCheckpoint);
     $('checkpoint-use').addEventListener('click', useCheckpoint);
     $('compute-job-form').addEventListener('submit', event => { event.preventDefault(); runComputeJob(); });
@@ -2800,8 +2957,10 @@
       $('return-kadmium').href = window.__KADMIUM_DESKTOP__ ? '/companion#models' : '/#/models';
       $('compute-url').value = location.origin;
     }
-    if (location.hash === '#models') openModelLibrary();
-    window.addEventListener('hashchange', () => { if (location.hash === '#models') openModelLibrary(); });
+    const routeHash = () => { if (location.hash === '#models' || location.hash === '#models-cloud') openModelLibrary(location.hash === '#models-cloud' ? 'cloud' : 'local'); };
+    routeHash();
+    window.addEventListener('hashchange', routeHash);
+    refreshCheckpoints();
     await Promise.all([loadPlugins(), loadSystem()]);
   }
 

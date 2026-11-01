@@ -103,7 +103,7 @@ pub(crate) async fn list(
 pub(crate) async fn import(
     State(state): State<ServerState>,
     Json(request): Json<ImportRequest>,
-) -> std::result::Result<Json<CheckpointSummary>, ApiError> {
+) -> std::result::Result<Json<Value>, ApiError> {
     let permit = state
         .model_operations
         .clone()
@@ -112,20 +112,25 @@ pub(crate) async fn import(
             CondenserError::Config("A checkpoint import or load is already running".into())
         })?;
     let library = state.model_library.clone();
-    let manifest = tokio::task::spawn_blocking(move || {
+    // Preparation ends with a verified transport manifest, so sending never re-plans layout.
+    let (manifest, transport) = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        library.import_in(
+        let manifest = library.import_in(
             &request.source_path,
             ImportOptions {
                 accept_pre_quantized: request.accept_pre_quantized,
             },
             request.working_directory.as_deref(),
-        )
+        )?;
+        let transport = library.transport(&manifest.id)?;
+        Ok::<_, String>((manifest, transport))
     })
     .await
     .map_err(|e| CondenserError::Config(e.to_string()))?
     .map_err(CondenserError::Config)?;
-    Ok(Json(manifest.summary()))
+    let mut summary = json!(manifest.summary());
+    summary["transport"] = json!(transport.summary());
+    Ok(Json(summary))
 }
 
 pub(crate) async fn load(

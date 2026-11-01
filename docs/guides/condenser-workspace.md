@@ -12,7 +12,7 @@ A separate launch is optional; standalone Condenser uses the directory it is sta
 cargo run -p kadmium-condenser-app -- serve --port 7856
 ```
 
-Open `http://127.0.0.1:7856`. Configure the task's provider, base URL and model using **Provider settings**. Kadmium currently returns reference diagnostics; Ollama, OpenAI-compatible, Anthropic and MCL4-COE adapters use the endpoint you configure. Selecting Kadmium never silently switches the task to another provider.
+Open `http://127.0.0.1:7856`. Configure the task's provider, server address and model using **Model & quality** (the provider button in the top bar). Kadmium currently returns reference diagnostics; Ollama, OpenAI-compatible, Anthropic and MCL4-COE adapters use the endpoint you configure. Selecting Kadmium never silently switches the task to another provider.
 
 ## Inspect compute alongside a task
 
@@ -27,9 +27,9 @@ Changing the coordinator URL or planning model invalidates the displayed snapsho
 
 ## Load checkpoints and run distributed jobs
 
-Choose **Models & compute** in the sidebar or **Load a local checkpoint** in Provider settings. Normalize a GGUF file or complete SafeTensors directory, inspect its source precision and context, then load it in local Ollama. **Use in this task** explicitly selects the loaded model; a failed import or load leaves task routing intact. See [local checkpoints](local-checkpoints.md) for compatibility and the lossless storage contract.
+Choose **Models** in the sidebar or **Bring your own model…** in Model & quality. Prepare a GGUF file or complete SafeTensors folder, inspect its precision and context, then run it on **This computer** through Ollama or on a **Remote coordinator** you run. **Use in current task** explicitly selects the loaded model; a failed preparation, load or send leaves task routing intact. See [local checkpoints](local-checkpoints.md) for compatibility and the lossless storage contract.
 
-The same panel provides worker connection instructions and **Run on workers** for supplied FP32 matrix products, reference training previews, or replay. Jobs require at least two trusted online TCP workers and never fall back to demo or in-process execution. Results include actual node IDs, measured wall time, unit traces and failures. The training preview does not train an imported checkpoint. Follow [distributed compute](distributed-compute.md) to run jobs or synchronize real learners with the existing stateful DiLoCo API.
+The compute dock (chip icon beside the dock tabs) provides worker connection instructions and **Run on workers** for supplied FP32 matrix products, reference training previews, or replay. Jobs require at least two trusted online TCP workers and never fall back to demo or in-process execution. Results include actual node IDs, measured wall time, unit traces and failures. The training preview does not train an imported checkpoint. Follow [distributed compute](distributed-compute.md) to run jobs or synchronize real learners with the existing stateful DiLoCo API.
 
 ## Continue and control work
 
@@ -148,11 +148,11 @@ cargo run -p kadmium-condenser-app -- chat "Inspect Cargo.toml and explain this 
 
 ## Maximum-quality defaults
 
-**Provider settings → Quality & token limits** defaults to full model context/input, maximum output and no generation timeout. Explicitly lower **Context / input window** for Ollama, **Output tokens per response**, or **Request timeout** when needed. **Reset to maximum** clears these overrides; Apply saves them per task. Forks inherit them and queued prompts retain settings captured at submission. Existing explicit user limits remain intact. Input and output share a context budget, so both cannot occupy the entire window simultaneously.
+**Model & quality → Quality & limits** defaults to full model context, maximum output and no time limit, and its summary reads **Maximum quality** until you change something. Lower **Context window** (Ollama), **Longest response**, or **Time limit per request** only when needed; each field explains the tradeoff as you type and the summary lists every reduction. **Restore maximum quality** clears these overrides; Apply saves them per task. Forks inherit them and queued prompts retain settings captured at submission. Existing explicit user limits remain intact. Input and output share a context budget, so both cannot occupy the entire window simultaneously.
 
 Ollama resolves native context from model metadata on every request, disables prompt truncation and uses unlimited-until-stop generation. Other providers receive the complete conversation; context allocation is configured on their servers. Anthropic requires `max_tokens`, so Condenser resolves its advertised output maximum from model metadata. If that is absent, generation stops and asks for the model's documented output limit. OpenAI-compatible endpoints and the MCL4 OpenAI-compatible fallback send an output limit only when their model catalog explicitly advertises one (`max_output_tokens`, `max_completion_tokens` or `top_provider.max_completion_tokens`). Otherwise they omit `max_tokens`, which these APIs treat as the server's maximum. Context-window fields are never read as an output limit. The native MCL4 API is not preflighted. Condenser never substitutes 1,024 tokens or another guessed cap.
 
-MCL4 history compaction and old tool-result pruning are off by default and require **Allow history compaction**. Temperature remains the provider default because higher temperature does not mean higher quality. Run-level budgets remain separate explicit controls. Allocation and precision failures do not substitute another model or quantize weights. Backend numerical precision and tokenization remain backend responsibilities.
+MCL4 history compaction and old tool-result pruning are off by default and require **Compact long histories**. Temperature remains the provider default because higher temperature does not mean higher quality. Run-level budgets remain separate explicit controls. Allocation and precision failures do not substitute another model or quantize weights. Backend numerical precision and tokenization remain backend responsibilities.
 
 Chat HTTP bodies bypass the framework's generic 2 MiB request limit, and successful generation responses bypass the 16 MiB metadata-response cap. The complete conversation and response can therefore use the model's supported limits, subject to available host memory and upstream server/proxy configuration. Explicit user token/run limits remain effective; metadata, plugin, file and fetch limits are separate from model generation.
 
