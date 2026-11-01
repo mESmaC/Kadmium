@@ -119,7 +119,7 @@ fn fixture_covers_the_generated_sizes() {
     let vectors = vectors();
     assert_eq!(
         vectors.len(),
-        142,
+        147,
         "regenerate with `lake exe repops_vectors`"
     );
     assert!(vectors.iter().any(|v| v.n == 0));

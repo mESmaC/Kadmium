@@ -621,9 +621,16 @@ impl TokenBatchF32 {
         }
         let rows = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
         let dim = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
-        let expected = (rows as usize) * (dim as usize);
+        // Checked: `rows * dim * 4` can exceed `usize`, and a wrapped product would accept a
+        // header whose body is missing (the Lean model `Kadmium.Runtime.BatchCodec`).
+        let expected = (rows as usize)
+            .checked_mul(dim as usize)
+            .and_then(|elements| elements.checked_mul(4))
+            .ok_or_else(|| {
+                format!("TokenBatchF32: a {rows} x {dim} batch does not fit in memory")
+            })?;
         let body = &bytes[12..];
-        if body.len() != expected * 4 {
+        if body.len() != expected {
             return Err(format!(
                 "TokenBatchF32: {} data bytes for a {rows} x {dim} batch",
                 body.len()
@@ -705,8 +712,21 @@ impl ExpertPartialsBatch {
         let rows = u32_at(8);
         let dim = u32_at(12) as usize;
         let count = u32_at(16) as usize;
-        let entry_len = 8 + dim * 4;
-        if bytes.len() != 20 + count * entry_len {
+        // Checked: `count * entry_len` can exceed `usize`, and a wrapped product would accept a
+        // bare header (the Lean model `Kadmium.Runtime.BatchCodec`).
+        let entry_len = dim
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(8))
+            .ok_or_else(|| {
+                format!("ExpertPartialsBatch: partials of width {dim} do not fit in memory")
+            })?;
+        let expected = count
+            .checked_mul(entry_len)
+            .and_then(|n| n.checked_add(20))
+            .ok_or_else(|| {
+                format!("ExpertPartialsBatch: {count} partials of width {dim} do not fit in memory")
+            })?;
+        if bytes.len() != expected {
             return Err(format!(
                 "ExpertPartialsBatch: {} bytes do not hold {count} partials of width {dim}",
                 bytes.len()
