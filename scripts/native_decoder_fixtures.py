@@ -97,6 +97,13 @@ FIXTURES = [
         torch.float16,
         dict(rope_theta=10000.0, sliding_window=None, tie_word_embeddings=False),
     ),
+    (
+        "mistral_sliding_f16",
+        MistralConfig,
+        MistralForCausalLM,
+        torch.float16,
+        dict(rope_theta=10000.0, sliding_window=4, tie_word_embeddings=False),
+    ),
 ]
 
 

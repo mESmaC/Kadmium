@@ -801,12 +801,12 @@ impl DecoderSlice {
         let mut attended = vec![0.0f32; rows * qw];
         let mut weights = Vec::new();
         for r in 0..rows {
-            let visible = start + r + 1;
+            let visible = c.attention_range(start + r + 1);
             for head in 0..c.num_heads {
                 let kv_offset = (head / group) * d;
                 let query = &q[r * qw + head * d..r * qw + (head + 1) * d];
                 weights.clear();
-                for j in 0..visible {
+                for j in visible.clone() {
                     let key = &keys[j * kvw + kv_offset..j * kvw + kv_offset + d];
                     weights.push(math::lazy_tree_sum(d, &|t| query[t] * key[t]) * scale);
                 }
@@ -821,8 +821,9 @@ impl DecoderSlice {
                 let out = &mut attended[r * qw + head * d..r * qw + (head + 1) * d];
                 for (t, slot) in out.iter_mut().enumerate() {
                     let column = kv_offset + t;
-                    *slot =
-                        math::lazy_tree_sum(visible, &|j| weights[j] * values[j * kvw + column]);
+                    *slot = math::lazy_tree_sum(visible.len(), &|j| {
+                        weights[j] * values[(visible.start + j) * kvw + column]
+                    });
                 }
             }
         }

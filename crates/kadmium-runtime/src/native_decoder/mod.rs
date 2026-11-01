@@ -14,7 +14,7 @@
 //! - Keys and values are cached in `f32`.
 //! - The context is the model's `max_position_embeddings`. A request beyond it is an error
 //!   naming both numbers. Nothing is truncated or shifted.
-//! - A configuration feature that cannot be executed exactly, such as sliding-window attention or
+//! - A configuration feature that cannot be executed exactly, such as hybrid attention or
 //!   an unimplemented RoPE scaling type, is an error, never an approximation.
 //!
 //! Determinism: the arithmetic follows the RepOps conventions plus

@@ -2,7 +2,8 @@
 //!
 //! Fixtures come from `scripts/native_decoder_fixtures.py`: tiny randomly initialised Llama 3
 //! (BF16, `llama3` RoPE scaling), Qwen2 (F32, q/k/v bias, tied embeddings), Qwen3 (BF16, q/k
-//! head norms, head_dim not hidden/heads, one KV head) and Mistral (F16) checkpoints, saved by
+//! head norms, head_dim not hidden/heads, one KV head) and Mistral (F16, full and sliding-window
+//! attention) checkpoints, saved by
 //! transformers, with the float32 logits transformers computes from the stored weights.
 
 use kadmium_core::{
@@ -19,7 +20,13 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const FIXTURES: [&str; 4] = ["llama3_bf16", "qwen2_f32", "qwen3_bf16", "mistral_f16"];
+const FIXTURES: [&str; 5] = [
+    "llama3_bf16",
+    "qwen2_f32",
+    "qwen3_bf16",
+    "mistral_f16",
+    "mistral_sliding_f16",
+];
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -210,6 +217,94 @@ fn a_slice_holds_only_its_part_of_the_weights() {
         .unwrap()
         .len() as usize;
     assert!(total < safetensors * 2, "weights were widened at load");
+}
+
+#[test]
+fn sliding_attention_crosses_the_window_at_every_prefill_boundary() {
+    let name = "mistral_sliding_f16";
+    let tokens = reference(name).tokens;
+    let model = whole(name);
+    let expected = bits(&prefill_logits(&model, &tokens));
+    let chain = [
+        slice(name, 0..1, true, false),
+        slice(name, 1..3, false, true),
+    ];
+    for prefill in 1..=tokens.len() {
+        assert_eq!(
+            bits(&run_chain(&chain, &tokens, prefill)),
+            expected,
+            "prefill {prefill}"
+        );
+    }
+}
+
+#[test]
+fn sliding_attention_masks_only_keys_outside_the_architectural_window() {
+    let dir = fixture("mistral_sliding_f16");
+    let manifest = SafetensorsManifest::open(&dir).unwrap();
+    let original = DecoderConfig::from_model_dir(&dir).unwrap();
+    let tokens = reference("mistral_sliding_f16").tokens;
+    let mut changed = tokens.clone();
+    changed[0] = 2;
+    // One layer isolates the mask from information carried forward through earlier layers.
+    let plan = SlicePlan {
+        layers: 0..1,
+        embedding: true,
+        head: true,
+    };
+    let mut full = original.clone();
+    full.sliding_window = None;
+    let full = DecoderSlice::load_from(&manifest, full, plan.clone()).unwrap();
+    let full_logits = bits(&prefill_logits(&full, &tokens));
+    for window in [
+        1,
+        4,
+        original.max_position_embeddings,
+        original.max_position_embeddings + 1,
+    ] {
+        let mut config = original.clone();
+        config.sliding_window = Some(window);
+        let model = DecoderSlice::load_from(&manifest, config, plan.clone()).unwrap();
+        let logits = bits(&prefill_logits(&model, &tokens));
+        let changed_logits = bits(&prefill_logits(&model, &changed));
+        let prefix = window.min(tokens.len()) * original.vocab_size;
+        assert_eq!(logits[..prefix], full_logits[..prefix], "window {window}");
+        assert_ne!(
+            logits[..original.vocab_size],
+            changed_logits[..original.vocab_size]
+        );
+        if window < tokens.len() {
+            assert_ne!(logits[prefix..], full_logits[prefix..]);
+            assert_eq!(
+                logits[prefix..],
+                changed_logits[prefix..],
+                "window {window}"
+            );
+        }
+    }
+}
+
+#[test]
+fn sliding_attention_keeps_the_full_context_and_cache() {
+    let model = whole("mistral_sliding_f16");
+    let c = model.config();
+    let maximum = c.max_position_embeddings;
+    assert_eq!(c.sliding_window, Some(4));
+    let mut cache = model.new_cache();
+    let tokens = vec![1; maximum];
+    let hidden = model.embed(&tokens, 0).unwrap();
+    model.forward(&hidden, &mut cache).unwrap();
+    assert_eq!(cache.positions(), maximum);
+    assert_eq!(cache.bytes(), c.num_layers * maximum * c.kv_width() * 2 * 4);
+    let before = cache.bytes();
+    let extra = model.embed(&[1], maximum).unwrap();
+    assert!(
+        matches!(model.forward(&extra, &mut cache), Err(NativeDecoderError::ContextExceeded {
+        requested, maximum: limit
+    }) if requested == maximum + 1 && limit == maximum)
+    );
+    assert_eq!(cache.positions(), maximum);
+    assert_eq!(cache.bytes(), before);
 }
 
 #[test]
