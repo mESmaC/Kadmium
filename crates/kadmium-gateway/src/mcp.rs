@@ -243,6 +243,33 @@ impl KadmiumMcpServer {
                     "required": []
                 }),
             },
+            McpToolDescriptor {
+                name: "kadmium_bucket_access".into(),
+                description: "Upload, download, verify, list, or inspect objects in the local coordinator's erasure-coded bucket store (kdm://pool-bucket/...) and inspect modelled storage medium capacity across cluster nodes.".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["status", "mediums", "list", "put", "get", "verify"],
+                            "description": "Bucket action: 'status' (full pool & medium report), 'mediums' (all storage mediums across systems), 'list' (list objects), 'put' (upload UTF-8 content), 'get' (download/inspect object), or 'verify' (verify shards & parity)."
+                        },
+                        "object_uri": {
+                            "type": "string",
+                            "description": "Object URI in kdm://pool-bucket/... format (required for 'put', 'get', 'verify')."
+                        },
+                        "content_utf8": {
+                            "type": "string",
+                            "description": "UTF-8 payload to store when action is 'put'."
+                        },
+                        "storage_class": {
+                            "type": "string",
+                            "description": "Optional storage class when action is 'put' (e.g. 'ModelCheckpointKtb', 'DatasetCorpusParquet', 'RlTrajectoryRollout', 'KvCacheSnapshot')."
+                        }
+                    },
+                    "required": []
+                }),
+            },
         ]
     }
 
@@ -271,6 +298,12 @@ impl KadmiumMcpServer {
                 uri: "kadmium://cluster/cloud-shield".into(),
                 name: "Multi-Provider Cloud Arbitrage & Failover Shield".into(),
                 description: "Modelled reference catalog $/TFLOP/hr spot comparison and zero-downtime failover simulations.".into(),
+                mime_type: "application/json".into(),
+            },
+            McpResourceDescriptor {
+                uri: "kadmium://cluster/storage-bucket".into(),
+                name: "Multi-Medium Distributed Storage Pool Bucket (kdm://pool-bucket)".into(),
+                description: "Local coordinator erasure-coded object store, modelled cluster storage medium inventory, and external/internal access guide.".into(),
                 mime_type: "application/json".into(),
             },
             McpResourceDescriptor {
@@ -304,6 +337,292 @@ impl KadmiumMcpServer {
                 }],
             },
         ]
+    }
+
+    /// Handles a single JSON-RPC 2.0 MCP request against a shared `Arc<Mutex<GatewayState>>`,
+    /// releasing the mutex during local disk I/O for `kadmium_bucket_access` and `resources/read`.
+    pub fn handle_request_shared(
+        state: &std::sync::Arc<std::sync::Mutex<GatewayState>>,
+        req: McpJsonRpcRequest,
+    ) -> McpJsonRpcResponse {
+        if req.method == "tools/call"
+            && let Some(ref params) = req.params
+            && params.get("name").and_then(|v| v.as_str()) == Some("kadmium_bucket_access")
+        {
+            let id = req.id.clone();
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let result = Self::handle_bucket_access_shared(state, args);
+            return match result {
+                Ok(val) => McpJsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id,
+                    result: Some(val),
+                    error: None,
+                },
+                Err(err) => McpJsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id,
+                    result: None,
+                    error: Some(err),
+                },
+            };
+        }
+        if req.method == "resources/read" {
+            let id = req.id.clone();
+            let uri = req
+                .params
+                .as_ref()
+                .and_then(|p| p.get("uri"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("kadmium://cluster/topology")
+                .to_string();
+            if uri == "kadmium://cluster/storage-bucket" {
+                let (nodes, offers, imported_models, bucket_objects, bucket_anchors) = {
+                    let guard = state.lock().expect("gateway state lock");
+                    (
+                        guard.nodes.clone(),
+                        guard.grid_offers.clone(),
+                        guard.imported_models.clone(),
+                        guard.bucket_objects.clone(),
+                        guard.bucket_anchors.clone(),
+                    )
+                };
+                let report =
+                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
+                        &nodes,
+                        &offers,
+                        &imported_models,
+                        &bucket_objects,
+                        &bucket_anchors,
+                    );
+                let text = serde_json::to_string_pretty(&report).unwrap_or_default();
+                return McpJsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id,
+                    result: Some(json!({
+                        "contents": [{
+                            "uri": uri,
+                            "mimeType": "application/json",
+                            "text": text
+                        }]
+                    })),
+                    error: None,
+                };
+            }
+        }
+        let mut guard = state.lock().expect("gateway state lock");
+        Self::handle_request(&mut guard, req)
+    }
+
+    fn handle_bucket_access_shared(
+        state: &std::sync::Arc<std::sync::Mutex<GatewayState>>,
+        args: Value,
+    ) -> Result<Value, McpJsonRpcError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("status");
+        let (
+            store,
+            coord_url,
+            nodes,
+            offers,
+            live_only,
+            imported_models,
+            bucket_objects,
+            bucket_anchors,
+        ) = {
+            let guard = state.lock().expect("gateway state lock");
+            (
+                guard.bucket_store(),
+                guard.coordinator_http_url(),
+                guard.nodes.clone(),
+                guard.grid_offers.clone(),
+                guard.live_only_mode,
+                guard.imported_models.clone(),
+                guard.bucket_objects.clone(),
+                guard.bucket_anchors.clone(),
+            )
+        };
+
+        let payload = match action {
+            "mediums" => {
+                let summaries =
+                    kadmium_data::DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums_with_offers(
+                        &nodes,
+                        &offers,
+                        &bucket_anchors,
+                        false,
+                    );
+                let node_profiles: Vec<_> = nodes
+                    .iter()
+                    .map(|n| {
+                        json!({
+                            "node_id": n.id.0,
+                            "hostname": n.hostname,
+                            "mediums": kadmium_data::DecentralizedStoragePoolEngine::inspect_node_storage_mediums_with_offer(
+                                n,
+                                offers.get(&n.id.0),
+                                false,
+                            ),
+                        })
+                    })
+                    .collect();
+                json!({
+                    "action": "mediums",
+                    "cluster_medium_summaries": summaries,
+                    "node_profiles": node_profiles,
+                })
+            }
+            "list" => {
+                let on_disk = store.list_objects().unwrap_or_default();
+                let guide = store
+                    .access_guide("kdm://pool-bucket/example/object.bin", &coord_url)
+                    .ok();
+                json!({
+                    "action": "list",
+                    "objects": bucket_objects,
+                    "persisted_manifests": on_disk.len(),
+                    "access_guide": guide,
+                })
+            }
+            "put" => {
+                let uri = args
+                    .get("object_uri")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("kdm://pool-bucket/mcp/artifact.txt");
+                let content = args
+                    .get("content_utf8")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let class_str = args
+                    .get("storage_class")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("DatasetCorpusParquet");
+                let live_nodes: &[kadmium_core::HardwareNode] =
+                    if live_only { &nodes } else { &[] };
+                let receipt = store
+                    .put_bytes_with_offers(
+                        uri,
+                        None,
+                        Some(class_str),
+                        content.as_bytes(),
+                        8,
+                        2,
+                        live_nodes,
+                        &offers,
+                        Some(&coord_url),
+                    )
+                    .map_err(|e| McpJsonRpcError {
+                        code: -32602,
+                        message: e,
+                    })?;
+                {
+                    let mut guard = state.lock().expect("gateway state lock");
+                    let previous = guard.bucket_objects.clone();
+                    guard
+                        .bucket_objects
+                        .retain(|o| o.object_uri != receipt.bucket_entry.object_uri);
+                    guard.bucket_objects.push(receipt.bucket_entry.clone());
+                    if let Err(err) = guard.save_persistent_state() {
+                        guard.bucket_objects = previous;
+                        return Err(McpJsonRpcError {
+                            code: -32603,
+                            message: format!("Could not save state journal: {err}"),
+                        });
+                    }
+                }
+                json!({
+                    "action": "put",
+                    "receipt": receipt,
+                })
+            }
+            "get" => {
+                let uri = args
+                    .get("object_uri")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpJsonRpcError {
+                        code: -32602,
+                        message: "Missing 'object_uri' for bucket 'get'".into(),
+                    })?;
+                let normalized_uri =
+                    kadmium_data::DecentralizedStoragePoolEngine::normalize_bucket_uri(uri)
+                        .map_err(|e| McpJsonRpcError {
+                            code: -32602,
+                            message: e,
+                        })?;
+                if store.inspect_object(&normalized_uri).is_ok() {
+                    let result =
+                        store
+                            .get_bytes(&normalized_uri, None)
+                            .map_err(|e| McpJsonRpcError {
+                                code: -32602,
+                                message: e,
+                            })?;
+                    let content_utf8 = String::from_utf8(result.bytes.clone()).ok();
+                    json!({
+                        "action": "get",
+                        "download": result,
+                        "content_utf8": content_utf8,
+                    })
+                } else if let Some(entry) = bucket_objects
+                    .iter()
+                    .find(|o| o.object_uri == normalized_uri)
+                {
+                    json!({
+                        "action": "get",
+                        "entry": entry,
+                        "access_guide": store.access_guide(&normalized_uri, &coord_url).ok(),
+                    })
+                } else {
+                    return Err(McpJsonRpcError {
+                        code: -32602,
+                        message: format!("Bucket object '{normalized_uri}' not found"),
+                    });
+                }
+            }
+            "verify" => {
+                let uri = args
+                    .get("object_uri")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpJsonRpcError {
+                        code: -32602,
+                        message: "Missing 'object_uri' for bucket 'verify'".into(),
+                    })?;
+                let report = store.verify_object(uri, 1).map_err(|e| McpJsonRpcError {
+                    code: -32602,
+                    message: e,
+                })?;
+                json!({
+                    "action": "verify",
+                    "verification": report,
+                })
+            }
+            _ => {
+                let report =
+                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
+                        &nodes,
+                        &offers,
+                        &imported_models,
+                        &bucket_objects,
+                        &bucket_anchors,
+                    );
+                json!({
+                    "action": "status",
+                    "report": report,
+                    "access_guide": store.access_guide("kdm://pool-bucket/checkpoints/deepseek-v3-671b/epoch-42.ktb", &coord_url).ok(),
+                })
+            }
+        };
+        let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+        Ok(json!({
+            "content": [{ "type": "text", "text": text }],
+            "structuredContent": payload,
+            "isError": false
+        }))
     }
 
     /// Handles a single JSON-RPC 2.0 MCP request against `GatewayState`.
@@ -653,6 +972,189 @@ impl KadmiumMcpServer {
                     "isError": false
                 }))
             }
+            "kadmium_bucket_access" => {
+                let action = args
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("status");
+                let store = state.bucket_store();
+                let coord_url = state.coordinator_http_url();
+                let payload = match action {
+                    "mediums" => {
+                        let summaries =
+                            kadmium_data::DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums_with_offers(
+                                &state.nodes,
+                                &state.grid_offers,
+                                &state.bucket_anchors,
+                                false,
+                            );
+                        let node_profiles: Vec<_> = state
+                            .nodes
+                            .iter()
+                            .map(|n| {
+                                json!({
+                                    "node_id": n.id.0,
+                                    "hostname": n.hostname,
+                                    "mediums": kadmium_data::DecentralizedStoragePoolEngine::inspect_node_storage_mediums_with_offer(
+                                        n,
+                                        state.grid_offers.get(&n.id.0),
+                                        false,
+                                    ),
+                                })
+                            })
+                            .collect();
+                        json!({
+                            "action": "mediums",
+                            "cluster_medium_summaries": summaries,
+                            "node_profiles": node_profiles,
+                        })
+                    }
+                    "list" => {
+                        let on_disk = store.list_objects().unwrap_or_default();
+                        let guide = store
+                            .access_guide("kdm://pool-bucket/example/object.bin", &coord_url)
+                            .ok();
+                        json!({
+                            "action": "list",
+                            "objects": state.bucket_objects,
+                            "persisted_manifests": on_disk.len(),
+                            "access_guide": guide,
+                        })
+                    }
+                    "put" => {
+                        let uri = args
+                            .get("object_uri")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("kdm://pool-bucket/mcp/artifact.txt");
+                        let content = args
+                            .get("content_utf8")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let class_str = args
+                            .get("storage_class")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("DatasetCorpusParquet");
+                        let live_nodes: &[kadmium_core::HardwareNode] = if state.live_only_mode {
+                            &state.nodes
+                        } else {
+                            &[]
+                        };
+                        let receipt = store
+                            .put_bytes(
+                                uri,
+                                None,
+                                Some(class_str),
+                                content.as_bytes(),
+                                8,
+                                2,
+                                live_nodes,
+                                Some(&coord_url),
+                            )
+                            .map_err(|e| McpJsonRpcError {
+                                code: -32602,
+                                message: e,
+                            })?;
+                        let previous = state.bucket_objects.clone();
+                        state
+                            .bucket_objects
+                            .retain(|o| o.object_uri != receipt.bucket_entry.object_uri);
+                        state.bucket_objects.push(receipt.bucket_entry.clone());
+                        if let Err(err) = state.save_persistent_state() {
+                            state.bucket_objects = previous;
+                            return Err(McpJsonRpcError {
+                                code: -32603,
+                                message: format!("Could not save state journal: {err}"),
+                            });
+                        }
+                        json!({
+                            "action": "put",
+                            "receipt": receipt,
+                        })
+                    }
+                    "get" => {
+                        let uri =
+                            args.get("object_uri")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| McpJsonRpcError {
+                                    code: -32602,
+                                    message: "Missing 'object_uri' for bucket 'get'".into(),
+                                })?;
+                        let normalized_uri =
+                            kadmium_data::DecentralizedStoragePoolEngine::normalize_bucket_uri(uri)
+                                .map_err(|e| McpJsonRpcError {
+                                    code: -32602,
+                                    message: e,
+                                })?;
+                        if store.inspect_object(&normalized_uri).is_ok() {
+                            let result = store.get_bytes(&normalized_uri, None).map_err(|e| {
+                                McpJsonRpcError {
+                                    code: -32602,
+                                    message: e,
+                                }
+                            })?;
+                            let content_utf8 = String::from_utf8(result.bytes.clone()).ok();
+                            json!({
+                                "action": "get",
+                                "download": result,
+                                "content_utf8": content_utf8,
+                            })
+                        } else if let Some(entry) = state
+                            .bucket_objects
+                            .iter()
+                            .find(|o| o.object_uri == normalized_uri)
+                        {
+                            json!({
+                                "action": "get",
+                                "entry": entry,
+                                "access_guide": store.access_guide(&normalized_uri, &coord_url).ok(),
+                            })
+                        } else {
+                            return Err(McpJsonRpcError {
+                                code: -32602,
+                                message: format!("Bucket object '{normalized_uri}' not found"),
+                            });
+                        }
+                    }
+                    "verify" => {
+                        let uri =
+                            args.get("object_uri")
+                                .and_then(|v| v.as_str())
+                                .ok_or_else(|| McpJsonRpcError {
+                                    code: -32602,
+                                    message: "Missing 'object_uri' for bucket 'verify'".into(),
+                                })?;
+                        let report = store.verify_object(uri, 1).map_err(|e| McpJsonRpcError {
+                            code: -32602,
+                            message: e,
+                        })?;
+                        json!({
+                            "action": "verify",
+                            "verification": report,
+                        })
+                    }
+                    _ => {
+                        let report =
+                            kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
+                                &state.nodes,
+                                &state.grid_offers,
+                                &state.imported_models,
+                                &state.bucket_objects,
+                                &state.bucket_anchors,
+                            );
+                        json!({
+                            "action": "status",
+                            "report": report,
+                            "access_guide": store.access_guide("kdm://pool-bucket/checkpoints/deepseek-v3-671b/epoch-42.ktb", &coord_url).ok(),
+                        })
+                    }
+                };
+                let text = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                Ok(json!({
+                    "content": [{ "type": "text", "text": text }],
+                    "structuredContent": payload,
+                    "isError": false
+                }))
+            }
             other => Err(McpJsonRpcError {
                 code: -32602,
                 message: format!("Unknown Kadmium MCP tool: '{other}'"),
@@ -693,6 +1195,20 @@ impl KadmiumMcpServer {
                 (
                     "application/json",
                     serde_json::to_string_pretty(&arb).unwrap_or_default(),
+                )
+            }
+            "kadmium://cluster/storage-bucket" => {
+                let report =
+                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
+                        &state.nodes,
+                        &state.grid_offers,
+                        &state.imported_models,
+                        &state.bucket_objects,
+                        &state.bucket_anchors,
+                    );
+                (
+                    "application/json",
+                    serde_json::to_string_pretty(&report).unwrap_or_default(),
                 )
             }
             "kadmium://docs/overview" => ("text/markdown", crate::DOC_OVERVIEW_MD.to_string()),

@@ -51,14 +51,13 @@ jobs:
       - name: Check every proof (warnings, including sorry, fail the build)
         working-directory: formal
         run: lake build --wfail
-      - name: Check the Rust differential fixture matches the Lean model
+      - name: Check the Rust differential fixtures match the Lean models
         run: |
           (cd formal && lake exe repops_vectors ../crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt)
-          git diff --exit-code -- crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt
-      - name: Check the transport chunk-map fixture matches the Lean model
-        run: |
           (cd formal && lake exe transport_vectors ../crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt)
-          git diff --exit-code -- crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt
+          (cd formal && lake exe storage_pool_vectors ../crates/kadmium-data/tests/fixtures/storage_pool_vectors.txt)
+          (cd formal && lake exe kadmium_vectors ..)
+          git diff --exit-code -- 'crates/*/tests/fixtures/*_lean_vectors.txt' crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt crates/kadmium-data/tests/fixtures/storage_pool_vectors.txt
 
   workspace-ui:
     name: Workspace browser workflows

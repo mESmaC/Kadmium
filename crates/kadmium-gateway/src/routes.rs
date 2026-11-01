@@ -4,12 +4,13 @@
 use crate::{
     CloudShieldApiResponse, ClusterOverviewResponse, CompanionAppStatus, CompanionConnectionMode,
     DocumentationPage, DreamRsiApiResponse, GatewayState, HostProbeApiResponse, KadmiumMcpManifest,
-    KadmiumMcpServer, McpJsonRpcRequest, McpJsonRpcResponse, build_documentation_catalog,
+    KadmiumMcpServer, McpJsonRpcRequest, McpJsonRpcResponse, ModelQualityLimits,
+    QualityTradeoffReport, build_documentation_catalog,
 };
 use axum::{
     Json, Router,
     extract::{Query, State},
-    http::header,
+    http::{HeaderMap, StatusCode, header},
     response::{Html, IntoResponse},
     routing::{get, post},
 };
@@ -26,9 +27,12 @@ use kadmium_core::{
     TegraX1PlatformController, WorkloadKind, sample_cloud_burst_gpu_node, sample_node_pool,
 };
 use kadmium_data::{
-    BucketGroundingAnchorKind, DecentralizedStoragePoolEngine, DecentralizedStoragePoolReport,
-    EcosystemIntegrationsOverview, Fts3TransferScheduler, Fts3TransferState, GroundingAnchorTarget,
-    GroundingSyncPolicy, ImportedModelManifest, LocalModelDiskImporter,
+    BucketDownloadResult, BucketExternalAccessGuide, BucketGroundingAnchorKind,
+    BucketObjectVerificationReport, ClusterStorageMediumSummary, DecentralizedStoragePoolEngine,
+    DecentralizedStoragePoolReport, EcosystemIntegrationsOverview, Fts3TransferScheduler,
+    Fts3TransferState, GroundingAnchorTarget, GroundingSyncPolicy, ImportedModelManifest,
+    LocalModelDiskImporter, PoolBucketObjectEntry, StorageMediumSlice, StoredBucketObjectManifest,
+    StoredBucketObjectReceipt,
 };
 use kadmium_network::{
     FleetUpdatePushSummary, HolePunchNegotiationResult, JoinTicket, LanPairingCandidate,
@@ -132,6 +136,8 @@ pub struct PhoneFarmApiResponse {
 pub struct ChatCompletionRequest {
     pub model: Option<String>,
     pub messages: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub stream: Option<bool>,
     #[serde(default)]
@@ -449,12 +455,46 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             get(get_storage_pool_bucket_report).post(get_storage_pool_bucket_report),
         )
         .route(
+            "/api/v1/storage/pool-bucket/mediums",
+            get(get_storage_pool_bucket_mediums),
+        )
+        .route(
+            "/api/v1/storage/pool-bucket/objects",
+            get(get_storage_pool_bucket_objects),
+        )
+        .route(
+            "/api/v1/storage/pool-bucket/upload",
+            post(post_storage_pool_bucket_upload)
+                .layer(axum::extract::DefaultBodyLimit::max(20 * 1024 * 1024)),
+        )
+        .route(
+            "/api/v1/storage/pool-bucket/download",
+            get(get_or_post_storage_pool_bucket_download)
+                .post(get_or_post_storage_pool_bucket_download),
+        )
+        .route(
+            "/api/v1/storage/pool-bucket/raw",
+            get(get_storage_pool_bucket_raw).post(get_storage_pool_bucket_raw),
+        )
+        .route(
+            "/api/v1/storage/pool-bucket/verify",
+            post(post_storage_pool_bucket_verify),
+        )
+        .route(
             "/api/v1/storage/pool-bucket/object",
             post(post_storage_pool_bucket_object),
         )
         .route(
             "/api/v1/storage/pool-bucket/anchor",
             post(post_storage_pool_bucket_anchor),
+        )
+        .route(
+            "/api/v1/models/quality-tradeoffs",
+            get(get_model_quality_tradeoffs).post(post_model_quality_tradeoffs),
+        )
+        .route(
+            "/api/v1/models/quality-limits",
+            get(get_model_quality_tradeoffs).post(post_model_quality_tradeoffs),
         )
         .route(
             "/api/v1/cluster/elastic-boost",
@@ -750,6 +790,8 @@ async fn post_cluster_model(
         guard.executed_inference_requests,
         guard.last_measured_tokens_per_sec,
         guard.last_measured_pipeline_latency_ms,
+        guard.quality_limits.clone(),
+        guard.user_lowered_quality_limits,
     );
     if req.unload == Some(true) || req.inference_model_id.as_deref() == Some("none") {
         guard.active_model_loaded = false;
@@ -759,7 +801,9 @@ async fn post_cluster_model(
         guard.last_measured_pipeline_latency_ms = None;
     } else {
         if let Some(model) = inference {
+            guard.quality_limits.sync_native_with_model(&model);
             guard.inference_model = model;
+            guard.user_lowered_quality_limits = !guard.quality_limits.is_uncompromised();
             guard.active_model_loaded = true;
             guard.user_selected_model = true;
         }
@@ -780,6 +824,8 @@ async fn post_cluster_model(
             guard.executed_inference_requests,
             guard.last_measured_tokens_per_sec,
             guard.last_measured_pipeline_latency_ms,
+            guard.quality_limits,
+            guard.user_lowered_quality_limits,
         ) = previous;
         guard.recompute_plans();
         return Err(persistence_error(error));
@@ -915,10 +961,18 @@ async fn get_dataflow_comparison(
     State(state): State<Arc<Mutex<GatewayState>>>,
 ) -> Json<DataflowComparisonReport> {
     let guard = state.lock().expect("gateway state lock");
+    let effective_model = guard.effective_inference_model();
+    let seq_len = 512.min(
+        guard
+            .quality_limits
+            .effective_context_window_tokens()
+            .unwrap_or(512)
+            .max(1),
+    );
     Json(DataflowStreamPlanner::evaluate_dataflows(
-        &guard.inference_model,
+        &effective_model,
         &guard.nodes,
-        512,
+        seq_len,
     ))
 }
 
@@ -1400,7 +1454,7 @@ async fn post_export_training_checkpoint(
             guard.last_checkpoint_step = report.step_index;
             guard.active_ktb_merkle_root_fnv64 = report.merkle_root_fnv64;
             let ckpt_uri = format!("kdm://pool-bucket/checkpoints/{}.ktb", report.checkpoint_id);
-            let obj = DecentralizedStoragePoolEngine::create_bucket_object(
+            let obj = DecentralizedStoragePoolEngine::create_bucket_object_with_offers(
                 &ckpt_uri,
                 &format!(
                     "Training Checkpoint {} (Step {} · {} tensor slices)",
@@ -1412,6 +1466,7 @@ async fn post_export_training_checkpoint(
                 2,
                 Some(report.merkle_root_fnv64),
                 &guard.nodes,
+                &guard.grid_offers,
             )
             .expect("valid checkpoint shard configuration");
             guard
@@ -1726,10 +1781,19 @@ async fn get_mcp_manifest() -> Json<KadmiumMcpManifest> {
 
 async fn post_mcp_rpc(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
     Json(req): Json<McpJsonRpcRequest>,
-) -> Json<McpJsonRpcResponse> {
-    let mut guard = state.lock().expect("gateway state lock");
-    Json(KadmiumMcpServer::handle_request(&mut guard, req))
+) -> Result<Json<McpJsonRpcResponse>, ApiError> {
+    {
+        let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+    }
+    let resp =
+        tokio::task::spawn_blocking(move || KadmiumMcpServer::handle_request_shared(&state, req))
+            .await
+            .map_err(|e| invalid_request(format!("MCP task failed: {e}")))?;
+    Ok(Json(resp))
 }
 
 async fn get_prometheus_metrics(
@@ -2161,18 +2225,103 @@ fn extract_prompt_and_vision_flag(
     (extracted, has_vision)
 }
 
+fn estimate_messages_input_tokens(messages: &[serde_json::Value]) -> u32 {
+    let mut total_chars = 0usize;
+    for msg in messages {
+        if let Some(content) = msg.get("content") {
+            match content {
+                serde_json::Value::String(s) => total_chars += s.chars().count(),
+                serde_json::Value::Array(blocks) => {
+                    for b in blocks {
+                        if let Some(t) = b.get("text").and_then(|t| t.as_str()) {
+                            total_chars += t.chars().count();
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    ((total_chars.max(1) as u32).div_ceil(4)).max(1)
+}
+
+fn resolve_request_quality_limits(
+    guard: &GatewayState,
+    requested_model_id: Option<&str>,
+) -> ModelQualityLimits {
+    if let Some(model_id) = requested_model_id
+        && let Some(spec) = guard.resolve_model(model_id)
+    {
+        let mut limits = guard.quality_limits.clone();
+        limits.sync_native_with_model(&spec);
+        return limits;
+    }
+    let mut limits = guard.quality_limits.clone();
+    limits.sync_native_with_model(&guard.inference_model);
+    limits
+}
+
+fn validate_chat_request_limits(
+    messages: &[serde_json::Value],
+    req_max_tokens: Option<u32>,
+    quality_limits: &ModelQualityLimits,
+) -> Result<(), ApiError> {
+    let estimated_input_tokens = estimate_messages_input_tokens(messages);
+    let max_input = quality_limits.effective_max_input_tokens();
+    let max_ctx = quality_limits.effective_context_window_tokens();
+    let in_str = max_input
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "backend-reported".to_string());
+    let ctx_str = max_ctx
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "backend-reported".to_string());
+    if max_input.is_some_and(|cap| estimated_input_tokens > cap)
+        || max_ctx.is_some_and(|cap| estimated_input_tokens > cap)
+    {
+        return Err(invalid_request(format!(
+            "Input prompt (~{estimated_input_tokens} tokens) exceeds active quality limit (max_input_tokens={in_str}, context_window_tokens={ctx_str}). Increase limits via POST /api/v1/models/quality-tradeoffs."
+        )));
+    }
+    if let Some(req_max_out) = req_max_tokens {
+        if req_max_out == 0 {
+            return Err(invalid_request("max_tokens must be at least 1"));
+        }
+        if let Some(max_output) = quality_limits.effective_max_output_tokens()
+            && req_max_out > max_output
+        {
+            return Err(invalid_request(format!(
+                "Requested max_tokens ({req_max_out}) exceeds active max_output_tokens limit ({max_output}). Increase limits via POST /api/v1/models/quality-tradeoffs."
+            )));
+        }
+        if let Some(ctx_cap) = max_ctx
+            && req_max_out > ctx_cap
+        {
+            return Err(invalid_request(format!(
+                "Requested max_tokens ({req_max_out}) exceeds active context_window_tokens limit ({ctx_cap})."
+            )));
+        }
+    }
+    Ok(())
+}
+
 async fn openai_chat_completions(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> axum::response::Response {
-    let (epoch, plan, workers) = {
+    let (epoch, plan, workers, quality_limits) = {
         let guard = state.lock().expect("gateway state lock");
+        let limits = resolve_request_quality_limits(&guard, req.model.as_deref());
         (
             guard.epoch,
             guard.inference_plan.clone(),
             guard.live_workers.clone(),
+            limits,
         )
     };
+    if let Err(err) = validate_chat_request_limits(&req.messages, req.max_tokens, &quality_limits) {
+        return err.into_response();
+    }
+
     let model_name = req.model.unwrap_or_else(|| plan.model_id.clone());
     let (prompt_sample, needs_vision_offload) =
         extract_prompt_and_vision_flag(&req.messages, req.vision_offload);
@@ -2257,7 +2406,8 @@ async fn openai_chat_completions(
             "speculative_speedup": exec_report.speculative_verification.effective_speedup_multiplier,
             "vision_offload": vision_telemetry,
             "execution_trace": exec_report,
-            "live_hops": live_hops
+            "live_hops": live_hops,
+            "effective_quality_limits": quality_limits
         },
         "choices": [{
             "index": 0,
@@ -2275,14 +2425,20 @@ async fn anthropic_messages(
     State(state): State<Arc<Mutex<GatewayState>>>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> axum::response::Response {
-    let (epoch, plan, workers) = {
+    let (epoch, plan, workers, quality_limits) = {
         let guard = state.lock().expect("gateway state lock");
+        let limits = resolve_request_quality_limits(&guard, req.model.as_deref());
         (
             guard.epoch,
             guard.inference_plan.clone(),
             guard.live_workers.clone(),
+            limits,
         )
     };
+    if let Err(err) = validate_chat_request_limits(&req.messages, req.max_tokens, &quality_limits) {
+        return err.into_response();
+    }
+
     let model_name = req.model.unwrap_or_else(|| plan.model_id.clone());
     let (prompt_sample, needs_vision_offload) =
         extract_prompt_and_vision_flag(&req.messages, req.vision_offload);
@@ -2358,7 +2514,8 @@ async fn anthropic_messages(
             "epoch": epoch,
             "estimated_tokens_per_sec": exec_report.effective_tokens_per_sec,
             "vision_offload": vision_telemetry,
-            "live_hops": live_hops
+            "live_hops": live_hops,
+            "effective_quality_limits": quality_limits
         }
     }))
     .into_response()
@@ -2533,11 +2690,158 @@ pub struct StorageBucketAnchorRequest {
     pub egress_cost_per_gb_usd: Option<f64>,
 }
 
+fn forbidden_request(message: impl Into<String>) -> ApiError {
+    (
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({
+            "error": {"type": "forbidden_error", "message": message.into()}
+        })),
+    )
+}
+
+fn unauthorized_request(message: impl Into<String>) -> ApiError {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(serde_json::json!({
+            "error": {"type": "unauthorized_error", "message": message.into()}
+        })),
+    )
+}
+
+fn is_loopback_host_header(host: &str) -> bool {
+    let h = host.trim();
+    if h.is_empty() {
+        return false;
+    }
+    let host_only = if let Some(rest) = h.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(h)
+    } else {
+        h.split(':').next().unwrap_or(h)
+    };
+    host_only.eq_ignore_ascii_case("localhost") || host_only == "127.0.0.1" || host_only == "::1"
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MaybePeerAddr(Option<std::net::SocketAddr>);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for MaybePeerAddr {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        let addr = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0);
+        Ok(Self(addr))
+    }
+}
+
+fn authorize_local_or_token(
+    maybe_peer: Option<std::net::SocketAddr>,
+    headers: &HeaderMap,
+    expected_token: &str,
+) -> Result<(), ApiError> {
+    if let Some(sfs) = headers
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        && !sfs.eq_ignore_ascii_case("same-origin")
+        && !sfs.eq_ignore_ascii_case("none")
+    {
+        return Err(forbidden_request(
+            "Cross-site requests to coordinator bucket and control endpoints are forbidden",
+        ));
+    }
+
+    if let Some(origin_hdr) = headers.get(header::ORIGIN) {
+        let origin = origin_hdr
+            .to_str()
+            .map_err(|_| forbidden_request("Invalid Origin header"))?
+            .trim();
+        let allowed = if let Some(host) = headers.get(header::HOST).and_then(|h| h.to_str().ok()) {
+            let host = host.trim();
+            !host.is_empty()
+                && (origin == format!("http://{host}") || origin == format!("https://{host}"))
+        } else {
+            origin.starts_with("http://127.0.0.1")
+                || origin.starts_with("http://localhost")
+                || origin.starts_with("http://[::1]")
+        };
+        if !allowed {
+            return Err(forbidden_request(
+                "Cross-origin requests to coordinator bucket and control endpoints are forbidden",
+            ));
+        }
+    }
+
+    let provided_token = headers
+        .get("x-kadmium-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .or_else(|| {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().strip_prefix("Bearer "))
+                .map(str::trim)
+        });
+
+    if let Some(tok) = provided_token {
+        if !kadmium_data::constant_time_eq(tok, expected_token) {
+            return Err(unauthorized_request("Invalid Kadmium access token"));
+        }
+        return Ok(());
+    }
+
+    if std::env::var("KADMIUM_REQUIRE_BUCKET_TOKEN")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        return Err(unauthorized_request(
+            "Request requires X-Kadmium-Token or Authorization Bearer token",
+        ));
+    }
+
+    let Some(peer_addr) = maybe_peer else {
+        return Err(forbidden_request(
+            "Peer socket address (ConnectInfo) is required for unauthenticated loopback access; pass X-Kadmium-Token or Authorization Bearer token",
+        ));
+    };
+    if !peer_addr.ip().is_loopback() {
+        return Err(forbidden_request(
+            "Non-loopback peer requires a valid X-Kadmium-Token or Authorization Bearer token",
+        ));
+    }
+
+    if let Some(host_val) = headers.get(header::HOST) {
+        let host = host_val
+            .to_str()
+            .map_err(|_| forbidden_request("Invalid Host header"))?;
+        if !is_loopback_host_header(host) {
+            return Err(forbidden_request(
+                "Non-loopback Host header requires a valid X-Kadmium-Token or Authorization Bearer token",
+            ));
+        }
+    } else {
+        return Err(forbidden_request(
+            "Missing Host header on network request without access token",
+        ));
+    }
+
+    Ok(())
+}
+
 async fn get_storage_pool_bucket_report(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
     Query(query): Query<StorageBucketRequest>,
     req: Option<Json<StorageBucketRequest>>,
-) -> Json<DecentralizedStoragePoolReport> {
+) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
     let body = req.map(|Json(r)| r).unwrap_or_default();
     let explicit_pool_size = body.pool_size.or(query.pool_size);
     let tier = body
@@ -2554,44 +2858,85 @@ async fn get_storage_pool_bucket_report(
     });
 
     if let Some(sz) = mapped_pool_size {
-        return Json(DecentralizedStoragePoolEngine::run_pool_storage_benchmark(
-            sz,
+        return Ok(Json(
+            DecentralizedStoragePoolEngine::run_pool_storage_benchmark(sz),
         ));
     }
 
-    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+    let (nodes, offers, imported_models, mut bucket_objects, bucket_anchors, store) = {
         let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         (
             guard.nodes.clone(),
+            guard.grid_offers.clone(),
             guard.imported_models.clone(),
             guard.bucket_objects.clone(),
             guard.bucket_anchors.clone(),
+            guard.bucket_store(),
         )
     };
-    Json(
-        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+    if let Ok(Ok(on_disk)) = tokio::task::spawn_blocking(move || store.list_objects()).await {
+        for manifest in on_disk {
+            if !bucket_objects
+                .iter()
+                .any(|o| o.object_uri == manifest.object_uri)
+            {
+                bucket_objects.push(manifest_to_bucket_entry(&manifest));
+            }
+        }
+    }
+    bucket_objects.sort_by(|a, b| a.object_uri.cmp(&b.object_uri));
+    Ok(Json(
+        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
             &nodes,
+            &offers,
             &imported_models,
             &bucket_objects,
             &bucket_anchors,
         ),
-    )
+    ))
 }
 
 async fn post_storage_pool_bucket_object(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
     Json(req): Json<StorageBucketPutObjectRequest>,
 ) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
+    let store_for_delete = {
+        let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+        guard.bucket_store()
+    };
     DecentralizedStoragePoolEngine::validate_shard_counts(
         req.data_shards_k.unwrap_or(8),
         req.parity_shards_m.unwrap_or(2),
     )
     .map_err(invalid_request)?;
-    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+
+    let delete_target = if let Some(del_uri) = req.delete_uri.as_deref() {
+        let norm = DecentralizedStoragePoolEngine::normalize_bucket_uri(del_uri)
+            .map_err(invalid_request)?;
+        Some((del_uri.to_string(), norm))
+    } else {
+        None
+    };
+
+    if let Some((_, ref norm_uri)) = delete_target {
+        let norm_for_io = norm_uri.clone();
+        tokio::task::spawn_blocking(move || store_for_delete.delete_object(&norm_for_io))
+            .await
+            .map_err(|e| invalid_request(format!("Bucket delete task failed: {e}")))?
+            .map_err(persistence_error)?;
+    }
+
+    let (nodes, offers, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
         let previous = guard.bucket_objects.clone();
-        if let Some(del_uri) = req.delete_uri.as_deref() {
-            guard.bucket_objects.retain(|o| o.object_uri != del_uri);
+        if let Some((ref raw_del, ref norm_del)) = delete_target {
+            guard
+                .bucket_objects
+                .retain(|o| &o.object_uri != raw_del && &o.object_uri != norm_del);
         } else {
             let (uri, name, kind, size_gb, merkle) = match req.preset.as_deref() {
                 Some("active-model") => {
@@ -2634,7 +2979,7 @@ async fn post_storage_pool_bucket_object(
             };
             let k = req.data_shards_k.unwrap_or(8);
             let m = req.parity_shards_m.unwrap_or(2);
-            let entry = DecentralizedStoragePoolEngine::create_bucket_object(
+            let entry = DecentralizedStoragePoolEngine::create_bucket_object_with_offers(
                 &uri,
                 &name,
                 &kind,
@@ -2643,6 +2988,7 @@ async fn post_storage_pool_bucket_object(
                 m,
                 merkle,
                 &guard.nodes,
+                &guard.grid_offers,
             )
             .map_err(invalid_request)?;
             guard
@@ -2656,6 +3002,7 @@ async fn post_storage_pool_bucket_object(
         }
         (
             guard.nodes.clone(),
+            guard.grid_offers.clone(),
             guard.imported_models.clone(),
             guard.bucket_objects.clone(),
             guard.bucket_anchors.clone(),
@@ -2663,8 +3010,9 @@ async fn post_storage_pool_bucket_object(
     };
 
     Ok(Json(
-        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
             &nodes,
+            &offers,
             &imported_models,
             &bucket_objects,
             &bucket_anchors,
@@ -2674,10 +3022,13 @@ async fn post_storage_pool_bucket_object(
 
 async fn post_storage_pool_bucket_anchor(
     State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
     Json(req): Json<StorageBucketAnchorRequest>,
 ) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
-    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+    let (nodes, offers, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         let previous = guard.bucket_anchors.clone();
         let kind = match req.anchor_kind.as_deref() {
             Some("LocalNasZfsVault") | Some("nas") => BucketGroundingAnchorKind::LocalNasZfsVault,
@@ -2724,6 +3075,7 @@ async fn post_storage_pool_bucket_anchor(
         }
         (
             guard.nodes.clone(),
+            guard.grid_offers.clone(),
             guard.imported_models.clone(),
             guard.bucket_objects.clone(),
             guard.bucket_anchors.clone(),
@@ -2731,13 +3083,825 @@ async fn post_storage_pool_bucket_anchor(
     };
 
     Ok(Json(
-        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
             &nodes,
+            &offers,
             &imported_models,
             &bucket_objects,
             &bucket_anchors,
         ),
     ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageBucketMediumsResponse {
+    pub store_root: String,
+    pub coordinator_http_url: String,
+    pub cluster_mediums: Vec<ClusterStorageMediumSummary>,
+    pub node_mediums: Vec<(String, String, Vec<StorageMediumSlice>)>,
+    pub access_guide: BucketExternalAccessGuide,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageBucketObjectsResponse {
+    pub store_root: String,
+    pub coordinator_http_url: String,
+    pub stored_manifests: Vec<StoredBucketObjectManifest>,
+    pub bucket_report: DecentralizedStoragePoolReport,
+    pub access_guide: BucketExternalAccessGuide,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StorageBucketUploadRequest {
+    #[serde(alias = "uri")]
+    pub object_uri: Option<String>,
+    pub display_name: Option<String>,
+    #[serde(alias = "storage_class")]
+    pub object_kind: Option<String>,
+    pub content_type: Option<String>,
+    #[serde(alias = "content_utf8")]
+    pub data_utf8: Option<String>,
+    pub data_hex: Option<String>,
+    pub source_path: Option<String>,
+    pub data_shards_k: Option<usize>,
+    pub parity_shards_m: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageBucketUploadResponse {
+    pub receipt: StoredBucketObjectReceipt,
+    pub manifest: StoredBucketObjectManifest,
+    pub bucket_entry: PoolBucketObjectEntry,
+    pub access_guide: BucketExternalAccessGuide,
+    pub bucket_report: DecentralizedStoragePoolReport,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StorageBucketDownloadRequest {
+    #[serde(alias = "uri")]
+    pub object_uri: Option<String>,
+    pub offset: Option<u64>,
+    pub length: Option<u64>,
+    pub output_path: Option<String>,
+    pub raw: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageBucketDownloadResponse {
+    #[serde(flatten)]
+    pub result: BucketDownloadResult,
+    pub size_bytes: usize,
+    pub content_utf8: Option<String>,
+    pub access_guide: BucketExternalAccessGuide,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StorageBucketVerifyRequest {
+    #[serde(alias = "uri")]
+    pub object_uri: String,
+    #[serde(default)]
+    pub simulate_drop_count: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelQualityLimitsUpdateRequest {
+    pub model_id: Option<String>,
+    #[serde(alias = "reset_to_native_maximum")]
+    pub reset_to_maximum: Option<bool>,
+    pub context_window_tokens: Option<u32>,
+    pub max_input_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    pub active_experts_per_token: Option<u32>,
+}
+
+fn manifest_to_bucket_entry(m: &StoredBucketObjectManifest) -> PoolBucketObjectEntry {
+    let size_gb = ((m.logical_size_bytes as f64) / (1024.0 * 1024.0 * 1024.0)).max(0.01);
+    let size_gb_rounded = (size_gb * 100.0).round() / 100.0;
+    let phys_gb_rounded = ((size_gb_rounded
+        * ((m.data_shards_k + m.parity_shards_m) as f64 / (m.data_shards_k.max(1) as f64)))
+        * 100.0)
+        .round()
+        / 100.0;
+    let superblocks = (size_gb_rounded * 16.0).ceil().max(1.0) as usize;
+    let holders: Vec<String> = m
+        .shards
+        .iter()
+        .map(|s| {
+            s.modelled_node_id
+                .clone()
+                .unwrap_or_else(|| s.storage_location.clone())
+        })
+        .take(6)
+        .collect();
+    let mut assigned_mediums = m
+        .shards
+        .iter()
+        .map(|s| s.storage_medium)
+        .collect::<Vec<_>>();
+    assigned_mediums.sort();
+    assigned_mediums.dedup();
+    PoolBucketObjectEntry {
+        object_uri: m.object_uri.clone(),
+        display_name: m.display_name.clone(),
+        object_kind: m.object_kind.clone(),
+        logical_size_gb: size_gb_rounded,
+        physical_erasure_coded_gb: phys_gb_rounded,
+        data_shards_k: m.data_shards_k,
+        parity_shards_m: m.parity_shards_m,
+        total_64mb_superblocks: superblocks,
+        merkle_root_fnv64: m.merkle_root_fnv64,
+        sample_stripe_holder_nodes: holders,
+        parallel_read_bandwidth_gbps: 0.0,
+        stored_size_bytes: Some(m.logical_size_bytes),
+        sha256: Some(m.sha256.clone()),
+        stored_on_disk: true,
+        assigned_storage_mediums: assigned_mediums,
+    }
+}
+
+fn decode_hex_bytes(hex_str: &str) -> Result<Vec<u8>, String> {
+    let clean: String = hex_str.chars().filter(|c| !c.is_whitespace()).collect();
+    if !clean.len().is_multiple_of(2) {
+        return Err("data_hex must have an even number of hex digits".into());
+    }
+    let mut out = Vec::with_capacity(clean.len() / 2);
+    for idx in (0..clean.len()).step_by(2) {
+        let byte = u8::from_str_radix(&clean[idx..idx + 2], 16)
+            .map_err(|_| format!("Invalid hex byte at index {idx}"))?;
+        out.push(byte);
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParsedHttpRange {
+    Full,
+    FromTo(u64, u64),
+    From(u64),
+    Suffix(u64),
+    Invalid,
+}
+
+fn parse_http_range_header(headers: &HeaderMap) -> ParsedHttpRange {
+    let Some(hdr) = headers.get(header::RANGE) else {
+        return ParsedHttpRange::Full;
+    };
+    let Ok(raw) = hdr.to_str() else {
+        return ParsedHttpRange::Invalid;
+    };
+    let Some(spec) = raw.trim().strip_prefix("bytes=") else {
+        return ParsedHttpRange::Invalid;
+    };
+    if spec.contains(',') {
+        return ParsedHttpRange::Invalid;
+    }
+    let Some((start_str, end_str)) = spec.split_once('-') else {
+        return ParsedHttpRange::Invalid;
+    };
+    let start_str = start_str.trim();
+    let end_str = end_str.trim();
+    if start_str.is_empty() {
+        let Ok(suffix_len) = end_str.parse::<u64>() else {
+            return ParsedHttpRange::Invalid;
+        };
+        if suffix_len == 0 {
+            return ParsedHttpRange::Invalid;
+        }
+        ParsedHttpRange::Suffix(suffix_len)
+    } else if end_str.is_empty() {
+        let Ok(start) = start_str.parse::<u64>() else {
+            return ParsedHttpRange::Invalid;
+        };
+        ParsedHttpRange::From(start)
+    } else {
+        let Ok(start) = start_str.parse::<u64>() else {
+            return ParsedHttpRange::Invalid;
+        };
+        let Ok(end_inclusive) = end_str.parse::<u64>() else {
+            return ParsedHttpRange::Invalid;
+        };
+        if end_inclusive < start {
+            return ParsedHttpRange::Invalid;
+        }
+        ParsedHttpRange::FromTo(start, end_inclusive)
+    }
+}
+
+fn range_not_satisfiable_response(total_size: u64) -> axum::response::Response {
+    (
+        StatusCode::RANGE_NOT_SATISFIABLE,
+        [
+            (
+                header::CONTENT_RANGE,
+                format!("bytes */{total_size}"),
+            ),
+            (header::ACCEPT_RANGES, "bytes".to_string()),
+        ],
+        Json(serde_json::json!({
+            "error": {
+                "type": "range_not_satisfiable",
+                "message": format!("Requested byte range is not satisfiable for object of size {total_size} bytes")
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn sanitize_ascii_filename(raw_uri: &str) -> String {
+    let base = raw_uri.rsplit('/').next().unwrap_or("bucket-object.bin");
+    let cleaned: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        .collect();
+    let trimmed = cleaned.trim_matches('.');
+    if trimmed.is_empty() {
+        "bucket-object.bin".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+async fn get_storage_pool_bucket_mediums(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
+) -> Result<Json<StorageBucketMediumsResponse>, ApiError> {
+    let (nodes, offers, anchors, store, coord_url) = {
+        let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+        (
+            guard.nodes.clone(),
+            guard.grid_offers.clone(),
+            guard.bucket_anchors.clone(),
+            guard.bucket_store(),
+            guard.coordinator_http_url(),
+        )
+    };
+    let cluster_mediums =
+        DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums_with_offers(
+            &nodes, &offers, &anchors, false,
+        );
+    let node_mediums = nodes
+        .iter()
+        .map(|n| {
+            (
+                n.id.0.clone(),
+                n.hostname.clone(),
+                DecentralizedStoragePoolEngine::inspect_node_storage_mediums_with_offer(
+                    n,
+                    offers.get(&n.id.0),
+                    false,
+                ),
+            )
+        })
+        .collect();
+    let access_guide = store
+        .access_guide("kdm://pool-bucket/workspace/artifact.ktb", &coord_url)
+        .expect("canonical access guide");
+    Ok(Json(StorageBucketMediumsResponse {
+        store_root: "local_coordinator_bucket_store".to_string(),
+        coordinator_http_url: coord_url,
+        cluster_mediums,
+        node_mediums,
+        access_guide,
+    }))
+}
+
+async fn get_storage_pool_bucket_objects(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
+) -> Result<Json<StorageBucketObjectsResponse>, ApiError> {
+    let (nodes, offers, imported_models, mut bucket_objects, bucket_anchors, store, coord_url) = {
+        let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+        (
+            guard.nodes.clone(),
+            guard.grid_offers.clone(),
+            guard.imported_models.clone(),
+            guard.bucket_objects.clone(),
+            guard.bucket_anchors.clone(),
+            guard.bucket_store(),
+            guard.coordinator_http_url(),
+        )
+    };
+    let store_for_list = store.clone();
+    let stored_manifests = tokio::task::spawn_blocking(move || store_for_list.list_objects())
+        .await
+        .map_err(|e| invalid_request(format!("Bucket list task failed: {e}")))?
+        .map_err(invalid_request)?;
+    for m in &stored_manifests {
+        if !bucket_objects.iter().any(|o| o.object_uri == m.object_uri) {
+            bucket_objects.push(manifest_to_bucket_entry(m));
+        }
+    }
+    let sample_uri = stored_manifests
+        .first()
+        .map(|m| m.object_uri.as_str())
+        .or_else(|| bucket_objects.first().map(|o| o.object_uri.as_str()))
+        .unwrap_or("kdm://pool-bucket/workspace/artifact.ktb")
+        .to_string();
+    let access_guide = store
+        .access_guide(&sample_uri, &coord_url)
+        .map_err(invalid_request)?;
+    let bucket_report = DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
+        &nodes,
+        &offers,
+        &imported_models,
+        &bucket_objects,
+        &bucket_anchors,
+    );
+    Ok(Json(StorageBucketObjectsResponse {
+        store_root: "local_coordinator_bucket_store".to_string(),
+        coordinator_http_url: coord_url,
+        stored_manifests,
+        bucket_report,
+        access_guide,
+    }))
+}
+
+async fn post_storage_pool_bucket_upload(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
+    Json(req): Json<StorageBucketUploadRequest>,
+) -> Result<Json<StorageBucketUploadResponse>, ApiError> {
+    if req.source_path.is_some() {
+        return Err(invalid_request(
+            "Server-side source_path file reads are disabled over HTTP; pass object bytes via data_utf8 or data_hex (or use `kadmium bucket put` locally)",
+        ));
+    }
+    let k = req.data_shards_k.unwrap_or(8);
+    let m = req.parity_shards_m.unwrap_or(2);
+    DecentralizedStoragePoolEngine::validate_stored_shard_counts(k, m).map_err(invalid_request)?;
+    let uri = req
+        .object_uri
+        .unwrap_or_else(|| "kdm://pool-bucket/workspace/uploaded-object.ktb".to_string());
+    let display_name = req
+        .display_name
+        .unwrap_or_else(|| "Uploaded Kadmium Bucket Object".to_string());
+    let object_kind = req
+        .object_kind
+        .unwrap_or_else(|| "Erasure-Coded Bucket Object (.ktb)".to_string());
+
+    let payload = if let Some(ref hex_str) = req.data_hex {
+        decode_hex_bytes(hex_str).map_err(invalid_request)?
+    } else if let Some(ref utf8_str) = req.data_utf8 {
+        utf8_str.as_bytes().to_vec()
+    } else {
+        return Err(invalid_request(
+            "Upload requires data_utf8 (or content_utf8) or data_hex",
+        ));
+    };
+
+    let (live_nodes, live_offers, store, coord_url) = {
+        let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+        let nodes = if guard.live_only_mode {
+            guard.nodes.clone()
+        } else {
+            Vec::new()
+        };
+        (
+            nodes,
+            guard.grid_offers.clone(),
+            guard.bucket_store(),
+            guard.coordinator_http_url(),
+        )
+    };
+
+    let receipt = tokio::task::spawn_blocking(move || {
+        store.put_bytes_with_offers(
+            &uri,
+            Some(&display_name),
+            Some(&object_kind),
+            &payload,
+            k,
+            m,
+            &live_nodes,
+            &live_offers,
+            Some(&coord_url),
+        )
+    })
+    .await
+    .map_err(|e| invalid_request(format!("Bucket upload task failed: {e}")))?
+    .map_err(invalid_request)?;
+
+    let (nodes, offers, imported_models, bucket_objects, bucket_anchors) = {
+        let mut guard = state.lock().expect("gateway state lock");
+        let previous = guard.bucket_objects.clone();
+        guard
+            .bucket_objects
+            .retain(|o| o.object_uri != receipt.bucket_entry.object_uri);
+        guard.bucket_objects.push(receipt.bucket_entry.clone());
+        if let Err(error) = guard.save_persistent_state() {
+            guard.bucket_objects = previous;
+            return Err(persistence_error(error));
+        }
+        (
+            guard.nodes.clone(),
+            guard.grid_offers.clone(),
+            guard.imported_models.clone(),
+            guard.bucket_objects.clone(),
+            guard.bucket_anchors.clone(),
+        )
+    };
+
+    let bucket_report = DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
+        &nodes,
+        &offers,
+        &imported_models,
+        &bucket_objects,
+        &bucket_anchors,
+    );
+    Ok(Json(StorageBucketUploadResponse {
+        manifest: receipt.manifest.clone(),
+        bucket_entry: receipt.bucket_entry.clone(),
+        access_guide: receipt.access_guide.clone(),
+        receipt,
+        bucket_report,
+    }))
+}
+
+async fn get_storage_pool_bucket_raw(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
+    Query(mut query): Query<StorageBucketDownloadRequest>,
+    body: Option<Json<Option<StorageBucketDownloadRequest>>>,
+) -> Result<axum::response::Response, ApiError> {
+    query.raw = Some(true);
+    get_or_post_storage_pool_bucket_download(
+        State(state),
+        MaybePeerAddr(maybe_peer),
+        headers,
+        Query(query),
+        body,
+    )
+    .await
+}
+
+async fn get_or_post_storage_pool_bucket_download(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
+    Query(query): Query<StorageBucketDownloadRequest>,
+    body: Option<Json<Option<StorageBucketDownloadRequest>>>,
+) -> Result<axum::response::Response, ApiError> {
+    let req = body.and_then(|Json(b)| b).unwrap_or_default();
+    if req.output_path.is_some() || query.output_path.is_some() {
+        return Err(invalid_request(
+            "Server-side output_path file writes are disabled over HTTP; stream bytes with raw=true (or /api/v1/storage/pool-bucket/raw) and save on the client",
+        ));
+    }
+    let object_uri = req
+        .object_uri
+        .or(query.object_uri)
+        .ok_or_else(|| invalid_request("object_uri (or uri) is required"))?;
+    let raw = req.raw.or(query.raw).unwrap_or(false);
+    let parsed_range = parse_http_range_header(&headers);
+    let explicit_offset = req.offset.or(query.offset);
+    let explicit_length = req.length.or(query.length);
+
+    let (store, coord_url) = {
+        let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+        (guard.bucket_store(), guard.coordinator_http_url())
+    };
+
+    type ResolvedByteRange = Option<(u64, u64, u64)>;
+    type BucketDownloadIoOutcome =
+        Result<(ResolvedByteRange, BucketDownloadResult), Result<u64, String>>;
+
+    let store_for_io = store.clone();
+    let uri_for_io = object_uri.clone();
+    let io_outcome = tokio::task::spawn_blocking(move || -> BucketDownloadIoOutcome {
+        let manifest = store_for_io.inspect_object(&uri_for_io).map_err(Err)?;
+        let total = manifest.logical_size_bytes;
+
+        let resolved_range: ResolvedByteRange = match parsed_range {
+            ParsedHttpRange::FromTo(start, end_incl) => {
+                if total == 0 || start >= total {
+                    return Err(Ok(total));
+                }
+                let end = end_incl.min(total - 1);
+                Some((start, end - start + 1, end))
+            }
+            ParsedHttpRange::From(start) => {
+                if total == 0 || start >= total {
+                    return Err(Ok(total));
+                }
+                let end = total - 1;
+                Some((start, total - start, end))
+            }
+            ParsedHttpRange::Suffix(suffix_len) => {
+                if total == 0 {
+                    return Err(Ok(total));
+                }
+                let take = suffix_len.min(total);
+                let start = total - take;
+                let end = total - 1;
+                Some((start, take, end))
+            }
+            // Per RFC 9110 §14.2, ignore syntactically invalid or unsupported Range headers
+            // and serve the full representation (or explicit query offset/length if provided).
+            ParsedHttpRange::Full | ParsedHttpRange::Invalid => {
+                match (explicit_offset, explicit_length) {
+                    (Some(off), Some(len)) => {
+                        if len == 0 || (total > 0 && off >= total) || (total == 0 && off > 0) {
+                            return Err(Ok(total));
+                        }
+                        if total == 0 {
+                            None
+                        } else {
+                            let take = len.min(total.saturating_sub(off));
+                            let end = off + take.saturating_sub(1);
+                            Some((off, take, end))
+                        }
+                    }
+                    (Some(off), None) => {
+                        if (total > 0 && off >= total) || (total == 0 && off > 0) {
+                            return Err(Ok(total));
+                        }
+                        if total == 0 {
+                            None
+                        } else {
+                            let take = total.saturating_sub(off);
+                            let end = total.saturating_sub(1);
+                            Some((off, take, end))
+                        }
+                    }
+                    (None, Some(len)) => {
+                        if len == 0 {
+                            return Err(Ok(total));
+                        }
+                        if total == 0 {
+                            None
+                        } else {
+                            let take = len.min(total);
+                            let end = take.saturating_sub(1);
+                            Some((0, take, end))
+                        }
+                    }
+                    (None, None) => None,
+                }
+            }
+        };
+
+        let byte_range = resolved_range.map(|(off, len, _)| (off, len));
+        let res = store_for_io
+            .get_bytes(&uri_for_io, byte_range)
+            .map_err(Err)?;
+        Ok((resolved_range, res))
+    })
+    .await
+    .map_err(|e| invalid_request(format!("Bucket download task failed: {e}")))?;
+
+    let (resolved_range, mut result) = match io_outcome {
+        Ok(pair) => pair,
+        Err(Ok(total_size)) => return Ok(range_not_satisfiable_response(total_size)),
+        Err(Err(msg)) => return Err(invalid_request(msg)),
+    };
+
+    if raw {
+        let filename = sanitize_ascii_filename(&result.object_uri);
+        let merkle = result.merkle_root_fnv64;
+        let total = result.total_logical_size_bytes;
+        let raw_bytes = std::mem::take(&mut result.bytes);
+        let mut resp_headers = HeaderMap::new();
+        resp_headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/octet-stream"),
+        );
+        if let Ok(disp) =
+            header::HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+        {
+            resp_headers.insert(header::CONTENT_DISPOSITION, disp);
+        }
+        resp_headers.insert(
+            header::ACCEPT_RANGES,
+            header::HeaderValue::from_static("bytes"),
+        );
+        resp_headers.insert(
+            header::X_CONTENT_TYPE_OPTIONS,
+            header::HeaderValue::from_static("nosniff"),
+        );
+        resp_headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            header::HeaderValue::from_static("sandbox; default-src 'none'"),
+        );
+        resp_headers.insert(
+            header::HeaderName::from_static("cross-origin-resource-policy"),
+            header::HeaderValue::from_static("same-origin"),
+        );
+        if let Ok(mr) = header::HeaderValue::from_str(&format!("{merkle:#018x}")) {
+            resp_headers.insert(header::HeaderName::from_static("x-kadmium-merkle-root"), mr);
+        }
+
+        let has_valid_http_range_header = matches!(
+            parsed_range,
+            ParsedHttpRange::FromTo(_, _) | ParsedHttpRange::From(_) | ParsedHttpRange::Suffix(_)
+        );
+        let status = if let Some((start, _len, end)) = resolved_range {
+            if has_valid_http_range_header {
+                if let Ok(cr) =
+                    header::HeaderValue::from_str(&format!("bytes {start}-{end}/{total}"))
+                {
+                    resp_headers.insert(header::CONTENT_RANGE, cr);
+                }
+                StatusCode::PARTIAL_CONTENT
+            } else {
+                StatusCode::OK
+            }
+        } else {
+            StatusCode::OK
+        };
+
+        return Ok((status, resp_headers, raw_bytes).into_response());
+    }
+
+    let size_bytes = result.returned_bytes_len;
+    let raw_bytes = std::mem::take(&mut result.bytes);
+    let content_utf8 = if raw_bytes.len() <= 256 * 1024 {
+        String::from_utf8(raw_bytes).ok()
+    } else {
+        None
+    };
+    let access_guide = store
+        .access_guide(&result.object_uri, &coord_url)
+        .map_err(invalid_request)?;
+
+    Ok(Json(StorageBucketDownloadResponse {
+        size_bytes,
+        content_utf8,
+        access_guide,
+        result,
+    })
+    .into_response())
+}
+
+async fn post_storage_pool_bucket_verify(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
+    Json(req): Json<StorageBucketVerifyRequest>,
+) -> Result<Json<BucketObjectVerificationReport>, ApiError> {
+    let store = {
+        let guard = state.lock().expect("gateway state lock");
+        authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+        guard.bucket_store()
+    };
+    let uri = req.object_uri;
+    let drop_count = req.simulate_drop_count;
+    let report = tokio::task::spawn_blocking(move || store.verify_object(&uri, drop_count))
+        .await
+        .map_err(|e| invalid_request(format!("Bucket verify task failed: {e}")))?
+        .map_err(invalid_request)?;
+    Ok(Json(report))
+}
+
+async fn get_model_quality_tradeoffs(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+) -> Json<QualityTradeoffReport> {
+    let guard = state.lock().expect("gateway state lock");
+    Json(
+        guard
+            .quality_limits
+            .evaluate_tradeoffs(&guard.inference_model),
+    )
+}
+
+async fn post_model_quality_tradeoffs(
+    State(state): State<Arc<Mutex<GatewayState>>>,
+    MaybePeerAddr(maybe_peer): MaybePeerAddr,
+    headers: HeaderMap,
+    Json(req): Json<ModelQualityLimitsUpdateRequest>,
+) -> Result<Json<QualityTradeoffReport>, ApiError> {
+    let mut guard = state.lock().expect("gateway state lock");
+    authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
+    let model = if let Some(ref model_id) = req.model_id {
+        guard
+            .resolve_model(model_id)
+            .ok_or_else(|| invalid_request(format!("Unsupported model ID: {model_id:?}")))?
+    } else {
+        guard.inference_model.clone()
+    };
+
+    let native = ModelQualityLimits::for_model(&model);
+    let mut updated = guard.quality_limits.clone();
+    updated.sync_native_with_model(&model);
+
+    if req.reset_to_maximum == Some(true) {
+        updated.reset_to_maximum_quality();
+    } else {
+        if let Some(ctx) = req.context_window_tokens {
+            if ctx == 0
+                || native
+                    .native_max_context_window_tokens
+                    .is_some_and(|nat| ctx > nat)
+            {
+                let max_str = native
+                    .native_max_context_window_tokens
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "backend-reported".to_string());
+                return Err(invalid_request(format!(
+                    "context_window_tokens ({ctx}) must be between 1 and {max_str}"
+                )));
+            }
+            updated.user_override_context_window_tokens =
+                match native.native_max_context_window_tokens {
+                    Some(nat) => (ctx < nat).then_some(ctx),
+                    None => Some(ctx),
+                };
+        }
+        let eff_ctx = updated
+            .user_override_context_window_tokens
+            .or(native.native_max_context_window_tokens);
+        if let Some(max_in) = req.max_input_tokens {
+            if max_in == 0 || eff_ctx.is_some_and(|ec| max_in > ec) {
+                let ec_str = eff_ctx
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "backend-reported".to_string());
+                return Err(invalid_request(format!(
+                    "max_input_tokens ({max_in}) must be between 1 and context_window_tokens ({ec_str})"
+                )));
+            }
+            updated.user_override_max_input_tokens = match native.native_max_input_tokens {
+                Some(nat) => (max_in < nat).then_some(max_in),
+                None => Some(max_in),
+            };
+        } else if let (Some(prev_in), Some(ec)) = (updated.user_override_max_input_tokens, eff_ctx)
+            && prev_in > ec
+        {
+            updated.user_override_max_input_tokens = Some(ec);
+        }
+        if let Some(max_out) = req.max_output_tokens {
+            let max_allowed_out = match (native.native_max_output_tokens, eff_ctx) {
+                (Some(no), Some(ec)) => Some(no.min(ec)),
+                (Some(no), None) => Some(no),
+                (None, Some(ec)) => Some(ec),
+                (None, None) => None,
+            };
+            if max_out == 0 || max_allowed_out.is_some_and(|cap| max_out > cap) {
+                let cap_str = max_allowed_out
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "backend-reported".to_string());
+                return Err(invalid_request(format!(
+                    "max_output_tokens ({max_out}) must be between 1 and {cap_str}"
+                )));
+            }
+            updated.user_override_max_output_tokens = match native.native_max_output_tokens {
+                Some(nat) => (max_out < nat).then_some(max_out),
+                None => Some(max_out),
+            };
+        } else if let (Some(prev_out), Some(ec)) =
+            (updated.user_override_max_output_tokens, eff_ctx)
+            && prev_out > ec
+        {
+            updated.user_override_max_output_tokens = Some(ec);
+        }
+        if let Some(experts) = req.active_experts_per_token {
+            let max_exp = native.native_active_experts_per_token.max(1);
+            if experts == 0 || experts > max_exp {
+                return Err(invalid_request(format!(
+                    "active_experts_per_token ({experts}) must be between 1 and {max_exp}"
+                )));
+            }
+            updated.user_override_active_experts_per_token =
+                (model.is_moe && experts < max_exp).then_some(experts);
+        }
+        updated.sync_native_with_model(&model);
+    }
+
+    let previous = (
+        guard.inference_model.clone(),
+        guard.user_selected_model,
+        guard.quality_limits.clone(),
+        guard.user_lowered_quality_limits,
+    );
+
+    if req.model_id.is_some() {
+        guard.inference_model = model.clone();
+        guard.user_selected_model = true;
+    }
+    let report = updated.evaluate_tradeoffs(&model);
+    guard.user_lowered_quality_limits = !report.is_uncompromised_maximum_quality;
+    guard.quality_limits = updated;
+
+    guard.recompute_plans();
+    if let Err(error) = guard.save_persistent_state() {
+        (
+            guard.inference_model,
+            guard.user_selected_model,
+            guard.quality_limits,
+            guard.user_lowered_quality_limits,
+        ) = previous;
+        guard.recompute_plans();
+        return Err(persistence_error(error));
+    }
+
+    Ok(Json(guard.quality_limits.evaluate_tradeoffs(&model)))
 }
 
 async fn get_hierarchical_pool_scale_report() -> Json<HierarchicalPoolBenchmarkReport> {

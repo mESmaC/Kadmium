@@ -1266,6 +1266,9 @@
     const models = useApi('/v1/models');
     const dataflow = useApi('/api/v1/dataflow');
     const kernels = useApi('/api/v1/runtime/kernels');
+    const qualityPath = '/api/v1/models/quality-tradeoffs';
+    const quality = useApi(qualityPath);
+    const [qForm, setQForm] = useState({ ctx: '', maxIn: '', maxOut: '', experts: '' });
     const [trace, setTrace] = useState(null);
     const [tab, setTab] = C.useTab(route, 'plan', ['plan', 'dataflow', 'kernels', 'trace']);
     const [busy, setBusy] = useState(null);
@@ -1289,9 +1292,46 @@
     const importLocalKtb = () => act(post('/api/v1/models/import', { model_id: inf.model_id, demo_fixture: true }, { refresh: C.CLUSTER_PATHS.concat(['/v1/models']) }), m => 'Compiled synthetic fixture for ' + m.model_id + ' to ' + m.compiled_ktb_path + ' (' + m.ktb_page_count + ' pages of 64 KiB)', 'ok').catch(() => {});
     const send = () => { setBusy('send'); act(post('/v1/chat/completions', { model: inf.model_id, messages: [{ role: 'user', content: prompt }] }, { refresh: ['/api/v1/cluster/overview'] }), r => r.kadmium_fabric ? 'Reference diagnostic across ' + r.kadmium_fabric.execution_trace.stages.length + ' machines at ' + fmt.num(r.kadmium_fabric.estimated_tokens_per_sec, 1) + ' tok/s' : 'Reference diagnostic complete').then(setReply).catch(() => {}).finally(() => setBusy(null)); };
     const replyText = reply && reply.choices && reply.choices[0] ? reply.choices[0].message.content : null;
+    const qTradeoffs = (quality && quality.tradeoffs) || [];
+    const qLowered = qTradeoffs.filter(t => t.manually_lowered);
+    const applyQualityLimits = (reset) => {
+      const body = reset ? { reset_to_native_maximum: true } : {
+        context_window_tokens: qForm.ctx ? Number(qForm.ctx) : undefined,
+        max_input_tokens: qForm.maxIn ? Number(qForm.maxIn) : undefined,
+        max_output_tokens: qForm.maxOut ? Number(qForm.maxOut) : undefined,
+        active_experts_per_token: qForm.experts ? Number(qForm.experts) : undefined
+      };
+      act(post(qualityPath, body, { into: qualityPath, refresh: [qualityPath, '/api/v1/cluster/overview'] }), r => r.is_uncompromised_maximum_quality ? 'Restored full native model quality & context window' : 'Applied manual limits (' + (r.tradeoffs || []).filter(t => t.manually_lowered).length + ' explicit quality tradeoff(s))', 'ok').then(() => { if (reset) setQForm({ ctx: '', maxIn: '', maxOut: '', experts: '' }); }).catch(() => {});
+    };
     return h(F, null,
       h(window.KadmiumWorkspace.ModelSetup),
       h(C.Note, null, 'The catalog below plans cluster placement. Prepare your own model above to generate answers in Condenser.'),
+      quality ? h(Panel, {
+        title: 'Model quality & context window guarantees',
+        sub: quality.model_display_name + ' (' + quality.model_id + ')',
+        desc: 'Kadmium never silently degrades model quality, precision, active MoE experts, context window, or maximum input/output tokens. You can manually lower limits below with explicit performance and quality tradeoffs.',
+        tools: h('div', { className: 'cr-rowwrap' },
+          h(K.Badge, { tone: quality.is_uncompromised_maximum_quality ? 'ok' : 'warn', dot: true }, quality.is_uncompromised_maximum_quality ? 'uncompromised native quality' : qLowered.length + ' manual tradeoff(s) active'),
+          !quality.is_uncompromised_maximum_quality ? h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => applyQualityLimits(true) }, 'Reset to native maximums') : null)
+      },
+        h('div', { className: 'cr-stats' },
+          h(Stat, { label: 'Context window', value: quality.effective_context_window_tokens != null ? fmt.num(quality.effective_context_window_tokens) : 'backend-reported', unit: quality.effective_context_window_tokens != null ? 'tokens' : '', meta: 'native max ' + (qTradeoffs[0] ? qTradeoffs[0].native_maximum : 'backend-reported') + ' (' + fmt.pct(quality.context_retention_pct, 1) + ')', tone: quality.is_uncompromised_maximum_quality ? 'cadmium' : '' }),
+          h(Stat, { label: 'Max input tokens', value: quality.effective_max_input_tokens != null ? fmt.num(quality.effective_max_input_tokens) : 'backend-reported', unit: quality.effective_max_input_tokens != null ? 'tokens' : '', meta: 'native max ' + (qTradeoffs[1] ? qTradeoffs[1].native_maximum : 'backend-reported') }),
+          h(Stat, { label: 'Max output tokens', value: quality.effective_max_output_tokens != null ? fmt.num(quality.effective_max_output_tokens) : 'Uncapped', unit: quality.effective_max_output_tokens != null ? 'tokens' : '', meta: 'native max ' + (qTradeoffs[2] ? qTradeoffs[2].native_maximum : 'Uncapped') }),
+          h(Stat, { label: 'KV cache savings', value: fmt.pct(quality.estimated_kv_cache_savings_pct, 1), meta: quality.is_uncompromised_maximum_quality ? 'full native context retained' : fmt.pct(quality.context_retention_pct, 1) + ' context window retained' })),
+        h('div', { className: 'cr-form', style: { marginTop: '10px' } },
+          h(K.Input, { label: 'Manual context window', mono: true, placeholder: quality.effective_context_window_tokens != null ? String(quality.effective_context_window_tokens) : 'backend-reported', value: qForm.ctx, onChange: e => setQForm(Object.assign({}, qForm, { ctx: e.target.value.replace(/[^0-9]/g, '') })) }),
+          h(K.Input, { label: 'Manual max input', mono: true, placeholder: quality.effective_max_input_tokens != null ? String(quality.effective_max_input_tokens) : 'backend-reported', value: qForm.maxIn, onChange: e => setQForm(Object.assign({}, qForm, { maxIn: e.target.value.replace(/[^0-9]/g, '') })) }),
+          h(K.Input, { label: 'Manual max output', mono: true, placeholder: quality.effective_max_output_tokens != null ? String(quality.effective_max_output_tokens) : 'Uncapped', value: qForm.maxOut, onChange: e => setQForm(Object.assign({}, qForm, { maxOut: e.target.value.replace(/[^0-9]/g, '') })) }),
+          h(K.Input, { label: 'Manual active experts', mono: true, placeholder: String(quality.effective_active_experts_per_token || 1), value: qForm.experts, onChange: e => setQForm(Object.assign({}, qForm, { experts: e.target.value.replace(/[^0-9]/g, '') })) }),
+          h(K.Button, { size: 'sm', variant: 'quiet', onClick: () => applyQualityLimits(false) }, 'Apply manual limits')),
+        qTradeoffs.length ? h(Table, { label: 'Active quality tradeoffs', rows: qTradeoffs, rowKey: t => t.parameter, cols: [
+          { key: 'p', label: 'parameter', render: t => h('code', null, t.label || t.parameter) },
+          { key: 'n', label: 'native maximum', render: t => t.native_maximum },
+          { key: 'c', label: 'configured', render: t => h(K.Badge, { tone: t.manually_lowered ? 'warn' : 'ok' }, t.active_setting) },
+          { key: 'q', label: 'quality tradeoff', cls: 'wrap sans', render: t => t.quality_impact },
+          { key: 'm', label: 'resource tradeoff', cls: 'wrap sans', render: t => t.resource_tradeoff }
+        ] }) : null) : null,
       (overview.imported_models || []).length ? h(Panel, { title: 'Files on this coordinator', sub: 'on disk, not loaded for generation' }, (overview.imported_models || []).map(m => h('div', { key: m.compiled_ktb_path, className: 'cr-rowwrap' }, h(K.Badge, { tone: m.synthetic_fixture ? 'warn' : 'neutral' }, m.synthetic_fixture ? 'synthetic fixture' : 'imported file'), h('code', null, m.compiled_ktb_path)))) : null,
       h('div', { className: 'cr-steps' },
         h(Panel, { className: 'cr-step', title: 'Choose a model', sub: modelLoaded ? 'planned: ' + inf.model_display_name : 'no preset selected',
@@ -1624,7 +1664,20 @@
     const bg = bucket && bucket.bucket_grounding;
     const objs = (bucket && bucket.bucket_objects) || [];
     const contribs = (bucket && bucket.node_contributions_sample) || [];
+    const mediums = (bucket && bucket.storage_mediums) || [];
     const anchors = (bg && bg.configured_anchors) || [];
+    const [upForm, setUpForm] = useState({ uri: 'workspace/checkpoint-meta.json', storageClass: 'ModelCheckpointKtb', content: '{"epoch":42,"verified":true}' });
+    const [inspectResult, setInspectResult] = useState(null);
+    const base = (workers && workers.coordinator_http_url) || window.location.origin;
+    const uploadBytes = () => {
+      const uri = 'kdm://pool-bucket/' + upForm.uri.trim().replace(/^kdm:\/\/pool-bucket\//, '').replace(/^\/+/, '');
+      act(post('/api/v1/storage/pool-bucket/upload', { object_uri: uri, storage_class: upForm.storageClass, content_utf8: upForm.content }, { refresh: C.CLUSTER_PATHS.concat([bucketPath]) }), r => 'Uploaded & erasure-coded ' + r.manifest.object_uri + ' (' + (r.manifest.shards || []).length + ' local Reed-Solomon shards)', 'ok').then(setInspectResult).catch(() => {});
+    };
+    const verifyObj = uri => act(post('/api/v1/storage/pool-bucket/verify', { uri }, { refresh: [bucketPath] }), r => r.bit_identical_verified ? 'Verified ' + r.intact_shards_on_disk + '/' + r.total_shards + ' erasure-coded shards' : 'Verification failed', 'ok').then(setInspectResult).catch(() => {});
+    const downloadObj = uri => act(post('/api/v1/storage/pool-bucket/download', { uri }, { refresh: [] }), 'Downloaded & verified ' + uri, 'ok').then(setInspectResult).catch(() => {});
+    const sampleUri = (objs[0] && objs[0].object_uri) || 'kdm://pool-bucket/workspace/checkpoint-meta.json';
+    const cliAccess = '$ kadmium bucket mediums\n$ kadmium bucket put ./weights.ktb ' + sampleUri + ' --class checkpoint\n$ kadmium bucket get ' + sampleUri + ' ./weights.out.ktb\n$ kadmium bucket verify ' + sampleUri;
+    const httpAccess = '$ curl -X POST ' + base + '/api/v1/storage/pool-bucket/upload -H "Content-Type: application/json" -d \'{"object_uri":"' + sampleUri + '","content_utf8":"..."}\'\n$ curl -fL "' + base + '/api/v1/storage/pool-bucket/download?uri=' + encodeURIComponent(sampleUri) + '&raw=true" -o out.bin';
     const logicalSum = objs.reduce((s, o) => s + (o.logical_size_gb || 0), 0);
     const physSum = objs.reduce((s, o) => s + (o.physical_erasure_coded_gb || 0), 0);
     const k = ec ? ec.data_shards_k : 8, m = ec ? ec.parity_shards_m : 2;
@@ -1641,18 +1694,40 @@
         h(Stat, { label: C.T('fts3', 'Copies in flight'), value: tx.length, unit: tx.length === 1 ? 'transfer' : 'transfers', meta: tx.length ? fmt.gb(totalGb) + ' between machines' : (overview.imported_models || []).length + ' compiled .ktb file' + ((overview.imported_models || []).length === 1 ? '' : 's') + ' on this machine' })),
       h(K.Tabs, { label: 'Storage views', value: tab, onChange: setTab, items: [{ id: 'bucket', label: 'Files', count: objs.length || undefined }, { id: 'transfers', label: 'Copies between machines', count: tx.length || undefined }, { id: 'sources', label: 'Sources', count: integ ? integ.connectors.length : undefined }, { id: 'hf', label: 'Hugging Face' }, { id: 'gh', label: 'GitHub' }] }),
       tab === 'bucket' ? h(C.TabPanel, { id: 'bucket', label: 'Files' },
+        mediums.length ? h(Panel, { title: 'All storage mediums across systems', sub: mediums.length + ' hardware tiers modelled across ' + (bucket ? bucket.total_participating_nodes : 0) + ' machines', flush: true, desc: 'Multi-medium HRW placement models and scores every hardware tier across cluster node profiles (Discrete GPU VRAM, Apple Silicon / LPDDR Unified Memory, System DDR4/DDR5 RAM, PCIe NVMe SSD, UFS 3.0-4.0 / eMMC / SD Flash on Phone Farm Boxes & SBCs, and Dedicated NAS ZFS/RAID Vaults) by bandwidth, endurance, and failure domain.' },
+          h(Table, { label: 'All storage mediums across systems', rows: mediums, rowKey: m => m.medium_kind, cols: [
+            { key: 'm', label: 'storage medium', render: m => h('span', { className: 'sans', style: { fontWeight: 600 } }, m.medium_label) },
+            { key: 'n', label: 'nodes', num: true, render: m => m.contributing_nodes },
+            { key: 'c', label: 'raw / pledged', num: true, render: m => fmt.gb(m.total_capacity_gb) + ' / ' + fmt.gb(m.pledged_bucket_gb) },
+            { key: 'r', label: 'aggregate bw', num: true, render: m => fmt.num(m.aggregate_bandwidth_gbps, 1) + ' GB/s' },
+            { key: 's', label: 'pool share', num: true, render: m => fmt.pct(m.share_of_pool_capacity_pct, 1) },
+            { key: 'u', label: 'optimal usage', cls: 'wrap sans', render: m => m.optimal_usage }
+          ] })) : null,
+        h('div', { className: 'cr-two' },
+          h(Panel, { title: 'Upload & verify real erasure-coded payload', sub: 'GF(2^8) Reed-Solomon k=8 + m=2 shards on disk', desc: 'Writes erasure-coded data + parity shard files in the local coordinator bucket store and verifies Merkle / parity reconstruction.' },
+            h('div', { className: 'cr-form' },
+              h(K.Input, { label: 'Object URI path', mono: true, prefix: 'kdm://pool-bucket/', className: 'wide', value: upForm.uri, onChange: e => setUpForm(Object.assign({}, upForm, { uri: e.target.value })) }),
+              h(K.Input, { label: 'UTF-8 payload content', mono: true, className: 'wide', value: upForm.content, onChange: e => setUpForm(Object.assign({}, upForm, { content: e.target.value })) }),
+              h(K.Button, { size: 'sm', variant: 'primary', onClick: uploadBytes }, 'Upload & encode shards')),
+            inspectResult ? Code(JSON.stringify(inspectResult, null, 2), 'bucket object / verification result', 'json') : null),
+          h(Panel, { title: 'Access within & outside Kadmium', sub: 'CLI | HTTP REST | MCP | Rust API', desc: 'Upload, download, byte-range stream, or verify bucket objects from inside Kadmium or from any external script or machine.' },
+            Code(cliAccess, 'kadmium bucket CLI (local or remote)'),
+            Code(httpAccess, 'External HTTP REST API (curl + Range support)'))),
         h(Panel, { title: 'Files in the bucket', sub: 'kdm://pool-bucket/', flush: true,
             desc: bucket ? bucket.protection_status : 'Placement estimate; data protection unverified.',
             tools: h(K.Badge, { tone: 'warn' }, 'durability unverified') },
           objs.length ? h(Table, { label: 'Files in the bucket', rows: objs, rowKey: o => o.object_uri, cols: [
               { key: 'u', label: 'name', render: o => h('div', null, h('div', { className: 'sans', style: { fontWeight: 600 } }, o.display_name), h('div', { className: 'cr-muted', style: { fontSize: '11.5px' } }, o.object_uri)) },
               { key: 'k', label: 'type', render: o => h(K.Badge, { tone: /Model|Compiled/i.test(o.object_kind) ? 'local' : 'neutral' }, kindLabel(o.object_kind)) },
-              { key: 'sz', label: 'size → estimated footprint', num: true, render: o => fmt.gb(o.logical_size_gb) + ' → ' + fmt.gb(o.physical_erasure_coded_gb) },
+              { key: 'sz', label: 'size / estimated footprint', num: true, render: o => fmt.gb(o.logical_size_gb) + ' / ' + fmt.gb(o.physical_erasure_coded_gb) },
               { key: 'ec', label: C.T('rs', 'pieces'), num: true, render: o => o.data_shards_k + ' + ' + o.parity_shards_m + ' spare' },
               { key: 'bw', label: 'estimated read speed', num: true, render: o => fmt.num(o.parallel_read_bandwidth_gbps, 1) + ' Gbps' },
               { key: 'm', label: C.T('merkle', 'fingerprint'), render: o => fmt.hex(o.merkle_root_fnv64, 12) },
               { key: 'h', label: C.T('hrw', 'planned holders'), cls: 'wrap', render: o => Badges((o.sample_stripe_holder_nodes || []).map(n => h(K.Badge, { key: n }, strip(n)))) },
-              { key: 'act', label: '', sr: 'Remove', render: o => h(C.Confirm, { label: 'Remove', ariaLabel: 'Remove ' + o.display_name, question: 'Remove it from the bucket?', yes: 'Remove', yesVariant: 'danger', onConfirm: () => put({ delete_uri: o.object_uri }, 'Removed ' + o.display_name + ' from the bucket') }) }
+              { key: 'act', label: '', sr: 'Actions', render: o => h('div', { className: 'cr-rowwrap' },
+                h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => downloadObj(o.object_uri) }, 'Inspect / Get'),
+                h(K.Button, { size: 'sm', variant: 'ghost', onClick: () => verifyObj(o.object_uri) }, 'Verify'),
+                h(C.Confirm, { label: 'Remove', ariaLabel: 'Remove ' + o.display_name, question: 'Remove it from the bucket?', yes: 'Remove', yesVariant: 'danger', onConfirm: () => put({ delete_uri: o.object_uri }, 'Removed ' + o.display_name + ' from the bucket') })) }
             ] })
             : h(Empty, {
                 action: h('div', { className: 'cr-rowwrap', style: { justifyContent: 'center' } },
