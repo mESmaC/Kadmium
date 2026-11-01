@@ -90,33 +90,96 @@
         }) : h('div', { className: 'kw-no-results' }, h('strong', null, 'No matching features'), h('p', null, 'Try a task like “model”, “storage”, or “training”.'), h('button', { type: 'button', className: 'kw-close', onClick: () => { setQuery(''); input.current.focus(); } }, 'Clear search'))),
         h('footer', { className: 'kw-dialog-foot' }, '↑ ↓ to navigate · Enter to open · Esc to close')), document.body) : null);
   }
+  function fmtBytes(bytes) {
+    const v = Number(bytes) || 0;
+    if (v >= 1024 * 1024 * 1024) return (v / (1024 * 1024 * 1024)).toFixed(2) + ' GiB';
+    if (v >= 1024 * 1024) return (v / (1024 * 1024)).toFixed(1) + ' MiB';
+    if (v >= 1024) return (v / 1024).toFixed(1) + ' KiB';
+    return v + ' B';
+  }
   function ModelSetup() {
     const local = ['127.0.0.1', 'localhost'].includes(location.hostname);
     const [received, setReceived] = React.useState(null);
+    const [placement, setPlacement] = React.useState(null);
+    const [selectedCheckpoint, setSelectedCheckpoint] = React.useState('');
     React.useEffect(() => {
       if (!local) return undefined;
       let live = true;
       fetch('/api/v1/model-transport').then(r => r.ok ? r.json() : null).then(d => { if (live && d) setReceived(d); }).catch(() => {});
       return () => { live = false; };
     }, [local]);
+    React.useEffect(() => {
+      let live = true;
+      const query = selectedCheckpoint ? '?checkpoint_id=' + encodeURIComponent(selectedCheckpoint) : '';
+      fetch('/api/v1/checkpoints/placement' + query).then(r => r.ok ? r.json() : null).then(d => {
+        if (live && d) {
+          setPlacement(d);
+          if (!selectedCheckpoint && d.selected_checkpoint_id) setSelectedCheckpoint(d.selected_checkpoint_id);
+        }
+      }).catch(() => {});
+      return () => { live = false; };
+    }, [selectedCheckpoint]);
     const served = new Set(received ? received.served : []);
+    const activePlan = placement && placement.placement;
+    const eligibleCount = placement && placement.eligible_machines ? placement.eligible_machines.length : 0;
+    const splitBadgeText = activePlan
+      ? (activePlan.is_split ? 'Split across ' + activePlan.machine_count + ' machines' : '1 machine')
+      : (eligibleCount ? eligibleCount + (eligibleCount === 1 ? ' machine' : ' machines') : 'Cluster');
     const destinations = [
       { id: 'local', title: 'On this computer', badge: h('span', { className: 'k-pill' }, 'Private'), body: 'Runs through Ollama on this machine. Nothing leaves your network. Best when this computer has enough memory for the model.', href: '/condenser/#models', action: 'Prepare a local model' },
-      { id: 'cloud', title: 'Remote coordinator', badge: null, body: 'Send the prepared model to a Kadmium coordinator you run, in verified, resumable chunks. It loads in that coordinator\u2019s Ollama at full context. Kadmium Cloud, the planned premium service, will use the same flow.', href: '/condenser/#models-cloud', action: 'Send to a coordinator' }
+      { id: 'split', title: 'Split across my machines', badge: h('span', { className: 'k-pill ok' }, splitBadgeText), body: 'Plans which of your machines holds which layers of a prepared SafeTensors model using real tensor sizes and the full native context KV cache. Fails with an error rather than shrinking the model or context.', href: '/condenser/#models-split', action: 'Split across my machines' },
+      { id: 'cloud', title: 'Remote coordinator', badge: null, body: 'Send the prepared model to a Kadmium coordinator you run, in verified, resumable chunks. It loads in that coordinator’s Ollama at full context. Kadmium Cloud, the planned premium service, will use the same flow.', href: '/condenser/#models-cloud', action: 'Send to a coordinator' }
     ];
     return h('section', { className: 'kw-model-setup', 'aria-labelledby': 'kw-model-title' },
       h('div', { className: 'kw-model-head' },
         h('span', { className: 'k-eyebrow' }, 'Your models'),
         h('h2', { id: 'kw-model-title' }, 'Run your own model'),
-        h('p', null, 'Choose a model file, let Condenser prepare it, then run it here or on a Kadmium coordinator. Weights are never quantized, pruned, or shortened, and every model starts with its full context and output.'),
+        h('p', null, 'Choose a model file, let Condenser prepare it, then run it here, split it across your machines, or send it to a Kadmium coordinator. Weights are never quantized, pruned, or shortened, and every model starts with its full context and output.'),
         h('ol', { className: 'k-steps', 'aria-label': 'How it works' },
           h('li', null, 'Choose a GGUF or SafeTensors model'),
           h('li', null, 'Prepare: verified, 4 KiB-aligned shards'),
-          h('li', null, 'Run on this computer or a remote coordinator'))),
+          h('li', null, 'Run here, split across machines, or send to a coordinator'))),
       local ? h('div', { className: 'kw-destinations' }, destinations.map(d => h('article', { key: d.id, className: 'kw-destination-card ' + d.id },
         h('header', null, h('h3', null, d.title), d.badge),
         h('p', null, d.body),
         h('a', { className: 'kw-cta', href: d.href }, d.action, h('span', { 'aria-hidden': 'true' }, ' →'))))) : null,
+      placement ? h('div', { className: 'kw-split-view', role: 'region', 'aria-labelledby': 'kw-split-title' },
+        h('div', { className: 'kw-split-head' },
+          h('h3', { id: 'kw-split-title' }, 'Which machine holds what'),
+          placement.checkpoints && placement.checkpoints.length > 1 ? h('select', {
+            className: 'kw-split-select',
+            'aria-label': 'Checkpoint to split across machines',
+            value: selectedCheckpoint || placement.selected_checkpoint_id || '',
+            onChange: e => setSelectedCheckpoint(e.target.value)
+          }, placement.checkpoints.map(c => h('option', { key: c.id, value: c.id }, c.name + ' (' + fmtBytes(c.source_bytes) + ')'))) : null),
+        activePlan ? h(React.Fragment, null,
+          h('p', { className: 'kw-split-summary' },
+            h('strong', null, activePlan.checkpoint_name), ' · ', activePlan.architecture, ' · ', activePlan.num_layers, ' layers · full context ', activePlan.context_length.toLocaleString(), ' tokens · ', fmtBytes(activePlan.total_weight_bytes), ' weights + ', fmtBytes(activePlan.total_kv_bytes), ' full-context KV cache (', fmtBytes(activePlan.total_bytes), ' total across ', activePlan.machine_count, activePlan.machine_count === 1 ? ' machine' : ' machines', ')'),
+          h('ul', { className: 'kw-split-stages', 'aria-label': 'Machines holding model layers' }, activePlan.stages.map(s => h('li', { key: s.stage_index, className: 'kw-split-stage' },
+            h('div', { className: 'kw-split-stage-top' },
+              h('div', { className: 'kw-split-stage-name' },
+                h('span', { className: 'k-pill premium' }, 'Stage ' + s.stage_index),
+                h('strong', null, s.hostname),
+                h('span', { className: 'kw-split-layers' }, 'Layers ' + s.start_layer + '..' + s.end_layer + ' (' + s.layer_count + (s.layer_count === 1 ? ' layer' : ' layers') + ')')),
+              h('div', { className: 'kw-split-stage-badges' },
+                h('span', { className: 'k-pill ' + (s.trust_tier === 'TrustedCore' ? 'ok' : 'warn') }, s.trust_tier),
+                h('span', { className: 'k-pill' }, s.residency_tier),
+                h('span', { className: 'k-pill ' + (s.online ? 'ok' : '') }, s.online ? 'Online worker' : 'Cluster node'))),
+            h('ul', { className: 'kw-split-holdings' }, (s.holdings || []).map((item, idx) => h('li', { key: idx }, item))),
+            h('div', { className: 'kw-split-memory' }, 'Weights: ' + fmtBytes(s.weight_bytes) + ' · Full-context KV cache: ' + fmtBytes(s.kv_bytes) + ' · Resident total: ' + fmtBytes(s.total_bytes) + ' of ' + fmtBytes(s.capacity_bytes) + ' (' + fmtBytes(s.free_bytes) + ' free)'))))) : null,
+        placement.placement_error ? h('p', { className: 'kw-split-error', role: 'alert' }, placement.placement_error) : null,
+        !activePlan && placement.eligible_machines && placement.eligible_machines.length ? h(React.Fragment, null,
+          h('p', { className: 'kw-split-summary' }, 'Eligible machines offering ', fmtBytes(placement.total_cluster_capacity_bytes), ' of resident memory across ', placement.eligible_machines.length, placement.eligible_machines.length === 1 ? ' machine' : ' machines', '. Prepare an unquantized SafeTensors checkpoint to view its exact layer and full-context KV cache assignment.'),
+          h('ul', { className: 'kw-split-stages', 'aria-label': 'Eligible cluster machines' }, placement.eligible_machines.map(m => h('li', { key: m.node_id, className: 'kw-split-stage' },
+            h('div', { className: 'kw-split-stage-top' },
+              h('div', { className: 'kw-split-stage-name' },
+                h('strong', null, m.hostname),
+                h('span', { className: 'kw-split-layers' }, fmtBytes(m.capacity_bytes) + ' offered')),
+              h('div', { className: 'kw-split-stage-badges' },
+                h('span', { className: 'k-pill ' + (m.trust_tier === 'TrustedCore' ? 'ok' : 'warn') }, m.trust_tier),
+                h('span', { className: 'k-pill' }, m.preferred_tier),
+                h('span', { className: 'k-pill ' + (m.online ? 'ok' : '') }, m.online ? 'Online worker' : 'Cluster node'))),
+            h('div', { className: 'kw-split-memory' }, 'Fast memory: ' + fmtBytes(m.fast_bytes) + ' · System RAM: ' + fmtBytes(m.warm_bytes) + ' · Total resident budget: ' + fmtBytes(m.capacity_bytes)))))) : null) : null,
       local && received && received.checkpoints.length ? h('div', { className: 'kw-received' },
         h('h3', null, 'Models on this coordinator'),
         h('ul', null, received.checkpoints.map(m => h('li', { key: m.id },

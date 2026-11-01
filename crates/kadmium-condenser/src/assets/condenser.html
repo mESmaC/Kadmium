@@ -135,7 +135,7 @@
         <header class="models-hero">
           <p class="k-eyebrow">Models</p>
           <h1 id="models-title">Bring your own model</h1>
-          <p class="models-lede">Pick a model on this computer. Condenser prepares it without changing a single weight, then you run it here or send it to a Kadmium coordinator. Full context and full output by default.</p>
+          <p class="models-lede">Pick a model on this computer. Condenser prepares it without changing a single weight, then you run it here, split it across your machines, or send it to a Kadmium coordinator. Full context and full output by default.</p>
           <ol class="k-steps" aria-label="Progress">
             <li id="step-choose" data-state="current">Choose</li>
             <li id="step-prepare">Prepare</li>
@@ -180,6 +180,7 @@
           <div class="model-card-head"><span class="model-step">3</span><div><h2 id="run-title">Run it</h2><p>Choose where the model runs. You can switch at any time.</p></div></div>
           <div class="k-segmented destination-switch" role="radiogroup" aria-label="Where the model runs">
             <label><input type="radio" name="destination" id="destination-local" value="local" checked>This computer</label>
+            <label><input type="radio" name="destination" id="destination-split" value="split">Split across my machines</label>
             <label><input type="radio" name="destination" id="destination-cloud" value="cloud">Remote coordinator</label>
           </div>
 
@@ -192,6 +193,21 @@
             <p id="checkpoint-context-hint" class="tradeoff" data-tone="ok">Maximum — the model's full context.</p>
             <div class="model-actions"><button id="checkpoint-load" class="primary-btn" disabled>Load on this computer</button><button id="checkpoint-use" class="secondary-btn" disabled>Use in current task</button></div>
             <p id="checkpoint-load-status" class="caption muted" role="status">Select a prepared model to load it.</p>
+          </div>
+
+          <div id="destination-split-panel" class="destination-panel" hidden>
+            <p class="destination-lede">Plans which of your machines holds which layers of this checkpoint using real tensor sizes and the full native context KV cache. If your machines cannot hold all layers and the full context, it stops with an error rather than using a smaller model or a shorter context.</p>
+            <div class="field-grid two">
+              <div class="field"><label for="split-endpoint">Coordinator address</label><input id="split-endpoint" class="code-sm" type="url" value="http://127.0.0.1:7848" spellcheck="false"></div>
+              <div class="field"><label for="split-key">Access token (optional)</label><input id="split-key" type="password" autocomplete="off" placeholder="Optional coordinator token · memory only"></div>
+            </div>
+            <p id="split-context-hint" class="tradeoff" data-tone="ok">Maximum — always plans for the model's full native context window.</p>
+            <div class="model-actions"><button id="split-plan" class="primary-btn" type="button" disabled>Split across my machines</button></div>
+            <p id="split-status" class="caption muted" role="status">Select a prepared SafeTensors model to see which machine holds which layers.</p>
+            <div id="split-results" class="split-results" hidden>
+              <dl id="split-facts" class="model-facts"></dl>
+              <div id="split-stages" class="split-stages" role="region" aria-label="Which machine holds what"></div>
+            </div>
           </div>
 
           <div id="destination-cloud-panel" class="destination-panel" hidden>

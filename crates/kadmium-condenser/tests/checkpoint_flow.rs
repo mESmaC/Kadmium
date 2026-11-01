@@ -266,3 +266,198 @@ async fn pre_quantized_import_requires_the_operator_to_accept_it() {
     server.abort();
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn split_across_machines_plans_stages_and_surfaces_insufficient_cluster_memory() {
+    use kadmium_core::{NodeId, NodeTrustTier};
+    use kadmium_data::checkpoint::placement::{
+        InspectedCheckpointProfile, MachineMemoryBudget, PlanCheckpointRequest,
+        plan_inspected_checkpoint_with_budgets,
+    };
+    use std::collections::BTreeSet;
+
+    let root = std::env::temp_dir().join(format!("condenser-split-flow-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let source = root.join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(
+        source.join("config.json"),
+        serde_json::json!({
+            "architectures": ["LlamaForCausalLM"],
+            "vocab_size": 16,
+            "hidden_size": 8,
+            "intermediate_size": 16,
+            "num_hidden_layers": 4,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 2,
+            "rms_norm_eps": 1e-5,
+            "max_position_embeddings": 64,
+            "rope_theta": 10000.0,
+            "tie_word_embeddings": false,
+            "hidden_act": "silu"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(source.join("tokenizer.json"), "{}").unwrap();
+    let mut specs: Vec<(String, Vec<usize>)> = vec![
+        ("model.embed_tokens.weight".into(), vec![16, 8]),
+        ("model.norm.weight".into(), vec![8]),
+        ("lm_head.weight".into(), vec![16, 8]),
+    ];
+    for layer in 0..4 {
+        let p = format!("model.layers.{layer}.");
+        specs.push((format!("{p}input_layernorm.weight"), vec![8]));
+        specs.push((format!("{p}post_attention_layernorm.weight"), vec![8]));
+        specs.push((format!("{p}self_attn.q_proj.weight"), vec![8, 8]));
+        specs.push((format!("{p}self_attn.k_proj.weight"), vec![8, 8]));
+        specs.push((format!("{p}self_attn.v_proj.weight"), vec![8, 8]));
+        specs.push((format!("{p}self_attn.o_proj.weight"), vec![8, 8]));
+        specs.push((format!("{p}mlp.gate_proj.weight"), vec![16, 8]));
+        specs.push((format!("{p}mlp.up_proj.weight"), vec![16, 8]));
+        specs.push((format!("{p}mlp.down_proj.weight"), vec![8, 16]));
+    }
+    let payloads: Vec<Vec<u8>> = specs
+        .iter()
+        .map(|(_, shape)| vec![0u8; shape.iter().product::<usize>() * 2])
+        .collect();
+    let entries: Vec<(&str, &str, Vec<usize>, &[u8])> = specs
+        .iter()
+        .zip(payloads.iter())
+        .map(|((name, shape), bytes)| (name.as_str(), "BF16", shape.clone(), bytes.as_slice()))
+        .collect();
+    std::fs::write(
+        source.join("model.safetensors"),
+        SafetensorsToKtbTranscoder::build_safetensors_bytes(&entries),
+    )
+    .unwrap();
+
+    let reject_budget = Arc::new(AtomicBool::new(false));
+    let reject_for_coordinator = reject_budget.clone();
+    let coordinator = Router::new().route(
+        "/api/v1/checkpoints/placement",
+        post(
+            move |headers: axum::http::HeaderMap, Json(req): Json<PlanCheckpointRequest>| {
+                let reject = reject_for_coordinator.clone();
+                async move {
+                    assert_eq!(
+                        headers.get("authorization").and_then(|v| v.to_str().ok()),
+                        Some("Bearer split-secret")
+                    );
+                    let profile = req.profile.expect("profile must be supplied");
+                    let inspected = InspectedCheckpointProfile {
+                        checkpoint_id: req.checkpoint_id,
+                        checkpoint_name: req.checkpoint_name.unwrap_or_else(|| "source".into()),
+                        architecture: req
+                            .architecture
+                            .unwrap_or_else(|| "LlamaForCausalLM".into()),
+                        source_format: req.source_format.unwrap_or_else(|| "safetensors".into()),
+                        profile: profile.clone(),
+                    };
+                    let per_layer = profile.layer_weight_bytes[0] + profile.kv_bytes_per_layer;
+                    let s0 = profile.embedding_bytes + 2 * per_layer;
+                    let s1 = 2 * per_layer + profile.final_norm_bytes + profile.lm_head_bytes;
+                    let mut m0 = MachineMemoryBudget::new(
+                        NodeId("node-a".into()),
+                        s0,
+                        NodeTrustTier::TrustedCore,
+                    );
+                    m0.hostname = "machine-alpha".into();
+                    let mut m1 = MachineMemoryBudget::new(
+                        NodeId("node-b".into()),
+                        s1,
+                        NodeTrustTier::TrustedCore,
+                    );
+                    m1.hostname = "machine-beta".into();
+                    let budgets = if reject.load(Ordering::Relaxed) {
+                        vec![m0]
+                    } else {
+                        vec![m0, m1]
+                    };
+                    let mut online = BTreeSet::new();
+                    online.insert("node-a".to_string());
+                    match plan_inspected_checkpoint_with_budgets(&inspected, &budgets, &online) {
+                        Ok(view) => (StatusCode::OK, Json(serde_json::to_value(view).unwrap())),
+                        Err(err) => (
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            Json(json!({ "error": err.to_string() })),
+                        ),
+                    }
+                }
+            },
+        ),
+    );
+    let coord_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let coord_url = format!("http://{}", coord_listener.local_addr().unwrap());
+    let coord_task = tokio::spawn(async move {
+        axum::serve(coord_listener, coordinator).await.unwrap();
+    });
+
+    let (addr, server) = bind(ServerOptions {
+        port: 0,
+        model_library: root.join("library"),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let server_task = tokio::spawn(server);
+    let client = reqwest::Client::new();
+    let base = format!("http://{addr}");
+
+    let imported: Value = client
+        .post(format!("{base}/api/v1/checkpoints/import"))
+        .json(&json!({ "source_path": &source }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = imported["id"].as_str().unwrap();
+
+    let resp = client
+        .post(format!("{base}/api/v1/checkpoints/split"))
+        .json(&json!({
+            "checkpoint_id": id,
+            "endpoint": &coord_url,
+            "api_key": "split-secret"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let view: Value = resp.json().await.unwrap();
+    assert_eq!(view["is_split"], true);
+    assert_eq!(view["context_length"], 64);
+    assert_eq!(view["stages"].as_array().unwrap().len(), 2);
+    assert_eq!(view["stages"][0]["hostname"], "machine-alpha");
+    assert_eq!(view["stages"][0]["start_layer"], 0);
+    assert_eq!(view["stages"][0]["end_layer"], 2);
+    assert_eq!(view["stages"][0]["embedding"], true);
+    assert_eq!(view["stages"][1]["hostname"], "machine-beta");
+    assert_eq!(view["stages"][1]["start_layer"], 2);
+    assert_eq!(view["stages"][1]["end_layer"], 4);
+    assert_eq!(view["stages"][1]["head"], true);
+
+    reject_budget.store(true, Ordering::Relaxed);
+    let failed = client
+        .post(format!("{base}/api/v1/checkpoints/split"))
+        .json(&json!({
+            "checkpoint_id": id,
+            "endpoint": &coord_url,
+            "api_key": "split-secret"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(failed.status(), 422);
+    let text = failed.text().await.unwrap();
+    assert!(
+        text.contains("refusing to shorten the context or use a smaller model"),
+        "{text}"
+    );
+
+    server_task.abort();
+    coord_task.abort();
+    let _ = std::fs::remove_dir_all(root);
+}

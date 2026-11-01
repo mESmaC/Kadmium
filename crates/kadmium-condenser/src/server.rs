@@ -165,6 +165,10 @@ fn router(state: ServerState) -> Router {
         )
         .route("/api/v1/checkpoints/load", post(crate::local_models::load))
         .route(
+            "/api/v1/checkpoints/split",
+            post(crate::local_models::split),
+        )
+        .route(
             "/api/v1/checkpoints/transport",
             post(crate::model_transport::transport),
         )

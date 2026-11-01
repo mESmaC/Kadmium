@@ -1725,24 +1725,26 @@
 
   function renderModelSteps() {
     const selected = selectedCheckpoint();
-    const running = state.localModels.loaded || (state.localModels.cloud && state.localModels.cloud.state === 'ready');
+    const running = state.localModels.loaded || state.localModels.splitPlan || (state.localModels.cloud && state.localModels.cloud.state === 'ready');
     setStep('step-choose', selected || $('checkpoint-path').value.trim() ? 'done' : 'current');
     setStep('step-prepare', selected ? 'done' : ($('checkpoint-path').value.trim() ? 'current' : ''));
     setStep('step-run', running ? 'done' : (selected ? 'current' : ''));
   }
 
   function setDestination(value) {
-    const cloud = value === 'cloud';
-    $('destination-cloud').checked = cloud;
-    $('destination-local').checked = !cloud;
-    $('destination-local-panel').hidden = cloud;
-    $('destination-cloud-panel').hidden = !cloud;
+    const mode = value === 'cloud' ? 'cloud' : value === 'split' ? 'split' : 'local';
+    $('destination-local').checked = mode === 'local';
+    $('destination-split').checked = mode === 'split';
+    $('destination-cloud').checked = mode === 'cloud';
+    $('destination-local-panel').hidden = mode !== 'local';
+    $('destination-split-panel').hidden = mode !== 'split';
+    $('destination-cloud-panel').hidden = mode !== 'cloud';
   }
 
   function openModelLibrary(destination) {
     closeLayer('settings');
     setView('models');
-    if (destination === 'cloud') setDestination('cloud');
+    if (destination === 'cloud' || destination === 'split' || destination === 'local') setDestination(destination);
     refreshCheckpoints();
     $('checkpoint-path').focus({ preventScroll: true });
   }
@@ -1751,12 +1753,118 @@
     const busy = state.localModels.busy;
     const cloud = state.localModels.cloud;
     const sending = cloud && ['preparing', 'uploading', 'verifying', 'loading'].includes(cloud.state);
-    ['checkpoint-path', 'checkpoint-working-directory', 'checkpoint-accept-quantized', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded', 'cloud-endpoint', 'cloud-key', 'cloud-context'].forEach(id => { $(id).disabled = busy || sending; });
+    ['checkpoint-path', 'checkpoint-working-directory', 'checkpoint-accept-quantized', 'checkpoint-import', 'checkpoint-select', 'checkpoint-refresh', 'checkpoint-backend', 'checkpoint-context', 'checkpoint-browse', 'checkpoint-browse-folder', 'checkpoint-embedded', 'split-endpoint', 'split-key', 'cloud-endpoint', 'cloud-key', 'cloud-context'].forEach(id => { $(id).disabled = busy || sending; });
     $('checkpoint-load').disabled = busy || sending || !$('checkpoint-select').value;
     $('checkpoint-use').disabled = busy || state.busy || !state.localModels.loaded;
+    $('split-plan').disabled = busy || sending || !$('checkpoint-select').value;
     $('cloud-send').disabled = busy || sending || !$('checkpoint-select').value;
     $('cloud-use').disabled = busy || state.busy || !(cloud && cloud.state === 'ready' && cloud.checkpoint_id === $('checkpoint-select').value);
     renderModelSteps();
+  }
+
+  function renderSplitPlan(plan) {
+    const wrap = $('split-results');
+    const facts = $('split-facts');
+    const stages = $('split-stages');
+    facts.replaceChildren();
+    stages.replaceChildren();
+    if (!plan) {
+      wrap.hidden = true;
+      return;
+    }
+    wrap.hidden = false;
+    [
+      ['Architecture', plan.architecture],
+      ['Layers', String(plan.num_layers)],
+      ['Full context', formatTokens(plan.context_length)],
+      ['Machines holding model', plan.machine_count + (plan.machine_count === 1 ? ' machine (whole model)' : ' machines (split)') + ' of ' + plan.eligible_machine_count + ' eligible'],
+      ['Weights', formatBytes(plan.total_weight_bytes)],
+      ['Full-context KV cache', formatBytes(plan.total_kv_bytes)],
+      ['Total resident memory', formatBytes(plan.total_bytes)]
+    ].forEach(([key, value]) => {
+      const row = element('div');
+      row.append(element('dt', '', key), element('dd', '', value));
+      facts.append(row);
+    });
+    const heading = element('h3', 'split-stages-title', 'Which machine holds what');
+    stages.append(heading);
+    plan.stages.forEach(stage => {
+      const card = element('article', 'split-stage-card');
+      card.dataset.stageIndex = String(stage.stage_index);
+      const head = element('div', 'split-stage-head');
+      const titleWrap = element('div', 'split-stage-title');
+      titleWrap.append(
+        element('span', 'k-pill premium', 'Stage ' + stage.stage_index),
+        element('strong', 'split-stage-host', stage.hostname),
+        element('span', 'code-sm muted', 'Layers ' + stage.start_layer + '..' + stage.end_layer + ' (' + stage.layer_count + (stage.layer_count === 1 ? ' layer' : ' layers') + ')')
+      );
+      const badges = element('div', 'split-stage-badges');
+      badges.append(
+        element('span', 'k-pill ' + (stage.trust_tier === 'TrustedCore' ? 'ok' : 'warn'), stage.trust_tier),
+        element('span', 'k-pill', stage.residency_tier),
+        element('span', 'k-pill ' + (stage.online ? 'ok' : ''), stage.online ? 'Online worker' : 'Cluster node')
+      );
+      if (stage.requires_approval) badges.append(element('span', 'k-pill warn', 'Requires approval'));
+      head.append(titleWrap, badges);
+      card.append(head);
+
+      const holdingsList = element('ul', 'split-holdings');
+      (stage.holdings || []).forEach(item => {
+        holdingsList.append(element('li', '', item));
+      });
+      card.append(holdingsList);
+
+      const mem = element('dl', 'model-facts split-stage-facts');
+      const usedPct = stage.capacity_bytes ? Math.min(100, Math.round(stage.total_bytes / stage.capacity_bytes * 100)) : 100;
+      [
+        ['Weights held', formatBytes(stage.weight_bytes)],
+        ['Full-context KV cache', formatBytes(stage.kv_bytes)],
+        ['Resident total', formatBytes(stage.total_bytes) + ' of ' + formatBytes(stage.capacity_bytes) + ' (' + usedPct + '% used · ' + formatBytes(stage.free_bytes) + ' free)']
+      ].forEach(([k, v]) => {
+        const r = element('div');
+        r.append(element('dt', '', k), element('dd', '', v));
+        mem.append(r);
+      });
+      card.append(mem);
+
+      const bar = element('div', 'k-progress');
+      bar.style.setProperty('--value', usedPct + '%');
+      bar.setAttribute('role', 'progressbar');
+      bar.setAttribute('aria-label', stage.hostname + ' resident memory usage');
+      bar.setAttribute('aria-valuemin', '0');
+      bar.setAttribute('aria-valuemax', '100');
+      bar.setAttribute('aria-valuenow', String(usedPct));
+      bar.append(element('span'));
+      card.append(bar);
+      stages.append(card);
+    });
+  }
+
+  async function splitAcrossMachines() {
+    if (state.localModels.busy || !$('checkpoint-select').value) return;
+    if (!$('split-endpoint').reportValidity()) return;
+    state.localModels.busy = true;
+    state.localModels.splitPlan = null;
+    renderSplitPlan(null);
+    checkpointControls();
+    $('split-status').classList.remove('error');
+    $('split-status').textContent = 'Planning layer placement across your machines using real tensor sizes and the full native context KV cache…';
+    try {
+      const plan = await postJson('/api/v1/checkpoints/split', {
+        checkpoint_id: $('checkpoint-select').value,
+        endpoint: $('split-endpoint').value.trim(),
+        api_key: $('split-key').value || null
+      });
+      state.localModels.splitPlan = plan;
+      renderSplitPlan(plan);
+      $('split-status').textContent = (plan.is_split ? 'Split across ' + plan.machine_count + ' machines' : 'Placed on 1 machine') + ' at full context (' + formatTokens(plan.context_length) + ') · ' + formatBytes(plan.total_weight_bytes) + ' weights + ' + formatBytes(plan.total_kv_bytes) + ' full-context KV cache.';
+    } catch (error) {
+      $('split-status').classList.add('error');
+      $('split-status').textContent = error.message;
+    } finally {
+      state.localModels.busy = false;
+      checkpointControls();
+    }
   }
 
   function preQuantizedLabel(source) {
@@ -2630,8 +2738,11 @@
     $('settings-local-model').addEventListener('click', () => openModelLibrary());
     $('compute-open-models').addEventListener('click', () => openModelLibrary());
     $('destination-local').addEventListener('change', () => setDestination('local'));
+    $('destination-split').addEventListener('change', () => setDestination('split'));
     $('destination-cloud').addEventListener('change', () => setDestination('cloud'));
     $('checkpoint-path').addEventListener('input', renderModelSteps);
+    $('split-plan').addEventListener('click', splitAcrossMachines);
+    $('split-endpoint').addEventListener('input', () => { state.localModels.splitPlan = null; renderSplitPlan(null); checkpointControls(); });
     $('cloud-context').addEventListener('input', () => contextTradeoff('cloud-context', 'cloud-context-hint'));
     $('cloud-send').addEventListener('click', sendToCloud);
     $('cloud-use').addEventListener('click', useCloud);
@@ -2660,7 +2771,7 @@
     }
     $('checkpoint-context').addEventListener('input', () => { state.localModels.loaded = null; contextTradeoff('checkpoint-context', 'checkpoint-context-hint'); checkpointControls(); $('checkpoint-load-status').textContent = 'Context changed. Load again to apply it.'; });
     $('checkpoint-refresh').addEventListener('click', () => refreshCheckpoints());
-    $('checkpoint-select').addEventListener('change', () => { state.localModels.loaded = null; $('checkpoint-load-status').textContent = 'Load this model before using it in a task.'; renderCheckpoint(); });
+    $('checkpoint-select').addEventListener('change', () => { state.localModels.loaded = null; state.localModels.splitPlan = null; renderSplitPlan(null); $('split-status').classList.remove('error'); $('split-status').textContent = 'Select Split across my machines to see which machine holds which layers.'; $('checkpoint-load-status').textContent = 'Load this model before using it in a task.'; renderCheckpoint(); });
     $('checkpoint-backend').addEventListener('input', () => { state.localModels.loaded = null; checkpointControls(); $('checkpoint-load-status').textContent = 'Address changed. Load the model at this address before using it.'; });
     $('checkpoint-load').addEventListener('click', loadCheckpoint);
     $('checkpoint-use').addEventListener('click', useCheckpoint);
@@ -2956,8 +3067,13 @@
       $('return-kadmium').hidden = false;
       $('return-kadmium').href = window.__KADMIUM_DESKTOP__ ? '/companion#models' : '/#/models';
       $('compute-url').value = location.origin;
+      $('split-endpoint').value = location.origin;
     }
-    const routeHash = () => { if (location.hash === '#models' || location.hash === '#models-cloud') openModelLibrary(location.hash === '#models-cloud' ? 'cloud' : 'local'); };
+    const routeHash = () => {
+      if (location.hash === '#models' || location.hash === '#models-split' || location.hash === '#models-cloud') {
+        openModelLibrary(location.hash === '#models-cloud' ? 'cloud' : location.hash === '#models-split' ? 'split' : 'local');
+      }
+    };
     routeHash();
     window.addEventListener('hashchange', routeHash);
     refreshCheckpoints();
