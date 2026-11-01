@@ -450,32 +450,99 @@ impl DecentralizedStoragePoolEngine {
         }
     }
 
+    /// Computes available capacity (`min(offer, hardware)`) and pledged bucket capacity in tenths
+    /// of a GiB, capped at available capacity and returning `(0, 0)` when `offer` or `hardware` is `0`
+    /// (`Kadmium.StoragePool.medium_respects_offer` — **Proved (model)**).
+    pub fn compute_medium_availability_and_pledge_tenths(
+        offer_tenths: u64,
+        hardware_tenths: u64,
+        pct: u64,
+        floor_tenths: u64,
+    ) -> (u64, u64) {
+        let avail = offer_tenths.min(hardware_tenths);
+        let pledged = if avail == 0 {
+            0
+        } else {
+            ((avail.saturating_mul(pct) / 100).max(floor_tenths)).min(avail)
+        };
+        (avail, pledged)
+    }
+
+    /// Computes `(available_capacity_gb, pledged_bucket_gb)` for a storage medium tier,
+    /// guaranteeing `available_capacity_gb <= min(offer_gb, hardware_gb)` and
+    /// `pledged_bucket_gb <= available_capacity_gb <= offer_gb`, with `0.0` pledged when
+    /// `offer_gb <= 0.0` (`Kadmium.StoragePool.medium_respects_offer` — **Proved (model)**).
+    pub fn compute_medium_availability_and_pledge(
+        offer_gb: f64,
+        hardware_gb: f64,
+        pledge_ratio: f64,
+        min_pledge_gb: f64,
+    ) -> (f64, f64) {
+        let offer_clamped = offer_gb.max(0.0);
+        let hw_clamped = hardware_gb.max(0.0);
+        let avail_raw = offer_clamped.min(hw_clamped);
+        let available_capacity_gb = round_1(avail_raw).min(offer_clamped).min(hw_clamped);
+        let pledged_bucket_gb = if available_capacity_gb <= 0.0 {
+            0.0
+        } else {
+            let raw_pledge =
+                (available_capacity_gb * pledge_ratio.clamp(0.0, 1.0)).max(min_pledge_gb.max(0.0));
+            round_1(raw_pledge.min(available_capacity_gb)).min(available_capacity_gb)
+        };
+        (available_capacity_gb, pledged_bucket_gb)
+    }
+
     /// Discovers and profiles **all available storage mediums** on a single `HardwareNode`,
-    /// taking into account live `PoliteState` resource offers, memory hierarchy bandwidths,
-    /// and persistent flash/disk tiers.
+    /// taking into account the node's `PoliteState` and default `ResourceOffer`, memory hierarchy
+    /// bandwidths, and persistent flash/disk tiers (`Kadmium.StoragePool.medium_respects_offer` — **Proved (model)**).
     pub fn inspect_node_storage_mediums(
         node: &HardwareNode,
         apply_synthetic_floors: bool,
     ) -> Vec<StorageMediumSlice> {
+        Self::inspect_node_storage_mediums_with_offer(node, None, apply_synthetic_floors)
+    }
+
+    /// Discovers and profiles **all available storage mediums** on a single `HardwareNode`,
+    /// bounded by the owner's `explicit_offer` (when provided, clamped to the machine and scaled
+    /// under `node.polite_state`) or `node.offered_now()` when `None`
+    /// (`Kadmium.StoragePool.medium_respects_offer` — **Proved (model)**).
+    pub fn inspect_node_storage_mediums_with_offer(
+        node: &HardwareNode,
+        explicit_offer: Option<&kadmium_core::ResourceOffer>,
+        apply_synthetic_floors: bool,
+    ) -> Vec<StorageMediumSlice> {
         let mut mediums = Vec::with_capacity(4);
-        let offered = node.offered_now();
+        let offered = match explicit_offer {
+            Some(offer) => offer
+                .clone()
+                .clamped_to(node)
+                .under_polite_state(node, node.polite_state),
+            None => node.offered_now(),
+        };
         let fast_total = node.memory.fast_accelerator_memory_gb();
 
         // 1. Discrete GPU VRAM Hot Buffer
         if node.memory.vram_gb > 0.0 {
-            let vram_avail = if fast_total > 0.0 {
-                offered.fast_memory_gb * (node.memory.vram_gb / fast_total)
+            let hw_vram = node.memory.vram_gb.max(0.0);
+            let offered_vram = if fast_total > 0.0 {
+                (offered.fast_memory_gb.max(0.0) * (hw_vram / fast_total)).min(hw_vram)
             } else {
                 0.0
             };
-            let pledged = (vram_avail * 0.12).max(if apply_synthetic_floors { 0.5 } else { 0.1 });
+            let min_pledge = if apply_synthetic_floors { 0.5 } else { 0.1 };
+            let (vram_avail, pledged) = Self::compute_medium_availability_and_pledge(
+                offered_vram,
+                hw_vram,
+                0.12,
+                min_pledge,
+            );
             mediums.push(StorageMediumSlice {
                 medium_kind: StorageMediumKind::VramHotBuffer,
                 medium_label: StorageMediumKind::VramHotBuffer.label().to_string(),
                 storage_tier: PoolStorageTier::Tier0WireRamCarousel,
-                total_capacity_gb: round_1(node.memory.vram_gb),
-                available_capacity_gb: round_1(vram_avail),
-                pledged_bucket_gb: round_1(pledged.min(node.memory.vram_gb)),
+                total_capacity_gb: round_1(hw_vram),
+                available_capacity_gb: vram_avail,
+                pledged_bucket_gb: pledged,
                 sustained_bandwidth_gbps: round_1(node.memory.vram_bw_gbps.max(64.0)),
                 typical_latency_us: StorageMediumKind::VramHotBuffer.typical_latency_us(),
                 optimal_usage: StorageMediumKind::VramHotBuffer.optimal_usage().to_string(),
@@ -484,19 +551,22 @@ impl DecentralizedStoragePoolEngine {
 
         // 2. Unified Memory Buffer (Apple Silicon / Tegra / APU / Snapdragon LPDDR)
         if node.memory.unified_mem_gb > 0.0 {
-            let uma_avail = if fast_total > 0.0 {
-                offered.fast_memory_gb * (node.memory.unified_mem_gb / fast_total)
+            let hw_uma = node.memory.unified_mem_gb.max(0.0);
+            let offered_uma = if fast_total > 0.0 {
+                (offered.fast_memory_gb.max(0.0) * (hw_uma / fast_total)).min(hw_uma)
             } else {
                 0.0
             };
-            let pledged = (uma_avail * 0.15).max(if apply_synthetic_floors { 1.0 } else { 0.15 });
+            let min_pledge = if apply_synthetic_floors { 1.0 } else { 0.15 };
+            let (uma_avail, pledged) =
+                Self::compute_medium_availability_and_pledge(offered_uma, hw_uma, 0.15, min_pledge);
             mediums.push(StorageMediumSlice {
                 medium_kind: StorageMediumKind::UnifiedMemoryBuffer,
                 medium_label: StorageMediumKind::UnifiedMemoryBuffer.label().to_string(),
                 storage_tier: PoolStorageTier::Tier0WireRamCarousel,
-                total_capacity_gb: round_1(node.memory.unified_mem_gb),
-                available_capacity_gb: round_1(uma_avail),
-                pledged_bucket_gb: round_1(pledged.min(node.memory.unified_mem_gb)),
+                total_capacity_gb: round_1(hw_uma),
+                available_capacity_gb: uma_avail,
+                pledged_bucket_gb: pledged,
                 sustained_bandwidth_gbps: round_1(node.memory.unified_mem_bw_gbps.max(50.0)),
                 typical_latency_us: StorageMediumKind::UnifiedMemoryBuffer.typical_latency_us(),
                 optimal_usage: StorageMediumKind::UnifiedMemoryBuffer
@@ -507,19 +577,18 @@ impl DecentralizedStoragePoolEngine {
 
         // 3. Host System DDR4/DDR5 RAM Carousel & Warm Shard Cache
         if node.memory.system_ram_gb > 0.0 {
-            let ram_avail = offered.system_ram_gb.max(node.memory.system_ram_gb * 0.25);
-            let pledged = (node.memory.system_ram_gb * 0.20).max(if apply_synthetic_floors {
-                1.5
-            } else {
-                0.2
-            });
+            let hw_ram = node.memory.system_ram_gb.max(0.0);
+            let offered_ram = offered.system_ram_gb.max(0.0);
+            let min_pledge = if apply_synthetic_floors { 1.5 } else { 0.2 };
+            let (ram_avail, pledged) =
+                Self::compute_medium_availability_and_pledge(offered_ram, hw_ram, 0.20, min_pledge);
             mediums.push(StorageMediumSlice {
                 medium_kind: StorageMediumKind::SystemRamCarousel,
                 medium_label: StorageMediumKind::SystemRamCarousel.label().to_string(),
                 storage_tier: PoolStorageTier::Tier0WireRamCarousel,
-                total_capacity_gb: round_1(node.memory.system_ram_gb),
-                available_capacity_gb: round_1(ram_avail),
-                pledged_bucket_gb: round_1(pledged.min(node.memory.system_ram_gb)),
+                total_capacity_gb: round_1(hw_ram),
+                available_capacity_gb: ram_avail,
+                pledged_bucket_gb: pledged,
                 sustained_bandwidth_gbps: round_1(node.memory.system_ram_bw_gbps.max(25.0)),
                 typical_latency_us: StorageMediumKind::SystemRamCarousel.typical_latency_us(),
                 optimal_usage: StorageMediumKind::SystemRamCarousel
@@ -530,16 +599,18 @@ impl DecentralizedStoragePoolEngine {
 
         // 4. Persistent Local Storage Medium (PCIe NVMe SSD, UFS/eMMC Flash, or NAS ZFS Vault)
         let persistent_kind = Self::classify_persistent_medium(node);
-        let raw_disk_total = if apply_synthetic_floors {
-            node.memory.nvme_cache_gb.max(150.0)
+        let offered_disk = offered.nvme_gb.max(0.0);
+        let (hw_disk, min_disk_pledge) = if apply_synthetic_floors {
+            (node.memory.nvme_cache_gb.max(150.0), 128.0)
         } else {
-            node.memory.nvme_cache_gb.max(4.7)
+            (node.memory.nvme_cache_gb.max(0.0), 4.0)
         };
-        let pledged_disk = if apply_synthetic_floors {
-            (node.memory.nvme_cache_gb * 0.85).max(128.0)
-        } else {
-            (node.memory.nvme_cache_gb * 0.85).max(4.0)
-        };
+        let (disk_avail, pledged_disk) = Self::compute_medium_availability_and_pledge(
+            offered_disk,
+            hw_disk,
+            0.85,
+            min_disk_pledge,
+        );
         let disk_bw = if apply_synthetic_floors {
             node.memory.nvme_read_bw_gbps.max(1.5)
         } else {
@@ -549,9 +620,9 @@ impl DecentralizedStoragePoolEngine {
             medium_kind: persistent_kind,
             medium_label: persistent_kind.label().to_string(),
             storage_tier: persistent_kind.default_tier(),
-            total_capacity_gb: round_1(raw_disk_total),
-            available_capacity_gb: round_1(offered.nvme_gb.max(pledged_disk)),
-            pledged_bucket_gb: round_1(pledged_disk),
+            total_capacity_gb: round_1(hw_disk),
+            available_capacity_gb: disk_avail,
+            pledged_bucket_gb: pledged_disk,
             sustained_bandwidth_gbps: round_1(disk_bw),
             typical_latency_us: persistent_kind.typical_latency_us(),
             optimal_usage: persistent_kind.optimal_usage().to_string(),
@@ -567,11 +638,31 @@ impl DecentralizedStoragePoolEngine {
         anchors: &[GroundingAnchorTarget],
         apply_synthetic_floors: bool,
     ) -> Vec<ClusterStorageMediumSummary> {
+        Self::summarize_cluster_storage_mediums_with_offers(
+            nodes,
+            &std::collections::BTreeMap::new(),
+            anchors,
+            apply_synthetic_floors,
+        )
+    }
+
+    /// Aggregates all available storage mediums across `nodes` bounded by each node's explicit
+    /// owner `ResourceOffer` in `offers` (or `node.offered_now()` when absent).
+    pub fn summarize_cluster_storage_mediums_with_offers(
+        nodes: &[HardwareNode],
+        offers: &std::collections::BTreeMap<String, kadmium_core::ResourceOffer>,
+        anchors: &[GroundingAnchorTarget],
+        apply_synthetic_floors: bool,
+    ) -> Vec<ClusterStorageMediumSummary> {
         use std::collections::BTreeMap;
         let mut by_kind: BTreeMap<StorageMediumKind, (usize, f64, f64, f64, f64)> = BTreeMap::new();
 
         for nd in nodes {
-            let slices = Self::inspect_node_storage_mediums(nd, apply_synthetic_floors);
+            let slices = Self::inspect_node_storage_mediums_with_offer(
+                nd,
+                offers.get(&nd.id.0),
+                apply_synthetic_floors,
+            );
             for s in slices {
                 let entry = by_kind
                     .entry(s.medium_kind)
@@ -636,6 +727,11 @@ impl DecentralizedStoragePoolEngine {
         let mut scored: Vec<(usize, f64)> = nodes
             .iter()
             .enumerate()
+            .filter(|(_, nd)| {
+                nd.pledged_disk_gb > 0.0
+                    || nd.pledged_wire_ram_gb > 0.0
+                    || nd.storage_mediums.iter().any(|m| m.pledged_bucket_gb > 0.0)
+            })
             .map(|(idx, nd)| {
                 let key = format!("{}#blk{}@{}", object_uri, superblock_idx, nd.node_id);
                 let mut h = 0xcbf2_9ce4_8422_2325u64;
@@ -1012,6 +1108,33 @@ impl DecentralizedStoragePoolEngine {
         merkle_root_fnv64: Option<u64>,
         nodes: &[HardwareNode],
     ) -> Result<PoolBucketObjectEntry, String> {
+        Self::create_bucket_object_with_offers(
+            object_uri,
+            display_name,
+            object_kind,
+            logical_size_gb,
+            data_shards_k,
+            parity_shards_m,
+            merkle_root_fnv64,
+            nodes,
+            &std::collections::BTreeMap::new(),
+        )
+    }
+
+    /// Creates a content-addressed `PoolBucketObjectEntry` inside `kdm://pool-bucket/...`
+    /// bounded by each node's explicit owner `ResourceOffer` in `offers` (or `node.offered_now()` when absent).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_bucket_object_with_offers(
+        object_uri: &str,
+        display_name: &str,
+        object_kind: &str,
+        logical_size_gb: f64,
+        data_shards_k: usize,
+        parity_shards_m: usize,
+        merkle_root_fnv64: Option<u64>,
+        nodes: &[HardwareNode],
+        offers: &std::collections::BTreeMap<String, kadmium_core::ResourceOffer>,
+    ) -> Result<PoolBucketObjectEntry, String> {
         let total_shards = Self::validate_shard_counts(data_shards_k, parity_shards_m)?;
         if !logical_size_gb.is_finite() || logical_size_gb <= 0.0 {
             return Err("logical_size_gb must be finite and positive".into());
@@ -1048,17 +1171,27 @@ impl DecentralizedStoragePoolEngine {
         let mut contributions = Vec::with_capacity(nodes.len());
         let mut total_seed_uplink_gbps = 0.0f64;
         for nd in nodes {
-            let pledged_disk = (nd.memory.nvme_cache_gb * 0.85).max(4.0);
+            let mediums =
+                Self::inspect_node_storage_mediums_with_offer(nd, offers.get(&nd.id.0), false);
+            let wire_ram: f64 = mediums
+                .iter()
+                .filter(|m| m.storage_tier == PoolStorageTier::Tier0WireRamCarousel)
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
+            let pledged_disk: f64 = mediums
+                .iter()
+                .filter(|m| m.storage_tier != PoolStorageTier::Tier0WireRamCarousel)
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
             let uplink = nd.network_uplink_gbps.max(0.1);
             total_seed_uplink_gbps += uplink;
-            let mediums = Self::inspect_node_storage_mediums(nd, false);
             let primary_medium = Some(Self::classify_persistent_medium(nd));
             contributions.push(NodeStorageContribution {
                 node_id: nd.id.0.clone(),
                 hostname: nd.hostname.clone(),
                 device_kind: nd.device_kind,
-                pledged_wire_ram_gb: 1.0,
-                pledged_disk_gb: pledged_disk,
+                pledged_wire_ram_gb: round_1(wire_ram),
+                pledged_disk_gb: round_1(pledged_disk),
                 disk_read_bw_gbps: nd.memory.nvme_read_bw_gbps.max(0.05),
                 seed_uplink_gbps: uplink,
                 hosted_shard_count: 0,
@@ -1110,6 +1243,24 @@ impl DecentralizedStoragePoolEngine {
         custom_objects: &[PoolBucketObjectEntry],
         custom_anchors: &[GroundingAnchorTarget],
     ) -> DecentralizedStoragePoolReport {
+        Self::evaluate_live_cluster_bucket_with_offers(
+            nodes,
+            &std::collections::BTreeMap::new(),
+            imported_models,
+            custom_objects,
+            custom_anchors,
+        )
+    }
+
+    /// Evaluates the live session's Decentralized Pool Storage Bucket bounded by each node's
+    /// explicit owner `ResourceOffer` in `offers` (or `node.offered_now()` when absent).
+    pub fn evaluate_live_cluster_bucket_with_offers(
+        nodes: &[HardwareNode],
+        offers: &std::collections::BTreeMap<String, kadmium_core::ResourceOffer>,
+        imported_models: &[crate::ImportedModelManifest],
+        custom_objects: &[PoolBucketObjectEntry],
+        custom_anchors: &[GroundingAnchorTarget],
+    ) -> DecentralizedStoragePoolReport {
         let mut contributions = Vec::with_capacity(nodes.len());
         let mut total_fast_mem_gb = 0.0f64;
         let mut total_wire_ram_gb = 0.0f64;
@@ -1118,14 +1269,30 @@ impl DecentralizedStoragePoolEngine {
         let mut total_seed_uplink_gbps = 0.0f64;
 
         for nd in nodes {
-            let fast_slice = (nd.memory.fast_accelerator_memory_gb() * 0.12).max(0.0);
-            let raw_wire_ram =
-                (nd.memory.fast_accelerator_memory_gb() * 0.10) + (nd.memory.system_ram_gb * 0.20);
-            let wire_ram = raw_wire_ram.max(0.25);
-            let pledged_disk = (nd.memory.nvme_cache_gb * 0.85).max(4.0);
+            let mediums =
+                Self::inspect_node_storage_mediums_with_offer(nd, offers.get(&nd.id.0), false);
+            let fast_slice: f64 = mediums
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        m.medium_kind,
+                        StorageMediumKind::VramHotBuffer | StorageMediumKind::UnifiedMemoryBuffer
+                    )
+                })
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
+            let wire_ram: f64 = mediums
+                .iter()
+                .filter(|m| m.storage_tier == PoolStorageTier::Tier0WireRamCarousel)
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
+            let pledged_disk: f64 = mediums
+                .iter()
+                .filter(|m| m.storage_tier != PoolStorageTier::Tier0WireRamCarousel)
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
             let disk_bw = nd.memory.nvme_read_bw_gbps.max(0.05);
             let uplink = nd.network_uplink_gbps.max(0.1);
-            let mediums = Self::inspect_node_storage_mediums(nd, false);
             let primary_medium = Some(Self::classify_persistent_medium(nd));
 
             total_fast_mem_gb += fast_slice;
@@ -1138,8 +1305,8 @@ impl DecentralizedStoragePoolEngine {
                 node_id: nd.id.0.clone(),
                 hostname: nd.hostname.clone(),
                 device_kind: nd.device_kind,
-                pledged_wire_ram_gb: (wire_ram * 10.0).round() / 10.0,
-                pledged_disk_gb: (pledged_disk * 10.0).round() / 10.0,
+                pledged_wire_ram_gb: round_1(wire_ram),
+                pledged_disk_gb: round_1(pledged_disk),
                 disk_read_bw_gbps: (disk_bw * 10.0).round() / 10.0,
                 seed_uplink_gbps: (uplink * 10.0).round() / 10.0,
                 hosted_shard_count: 0,
@@ -1321,10 +1488,10 @@ impl DecentralizedStoragePoolEngine {
             pre_staged_on_wire_hit_rate_pct: 0.0,
         };
 
-        let distinct_nodes = nodes
+        let distinct_nodes = contributions
             .iter()
-            .filter(|n| n.memory.nvme_cache_gb > 0.0)
-            .map(|n| &n.id.0)
+            .filter(|c| c.pledged_disk_gb > 0.0 || c.pledged_wire_ram_gb > 0.0)
+            .map(|c| &c.node_id)
             .collect::<std::collections::BTreeSet<_>>()
             .len();
         let required = objects
@@ -1339,7 +1506,12 @@ impl DecentralizedStoragePoolEngine {
         } else {
             "Unverified: placement is modelled, with no stored-byte or independent anchor sync receipts. No node-loss tolerance is established.".to_string()
         };
-        let storage_mediums = Self::summarize_cluster_storage_mediums(nodes, custom_anchors, false);
+        let storage_mediums = Self::summarize_cluster_storage_mediums_with_offers(
+            nodes,
+            offers,
+            custom_anchors,
+            false,
+        );
         let scorecard = format!(
             "LIVE STORAGE PLACEMENT ESTIMATE: {} objects, {:.2} GiB across {} storage medium classes. {}",
             objects.len(),
@@ -1382,21 +1554,27 @@ impl DecentralizedStoragePoolEngine {
         let mut total_seed_uplink_gbps = 0.0f64;
 
         for nd in nodes {
-            // Each node pledges ~15% of its RAM/UMA to the Wire Carousel and 85% of its NVMe/UFS/SD cache to the Pool Bucket
-            let fast_slice = (nd.memory.fast_accelerator_memory_gb() * 0.12).max(0.0);
-            let raw_wire_ram =
-                (nd.memory.fast_accelerator_memory_gb() * 0.10) + (nd.memory.system_ram_gb * 0.20);
-            let wire_ram = if apply_synthetic_floors {
-                raw_wire_ram.max(2.0)
-            } else {
-                raw_wire_ram.max(0.25)
-            };
-            let raw_disk = nd.memory.nvme_cache_gb * 0.85;
-            let pledged_disk = if apply_synthetic_floors {
-                raw_disk.max(128.0)
-            } else {
-                raw_disk.max(4.0)
-            };
+            let mediums = Self::inspect_node_storage_mediums(nd, apply_synthetic_floors);
+            let fast_slice: f64 = mediums
+                .iter()
+                .filter(|m| {
+                    matches!(
+                        m.medium_kind,
+                        StorageMediumKind::VramHotBuffer | StorageMediumKind::UnifiedMemoryBuffer
+                    )
+                })
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
+            let wire_ram: f64 = mediums
+                .iter()
+                .filter(|m| m.storage_tier == PoolStorageTier::Tier0WireRamCarousel)
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
+            let pledged_disk: f64 = mediums
+                .iter()
+                .filter(|m| m.storage_tier != PoolStorageTier::Tier0WireRamCarousel)
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
             let disk_bw = if apply_synthetic_floors {
                 nd.memory.nvme_read_bw_gbps.max(1.5)
             } else {
@@ -1407,7 +1585,6 @@ impl DecentralizedStoragePoolEngine {
             } else {
                 nd.network_uplink_gbps.max(0.1)
             };
-            let mediums = Self::inspect_node_storage_mediums(nd, apply_synthetic_floors);
             let primary_medium = Some(Self::classify_persistent_medium(nd));
 
             total_fast_mem_gb += fast_slice;
@@ -2418,6 +2595,34 @@ impl BucketObjectStore {
         nodes: &[HardwareNode],
         coordinator_url: Option<&str>,
     ) -> Result<StoredBucketObjectReceipt, String> {
+        self.put_bytes_with_offers(
+            object_uri,
+            display_name,
+            object_kind,
+            payload,
+            data_shards_k,
+            parity_shards_m,
+            nodes,
+            &std::collections::BTreeMap::new(),
+            coordinator_url,
+        )
+    }
+
+    /// Encodes `payload` into `$k + m$` erasure-coded shards bounded by each node's explicit
+    /// `ResourceOffer` in `offers` (or `node.offered_now()` when absent).
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_bytes_with_offers(
+        &self,
+        object_uri: &str,
+        display_name: Option<&str>,
+        object_kind: Option<&str>,
+        payload: &[u8],
+        data_shards_k: usize,
+        parity_shards_m: usize,
+        nodes: &[HardwareNode],
+        offers: &std::collections::BTreeMap<String, kadmium_core::ResourceOffer>,
+        coordinator_url: Option<&str>,
+    ) -> Result<StoredBucketObjectReceipt, String> {
         let normalized_uri = DecentralizedStoragePoolEngine::normalize_bucket_uri(object_uri)?;
         let total_shards = DecentralizedStoragePoolEngine::validate_stored_shard_counts(
             data_shards_k,
@@ -2494,20 +2699,32 @@ impl BucketObjectStore {
         // Only model node placements over the actual `nodes` passed by the caller (never fall back to synthetic sample nodes).
         let mut contributions = Vec::with_capacity(nodes.len());
         for nd in nodes {
-            let pledged_disk = (nd.memory.nvme_cache_gb * 0.85).max(4.0);
+            let mediums = DecentralizedStoragePoolEngine::inspect_node_storage_mediums_with_offer(
+                nd,
+                offers.get(&nd.id.0),
+                false,
+            );
+            let wire_ram: f64 = mediums
+                .iter()
+                .filter(|m| m.storage_tier == PoolStorageTier::Tier0WireRamCarousel)
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
+            let pledged_disk: f64 = mediums
+                .iter()
+                .filter(|m| m.storage_tier != PoolStorageTier::Tier0WireRamCarousel)
+                .map(|m| m.pledged_bucket_gb)
+                .sum();
             let uplink = nd.network_uplink_gbps.max(0.1);
             contributions.push(NodeStorageContribution {
                 node_id: nd.id.0.clone(),
                 hostname: nd.hostname.clone(),
                 device_kind: nd.device_kind,
-                pledged_wire_ram_gb: 1.0,
-                pledged_disk_gb: pledged_disk,
+                pledged_wire_ram_gb: round_1(wire_ram),
+                pledged_disk_gb: round_1(pledged_disk),
                 disk_read_bw_gbps: nd.memory.nvme_read_bw_gbps.max(0.05),
                 seed_uplink_gbps: uplink,
                 hosted_shard_count: 0,
-                storage_mediums: DecentralizedStoragePoolEngine::inspect_node_storage_mediums(
-                    nd, false,
-                ),
+                storage_mediums: mediums,
                 primary_storage_medium: Some(
                     DecentralizedStoragePoolEngine::classify_persistent_medium(nd),
                 ),
@@ -3356,5 +3573,83 @@ mod tests {
                 .expect("delete succeeds")
         );
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_node_storage_mediums_strictly_bounded_by_owner_offer_and_draining_state() {
+        let mut nodes = sample_node_pool(4);
+        // Set node 0 to PoliteState::Draining (offered_now() == 0 across all mediums)
+        nodes[0].polite_state = kadmium_core::PoliteState::Draining;
+        let draining_slices =
+            DecentralizedStoragePoolEngine::inspect_node_storage_mediums(&nodes[0], true);
+        assert!(!draining_slices.is_empty());
+        for slice in &draining_slices {
+            assert_eq!(
+                slice.available_capacity_gb, 0.0,
+                "draining node medium {:?} must have 0.0 available_capacity_gb",
+                slice.medium_kind
+            );
+            assert_eq!(
+                slice.pledged_bucket_gb, 0.0,
+                "draining node medium {:?} must have 0.0 pledged_bucket_gb",
+                slice.medium_kind
+            );
+        }
+
+        // Set explicit custom ResourceOffer on node 1 with tight bounds
+        let custom_offer = kadmium_core::ResourceOffer {
+            fast_memory_gb: 2.0,
+            system_ram_gb: 4.0,
+            nvme_gb: 10.0,
+            reserved_ram_gb: 4.0,
+            slots: 1,
+            max_allocations: 1,
+            requires_approval: false,
+        };
+        let bounded_slices =
+            DecentralizedStoragePoolEngine::inspect_node_storage_mediums_with_offer(
+                &nodes[1],
+                Some(&custom_offer),
+                true,
+            );
+        for slice in &bounded_slices {
+            assert!(
+                slice.pledged_bucket_gb <= slice.available_capacity_gb,
+                "pledged_bucket_gb ({}) must never exceed available_capacity_gb ({})",
+                slice.pledged_bucket_gb,
+                slice.available_capacity_gb
+            );
+            match slice.medium_kind {
+                StorageMediumKind::VramHotBuffer | StorageMediumKind::UnifiedMemoryBuffer => {
+                    assert!(slice.available_capacity_gb <= custom_offer.fast_memory_gb);
+                }
+                StorageMediumKind::SystemRamCarousel => {
+                    assert!(slice.available_capacity_gb <= custom_offer.system_ram_gb);
+                }
+                _ => {
+                    assert!(slice.available_capacity_gb <= custom_offer.nvme_gb);
+                }
+            }
+        }
+
+        let mut offers = std::collections::BTreeMap::new();
+        offers.insert(nodes[1].id.0.clone(), custom_offer);
+        let live_report = DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
+            &nodes,
+            &offers,
+            &[],
+            &[],
+            &[],
+        );
+        // Node 0 is draining so only 3 distinct placement nodes have non-zero capacity
+        assert_eq!(live_report.distinct_placement_nodes, 3);
+        assert_eq!(
+            live_report.node_contributions_sample[0].pledged_wire_ram_gb,
+            0.0
+        );
+        assert_eq!(
+            live_report.node_contributions_sample[0].pledged_disk_gb,
+            0.0
+        );
     }
 }

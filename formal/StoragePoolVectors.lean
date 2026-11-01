@@ -50,6 +50,20 @@ def render : String := Id.run do
       let row := systematicCauchyRow sIdx k
       let rowStr := String.intercalate "," (row.map (fun b => toString b.toNat))
       out := out ++ s!"cauchy_row {k} {sIdx} {rowStr}\n"
+  let mediumCases : List (Nat × Nat × Nat × Nat) := [
+    (0, 1280, 20, 2),
+    (0, 20480, 85, 40),
+    (5, 240, 12, 1),
+    (10, 1280, 20, 2),
+    (20, 20480, 85, 40),
+    (240, 240, 12, 1),
+    (640, 1280, 20, 2),
+    (20480, 10240, 85, 40)
+  ]
+  for (offer, hw, pct, floor) in mediumCases do
+    let avail := mediumAvailable offer hw
+    let pledged := mediumPledged avail pct floor
+    out := out ++ s!"medium_pledge {offer} {hw} {pct} {floor} {avail} {pledged}\n"
   return out
 
 def main (args : List String) : IO UInt32 := do

@@ -1110,4 +1110,92 @@ async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeo
     assert_eq!(switched_q["model_id"], "llama-3.2-3b-instruct");
     assert_eq!(switched_q["is_uncompromised_maximum_quality"], true);
     assert_eq!(switched_q["effective_context_window_tokens"], 131_072);
+
+    // Unknown model IDs report Option::None ("backend-reported") rather than a synthetic 32,768 fallback
+    let mut unknown_spec = kadmium_core::ModelSpec::llama_3_2_3b_instruct();
+    unknown_spec.id = "custom-unknown-7b".into();
+    assert_eq!(unknown_spec.try_native_max_context_tokens(), None);
+    let mut unknown_limits = kadmium_gateway::ModelQualityLimits::for_model(&unknown_spec);
+    assert_eq!(unknown_limits.native_max_context_window_tokens, None);
+    assert_eq!(unknown_limits.native_max_input_tokens, None);
+    assert_eq!(unknown_limits.effective_context_window_tokens(), None);
+    assert_eq!(unknown_limits.effective_max_input_tokens(), None);
+    let unknown_report = unknown_limits.evaluate_tradeoffs(&unknown_spec);
+    assert!(unknown_report.is_uncompromised_maximum_quality);
+    assert_eq!(unknown_report.effective_context_window_tokens, None);
+    assert_eq!(unknown_report.effective_max_input_tokens, None);
+    assert_eq!(
+        unknown_report.tradeoffs[0].native_maximum,
+        "backend-reported"
+    );
+    assert_eq!(
+        unknown_report.tradeoffs[0].active_setting,
+        "backend-reported"
+    );
+    unknown_limits.user_override_context_window_tokens = Some(16_384);
+    unknown_limits.user_override_max_input_tokens = Some(8_192);
+    unknown_limits.sync_native_with_model(&unknown_spec);
+    assert_eq!(
+        unknown_limits.effective_context_window_tokens(),
+        Some(16_384)
+    );
+    assert_eq!(unknown_limits.effective_max_input_tokens(), Some(8_192));
+}
+
+#[tokio::test]
+async fn owner_resource_offers_and_draining_nodes_bound_bucket_mediums_and_persist() {
+    let dir = temp_dir("bucket-offer-bounds");
+    let state = Arc::new(Mutex::new({
+        let mut s = GatewayState::new();
+        s.persistent_state_dir = dir.clone();
+        s.nodes[0].polite_state = kadmium_core::PoliteState::Draining;
+        let custom_offer = kadmium_core::ResourceOffer {
+            fast_memory_gb: 1.5,
+            system_ram_gb: 3.0,
+            nvme_gb: 8.0,
+            reserved_ram_gb: 4.0,
+            slots: 1,
+            max_allocations: 1,
+            requires_approval: false,
+        };
+        let node1_id = s.nodes[1].id.0.clone();
+        s.grid_offers.insert(node1_id, custom_offer);
+        s.save_persistent_state().unwrap();
+        s
+    }));
+    let app = build_router(state.clone());
+
+    let (med_status, med_body) = request(
+        &app,
+        "GET",
+        "/api/v1/storage/pool-bucket/mediums",
+        json!(null),
+    )
+    .await;
+    assert_eq!(med_status, 200, "{med_body}");
+    let med_json: Value = serde_json::from_str(&med_body).unwrap();
+    let node_mediums = med_json["node_mediums"].as_array().unwrap();
+    // Node 0 is PoliteState::Draining -> every medium has 0.0 available and 0.0 pledged
+    for slice in node_mediums[0][2].as_array().unwrap() {
+        assert_eq!(slice["available_capacity_gb"].as_f64(), Some(0.0));
+        assert_eq!(slice["pledged_bucket_gb"].as_f64(), Some(0.0));
+    }
+    // Node 1 has custom ResourceOffer (fast_memory_gb=1.5, system_ram_gb=3.0, nvme_gb=8.0)
+    for slice in node_mediums[1][2].as_array().unwrap() {
+        let avail = slice["available_capacity_gb"].as_f64().unwrap();
+        let pledged = slice["pledged_bucket_gb"].as_f64().unwrap();
+        assert!(pledged <= avail);
+        assert!(avail <= 8.0);
+    }
+
+    // Verify grid_offers survive journal reload
+    let mut reloaded = GatewayState::new();
+    reloaded.persistent_state_dir = dir.clone();
+    assert!(reloaded.load_persistent_state().unwrap());
+    let node1_id = reloaded.nodes[1].id.0.clone();
+    assert_eq!(
+        reloaded.grid_offers.get(&node1_id).map(|o| o.nvme_gb),
+        Some(8.0)
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }

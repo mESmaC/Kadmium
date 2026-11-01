@@ -313,4 +313,42 @@ def CauchyMdsConjecture : Prop :=
               acc ^^^ gf256Mul invEntry matEntry)
             0) = (if i == j then 1 else 0)
 
+/-- Available storage capacity (`min(offer, hw)`) on a medium tier in tenths of a GiB,
+modelling `DecentralizedStoragePoolEngine::compute_medium_availability_and_pledge_tenths`. -/
+def mediumAvailable (offer hw : Nat) : Nat := Nat.min offer hw
+
+/-- Pledged bucket capacity on a medium tier in tenths of a GiB, capped at `avail` and `0` when
+`avail = 0`, modelling `DecentralizedStoragePoolEngine::compute_medium_availability_and_pledge_tenths`. -/
+def mediumPledged (avail pct floor : Nat) : Nat :=
+  if avail = 0 then 0 else Nat.min avail (Nat.max (avail * pct / 100) floor)
+
+/-- Architecture invariant P5 (`ARCHITECTURE.md §9.5`: "an offer is never exceeded"):
+available capacity never exceeds `offer` or `hw`, pledged bucket capacity never exceeds available
+capacity (and therefore never exceeds `offer`), and a zero offer pledges zero capacity. -/
+def RespectsOffer (offer hw avail pledged : Nat) : Prop :=
+  avail ≤ offer ∧ avail ≤ hw ∧ pledged ≤ avail ∧ (offer = 0 → pledged = 0)
+
+/-- **Proved (model)**: `mediumAvailable` and `mediumPledged` satisfy `RespectsOffer` for all
+non-negative `(offer, hw, pct, floor)` inputs. -/
+theorem medium_respects_offer (offer hw pct floor : Nat) :
+    RespectsOffer offer hw (mediumAvailable offer hw)
+      (mediumPledged (mediumAvailable offer hw) pct floor) := by
+  unfold RespectsOffer mediumAvailable mediumPledged
+  refine ⟨Nat.min_le_left _ _, Nat.min_le_right _ _, ?_, ?_⟩
+  · split
+    · omega
+    · exact Nat.min_le_left _ _
+  · intro h0
+    subst h0
+    simp
+
+/-- Models `ModelQualityLimits::effective_context_window_tokens()` over an optional known native
+context window (`ModelSpec::try_native_max_context_tokens()`) and optional user override. -/
+def qualityLimitsCtx (known : Option Nat) (override : Option Nat) : Option Nat :=
+  match override with | some c => some c | none => known
+
+/-- **Proved (model)**: When a model is unknown (`known = none`) and the user has not set a manual
+override (`override = none`), no context window is fabricated (`qualityLimitsCtx none none = none`). -/
+theorem qualityLimitsCtx_unknown : qualityLimitsCtx none none = none := rfl
+
 end Kadmium.StoragePool

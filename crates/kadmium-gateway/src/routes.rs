@@ -966,6 +966,7 @@ async fn get_dataflow_comparison(
         guard
             .quality_limits
             .effective_context_window_tokens()
+            .unwrap_or(512)
             .max(1),
     );
     Json(DataflowStreamPlanner::evaluate_dataflows(
@@ -1453,7 +1454,7 @@ async fn post_export_training_checkpoint(
             guard.last_checkpoint_step = report.step_index;
             guard.active_ktb_merkle_root_fnv64 = report.merkle_root_fnv64;
             let ckpt_uri = format!("kdm://pool-bucket/checkpoints/{}.ktb", report.checkpoint_id);
-            let obj = DecentralizedStoragePoolEngine::create_bucket_object(
+            let obj = DecentralizedStoragePoolEngine::create_bucket_object_with_offers(
                 &ckpt_uri,
                 &format!(
                     "Training Checkpoint {} (Step {} · {} tensor slices)",
@@ -1465,6 +1466,7 @@ async fn post_export_training_checkpoint(
                 2,
                 Some(report.merkle_root_fnv64),
                 &guard.nodes,
+                &guard.grid_offers,
             )
             .expect("valid checkpoint shard configuration");
             guard
@@ -2267,9 +2269,17 @@ fn validate_chat_request_limits(
     let estimated_input_tokens = estimate_messages_input_tokens(messages);
     let max_input = quality_limits.effective_max_input_tokens();
     let max_ctx = quality_limits.effective_context_window_tokens();
-    if estimated_input_tokens > max_input || estimated_input_tokens > max_ctx {
+    let in_str = max_input
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "backend-reported".to_string());
+    let ctx_str = max_ctx
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "backend-reported".to_string());
+    if max_input.is_some_and(|cap| estimated_input_tokens > cap)
+        || max_ctx.is_some_and(|cap| estimated_input_tokens > cap)
+    {
         return Err(invalid_request(format!(
-            "Input prompt (~{estimated_input_tokens} tokens) exceeds active quality limit (max_input_tokens={max_input}, context_window_tokens={max_ctx}). Increase limits via POST /api/v1/models/quality-tradeoffs."
+            "Input prompt (~{estimated_input_tokens} tokens) exceeds active quality limit (max_input_tokens={in_str}, context_window_tokens={ctx_str}). Increase limits via POST /api/v1/models/quality-tradeoffs."
         )));
     }
     if let Some(req_max_out) = req_max_tokens {
@@ -2283,9 +2293,11 @@ fn validate_chat_request_limits(
                 "Requested max_tokens ({req_max_out}) exceeds active max_output_tokens limit ({max_output}). Increase limits via POST /api/v1/models/quality-tradeoffs."
             )));
         }
-        if req_max_out > max_ctx {
+        if let Some(ctx_cap) = max_ctx
+            && req_max_out > ctx_cap
+        {
             return Err(invalid_request(format!(
-                "Requested max_tokens ({req_max_out}) exceeds active context_window_tokens limit ({max_ctx})."
+                "Requested max_tokens ({req_max_out}) exceeds active context_window_tokens limit ({ctx_cap})."
             )));
         }
     }
@@ -2851,11 +2863,12 @@ async fn get_storage_pool_bucket_report(
         ));
     }
 
-    let (nodes, imported_models, mut bucket_objects, bucket_anchors, store) = {
+    let (nodes, offers, imported_models, mut bucket_objects, bucket_anchors, store) = {
         let guard = state.lock().expect("gateway state lock");
         authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         (
             guard.nodes.clone(),
+            guard.grid_offers.clone(),
             guard.imported_models.clone(),
             guard.bucket_objects.clone(),
             guard.bucket_anchors.clone(),
@@ -2874,8 +2887,9 @@ async fn get_storage_pool_bucket_report(
     }
     bucket_objects.sort_by(|a, b| a.object_uri.cmp(&b.object_uri));
     Ok(Json(
-        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
             &nodes,
+            &offers,
             &imported_models,
             &bucket_objects,
             &bucket_anchors,
@@ -2916,7 +2930,7 @@ async fn post_storage_pool_bucket_object(
             .map_err(persistence_error)?;
     }
 
-    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+    let (nodes, offers, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
         let previous = guard.bucket_objects.clone();
         if let Some((ref raw_del, ref norm_del)) = delete_target {
@@ -2965,7 +2979,7 @@ async fn post_storage_pool_bucket_object(
             };
             let k = req.data_shards_k.unwrap_or(8);
             let m = req.parity_shards_m.unwrap_or(2);
-            let entry = DecentralizedStoragePoolEngine::create_bucket_object(
+            let entry = DecentralizedStoragePoolEngine::create_bucket_object_with_offers(
                 &uri,
                 &name,
                 &kind,
@@ -2974,6 +2988,7 @@ async fn post_storage_pool_bucket_object(
                 m,
                 merkle,
                 &guard.nodes,
+                &guard.grid_offers,
             )
             .map_err(invalid_request)?;
             guard
@@ -2987,6 +3002,7 @@ async fn post_storage_pool_bucket_object(
         }
         (
             guard.nodes.clone(),
+            guard.grid_offers.clone(),
             guard.imported_models.clone(),
             guard.bucket_objects.clone(),
             guard.bucket_anchors.clone(),
@@ -2994,8 +3010,9 @@ async fn post_storage_pool_bucket_object(
     };
 
     Ok(Json(
-        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
             &nodes,
+            &offers,
             &imported_models,
             &bucket_objects,
             &bucket_anchors,
@@ -3009,7 +3026,7 @@ async fn post_storage_pool_bucket_anchor(
     headers: HeaderMap,
     Json(req): Json<StorageBucketAnchorRequest>,
 ) -> Result<Json<DecentralizedStoragePoolReport>, ApiError> {
-    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+    let (nodes, offers, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
         authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         let previous = guard.bucket_anchors.clone();
@@ -3058,6 +3075,7 @@ async fn post_storage_pool_bucket_anchor(
         }
         (
             guard.nodes.clone(),
+            guard.grid_offers.clone(),
             guard.imported_models.clone(),
             guard.bucket_objects.clone(),
             guard.bucket_anchors.clone(),
@@ -3065,8 +3083,9 @@ async fn post_storage_pool_bucket_anchor(
     };
 
     Ok(Json(
-        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+        DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
             &nodes,
+            &offers,
             &imported_models,
             &bucket_objects,
             &bucket_anchors,
@@ -3308,25 +3327,32 @@ async fn get_storage_pool_bucket_mediums(
     MaybePeerAddr(maybe_peer): MaybePeerAddr,
     headers: HeaderMap,
 ) -> Result<Json<StorageBucketMediumsResponse>, ApiError> {
-    let (nodes, anchors, store, coord_url) = {
+    let (nodes, offers, anchors, store, coord_url) = {
         let guard = state.lock().expect("gateway state lock");
         authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         (
             guard.nodes.clone(),
+            guard.grid_offers.clone(),
             guard.bucket_anchors.clone(),
             guard.bucket_store(),
             guard.coordinator_http_url(),
         )
     };
     let cluster_mediums =
-        DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums(&nodes, &anchors, false);
+        DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums_with_offers(
+            &nodes, &offers, &anchors, false,
+        );
     let node_mediums = nodes
         .iter()
         .map(|n| {
             (
                 n.id.0.clone(),
                 n.hostname.clone(),
-                DecentralizedStoragePoolEngine::inspect_node_storage_mediums(n, false),
+                DecentralizedStoragePoolEngine::inspect_node_storage_mediums_with_offer(
+                    n,
+                    offers.get(&n.id.0),
+                    false,
+                ),
             )
         })
         .collect();
@@ -3347,11 +3373,12 @@ async fn get_storage_pool_bucket_objects(
     MaybePeerAddr(maybe_peer): MaybePeerAddr,
     headers: HeaderMap,
 ) -> Result<Json<StorageBucketObjectsResponse>, ApiError> {
-    let (nodes, imported_models, mut bucket_objects, bucket_anchors, store, coord_url) = {
+    let (nodes, offers, imported_models, mut bucket_objects, bucket_anchors, store, coord_url) = {
         let guard = state.lock().expect("gateway state lock");
         authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         (
             guard.nodes.clone(),
+            guard.grid_offers.clone(),
             guard.imported_models.clone(),
             guard.bucket_objects.clone(),
             guard.bucket_anchors.clone(),
@@ -3378,8 +3405,9 @@ async fn get_storage_pool_bucket_objects(
     let access_guide = store
         .access_guide(&sample_uri, &coord_url)
         .map_err(invalid_request)?;
-    let bucket_report = DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+    let bucket_report = DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
         &nodes,
+        &offers,
         &imported_models,
         &bucket_objects,
         &bucket_anchors,
@@ -3427,7 +3455,7 @@ async fn post_storage_pool_bucket_upload(
         ));
     };
 
-    let (live_nodes, store, coord_url) = {
+    let (live_nodes, live_offers, store, coord_url) = {
         let guard = state.lock().expect("gateway state lock");
         authorize_local_or_token(maybe_peer, &headers, &guard.bucket_write_token)?;
         let nodes = if guard.live_only_mode {
@@ -3435,11 +3463,16 @@ async fn post_storage_pool_bucket_upload(
         } else {
             Vec::new()
         };
-        (nodes, guard.bucket_store(), guard.coordinator_http_url())
+        (
+            nodes,
+            guard.grid_offers.clone(),
+            guard.bucket_store(),
+            guard.coordinator_http_url(),
+        )
     };
 
     let receipt = tokio::task::spawn_blocking(move || {
-        store.put_bytes(
+        store.put_bytes_with_offers(
             &uri,
             Some(&display_name),
             Some(&object_kind),
@@ -3447,6 +3480,7 @@ async fn post_storage_pool_bucket_upload(
             k,
             m,
             &live_nodes,
+            &live_offers,
             Some(&coord_url),
         )
     })
@@ -3454,7 +3488,7 @@ async fn post_storage_pool_bucket_upload(
     .map_err(|e| invalid_request(format!("Bucket upload task failed: {e}")))?
     .map_err(invalid_request)?;
 
-    let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+    let (nodes, offers, imported_models, bucket_objects, bucket_anchors) = {
         let mut guard = state.lock().expect("gateway state lock");
         let previous = guard.bucket_objects.clone();
         guard
@@ -3467,14 +3501,16 @@ async fn post_storage_pool_bucket_upload(
         }
         (
             guard.nodes.clone(),
+            guard.grid_offers.clone(),
             guard.imported_models.clone(),
             guard.bucket_objects.clone(),
             guard.bucket_anchors.clone(),
         )
     };
 
-    let bucket_report = DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+    let bucket_report = DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
         &nodes,
+        &offers,
         &imported_models,
         &bucket_objects,
         &bucket_anchors,
@@ -3760,49 +3796,70 @@ async fn post_model_quality_tradeoffs(
         updated.reset_to_maximum_quality();
     } else {
         if let Some(ctx) = req.context_window_tokens {
-            if ctx == 0 || ctx > native.native_max_context_window_tokens {
+            if ctx == 0
+                || native
+                    .native_max_context_window_tokens
+                    .is_some_and(|nat| ctx > nat)
+            {
+                let max_str = native
+                    .native_max_context_window_tokens
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "backend-reported".to_string());
                 return Err(invalid_request(format!(
-                    "context_window_tokens ({ctx}) must be between 1 and {}",
-                    native.native_max_context_window_tokens
+                    "context_window_tokens ({ctx}) must be between 1 and {max_str}"
                 )));
             }
             updated.user_override_context_window_tokens =
-                (ctx < native.native_max_context_window_tokens).then_some(ctx);
+                match native.native_max_context_window_tokens {
+                    Some(nat) => (ctx < nat).then_some(ctx),
+                    None => Some(ctx),
+                };
         }
         let eff_ctx = updated
             .user_override_context_window_tokens
-            .unwrap_or(native.native_max_context_window_tokens);
+            .or(native.native_max_context_window_tokens);
         if let Some(max_in) = req.max_input_tokens {
-            if max_in == 0 || max_in > eff_ctx {
+            if max_in == 0 || eff_ctx.is_some_and(|ec| max_in > ec) {
+                let ec_str = eff_ctx
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "backend-reported".to_string());
                 return Err(invalid_request(format!(
-                    "max_input_tokens ({max_in}) must be between 1 and context_window_tokens ({eff_ctx})"
+                    "max_input_tokens ({max_in}) must be between 1 and context_window_tokens ({ec_str})"
                 )));
             }
-            updated.user_override_max_input_tokens =
-                (max_in < native.native_max_input_tokens).then_some(max_in);
-        } else if let Some(prev_in) = updated.user_override_max_input_tokens
-            && prev_in > eff_ctx
+            updated.user_override_max_input_tokens = match native.native_max_input_tokens {
+                Some(nat) => (max_in < nat).then_some(max_in),
+                None => Some(max_in),
+            };
+        } else if let (Some(prev_in), Some(ec)) = (updated.user_override_max_input_tokens, eff_ctx)
+            && prev_in > ec
         {
-            updated.user_override_max_input_tokens = Some(eff_ctx);
+            updated.user_override_max_input_tokens = Some(ec);
         }
         if let Some(max_out) = req.max_output_tokens {
-            let max_allowed_out = native
-                .native_max_output_tokens
-                .unwrap_or(eff_ctx)
-                .min(eff_ctx);
-            if max_out == 0 || max_out > max_allowed_out {
+            let max_allowed_out = match (native.native_max_output_tokens, eff_ctx) {
+                (Some(no), Some(ec)) => Some(no.min(ec)),
+                (Some(no), None) => Some(no),
+                (None, Some(ec)) => Some(ec),
+                (None, None) => None,
+            };
+            if max_out == 0 || max_allowed_out.is_some_and(|cap| max_out > cap) {
+                let cap_str = max_allowed_out
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "backend-reported".to_string());
                 return Err(invalid_request(format!(
-                    "max_output_tokens ({max_out}) must be between 1 and {max_allowed_out}"
+                    "max_output_tokens ({max_out}) must be between 1 and {cap_str}"
                 )));
             }
             updated.user_override_max_output_tokens = match native.native_max_output_tokens {
                 Some(nat) => (max_out < nat).then_some(max_out),
                 None => Some(max_out),
             };
-        } else if let Some(prev_out) = updated.user_override_max_output_tokens
-            && prev_out > eff_ctx
+        } else if let (Some(prev_out), Some(ec)) =
+            (updated.user_override_max_output_tokens, eff_ctx)
+            && prev_out > ec
         {
-            updated.user_override_max_output_tokens = Some(eff_ctx);
+            updated.user_override_max_output_tokens = Some(ec);
         }
         if let Some(experts) = req.active_experts_per_token {
             let max_exp = native.native_active_experts_per_token.max(1);

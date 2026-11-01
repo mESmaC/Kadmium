@@ -380,18 +380,20 @@ impl KadmiumMcpServer {
                 .unwrap_or("kadmium://cluster/topology")
                 .to_string();
             if uri == "kadmium://cluster/storage-bucket" {
-                let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+                let (nodes, offers, imported_models, bucket_objects, bucket_anchors) = {
                     let guard = state.lock().expect("gateway state lock");
                     (
                         guard.nodes.clone(),
+                        guard.grid_offers.clone(),
                         guard.imported_models.clone(),
                         guard.bucket_objects.clone(),
                         guard.bucket_anchors.clone(),
                     )
                 };
                 let report =
-                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
                         &nodes,
+                        &offers,
                         &imported_models,
                         &bucket_objects,
                         &bucket_anchors,
@@ -423,12 +425,22 @@ impl KadmiumMcpServer {
             .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("status");
-        let (store, coord_url, nodes, live_only, imported_models, bucket_objects, bucket_anchors) = {
+        let (
+            store,
+            coord_url,
+            nodes,
+            offers,
+            live_only,
+            imported_models,
+            bucket_objects,
+            bucket_anchors,
+        ) = {
             let guard = state.lock().expect("gateway state lock");
             (
                 guard.bucket_store(),
                 guard.coordinator_http_url(),
                 guard.nodes.clone(),
+                guard.grid_offers.clone(),
                 guard.live_only_mode,
                 guard.imported_models.clone(),
                 guard.bucket_objects.clone(),
@@ -439,8 +451,9 @@ impl KadmiumMcpServer {
         let payload = match action {
             "mediums" => {
                 let summaries =
-                    kadmium_data::DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums(
+                    kadmium_data::DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums_with_offers(
                         &nodes,
+                        &offers,
                         &bucket_anchors,
                         false,
                     );
@@ -450,7 +463,11 @@ impl KadmiumMcpServer {
                         json!({
                             "node_id": n.id.0,
                             "hostname": n.hostname,
-                            "mediums": kadmium_data::DecentralizedStoragePoolEngine::inspect_node_storage_mediums(n, false),
+                            "mediums": kadmium_data::DecentralizedStoragePoolEngine::inspect_node_storage_mediums_with_offer(
+                                n,
+                                offers.get(&n.id.0),
+                                false,
+                            ),
                         })
                     })
                     .collect();
@@ -488,7 +505,7 @@ impl KadmiumMcpServer {
                 let live_nodes: &[kadmium_core::HardwareNode] =
                     if live_only { &nodes } else { &[] };
                 let receipt = store
-                    .put_bytes(
+                    .put_bytes_with_offers(
                         uri,
                         None,
                         Some(class_str),
@@ -496,6 +513,7 @@ impl KadmiumMcpServer {
                         8,
                         2,
                         live_nodes,
+                        &offers,
                         Some(&coord_url),
                     )
                     .map_err(|e| McpJsonRpcError {
@@ -585,8 +603,9 @@ impl KadmiumMcpServer {
             }
             _ => {
                 let report =
-                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
                         &nodes,
+                        &offers,
                         &imported_models,
                         &bucket_objects,
                         &bucket_anchors,
@@ -963,8 +982,9 @@ impl KadmiumMcpServer {
                 let payload = match action {
                     "mediums" => {
                         let summaries =
-                            kadmium_data::DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums(
+                            kadmium_data::DecentralizedStoragePoolEngine::summarize_cluster_storage_mediums_with_offers(
                                 &state.nodes,
+                                &state.grid_offers,
                                 &state.bucket_anchors,
                                 false,
                             );
@@ -975,7 +995,11 @@ impl KadmiumMcpServer {
                                 json!({
                                     "node_id": n.id.0,
                                     "hostname": n.hostname,
-                                    "mediums": kadmium_data::DecentralizedStoragePoolEngine::inspect_node_storage_mediums(n, false),
+                                    "mediums": kadmium_data::DecentralizedStoragePoolEngine::inspect_node_storage_mediums_with_offer(
+                                        n,
+                                        state.grid_offers.get(&n.id.0),
+                                        false,
+                                    ),
                                 })
                             })
                             .collect();
@@ -1110,8 +1134,9 @@ impl KadmiumMcpServer {
                     }
                     _ => {
                         let report =
-                            kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+                            kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
                                 &state.nodes,
+                                &state.grid_offers,
                                 &state.imported_models,
                                 &state.bucket_objects,
                                 &state.bucket_anchors,
@@ -1174,8 +1199,9 @@ impl KadmiumMcpServer {
             }
             "kadmium://cluster/storage-bucket" => {
                 let report =
-                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket_with_offers(
                         &state.nodes,
+                        &state.grid_offers,
                         &state.imported_models,
                         &state.bucket_objects,
                         &state.bucket_anchors,

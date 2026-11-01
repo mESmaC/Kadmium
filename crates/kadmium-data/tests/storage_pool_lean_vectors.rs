@@ -12,6 +12,7 @@ fn storage_pool_matches_lean_vectors() {
     let mut quota_rows = 0usize;
     let mut swap_rows = 0usize;
     let mut cauchy_rows = 0usize;
+    let mut medium_pledge_rows = 0usize;
 
     for (line_no, raw) in VECTORS.lines().enumerate() {
         let line = raw.trim();
@@ -181,6 +182,45 @@ fn storage_pool_matches_lean_vectors() {
                 );
                 cauchy_rows += 1;
             }
+            "medium_pledge" => {
+                assert_eq!(cols.len(), 7, "line {}", line_no + 1);
+                let offer_tenths: u64 = cols[1].parse().expect("offer_tenths");
+                let hw_tenths: u64 = cols[2].parse().expect("hw_tenths");
+                let pct: u64 = cols[3].parse().expect("pct");
+                let floor_tenths: u64 = cols[4].parse().expect("floor_tenths");
+                let expected_avail: u64 = cols[5].parse().expect("expected_avail");
+                let expected_pledged: u64 = cols[6].parse().expect("expected_pledged");
+
+                let (actual_avail, actual_pledged) =
+                    DecentralizedStoragePoolEngine::compute_medium_availability_and_pledge_tenths(
+                        offer_tenths,
+                        hw_tenths,
+                        pct,
+                        floor_tenths,
+                    );
+                assert_eq!(
+                    (actual_avail, actual_pledged),
+                    (expected_avail, expected_pledged),
+                    "compute_medium_availability_and_pledge_tenths({offer_tenths}, {hw_tenths}, {pct}, {floor_tenths}) mismatch at line {}",
+                    line_no + 1
+                );
+
+                let (avail_gb, pledged_gb) =
+                    DecentralizedStoragePoolEngine::compute_medium_availability_and_pledge(
+                        offer_tenths as f64 / 10.0,
+                        hw_tenths as f64 / 10.0,
+                        pct as f64 / 100.0,
+                        floor_tenths as f64 / 10.0,
+                    );
+                assert!(avail_gb <= (offer_tenths as f64 / 10.0) + 1e-9);
+                assert!(avail_gb <= (hw_tenths as f64 / 10.0) + 1e-9);
+                assert!(pledged_gb <= avail_gb + 1e-9);
+                if offer_tenths == 0 {
+                    assert_eq!(avail_gb, 0.0);
+                    assert_eq!(pledged_gb, 0.0);
+                }
+                medium_pledge_rows += 1;
+            }
             other => panic!("unknown vector tag {other} at line {}", line_no + 1),
         }
     }
@@ -190,4 +230,5 @@ fn storage_pool_matches_lean_vectors() {
     assert_eq!(quota_rows, 4);
     assert_eq!(swap_rows, 5);
     assert!(cauchy_rows >= 15);
+    assert_eq!(medium_pledge_rows, 8);
 }
