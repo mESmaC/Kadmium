@@ -94,6 +94,23 @@ Cancellation is checked between raw-tensor and transport-chunk copies and around
 import. Existing integrity scans and normalization finish their current call before the
 adapter observes cancellation.
 
+`PreparedSlice::storage_bytes()` is the disk charge: transported payload files plus the serialized
+`transport.json` and chunk-receipt payloads. `transport().total_bytes` is only the transported
+payload, not the storage reservation. These are logical file lengths; filesystem allocation
+blocks and directory overhead are not included.
+
+Cancelled transfers, source-read failures and rejected chunks retain the verified chunks and
+the full pending `StagingJob` reservation in `ReplicaCatalog`. Reuse that catalogue when resuming;
+pending storage is not a verified replica or a source. To abandon a transfer, first delete or
+reconcile its partial files, then call `release_staging`. Losing the catalogue requires reconciling
+the worker library before new placements; this adapter does not recover reservations from disk.
+The logical-byte gate, resume charge and pending-to-resident accounting are **Proved (model)**
+by `Kadmium.Grid.StagingStorage.gate_respects_logical_offer`,
+`Kadmium.Grid.StagingStorage.resume_counts_once` and
+`Kadmium.Grid.StagingStorage.publish_counts_once` at `3ddc52ab01a5244b9117f22e9ef36ea2ce934b53`,
+checked with `cd formal && lake build --wfail`. See the
+[model assumptions and differential tests](../../formal/README.md#resumable-staging-storage-gridstagingstoragelean).
+
 The selection rule is **Proved (model)** as `Kadmium.Native.Shard.selected_iff` and
 `Kadmium.Native.Shard.payload_preserved` at `8c99026edeb99a53ed90427327985b61246d54e5`,
 checked with `cd formal && lake build --wfail`; see the
@@ -101,7 +118,7 @@ checked with `cd formal && lake build --wfail`; see the
 Those theorems are about lists of tensor parts and unchanged payloads, not Rust extraction,
 I/O, approval gates or hash security.
 
-Reference checks for this increment run with:
+**Measured** reference checks for this increment run with:
 
 ```sh
 cargo test --locked -p kadmium-runtime --test native_staging --test native_staging_lean_vectors
@@ -113,6 +130,10 @@ draining and restricted-trust workers, corrupt chunks, resume, cancellation and 
 entries. They use temporary libraries on one machine, not a multi-machine benchmark. Chunk
 verification and publication use the existing checkpoint transport. Context, sampling,
 generation settings and original source weights are not changed by shard selection.
+
+Selected packages still carry the full source configuration and a temporary import name.
+They are not standalone models; use them only through the explicit slice-loading API. A clear
+slice-library name and marker remain follow-up work before exposing these packages in an interface.
 
 Remaining integration work: connect these packages to authenticated worker sessions; reserve
 execution memory for actual weights and the full-context KV cache; assign layers; and run the
