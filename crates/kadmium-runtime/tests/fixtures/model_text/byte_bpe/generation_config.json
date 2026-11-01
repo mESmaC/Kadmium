@@ -1,0 +1,17 @@
+{
+  "do_sample": true,
+  "temperature": 0.7,
+  "top_p": 0.8,
+  "top_k": 20,
+  "repetition_penalty": 1.05,
+  "eos_token_id": [
+    2,
+    4
+  ],
+  "bos_token_id": 1,
+  "stop_strings": [
+    "END",
+    "结束"
+  ],
+  "max_new_tokens": 17
+}

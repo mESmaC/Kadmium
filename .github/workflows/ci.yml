@@ -59,6 +59,10 @@ jobs:
         run: |
           (cd formal && lake exe transport_vectors ../crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt)
           git diff --exit-code -- crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt
+      - name: Check the model text fixture matches the Lean model
+        run: |
+          (cd formal && lake exe text_vectors ../crates/kadmium-runtime/tests/fixtures/model_text_contract.txt)
+          git diff --exit-code -- crates/kadmium-runtime/tests/fixtures/model_text_contract.txt
 
   workspace-ui:
     name: Workspace browser workflows

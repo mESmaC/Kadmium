@@ -21,6 +21,7 @@ pub mod kernels;
 pub mod kv_replay;
 pub mod live_worker;
 pub mod matrix_job;
+pub mod model_text;
 pub mod moe_layer;
 pub mod native_decoder;
 /// Explicit approximate NPU execution, separate from RepOps verification paths.

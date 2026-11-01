@@ -1,0 +1,1 @@
+{{ bos_token }}{% for message in messages %}{% if (message['role'] == 'user') != (loop.index0 % 2 == 0) %}{{ raise_exception('roles must alternate') }}{% endif %}{% if message['role'] == 'user' %}{{ '[INST] ' + message['content'].strip() + ' [/INST]' }}{% else %}{{ ' ' + message['content'] + eos_token }}{% endif %}{% endfor %}

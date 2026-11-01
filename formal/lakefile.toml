@@ -1,5 +1,5 @@
 name = "kadmium_formal"
-defaultTargets = ["KadmiumFormal", "repops_vectors", "transport_vectors"]
+defaultTargets = ["KadmiumFormal", "repops_vectors", "transport_vectors", "text_vectors"]
 
 [leanOptions]
 autoImplicit = false
@@ -14,3 +14,7 @@ root = "Vectors"
 [[lean_exe]]
 name = "transport_vectors"
 root = "TransportVectors"
+
+[[lean_exe]]
+name = "text_vectors"
+root = "TextVectors"
