@@ -1851,6 +1851,7 @@ dependencies = [
 name = "kadmium-runtime"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "kadmium-core",
  "kadmium-cuda",
  "kadmium-data",
