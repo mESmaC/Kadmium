@@ -33,6 +33,7 @@ mod config;
 pub mod math;
 mod model;
 mod placement;
+pub mod staging;
 
 pub use config::{Architecture, DecoderConfig, RopeScaling};
 pub use kadmium_sharding::{

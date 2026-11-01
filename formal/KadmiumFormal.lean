@@ -11,6 +11,7 @@ import KadmiumFormal.Data.Fts3Chunks
 import KadmiumFormal.Data.RangeCoalesce
 import KadmiumFormal.Grid.Redundancy
 import KadmiumFormal.Grid.Eviction
+import KadmiumFormal.Grid.StagingStorage
 import KadmiumFormal.Sharding.RowShare
 import KadmiumFormal.Sharding.LayerPlacement
 import KadmiumFormal.Runtime.Bisect
@@ -21,5 +22,6 @@ import KadmiumFormal.Transport.Publish
 import KadmiumFormal.Native.LayerSplit
 import KadmiumFormal.Native.AttentionWindow
 import KadmiumFormal.Native.ModelText
+import KadmiumFormal.Native.ShardSelection
 import KadmiumFormal.Native.Generation
 import KadmiumFormal.Audit

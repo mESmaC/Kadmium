@@ -28,6 +28,47 @@ pub struct SlicePlan {
 }
 
 impl SlicePlan {
+    /// Tensor names required by the loader, including an embedding used as a tied output head.
+    /// Validates shapes and dtypes without reading weight payloads.
+    pub fn tensor_names(
+        &self,
+        manifest: &SafetensorsManifest,
+        config: &DecoderConfig,
+    ) -> Result<Vec<String>> {
+        if self.layers.start > self.layers.end || self.layers.end > config.num_layers {
+            return Err(NativeDecoderError::LayerRange {
+                start: self.layers.start,
+                end: self.layers.end,
+                layers: config.num_layers,
+            });
+        }
+        check_against_checkpoint(manifest, config)?;
+        let mut specs = Vec::new();
+        if self.embedding || (self.head && config.tie_word_embeddings) {
+            specs.push(Spec {
+                name: "model.embed_tokens.weight".into(),
+                shape: vec![config.vocab_size, config.hidden_size],
+            });
+        }
+        for layer in self.layers.clone() {
+            specs.extend(block_specs(config, layer));
+        }
+        if self.head {
+            specs.push(Spec {
+                name: "model.norm.weight".into(),
+                shape: vec![config.hidden_size],
+            });
+            if !config.tie_word_embeddings {
+                specs.push(Spec {
+                    name: "lm_head.weight".into(),
+                    shape: vec![config.vocab_size, config.hidden_size],
+                });
+            }
+        }
+        validate_specs(manifest, &specs)?;
+        Ok(specs.into_iter().map(|spec| spec.name).collect())
+    }
+
     /// The whole model in one slice.
     pub fn whole(config: &DecoderConfig) -> Self {
         Self {
@@ -229,12 +270,16 @@ pub(super) fn stored_spec_bytes(manifest: &SafetensorsManifest, spec: &Spec) -> 
     }
 }
 
-/// Reads tensors in one batched pass, checking each one's dtype and shape before any byte is
-/// read. Only F32, F16 and BF16 are accepted; they are kept as stored.
-fn fetch(manifest: &SafetensorsManifest, specs: &[Spec]) -> Result<Vec<WeightData>> {
+/// Checks every dtype and shape before a payload is read.
+fn validate_specs(manifest: &SafetensorsManifest, specs: &[Spec]) -> Result<()> {
     for spec in specs {
         let _ = stored_spec_bytes(manifest, spec)?;
     }
+    Ok(())
+}
+
+fn fetch(manifest: &SafetensorsManifest, specs: &[Spec]) -> Result<Vec<WeightData>> {
+    validate_specs(manifest, specs)?;
     let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
     let (payloads, _) = manifest.read_tensors(&names)?;
     let mut out = Vec::with_capacity(specs.len());

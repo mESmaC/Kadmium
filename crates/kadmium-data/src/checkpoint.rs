@@ -4,6 +4,7 @@
 
 pub(crate) mod formats;
 pub mod placement;
+mod selection;
 pub mod transport;
 
 pub use formats::ggml_type_name;
