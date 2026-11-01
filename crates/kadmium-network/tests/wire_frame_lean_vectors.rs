@@ -34,6 +34,37 @@ fn fixture_has_every_section() {
     assert!(kinds.contains(&"reject"));
 }
 
+/// `read_from_stream` parses the same header as `decode` and only then reads the payload, so it
+/// agrees with the decoder on every fixture frame and refuses every rejected input, including the
+/// oversize length, without reaching a payload byte.
+#[test]
+fn stream_reader_agrees_with_the_decoder() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async {
+        for f in lines().filter(|f| f[0] == "frame" || f[0] == "legacy") {
+            let encoded = hex(if f[0] == "frame" { f[5] } else { f[4] });
+            let mut cursor: &[u8] = &encoded;
+            let streamed = WireFrame::read_from_stream(&mut cursor)
+                .await
+                .expect("the stream reader accepts every fixture frame");
+            assert_eq!(streamed, WireFrame::decode(&encoded).expect("decodes"));
+            assert!(cursor.is_empty(), "the reader consumed exactly one frame");
+        }
+        for f in lines().filter(|f| f[0] == "reject") {
+            let input = hex(f[1]);
+            let mut cursor: &[u8] = &input;
+            assert!(
+                WireFrame::read_from_stream(&mut cursor).await.is_err(),
+                "the stream reader accepted {} which the model rejects as {}",
+                f[1],
+                f[2]
+            );
+        }
+    });
+}
+
 #[test]
 fn frames_encode_and_decode_as_the_lean_model() {
     for f in lines().filter(|f| f[0] == "frame") {

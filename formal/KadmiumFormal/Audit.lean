@@ -106,6 +106,8 @@ elab "#assert_standard_axioms " id:ident : command => do
 -- HTTP range coalescing
 #assert_standard_axioms Kadmium.Data.coalesce_members
 #assert_standard_axioms Kadmium.Data.coalesce_contains
+#assert_standard_axioms Kadmium.Data.coalesce_start_attained
+#assert_standard_axioms Kadmium.Data.coalesce_stop_attained
 #assert_standard_axioms Kadmium.Data.coalesce_separated
 #assert_standard_axioms Kadmium.Data.coalesce_valid
 #assert_standard_axioms Kadmium.Data.coalesce_optimal

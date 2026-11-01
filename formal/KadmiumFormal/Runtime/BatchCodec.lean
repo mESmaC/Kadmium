@@ -20,7 +20,8 @@ Results:
 * `decodeF32_encodeF32`, `decodePart_encodePart`: the encoders' output decodes back to the input
   for every batch whose counts fit `u32`.
 * `decodeF32_exact`, `decodePart_exact`: whatever decodes has exactly the length the header
-  implies, so an accepted body is read in full and nothing is read past it.
+  implies, so an accepted body is read in full and nothing is read past it. For `PART` the
+  header's count is the number of decoded partials and every partial carries `dim * 4` data bytes.
 * `wrapped_accepts_empty_f32`, `wrapped_accepts_header_only_part` (**finding**): with the wrapping
   arithmetic, a `2^31 × 2^31` `F32B` header with no body and a `PART` header declaring `2^31`
   partials of width `2^31 - 2` with no body both pass the length check. The checked arithmetic
@@ -169,6 +170,32 @@ theorem length_encodeEntry {dim : Nat} {p : Partial} (h : p.data.length = dim * 
   simp [encodeEntry, entryLen, h]
   omega
 
+/-- The parser always yields as many entries as the header declares. -/
+theorem length_parseEntries (dim : Nat) :
+    ∀ (count : Nat) (bytes : List Nat), (parseEntries dim count bytes).length = count := by
+  intro count
+  induction count with
+  | zero => intro _; rfl
+  | succ c ih => intro bytes; simp [parseEntries, ih]
+
+/-- When the body has exactly the declared length, every parsed entry carries `dim * 4` data
+bytes: no entry is cut short by the end of the input. -/
+theorem parseEntries_wellFormed (dim : Nat) :
+    ∀ (count : Nat) (bytes : List Nat), bytes.length = count * entryLen dim →
+      WellFormed dim (parseEntries dim count bytes) := by
+  intro count
+  induction count with
+  | zero => intro _ _ p hp; simp [parseEntries] at hp
+  | succ c ih =>
+    intro bytes hlen p hp
+    rw [Nat.succ_mul] at hlen
+    unfold entryLen at hlen
+    simp only [parseEntries, List.mem_cons] at hp
+    rcases hp with rfl | hp
+    · simp only [List.length_take, List.length_drop]
+      exact Nat.min_eq_left (by omega)
+    · exact ih (bytes.drop (entryLen dim)) (by rw [List.length_drop]; unfold entryLen; omega) p hp
+
 theorem length_flatten_entries {dim : Nat} :
     ∀ {partials : List Partial}, WellFormed dim partials →
       ((partials.map encodeEntry).flatten).length = partials.length * entryLen dim := by
@@ -237,10 +264,13 @@ theorem decodePart_encodePart (layer rows dim : Nat) (partials : List Partial)
     decodeLE_encodeLE (lt_pow_four hr), decodeLE_encodeLE (lt_pow_four hd),
     decodeLE_encodeLE (lt_pow_four hc), hlen, hentries]
 
-/-- An accepted `PART` payload has exactly the implied length. -/
+/-- An accepted `PART` payload has exactly the length its header implies: the header's count
+field is the number of decoded partials, the input holds exactly `20 + count * (8 + dim * 4)`
+bytes, and every decoded partial carries `dim * 4` data bytes. -/
 theorem decodePart_exact {bytes : List Nat} {layer rows dim : Nat} {partials : List Partial}
     (h : decodePart bytes = .ok (layer, rows, dim, partials)) :
-    ∃ count, bytes.length = 20 + count * (8 + dim * 4) := by
+    bytes.length = 20 + partials.length * (8 + dim * 4) ∧
+      decodeLE ((bytes.drop 16).take 4) = partials.length ∧ WellFormed dim partials := by
   unfold decodePart at h
   split at h
   · exact absurd h (by simp)
@@ -248,8 +278,14 @@ theorem decodePart_exact {bytes : List Nat} {layer rows dim : Nat} {partials : L
     split at h
     · rename_i hlen
       simp only [Except.ok.injEq, Prod.mk.injEq] at h
-      obtain ⟨_, _, rfl, _⟩ := h
-      exact ⟨_, hlen⟩
+      obtain ⟨_, _, rfl, rfl⟩ := h
+      rw [length_parseEntries]
+      unfold expectedPart entryLen at hlen
+      refine ⟨hlen, rfl, ?_⟩
+      apply parseEntries_wellFormed
+      rw [List.length_drop, hlen]
+      unfold entryLen
+      omega
     · exact absurd h (by simp)
 
 /-- **Finding.** In `usize` arithmetic, `2^31` partials of width `2^31 - 2` take `2^64` bytes,

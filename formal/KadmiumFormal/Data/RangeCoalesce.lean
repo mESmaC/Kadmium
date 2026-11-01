@@ -32,6 +32,9 @@ unrequested bytes is ever fetched. The number of requests is the quantity minimi
 * `coalesce_members`: the members of the requests, in request order, are exactly the indices
   `0 .. n`, each once. Every slice is fetched by exactly one request.
 * `coalesce_contains`: every member slice lies inside its request's byte range.
+* `coalesce_start_attained`, `coalesce_stop_attained`: every request begins at a member's first
+  byte and ends at a member's last byte, so `Valid` below, which only speaks about windows inside
+  the request, leaves no unrequested run at either end.
 * `coalesce_separated`: consecutive requests are more than `g` bytes apart, so no two could have
   been merged.
 * `coalesce_valid`: every request the loop produces is valid for `g`.
@@ -111,6 +114,8 @@ structure Inv (g : Nat) (sl : Nat → Slice) (n k : Nat) (acc : List Req) : Prop
   ordered : ∀ r ∈ acc, r.start ≤ r.stop
   /-- Some member reaches the request's end. -/
   attained : ∀ r ∈ acc, ∃ m ∈ r.members, (sl m).stop = r.stop
+  /-- Some member starts the request. -/
+  start_attained : ∀ r ∈ acc, ∃ m ∈ r.members, (sl m).start = r.start
   /-- Every request starts at or before every slice still to come. -/
   start_le : ∀ r ∈ acc, ∀ j, k ≤ j → j < n → r.start ≤ (sl j).start
   /-- Newer requests start more than `g` bytes after older ones end. -/
@@ -124,6 +129,7 @@ theorem inv_zero (g : Nat) (sl : Nat → Slice) (n : Nat) : Inv g sl n 0 [] wher
   contains := by simp
   ordered := by simp
   attained := by simp
+  start_attained := by simp
   start_le := by simp
   separated := List.Pairwise.nil
   valid := by simp
@@ -142,7 +148,7 @@ theorem inv_step (g : Nat) (sl : Nat → Slice) (n k : Nat) (acc : List Req) (hs
       simpa using this.symm
     subst hk0
     simp only [step]
-    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
     · simp
     · intro r hr m hm
       simp only [List.mem_singleton] at hr
@@ -160,6 +166,10 @@ theorem inv_step (g : Nat) (sl : Nat → Slice) (n k : Nat) (acc : List Req) (hs
       simp only [List.mem_singleton] at hr
       subst hr
       exact hwk
+    · intro r hr
+      simp only [List.mem_singleton] at hr
+      subst hr
+      exact ⟨0, by simp, rfl⟩
     · intro r hr
       simp only [List.mem_singleton] at hr
       subst hr
@@ -183,7 +193,7 @@ theorem inv_step (g : Nat) (sl : Nat → Slice) (n k : Nat) (acc : List Req) (hs
       have hord := h.ordered last hlast
       obtain ⟨ma, hma, hmas⟩ := h.attained last hlast
       have hwma := hw ma (by have := h.members_lt last hlast ma hma; omega)
-      refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
       · have := h.flat
         simp only [List.reverse_cons, List.map_append, List.map_cons, List.map_nil,
           List.flatten_append, List.flatten_cons, List.flatten_nil, List.append_nil] at this ⊢
@@ -223,6 +233,12 @@ theorem inv_step (g : Nat) (sl : Nat → Slice) (n k : Nat) (acc : List Req) (hs
           · exact ⟨ma, by simp [hma], by simp only; omega⟩
           · exact ⟨k, by simp, by simp only; omega⟩
         · exact h.attained r (by simp [hr])
+      · intro r hr
+        simp only [List.mem_cons] at hr
+        rcases hr with rfl | hr
+        · obtain ⟨m, hm, hms⟩ := h.start_attained last hlast
+          exact ⟨m, by simp [hm], hms⟩
+        · exact h.start_attained r (by simp [hr])
       · intro r hr j hj hjn
         simp only [List.mem_cons] at hr
         rcases hr with rfl | hr
@@ -251,7 +267,7 @@ theorem inv_step (g : Nat) (sl : Nat → Slice) (n k : Nat) (acc : List Req) (hs
     · -- Start a new request.
       rename_i hfar
       have hlast : last ∈ last :: rest := by simp
-      refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
       · have := h.flat
         simp only [List.reverse_cons, List.map_append, List.map_cons, List.map_nil,
           List.flatten_append, List.flatten_cons, List.flatten_nil, List.append_nil] at this ⊢
@@ -283,6 +299,11 @@ theorem inv_step (g : Nat) (sl : Nat → Slice) (n k : Nat) (acc : List Req) (hs
         rcases hr with rfl | hr
         · exact ⟨k, by simp, rfl⟩
         · exact h.attained r (List.mem_cons.mpr hr)
+      · intro r hr
+        simp only [List.mem_cons] at hr
+        rcases hr with rfl | hr
+        · exact ⟨k, by simp, rfl⟩
+        · exact h.start_attained r (List.mem_cons.mpr hr)
       · intro r hr j hj hjn
         simp only [List.mem_cons] at hr
         rcases hr with rfl | hr
@@ -350,6 +371,18 @@ theorem coalesce_members_lt (hs : Sorted sl n) (hw : WellFormed sl n) :
     ∀ r ∈ coalesce g sl n, ∀ m ∈ r.members, m < n := by
   intro r hr
   exact (inv_coalesceRev g sl n hs hw n (Nat.le_refl n)).members_lt r (List.mem_reverse.mp hr)
+
+/-- **Tight ends.** Every request begins at a member's first byte and ends at a member's last
+byte, so it fetches no unrequested byte before its first member or after its last. -/
+theorem coalesce_start_attained (hs : Sorted sl n) (hw : WellFormed sl n) :
+    ∀ r ∈ coalesce g sl n, ∃ m ∈ r.members, (sl m).start = r.start := by
+  intro r hr
+  exact (inv_coalesceRev g sl n hs hw n (Nat.le_refl n)).start_attained r (List.mem_reverse.mp hr)
+
+theorem coalesce_stop_attained (hs : Sorted sl n) (hw : WellFormed sl n) :
+    ∀ r ∈ coalesce g sl n, ∃ m ∈ r.members, (sl m).stop = r.stop := by
+  intro r hr
+  exact (inv_coalesceRev g sl n hs hw n (Nat.le_refl n)).attained r (List.mem_reverse.mp hr)
 
 /-- **Separation.** An earlier request ends more than `g` bytes before a later one starts. -/
 theorem coalesce_separated (hs : Sorted sl n) (hw : WellFormed sl n) :

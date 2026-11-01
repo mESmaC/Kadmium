@@ -15,7 +15,7 @@ An optimality theorem names its cost model, such as the number of additions, the
 
 ## Results
 
-All results in the tables below are **Proved (model)**. Four executables write the differential fixtures: `lake exe repops_vectors` writes `crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt`, checked by `crates/kadmium-runtime/tests/repops_lean_vectors.rs`; `lake exe transport_vectors` writes `crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt`, checked by `crates/kadmium-data/tests/transport_lean_vectors.rs`; `lake exe storage_pool_vectors` writes `crates/kadmium-data/tests/fixtures/storage_pool_vectors.txt`, checked by `crates/kadmium-data/tests/storage_pool_lean_vectors.rs`; `lake exe kadmium_vectors <repository root>` writes every `crates/*/tests/fixtures/*_lean_vectors.txt`, each checked by the Rust test of the same stem in that crate's `tests/` directory.
+All results in the tables below are **Proved (model)**. Four executables write the differential fixtures: `lake exe repops_vectors` writes `crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt`, checked by `crates/kadmium-runtime/tests/repops_lean_vectors.rs`; `lake exe transport_vectors` writes `crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt`, checked by `crates/kadmium-data/tests/transport_lean_vectors.rs`; `lake exe storage_pool_vectors` writes `crates/kadmium-data/tests/fixtures/storage_pool_vectors.txt`, checked by `crates/kadmium-data/tests/storage_pool_lean_vectors.rs`; `lake exe kadmium_vectors <repository root>` writes every `crates/*/tests/fixtures/*_lean_vectors.txt`, each checked by a `*_lean_vectors.rs` test in that crate's `tests/` directory. Where a row's Rust item has no fixture, the row says so.
 
 ### RepOps reductions (`KadmiumFormal/Pow2.lean`, `RepOps/TreeSum.lean`, `RepOps/TreeReducer.lean`)
 
@@ -42,6 +42,8 @@ Every RepOps tree theorem holds for an arbitrary addition `add : α → α → �
 | `RepOps.digestBytes_eq_fnv1a` | `digest_bytes(tag, bytes)` is FNV-1a of `manifest id (8 bytes LE) ++ tag ++ [0] ++ bytes`. | `repops::Digest::new`, `repops::digest_bytes` |
 | `RepOps.preimage_inj`, `RepOps.foldChain_preimage_inj` | That byte string determines the manifest id, the NUL-free tag and the payload, and the `fold_chain` encoding determines its digests (fewer than `2^32` of them). Digests computed under different manifests, tags or payloads hash different byte strings. Equal digests do not imply equal inputs: FNV-1a is not collision resistant, and no theorem says otherwise. | `repops::Digest::new`, `repops::fold_chain` |
 
+Fixtures: the FNV-1a vectors are checked by `crates/kadmium-data/tests/fnv1a_lean_vectors.rs` (`compute_fnv1a64_checksum`), `crates/kadmium-grid/tests/fnv1a_lean_vectors.rs` (`fnv1a_64`) and `crates/kadmium-runtime/tests/digest_lean_vectors.rs`, which also checks `digest_bytes`, `Digest::{new, update, update_u32}` and `fold_chain` against the modelled preimage and chain bytes through the public API, with the manifest id the running binary reports. The private `repops::fnv1a` is reached only through those.
+
 ### Little-endian bytes (`KadmiumFormal/Bytes.lean`)
 
 | Theorem | Statement | Rust item |
@@ -57,6 +59,8 @@ Every RepOps tree theorem holds for an arbitrary addition `add : α → α → �
 | `Network.decode_shortMagic`, `decode_badMagic`, `decode_shortHeader`, `decode_badKind`, `decode_oversize`, `decode_truncated` | A short input, an unknown magic, a short header, a kind byte outside `1 ..= 15`, a declared length above `2^30` and a payload shorter than declared are rejected. The oversize rejection holds for every payload, so the length is refused before any payload byte is read or allocated. | `WireFrame::decode`, `WireFrame::parse_header`, `WireFrame::read_from_stream` |
 | `Network.decode_ok_payload_le` | Whatever decodes carries at most `2^30` payload bytes. | `WireFrame::decode` |
 | `Network.encode_not_total` | A frame with more than `2^30` payload bytes never round-trips: `encode` writes `payload.len() as u32` and does not check the cap. See Findings. | `WireFrame::encode_with_request_id` |
+
+Fixture: `crates/kadmium-network/tests/wire_frame_lean_vectors.rs` runs every frame and every rejected input through both `WireFrame::decode` and `WireFrame::read_from_stream`.
 
 ### XOR page parity (`Network/XorParity.lean`)
 
@@ -74,6 +78,8 @@ Every RepOps tree theorem holds for an arbitrary addition `add : α → α → �
 | `Data.bank_getElem?` | Byte `j` of tensor `i` is at `offsets[i] + j` of the bank image, unchanged, for every tensor including empty ones. The copy into a bank is byte-exact. | `KtbBankPacker::pack_to_bytes`, `checkpoint::write_bank` |
 | `Data.reader_accepts` | Every entry the packer writes passes the reader's range check, so `from_slice(pack(..))` never rejects a packed bank. | `KtbBankReader::from_slice`, `KtbBankReader::tensor_range` |
 
+Fixture: `crates/kadmium-data/tests/ktb_layout_lean_vectors.rs` exercises `KtbBankPacker::pack_to_bytes` and `KtbBankReader`. `checkpoint::write_bank` and `Checkpoint::verify` compute the same reservation and offset formula but write and read files; they are covered as a model only, read against the model rather than run against the fixture.
+
 ### FTS3 chunk manifests (`Data/Fts3Chunks.lean`)
 
 | Theorem | Statement | Rust item |
@@ -86,8 +92,8 @@ Every RepOps tree theorem holds for an arbitrary addition `add : α → α → �
 | Theorem | Statement | Rust item |
 | :--- | :--- | :--- |
 | `Data.coalesce_members` | The members of the requests, in request order, are the slice indices `0 .. n`, each once: every slice is fetched by exactly one request. | `HfByteRangeSlicer::coalesce_range_requests` |
-| `Data.coalesce_contains`, `Data.coalesce_separated` | Every member lies inside its request's byte range, and consecutive requests are more than `max_gap_bytes` apart. | `HfByteRangeSlicer::coalesce_range_requests` |
-| `Data.coalesce_valid` | Every request fetches no run of more than `max_gap_bytes` unrequested bytes. | `HfByteRangeSlicer::coalesce_range_requests` |
+| `Data.coalesce_contains`, `Data.coalesce_start_attained`, `Data.coalesce_stop_attained`, `Data.coalesce_separated` | Every member lies inside its request's byte range, every request begins at a member's first byte and ends at a member's last byte, and consecutive requests are more than `max_gap_bytes` apart. | `HfByteRangeSlicer::coalesce_range_requests` |
+| `Data.coalesce_valid` | Every window of `max_gap_bytes + 1` consecutive bytes inside a request touches a member, so, with the ends attained, a request fetches no run of more than `max_gap_bytes` unrequested bytes anywhere. | `HfByteRangeSlicer::coalesce_range_requests` |
 | `Data.coalesce_optimal` | **Fewest requests.** Any list of requests, each containing the slices it serves and fetching no run of more than `max_gap_bytes` unrequested bytes, whose members together cover every slice, has at least as many requests as the loop produces. Cost model: the number of HTTP requests, subject to the gap bound. The model covers one URL; slices of different URLs never merge. | `HfByteRangeSlicer::coalesce_range_requests` |
 
 ### Storage pool (`KadmiumFormal/StoragePool.lean`)
@@ -132,7 +138,7 @@ The differential fixture is `crates/kadmium-data/tests/fixtures/transport_chunk_
 | :--- | :--- | :--- |
 | `Grid.Redundancy.normalized_valid`, `normalized_idem`, `valid_iff_normalized_eq` | Normalisation establishes `1 ≤ min_quorum ≤ target_replicas ≤ max_replicas`, is idempotent, and leaves exactly the valid policies unchanged. | `RedundancyPolicy::normalized` |
 | `Grid.Redundancy.le_normalized` | Normalisation never lowers a count, so a quorum the operator asked for is never weakened. | `RedundancyPolicy::normalized` |
-| `Grid.evict_spec` | The replicas offered for eviction are the shortest prefix of the sorted unpinned replicas that frees the requested bytes, or every unpinned replica. | `ReplicaCatalog::evict_candidates` |
+| `Grid.evict_spec` | The replicas offered for eviction are the shortest prefix of the sorted unpinned replicas that frees the requested bytes, or every unpinned replica. This is about prefixes of the `(hits, last_access)` order; the loop does not search for the smallest sufficient subset over all replicas and the theorem does not claim one. | `ReplicaCatalog::evict_candidates` |
 
 ### Round-robin row shares (`Sharding/RowShare.lean`)
 
@@ -153,7 +159,7 @@ The differential fixture is `crates/kadmium-data/tests/fixtures/transport_chunk_
 | Theorem | Statement | Rust item |
 | :--- | :--- | :--- |
 | `Runtime.decodeF32_encodeF32`, `Runtime.decodePart_encodePart` | The encoders' output decodes back to the input for every batch whose counts fit `u32`. | `TokenBatchF32::{to_le_bytes, from_le_bytes}`, `ExpertPartialsBatch::{to_le_bytes, from_le_bytes}` |
-| `Runtime.decodeF32_exact`, `Runtime.decodePart_exact` | An accepted body has exactly the length its header implies, so nothing is read past it. | `TokenBatchF32::from_le_bytes`, `ExpertPartialsBatch::from_le_bytes` |
+| `Runtime.decodeF32_exact`, `Runtime.decodePart_exact` | An accepted `F32B` body has exactly `rows * dim * 4` bytes. An accepted `PART` input has exactly `20 + count * (8 + dim * 4)` bytes, where `count` is both the header's count field and the number of decoded partials, and every decoded partial carries `dim * 4` data bytes. Nothing is read past the input. | `TokenBatchF32::from_le_bytes`, `ExpertPartialsBatch::from_le_bytes` |
 | `Runtime.wrapped_accepts_empty_f32`, `Runtime.wrapped_accepts_header_only_part`, and their `checked_rejects_*` counterparts | In wrapping `usize` arithmetic a `2^31 × 2^31` `F32B` header and a `PART` header for `2^31` partials of width `2^31 - 2` both imply an empty body; the checked arithmetic rejects both. See Findings. | `TokenBatchF32::from_le_bytes`, `ExpertPartialsBatch::from_le_bytes` |
 
 Modelling assumptions shared by these results:
@@ -186,8 +192,12 @@ lake exe kadmium_vectors ..
 cd ..
 cargo test --locked -p kadmium-runtime --test repops_lean_vectors
 cargo test --locked -p kadmium-data --test transport_lean_vectors --test storage_pool_lean_vectors
-cargo test --locked -p kadmium-runtime -p kadmium-network -p kadmium-data -p kadmium-grid -p kadmium-sharding -- lean_vectors
+for crate in kadmium-runtime kadmium-network kadmium-data kadmium-grid kadmium-sharding; do
+  cargo test --locked -p "$crate" --test '*_lean_vectors'
+done
 ```
+
+`--test` selects integration-test binaries by name and accepts a glob. A bare trailing filter such as `-- lean_vectors` would match test function names instead, and no test function is named that way, so it runs nothing and still exits 0.
 
 `lake build --wfail` checks every proof and turns warnings, including `declaration uses 'sorry'`, into errors. `KadmiumFormal/Audit.lean` fails the build if a listed theorem depends on any axiom other than `propext`, `Classical.choice` and `Quot.sound`, which rules out `sorry`, `native_decide` and project-local axioms. CI runs all four executables and fails if any regenerated fixture differs from the committed one.
 
@@ -197,6 +207,6 @@ cargo test --locked -p kadmium-runtime -p kadmium-network -p kadmium-data -p kad
 2. State the theorem for the general case, such as every `add` or every input length, not for sample inputs.
 3. For an optimality claim, state the cost model and prove a lower bound over all alternatives, not only a bound for the chosen algorithm.
 4. Add the theorem to `KadmiumFormal/Audit.lean`.
-5. Add a fixture to `Fixtures.lean` and a Rust test named `<stem>_lean_vectors.rs` in the owning crate that reproduces it.
+5. Add a fixture to `Fixtures.lean` and a Rust test named `<stem>_lean_vectors.rs` in the owning crate that reproduces it. A row whose Rust item is not run against a fixture says "model only".
 6. Add a row to the results table, and cite the result elsewhere only with its label.
 7. If a later Rust change alters the behaviour of a covered item, update the model and the proof in the same PR.

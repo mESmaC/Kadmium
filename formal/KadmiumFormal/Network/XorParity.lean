@@ -8,9 +8,12 @@ page.
 
 Modelling choices:
 
-* A page is a function from byte position to byte value. The Rust asserts that every page in a
-  stripe has the same length and zips byte by byte; positions past the common length are never
-  read, so a model over total functions loses nothing.
+* A page is a function from byte position to byte value. `encode_xor_parity_page` asserts that
+  every page in a stripe has the same length; `reconstruct_missing_page_xor` does not assert it
+  and zips the parity with each page, so a page shorter than the parity leaves the parity's tail
+  untouched and a longer page has its tail ignored. Both functions touch only positions below the
+  shorter of the two lengths they zip, so a model over total functions, read at those positions,
+  loses nothing; the theorem is about those positions.
 * `reconstruct` skips the page at `missing_index` and panics if any other page is absent; the model
   takes the present pages (`List.eraseIdx`) and so covers every call that does not panic.
 

@@ -16,8 +16,13 @@ for r in candidates {
 The model takes the sorted byte sizes and returns how many leading candidates are chosen.
 Results: the chosen replicas are a prefix of the sorted order (`pickCount_le`), they free at least
 `bytes_needed` unless every unpinned replica is offered (`pick_reaches`), and no shorter prefix
-would do (`pick_minimal`), so a worker that must make room evicts the fewest, least valuable
-replicas that suffice. Pinned replicas are filtered before the loop and are never offered.
+would do (`pick_minimal`). The claim is about prefixes of the sorted order: the loop offers the
+shortest sufficient prefix of the least valuable replicas, not the smallest sufficient subset over
+all replicas, which it does not search for. Pinned replicas are filtered before the loop and are
+never offered.
+
+Modelling choices: byte counts are unbounded `Nat`; the Rust accumulates `freed` in a `u64` with
+unchecked `+=`, which wraps only past `2^64` bytes of replicas on one node.
 -/
 
 namespace Kadmium.Grid
