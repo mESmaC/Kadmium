@@ -1863,6 +1863,7 @@ dependencies = [
  "minijinja-contrib",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "tokenizers",
  "tokio",

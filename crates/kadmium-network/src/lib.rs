@@ -215,6 +215,9 @@ pub enum WireFrameKind {
     /// Batched, checkpoint-bound expert reads. Payload is a binary `KDEX` request/response
     /// defined by `kadmium-data`; replies reuse this kind and the request id.
     ExpertLoad = 15,
+    /// Authenticated native decoder slice session (`KDNS` open, exact-`f32` forward, close and
+    /// cancel). Replies reuse this kind and the request id.
+    NativeDecoderSession = 16,
 }
 
 impl WireFrameKind {
@@ -235,6 +238,7 @@ impl WireFrameKind {
             13 => Some(Self::DeltaHello),
             14 => Some(Self::DeltaFrame),
             15 => Some(Self::ExpertLoad),
+            16 => Some(Self::NativeDecoderSession),
             _ => None,
         }
     }
@@ -736,11 +740,12 @@ mod tests {
             (WireFrameKind::DeltaHello, 13u8),
             (WireFrameKind::DeltaFrame, 14u8),
             (WireFrameKind::ExpertLoad, 15u8),
+            (WireFrameKind::NativeDecoderSession, 16u8),
         ] {
             assert_eq!(kind as u8, byte);
             assert_eq!(WireFrameKind::from_u8(byte), Some(kind));
         }
-        assert_eq!(WireFrameKind::from_u8(16), None);
+        assert_eq!(WireFrameKind::from_u8(17), None);
     }
 
     #[tokio::test]

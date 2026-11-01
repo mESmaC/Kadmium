@@ -56,7 +56,8 @@ def wireFrames : Fixture :=
   let cases : List (Nat × Nat × Nat × Nat × Nat) :=
     -- kind, epoch, request id, payload seed, payload length
     [(1, 0, 0, 1, 0), (2, 7, 1, 2, 1), (10, 4294967295, 18446744073709551615, 3, 5),
-     (11, 65536, 4242, 4, 32), (15, 1, 1 <<< 40, 5, 100), (6, 123456789, 99, 6, 255)]
+     (11, 65536, 4242, 4, 32), (15, 1, 1 <<< 40, 5, 100), (16, 2, 77, 6, 16),
+     (6, 123456789, 99, 6, 255)]
   let frames := cases.map fun (k, e, r, seed, len) =>
     let payload := randomBytes seed len
     let f : Network.Frame := ⟨k, e, r, payload⟩
@@ -76,7 +77,7 @@ def wireFrames : Fixture :=
      [0x4B, 0x44, 0x4D, 0x33, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
      Network.MAGIC_V2 ++ [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
      Network.MAGIC_V2 ++ 0 :: (Bytes.encodeLE 4 1 ++ (Bytes.encodeLE 8 1 ++ Bytes.encodeLE 4 0)),
-     Network.MAGIC_V2 ++ 16 :: (Bytes.encodeLE 4 1 ++ (Bytes.encodeLE 8 1 ++ Bytes.encodeLE 4 0)),
+     Network.MAGIC_V2 ++ 17 :: (Bytes.encodeLE 4 1 ++ (Bytes.encodeLE 8 1 ++ Bytes.encodeLE 4 0)),
      Network.MAGIC_V2 ++ 1 :: (Bytes.encodeLE 4 1 ++ (Bytes.encodeLE 8 1 ++
        Bytes.encodeLE 4 (Network.MAX_PAYLOAD + 1))),
      Network.MAGIC_V2 ++ 1 :: (Bytes.encodeLE 4 1 ++ (Bytes.encodeLE 8 1 ++

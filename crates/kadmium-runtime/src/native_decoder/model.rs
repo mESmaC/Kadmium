@@ -15,6 +15,7 @@ use kadmium_data::{SafetensorsDtype, SafetensorsManifest};
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What one slice holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -689,6 +690,17 @@ impl DecoderSlice {
 
     /// Runs this slice's layers over `input`, appending its keys and values to `cache`.
     pub fn forward(&self, input: &Activations, cache: &mut KvCache) -> Result<Activations> {
+        self.forward_until(input, cache, &AtomicBool::new(false))
+    }
+
+    /// Runs this slice's layers over `input`, stopping between layers when `cancelled` is set and
+    /// restoring `cache` to the positions it held before the call.
+    pub fn forward_until(
+        &self,
+        input: &Activations,
+        cache: &mut KvCache,
+        cancelled: &AtomicBool,
+    ) -> Result<Activations> {
         let c = &self.config;
         if input.hidden_size != c.hidden_size {
             return Err(NativeDecoderError::Shape(format!(
@@ -716,6 +728,10 @@ impl DecoderSlice {
                 maximum: c.max_position_embeddings,
             });
         }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(NativeDecoderError::Cancelled("forward pass".into()));
+        }
+        let prior_len = cache.positions * c.kv_width();
         let added = rows * c.kv_width();
         for store in cache.keys.iter_mut().chain(cache.values.iter_mut()) {
             store
@@ -728,6 +744,12 @@ impl DecoderSlice {
         let (cos, sin) = self.rope_table(input.start_position, rows);
         let mut hidden = input.data.clone();
         for (index, block) in self.blocks.iter().enumerate() {
+            if cancelled.load(Ordering::Relaxed) {
+                for store in cache.keys.iter_mut().chain(cache.values.iter_mut()) {
+                    store.truncate(prior_len);
+                }
+                return Err(NativeDecoderError::Cancelled("forward pass".into()));
+            }
             hidden = self.block_forward(
                 block,
                 &hidden,
@@ -738,6 +760,12 @@ impl DecoderSlice {
                 &mut cache.keys[index],
                 &mut cache.values[index],
             );
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            for store in cache.keys.iter_mut().chain(cache.values.iter_mut()) {
+                store.truncate(prior_len);
+            }
+            return Err(NativeDecoderError::Cancelled("forward pass".into()));
         }
         cache.positions = end;
         Activations::new(input.start_position, c.hidden_size, hidden)
