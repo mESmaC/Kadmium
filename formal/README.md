@@ -157,7 +157,7 @@ The differential fixture is `crates/kadmium-data/tests/fixtures/transport_chunk_
 | `Sharding.LayerPlacement.planFrom_complete`, `planFrom_none_iff_infeasible`, `infeasible_when_total_exceeds_cluster_capacity` | `planFrom` returns `none` if and only if no valid full-context placement exists on the candidate machines, and any valid placement requires total stage bytes at most the sum of candidate machine capacities. | `LayerPlacementPlanner::plan_with_budgets` |
 | `Sharding.LayerPlacement.planFrom_optimal` | **Minimax relative memory load.** Among all valid placements on the candidate machines, `planFrom` minimizes the bottleneck per-machine relative memory load `totalBytes / capacityBytes` (compared exactly by cross-multiplication `loadLe`). Cost model: peak stage `totalBytes / capacityBytes`. | `LayerPlacementPlanner::plan_with_budgets` |
 
-Fixture: `crates/kadmium-sharding/tests/layer_placement_lean_vectors.rs` runs every fixture line from `crates/kadmium-sharding/tests/fixtures/layer_placement_lean_vectors.txt` through `CheckpointMemoryProfile` and `LayerPlacementPlanner::plan_with_budgets`. `crates/kadmium-runtime/tests/native_decoder.rs` checks that `checkpoint_memory_profile` matches `DecoderSlice::stored_weight_bytes()` and full-context `KvCache::bytes()` across all four model fixtures and every cut point.
+Fixture: `crates/kadmium-sharding/tests/layer_placement_lean_vectors.rs` runs every fixture line from `crates/kadmium-sharding/tests/fixtures/layer_placement_lean_vectors.txt` through `CheckpointMemoryProfile` and `LayerPlacementPlanner::plan_with_budgets`. `crates/kadmium-runtime/tests/native_decoder.rs` checks that `checkpoint_memory_profile` matches `DecoderSlice::stored_weight_bytes()` and full-context `KvCache::bytes()` across the model fixtures and every cut point.
 
 ### Verde bisection (`Runtime/Bisect.lean`)
 
@@ -174,9 +174,32 @@ Fixture: `crates/kadmium-sharding/tests/layer_placement_lean_vectors.rs` runs ev
 | `Runtime.decodeF32_exact`, `Runtime.decodePart_exact` | An accepted `F32B` body has exactly `rows * dim * 4` bytes. An accepted `PART` input has exactly `20 + count * (8 + dim * 4)` bytes, where `count` is both the header's count field and the number of decoded partials, and every decoded partial carries `dim * 4` data bytes. Nothing is read past the input. | `TokenBatchF32::from_le_bytes`, `ExpertPartialsBatch::from_le_bytes` |
 | `Runtime.wrapped_accepts_empty_f32`, `Runtime.wrapped_accepts_header_only_part`, and their `checked_rejects_*` counterparts | In wrapping `usize` arithmetic a `2^31 × 2^31` `F32B` header and a `PART` header for `2^31` partials of width `2^31 - 2` both imply an empty body; the checked arithmetic rejects both. See Findings. | `TokenBatchF32::from_le_bytes`, `ExpertPartialsBatch::from_le_bytes` |
 
+### Native Mistral attention mask (`Native/AttentionWindow.lean`)
+
+**Proved (model)** at `df20cc99d03800b445e1118daeb1859685eb4e2c`, checked with `cd formal && lake build --wfail`.
+The model describes `native_decoder::DecoderConfig::attention_range`, used by
+`DecoderSlice::block_forward`. For a query ending at exclusive position `stop`, a window
+includes the current token. It does not model floating-point logits, config parsing or cache
+storage. The differential test `attention_window_lean_vectors` compares Rust bounds with the
+generated Lean fixture, including zero positions, window boundaries and integer boundaries.
+
+| Theorem (full name) | Property in the model |
+| :--- | :--- |
+| `Kadmium.Native.Attention.visible_iff` | A key is visible exactly when it precedes `stop` and `stop <= key + width`. |
+| `Kadmium.Native.Attention.full_iff` | Full attention exposes exactly the keys preceding `stop`. |
+| `Kadmium.Native.Attention.current_visible` | A positive window includes the current query's key. |
+| `Kadmium.Native.Attention.width_exact` | The number of visible keys is `min width stop`. |
+| `Kadmium.Native.Attention.wide_window_is_full` | A window at least as wide as `stop` has the full-attention bounds. |
+| `Kadmium.Native.Attention.batch_independent` | The same absolute query position has the same bounds at any batch offset. |
+
+**Measured** test observations: `cargo test --locked -p kadmium-runtime --test native_decoder`
+checks the sliding Mistral fixture against Transformers logits, every layer cut and prefill
+boundary, mask isolation in one layer, and full-context KV storage. These are synthetic
+checkpoint tests, not a production-model benchmark or a proof of floating-point equivalence.
+
 ### Native decoder layer splits (`Native/LayerSplit.lean`)
 
-**Proved (model)**, about a model only: there is no differential fixture. A layer is any function of the activations and its own KV cache, so the statements hold bit for bit for `f32` without a floating-point model. The Rust test `splitting_the_layers_at_every_cut_is_bit_identical` in `crates/kadmium-runtime/tests/native_decoder.rs` checks the property on four checkpoint layouts, every pair of cuts, through prefill and token-by-token decode. Modelling choices are listed in the module docstring.
+**Proved (model)**, about a model only: there is no differential fixture. A layer is any function of the activations and its own KV cache, so the statements hold bit for bit for `f32` without a floating-point model. The Rust test `splitting_the_layers_at_every_cut_is_bit_identical` in `crates/kadmium-runtime/tests/native_decoder.rs` checks the property on the checkpoint layouts, every pair of cuts, through prefill and token-by-token decode. Modelling choices are listed in the module docstring.
 
 | Theorem | Statement | Rust item |
 | :--- | :--- | :--- |

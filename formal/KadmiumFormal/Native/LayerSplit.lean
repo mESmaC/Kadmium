@@ -27,7 +27,7 @@ Modelling choices:
 
 The link to the code is **model only**. The Rust test
 `splitting_the_layers_at_every_cut_is_bit_identical` (`crates/kadmium-runtime/tests/native_decoder.rs`)
-checks the property on four real checkpoint layouts, every pair of cuts, through prefill and
+checks the property on the checkpoint layouts, every pair of cuts, through prefill and
 token-by-token decode.
 -/
 

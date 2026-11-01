@@ -1,6 +1,6 @@
 //! Hugging Face `config.json` for the dense decoder families the native runtime executes.
 //!
-//! A field the decoder cannot honour exactly is an error, never an approximation: sliding-window
+//! A field the decoder cannot honour exactly is an error, never an approximation: hybrid
 //! attention, a RoPE scaling type other than default or `llama3`, an activation other than SiLU,
 //! and a `quantization_config` (a checkpoint quantized before import) are all refused with the
 //! reason. Defaults are the format's own documented defaults (`num_key_value_heads` equals
@@ -20,7 +20,7 @@ const CONFIG_FILE_LIMIT: u64 = 4 * 1024 * 1024;
 pub enum Architecture {
     /// `LlamaForCausalLM`: Llama 2, 3, 3.1, 3.2 and Llama-architecture derivatives.
     Llama,
-    /// `MistralForCausalLM` without sliding-window attention.
+    /// `MistralForCausalLM`, with full or model-declared sliding-window attention.
     Mistral,
     /// `Qwen2ForCausalLM`: Qwen2 and Qwen2.5, bias on the q, k and v projections.
     Qwen2,
@@ -69,6 +69,9 @@ pub struct DecoderConfig {
     pub rope_scaling: RopeScaling,
     /// The model's native context length: the decoder serves every position below it.
     pub max_position_embeddings: usize,
+    /// Mistral's architectural attention window, including the current token. This does not
+    /// lower the context limit or discard any cached keys and values. `None` is full attention.
+    pub sliding_window: Option<usize>,
     pub tie_word_embeddings: bool,
     pub qkv_bias: bool,
     pub o_bias: bool,
@@ -214,22 +217,14 @@ impl DecoderConfig {
             )));
         }
 
-        if let Some(types) = json.get("layer_types").and_then(Value::as_array)
-            && types.iter().any(|t| t.as_str() != Some("full_attention"))
-        {
-            return Err(unsupported(
-                "sliding-window attention layers (`layer_types`)",
-            ));
-        }
-        match architecture {
+        let sliding_window = match architecture {
             Architecture::Mistral => {
-                if let Some(window) = optional_positive(json, "sliding_window")?
-                    && window < max_position_embeddings
-                {
-                    return Err(unsupported(format!(
-                        "sliding-window attention ({window} of {max_position_embeddings} positions)"
-                    )));
+                if json.get("sliding_window").is_none() {
+                    return Err(invalid(
+                        "Mistral must declare `sliding_window`: a positive integer, or null for full attention",
+                    ));
                 }
+                optional_positive(json, "sliding_window")?
             }
             Architecture::Qwen2 | Architecture::Qwen3 => {
                 if flag(json, "use_sliding_window", false)? {
@@ -237,8 +232,27 @@ impl DecoderConfig {
                         "sliding-window attention (`use_sliding_window`)",
                     ));
                 }
+                None
             }
-            Architecture::Llama => {}
+            Architecture::Llama => None,
+        };
+        if let Some(types) = json.get("layer_types").filter(|v| !v.is_null()) {
+            let types = types
+                .as_array()
+                .ok_or_else(|| invalid("`layer_types` must be an array"))?;
+            let expected = if sliding_window.is_some() {
+                "sliding_attention"
+            } else {
+                "full_attention"
+            };
+            if types.iter().any(|t| t.as_str() != Some(expected)) {
+                return Err(unsupported(format!(
+                    "`layer_types` inconsistent with {expected}; hybrid attention is not implemented"
+                )));
+            }
+            if types.len() != num_layers {
+                return Err(invalid("`layer_types` must have one entry per layer"));
+            }
         }
 
         let (rope_theta, rope_scaling) = rope(json)?;
@@ -269,6 +283,7 @@ impl DecoderConfig {
             rope_theta,
             rope_scaling,
             max_position_embeddings,
+            sliding_window,
             tie_word_embeddings: flag(json, "tie_word_embeddings", false)?,
             qkv_bias,
             o_bias,
@@ -283,6 +298,14 @@ impl DecoderConfig {
 
     pub fn kv_width(&self) -> usize {
         self.num_kv_heads * self.head_dim
+    }
+
+    /// The keys visible to the query at `end - 1`, with `end` an exclusive absolute position.
+    /// Proved (model): `Kadmium.Native.Attention.visible_iff` models these bounds; the
+    /// `attention_window_lean_vectors` test compares this method with the Lean fixtures.
+    pub fn attention_range(&self, end: usize) -> std::ops::Range<usize> {
+        self.sliding_window
+            .map_or(0, |window| end.saturating_sub(window))..end
     }
 }
 
@@ -413,8 +436,51 @@ mod tests {
             "num_key_value_heads": 8, "rms_norm_eps": 1e-5, "max_position_embeddings": 32768,
             "sliding_window": 4096
         });
-        let error = DecoderConfig::from_json(&mistral).unwrap_err().to_string();
-        assert!(error.contains("4096") && error.contains("32768"), "{error}");
+        let config = DecoderConfig::from_json(&mistral).unwrap();
+        assert_eq!(config.sliding_window, Some(4096));
+        assert_eq!(config.max_position_embeddings, 32768);
+    }
+
+    #[test]
+    fn mistral_requires_an_explicit_valid_attention_layout() {
+        let mut json = llama();
+        json["architectures"] = json!(["MistralForCausalLM"]);
+        assert!(
+            DecoderConfig::from_json(&json)
+                .unwrap_err()
+                .to_string()
+                .contains("sliding_window")
+        );
+        for window in [json!(0), json!(-1), json!(1.5), json!("4"), json!(true)] {
+            json["sliding_window"] = window;
+            assert!(matches!(
+                DecoderConfig::from_json(&json),
+                Err(NativeDecoderError::Config(_))
+            ));
+        }
+        for (window, kind) in [
+            (json!(4), "sliding_attention"),
+            (Value::Null, "full_attention"),
+        ] {
+            json["sliding_window"] = window;
+            json["layer_types"] = json!(vec![kind; 28]);
+            DecoderConfig::from_json(&json).unwrap();
+            json["layer_types"][0] = json!("other_attention");
+            assert!(matches!(
+                DecoderConfig::from_json(&json),
+                Err(NativeDecoderError::Unsupported(_))
+            ));
+            json["layer_types"] = json!([kind]);
+            assert!(matches!(
+                DecoderConfig::from_json(&json),
+                Err(NativeDecoderError::Config(_))
+            ));
+            json["layer_types"] = json!(kind);
+            assert!(matches!(
+                DecoderConfig::from_json(&json),
+                Err(NativeDecoderError::Config(_))
+            ));
+        }
     }
 
     #[test]

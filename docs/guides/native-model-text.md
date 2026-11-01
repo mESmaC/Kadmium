@@ -84,9 +84,26 @@ Text-only comparisons were run on Windows on 2026-10-31 using the pinned Python 
 
 ## Current limitations
 
+The native decoder also accepts Mistral SafeTensors configurations with an explicit positive
+`sliding_window`, or `null` for full attention. The window comes from the architecture; it is
+not an operator context setting. Its mask bounds are **Proved (model)** by
+`Kadmium.Native.Attention.visible_iff` and `Kadmium.Native.Attention.full_iff` at
+`df20cc99d03800b445e1118daeb1859685eb4e2c` (`cd formal && lake build --wfail`), with a Rust differential fixture.
+See the [attention-mask proof scope](../../formal/README.md#native-mistral-attention-mask-nativeattentionwindowlean).
+
+**Measured** in the synthetic `mistral_sliding_f16` fixture: the native decoder passes the
+existing Transformers logit comparison and split-layer bit comparisons, retains the full KV
+cache through `max_position_embeddings`, and rejects an extra token. Reproduce with
+`cargo test --locked -p kadmium-runtime --test native_decoder`. Fixture provenance is recorded
+in `tests/fixtures/native_decoder/mistral_sliding_f16/reference.json` under `kadmium-runtime`:
+PyTorch 2.14.0+cpu and Transformers 5.22.1, generated on Windows on 2026-10-31. This is reference
+CPU execution; no speed or production-checkpoint result is claimed.
+
 - Only exported `tokenizer.json` assets are accepted; `tokenizer.model` alone needs an export.
 - The native decoder's architecture/configuration checks still apply. Text assets do not add
-  support for another architecture, sliding-window attention or quantized weights.
+  support for GGUF execution, MoE architectures, Qwen sliding/hybrid attention or quantized weights.
+- Mistral must explicitly declare its window or `null`; malformed windows and inconsistent
+  `layer_types` are rejected. Mixed full/sliding layers remain unsupported.
 - Wrapper options `add_prefix_space=true` and `split_special_tokens=true` are rejected. Conflicting
   added-token metadata or BOS/EOS postprocessor settings require matching exported assets.
   Resolved special tokens must already be registered as special in `tokenizer.json`. Merging
