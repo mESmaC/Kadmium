@@ -164,14 +164,30 @@ impl ModelText {
     /// Decode the complete token sequence, including byte-fallback sequences spanning tokens.
     /// This is not an incremental streaming decoder; callers must not emit independent tokens.
     pub fn decode(&self, ids: &[u32], skip_special_tokens: bool) -> Result<String> {
+        let text = self.decode_without_clean_up(ids, skip_special_tokens)?;
+        self.clean_up(&text)
+    }
+
+    /// `decode` before the Hugging Face `clean_up_tokenization_spaces` step. A caller that
+    /// separates one part of a sequence's text from another, such as the generated text from the
+    /// prompt, splits here and then applies [`ModelText::clean_up`] to its part, so a clean-up
+    /// replacement cannot reach across the boundary.
+    pub fn decode_without_clean_up(
+        &self,
+        ids: &[u32],
+        skip_special_tokens: bool,
+    ) -> Result<String> {
         self.validate_ids(ids)?;
-        let text = self
-            .tokenizer
+        self.tokenizer
             .decode(ids, skip_special_tokens)
-            .map_err(|e| ModelTextError::Tokenizer(e.to_string()))?;
+            .map_err(|e| ModelTextError::Tokenizer(e.to_string()))
+    }
+
+    /// The tokenizer's `clean_up_tokenization_spaces` step, when its config enables it.
+    pub fn clean_up(&self, text: &str) -> Result<String> {
         match self.tokenizer_config.get("clean_up_tokenization_spaces") {
-            Some(Value::Bool(true)) => Ok(clean_up(&text)),
-            Some(Value::Bool(false)) | Some(Value::Null) | None => Ok(text),
+            Some(Value::Bool(true)) => Ok(clean_up(text)),
+            Some(Value::Bool(false)) | Some(Value::Null) | None => Ok(text.to_owned()),
             Some(_) => Err(invalid("clean_up_tokenization_spaces must be a boolean")),
         }
     }

@@ -26,8 +26,8 @@
 //! `linear_is_identical_at_every_thread_count` pins 1 to 1,000 threads.
 //!
 //! Status: reference execution on the CPU, with byte-exact multi-machine layer placement
-//! ([`plan_checkpoint_placement`]). No wire protocol or Condenser route uses it yet, and its speed
-//! has not been measured.
+//! ([`plan_checkpoint_placement`]). `native_generation` generates across a chain of slices in one
+//! process. No wire protocol or Condenser route uses it yet, and its speed has not been measured.
 
 mod config;
 pub mod math;

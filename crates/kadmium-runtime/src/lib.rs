@@ -24,6 +24,7 @@ pub mod matrix_job;
 pub mod model_text;
 pub mod moe_layer;
 pub mod native_decoder;
+pub mod native_generation;
 /// Explicit approximate NPU execution, separate from RepOps verification paths.
 pub use kadmium_npu as npu;
 pub mod repops;

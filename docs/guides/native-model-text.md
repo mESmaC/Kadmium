@@ -44,7 +44,8 @@ Transformers `GenerationConfig`; no sampler is implemented here. A future genera
 implement or reject every active setting in `declared`, including settings outside the common
 fields. The declared `max_length` and `max_new_tokens` remain metadata; this adapter does not
 use them to cap generation. `find_stop` searches the complete decoded generated text, excluding
-the prompt. Streaming stop buffering and token selection belong to the coordinator work.
+the prompt. Token selection and streaming with stop strings are in
+[native generation](native-generation.md), which implements or refuses every declared setting.
 
 ## Quality contract and proof scope
 

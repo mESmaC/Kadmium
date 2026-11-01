@@ -225,6 +225,21 @@ are opaque inputs to this model. These theorems do not prove Hugging Face or Jin
 | `Native.Text.template_visible_iff`, `Native.Text.unset_template_hidden`, `Native.Text.tokenizer_flags_hidden` | Only populated special-token attributes enter the template context; unset values and BOS/EOS configuration flags do not. Parsing and descriptor registration are outside the model. The Transformers differential fixture checks these branches. | `specials::resolve`, `template::render` |
 | `Native.Text.mem_mergeAdditional` | The string-only additional-token merge contains exactly tokens from either input. Model only, with the `legacy_null_and_union` Transformers differential example. Descriptor merges are refused rather than modelled. | `specials::resolve` additional-token merge |
 
+### Native generation (`Native/Generation.lean`)
+
+Two results about `native_generation::generate`, the coordinator loop that generates across a chain of stages.
+
+Where the layers are cut cannot change a generated token. This is **Proved (model)** about a model only; there is no differential fixture. The token embedding and the LM head are folded into the embedding and selection functions, and the sampler's state, including its random generator, is threaded through selection. The Rust test `chain_generation_is_identical_at_every_cut` in `crates/kadmium-runtime/tests/native_generation.rs` checks the property on four checkpoint layouts at every pair of cuts, greedily against an independent decoding loop and with sampling from one seed.
+
+Streamed-text holdback is **Proved (model)** with a differential fixture: `lake exe kadmium_vectors` writes `crates/kadmium-runtime/tests/fixtures/generation_lean_vectors.txt`, and `held_back_len_matches_the_lean_model` in `tests/generation_lean_vectors.rs` requires `held_back_len` to reproduce `heldBack` on every line. The model's text grows only by appending. The Rust code first removes a trailing U+FFFD, which a later token may complete, and checks at run time that the decoded text keeps extending what was sent; the tokenizer is not modelled.
+
+| Theorem | Statement | Rust item |
+| :--- | :--- | :--- |
+| `Native.Generation.runLayers_length`, `Native.Generation.runChain_aligned` | A pass keeps one cache per cache it was given, so a chain's caches stay aligned with its slices from step to step. | `DecoderSlice::forward` over a chain of slices |
+| `Native.Generation.generate_chain_eq_whole` | For any selection function and stopping rule, generating over a chain of slices with aligned caches gives exactly the tokens of generating over one slice that holds all their layers. | `native_generation::generate`, `Chain::step` |
+| `Native.Generation.emitLen_mono`, `Native.Generation.emitted_prefix` | When the text grows, the number of bytes sent never decreases, and what was sent before is a prefix of what is sent after. | `native_generation::held_back_len`, `text::TextStream::push` |
+| `Native.Generation.emitLen_le_stop` | If the text so far holds no whole stop string and its continuation completes one at offset `p`, nothing from `p` on was sent. | `text::TextStream::push` |
+
 
 Modelling assumptions shared by these results:
 
