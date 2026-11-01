@@ -58,6 +58,9 @@ theorem nextPow2_spec (n : Nat) :
   ⟨⟨ceilLog2 n, rfl⟩, le_two_pow_ceilLog2 n,
     fun _ hk => Nat.pow_le_pow_right (by decide) (ceilLog2_le_of_le_two_pow hk)⟩
 
+theorem ceilLog2_mono {a b : Nat} (h : a ≤ b) : ceilLog2 a ≤ ceilLog2 b :=
+  ceilLog2_le_of_le_two_pow (Nat.le_trans h (le_two_pow_ceilLog2 b))
+
 theorem ceilLog2_two_pow (k : Nat) : ceilLog2 (2 ^ k) = k := by
   apply Nat.le_antisymm (ceilLog2_le_of_le_two_pow (Nat.le_refl _))
   exact (Nat.pow_le_pow_iff_right (by decide)).mp (le_two_pow_ceilLog2 (2 ^ k))

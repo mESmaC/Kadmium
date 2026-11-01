@@ -274,7 +274,11 @@ impl ResourceOffer {
         Self {
             fast_memory_gb: vram_share * vram_factor + unified_share * unified_factor,
             system_ram_gb: self.system_ram_gb * rho,
-            nvme_gb: self.nvme_gb,
+            nvme_gb: if state == PoliteState::Draining {
+                0.0
+            } else {
+                self.nvme_gb
+            },
             reserved_ram_gb: self.reserved_ram_gb,
             slots: if state == PoliteState::Draining {
                 0

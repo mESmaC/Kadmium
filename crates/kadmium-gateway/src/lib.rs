@@ -212,6 +212,543 @@ pub struct GatewayState {
     pub last_measured_pipeline_latency_ms: Option<f64>,
     /// Checkpoint id training was last resumed from via `/api/v1/training/resume`.
     pub resumed_from_checkpoint: Option<String>,
+    /// Active model quality and context/token limits (always full native maxima unless manually lowered by the user).
+    pub quality_limits: ModelQualityLimits,
+    /// True only when the user has explicitly lowered one or more model quality limits.
+    pub user_lowered_quality_limits: bool,
+    /// Local access token required for HTTP bucket write/delete operations.
+    pub bucket_write_token: String,
+    /// Isolated bucket store directory used when `persistent_state_dir` is at its default in-memory test value.
+    pub default_test_bucket_dir: std::path::PathBuf,
+}
+
+/// Severity of quality/capability impact when a user manually lowers a model limit below its native maximum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum QualityTradeoffSeverity {
+    /// Full native model capability — zero quality degradation.
+    Uncompromised,
+    /// Minor capability bound reduction; local reasoning quality preserved on shorter tasks.
+    ModerateTradeoff,
+    /// Significant capability reduction; multi-file context, deep reasoning, or MoE routing fidelity degraded.
+    SevereDegradationWarning,
+}
+
+/// Per-dimension tradeoff analysis when a model parameter is kept at native maximum vs. manually lowered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualityTradeoffDimension {
+    pub parameter: String,
+    pub label: String,
+    pub native_maximum: String,
+    pub active_setting: String,
+    pub manually_lowered: bool,
+    pub retained_ratio_pct: f64,
+    pub severity: QualityTradeoffSeverity,
+    pub resource_tradeoff: String,
+    pub quality_impact: String,
+}
+
+/// Explicit tradeoff report returned whenever model quality/context limits are inspected or modified.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QualityTradeoffReport {
+    pub model_id: String,
+    pub model_display_name: String,
+    pub is_uncompromised_maximum_quality: bool,
+    pub overall_severity: QualityTradeoffSeverity,
+    pub effective_context_window_tokens: Option<u32>,
+    pub effective_max_input_tokens: Option<u32>,
+    pub effective_max_output_tokens: Option<u32>,
+    pub effective_active_experts_per_token: u32,
+    pub context_retention_pct: f64,
+    pub estimated_kv_cache_savings_pct: f64,
+    pub kv_cache_memory_reduction_pct: f64,
+    pub tradeoffs: Vec<QualityTradeoffDimension>,
+    pub summary_banner: String,
+}
+
+/// Per-model user override settings stored inside `ModelQualityLimits::per_model_overrides`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerModelQualityOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_context_window_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_max_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_active_experts_per_token: Option<u32>,
+}
+
+impl PerModelQualityOverrides {
+    pub fn is_all_none(&self) -> bool {
+        self.user_override_context_window_tokens.is_none()
+            && self.user_override_max_input_tokens.is_none()
+            && self.user_override_max_output_tokens.is_none()
+            && self.user_override_active_experts_per_token.is_none()
+    }
+}
+
+/// User-configurable model quality and context limits.
+/// Defaults to `None` on every override field, which means **100% uncompromised native model maxima**
+/// and no artificial cap on output tokens unless explicitly requested by the user.
+/// For unknown models (`ModelSpec::try_native_max_context_tokens() == None`), `native_max_context_window_tokens`
+/// and `native_max_input_tokens` remain `None` (`backend-reported`) rather than inventing a window
+/// (`Kadmium.StoragePool.qualityLimitsCtx_unknown` — **Proved (model)**).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelQualityLimits {
+    /// Model ID to which the top-level `native_*` and `user_override_*` fields currently apply.
+    #[serde(default)]
+    pub model_id: String,
+    #[serde(default)]
+    pub native_max_context_window_tokens: Option<u32>,
+    #[serde(default)]
+    pub native_max_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_max_output_tokens: Option<u32>,
+    pub native_active_experts_per_token: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_context_window_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_max_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_active_experts_per_token: Option<u32>,
+    /// Per-model override map so lowering a limit on one model never leaks to another model
+    /// and switching models preserves each model's own overrides without clamping.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_model_overrides: BTreeMap<String, PerModelQualityOverrides>,
+}
+
+impl ModelQualityLimits {
+    /// Returns the uncompromised native maxima for a given `ModelSpec`.
+    /// Native context window is derived from `ModelSpec::try_native_max_context_tokens()` (`None`
+    /// for unknown models so no window is fabricated).
+    pub fn for_model(model: &ModelSpec) -> Self {
+        let native_ctx = model.try_native_max_context_tokens();
+        let native_experts = if model.is_moe {
+            model.active_experts_per_token.max(1)
+        } else {
+            1
+        };
+        Self {
+            model_id: model.id.clone(),
+            native_max_context_window_tokens: native_ctx,
+            native_max_input_tokens: native_ctx,
+            native_max_output_tokens: None,
+            native_active_experts_per_token: native_experts,
+            user_override_context_window_tokens: None,
+            user_override_max_input_tokens: None,
+            user_override_max_output_tokens: None,
+            user_override_active_experts_per_token: None,
+            per_model_overrides: BTreeMap::new(),
+        }
+    }
+
+    fn save_current_overrides_to_map(&mut self) {
+        if self.model_id.is_empty() {
+            return;
+        }
+        let ov = PerModelQualityOverrides {
+            user_override_context_window_tokens: self.user_override_context_window_tokens,
+            user_override_max_input_tokens: self.user_override_max_input_tokens,
+            user_override_max_output_tokens: self.user_override_max_output_tokens,
+            user_override_active_experts_per_token: self.user_override_active_experts_per_token,
+        };
+        if ov.is_all_none() {
+            self.per_model_overrides.remove(&self.model_id);
+        } else {
+            self.per_model_overrides.insert(self.model_id.clone(), ov);
+        }
+    }
+
+    pub fn has_any_overrides(&self) -> bool {
+        !self.is_uncompromised()
+            || self
+                .per_model_overrides
+                .values()
+                .any(|ov| !ov.is_all_none())
+    }
+
+    /// Re-anchors the `native_*` fields to `model`'s authoritative `ModelSpec`, loading only
+    /// overrides scoped to `model.id` and clamping them to `model`'s native bounds.
+    pub fn sync_native_with_model(&mut self, model: &ModelSpec) {
+        if self.model_id.is_empty() {
+            self.model_id = model.id.clone();
+        } else if self.model_id != model.id {
+            self.save_current_overrides_to_map();
+            self.model_id = model.id.clone();
+            let stored = self
+                .per_model_overrides
+                .get(&model.id)
+                .cloned()
+                .unwrap_or_default();
+            self.user_override_context_window_tokens = stored.user_override_context_window_tokens;
+            self.user_override_max_input_tokens = stored.user_override_max_input_tokens;
+            self.user_override_max_output_tokens = stored.user_override_max_output_tokens;
+            self.user_override_active_experts_per_token =
+                stored.user_override_active_experts_per_token;
+        }
+
+        let fresh = Self::for_model(model);
+        self.native_max_context_window_tokens = fresh.native_max_context_window_tokens;
+        self.native_max_input_tokens = fresh.native_max_input_tokens;
+        self.native_max_output_tokens = fresh.native_max_output_tokens;
+        self.native_active_experts_per_token = fresh.native_active_experts_per_token;
+        if let Some(ctx) = self.user_override_context_window_tokens {
+            self.user_override_context_window_tokens = match self.native_max_context_window_tokens {
+                Some(nat) => Some(ctx.clamp(1, nat.max(1))),
+                None => Some(ctx.max(1)),
+            };
+        }
+        let eff_ctx = self.effective_context_window_tokens();
+        if let Some(inp) = self.user_override_max_input_tokens {
+            self.user_override_max_input_tokens = match eff_ctx {
+                Some(ctx_cap) => Some(inp.clamp(1, ctx_cap.max(1))),
+                None => Some(inp.max(1)),
+            };
+        }
+        if let Some(out) = self.user_override_max_output_tokens {
+            self.user_override_max_output_tokens = match eff_ctx {
+                Some(ctx_cap) => Some(out.clamp(1, ctx_cap.max(1))),
+                None => Some(out.max(1)),
+            };
+        }
+        if model.is_moe {
+            if let Some(exp) = self.user_override_active_experts_per_token {
+                self.user_override_active_experts_per_token =
+                    Some(exp.clamp(1, self.native_active_experts_per_token.max(1)));
+            }
+        } else {
+            self.user_override_active_experts_per_token = None;
+        }
+        self.save_current_overrides_to_map();
+    }
+
+    pub fn effective_context_window_tokens(&self) -> Option<u32> {
+        match (
+            self.user_override_context_window_tokens,
+            self.native_max_context_window_tokens,
+        ) {
+            (Some(v), Some(nat)) => Some(v.clamp(1, nat.max(1))),
+            (Some(v), None) => Some(v.max(1)),
+            (None, Some(nat)) => Some(nat),
+            (None, None) => None,
+        }
+    }
+
+    pub fn effective_max_input_tokens(&self) -> Option<u32> {
+        let eff_ctx = self.effective_context_window_tokens();
+        match (
+            self.user_override_max_input_tokens,
+            self.native_max_input_tokens,
+            eff_ctx,
+        ) {
+            (Some(v), _, Some(ctx)) => Some(v.clamp(1, ctx.max(1))),
+            (Some(v), Some(nat), None) => Some(v.clamp(1, nat.max(1))),
+            (Some(v), None, None) => Some(v.max(1)),
+            (None, Some(nat), Some(ctx)) => Some(nat.min(ctx)),
+            (None, Some(nat), None) => Some(nat),
+            (None, None, Some(ctx)) => Some(ctx),
+            (None, None, None) => None,
+        }
+    }
+
+    /// Returns an output token limit only when explicitly configured (`user_override_max_output_tokens`
+    /// or `native_max_output_tokens`). Returns `None` by default so output length is bounded only
+    /// by the effective context window.
+    pub fn effective_max_output_tokens(&self) -> Option<u32> {
+        let eff_ctx = self.effective_context_window_tokens();
+        match (
+            self.user_override_max_output_tokens,
+            self.native_max_output_tokens,
+            eff_ctx,
+        ) {
+            (Some(user_cap), Some(native_cap), Some(ctx)) => {
+                Some(user_cap.clamp(1, native_cap.min(ctx).max(1)))
+            }
+            (Some(user_cap), Some(native_cap), None) => Some(user_cap.clamp(1, native_cap.max(1))),
+            (Some(user_cap), None, Some(ctx)) => Some(user_cap.clamp(1, ctx.max(1))),
+            (Some(user_cap), None, None) => Some(user_cap.max(1)),
+            (None, Some(native_cap), Some(ctx)) => Some(native_cap.min(ctx)),
+            (None, Some(native_cap), None) => Some(native_cap),
+            (None, None, _) => None,
+        }
+    }
+
+    pub fn effective_active_experts_per_token(&self) -> u32 {
+        let native = self.native_active_experts_per_token.max(1);
+        self.user_override_active_experts_per_token
+            .map(|v| v.clamp(1, native))
+            .unwrap_or(native)
+    }
+
+    pub fn reset_to_maximum_quality(&mut self) {
+        self.user_override_context_window_tokens = None;
+        self.user_override_max_input_tokens = None;
+        self.user_override_max_output_tokens = None;
+        self.user_override_active_experts_per_token = None;
+        self.save_current_overrides_to_map();
+    }
+
+    pub fn is_uncompromised(&self) -> bool {
+        let ctx_uncompromised = match (
+            self.effective_context_window_tokens(),
+            self.native_max_context_window_tokens,
+        ) {
+            (None, None) => true,
+            (Some(eff), Some(nat)) => eff >= nat,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+        };
+        let in_uncompromised = match (
+            self.effective_max_input_tokens(),
+            self.native_max_input_tokens,
+        ) {
+            (None, None) => true,
+            (Some(eff), Some(nat)) => eff >= nat,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+        };
+        let out_uncompromised = match (
+            self.effective_max_output_tokens(),
+            self.native_max_output_tokens,
+        ) {
+            (None, None) => true,
+            (Some(eff), Some(nat)) => eff >= nat,
+            (Some(_), None) => false,
+            (None, Some(_)) => true,
+        };
+        ctx_uncompromised
+            && in_uncompromised
+            && out_uncompromised
+            && self.effective_active_experts_per_token()
+                >= self.native_active_experts_per_token.max(1)
+    }
+
+    pub fn evaluate_tradeoffs(&self, model: &ModelSpec) -> QualityTradeoffReport {
+        let eff_ctx = self.effective_context_window_tokens();
+        let eff_in = self.effective_max_input_tokens();
+        let eff_out = self.effective_max_output_tokens();
+        let eff_exp = self.effective_active_experts_per_token();
+
+        let ctx_ratio = match (eff_ctx, self.native_max_context_window_tokens) {
+            (Some(eff), Some(nat)) => (eff as f64 / nat.max(1) as f64) * 100.0,
+            (None, None) => 100.0,
+            (Some(_), None) => 50.0,
+            (None, Some(_)) => 100.0,
+        };
+        let in_ratio = match (eff_in, self.native_max_input_tokens) {
+            (Some(eff), Some(nat)) => (eff as f64 / nat.max(1) as f64) * 100.0,
+            (None, None) => 100.0,
+            (Some(_), None) => 50.0,
+            (None, Some(_)) => 100.0,
+        };
+        let out_baseline = self
+            .native_max_output_tokens
+            .or(eff_ctx)
+            .unwrap_or(1)
+            .max(1);
+        let out_ratio = match eff_out {
+            Some(cap) => ((cap as f64 / out_baseline as f64) * 100.0).min(100.0),
+            None => 100.0,
+        };
+        let exp_ratio =
+            (eff_exp as f64 / self.native_active_experts_per_token.max(1) as f64) * 100.0;
+
+        let classify = |pct: f64| -> QualityTradeoffSeverity {
+            if pct >= 99.9 {
+                QualityTradeoffSeverity::Uncompromised
+            } else if pct >= 50.0 {
+                QualityTradeoffSeverity::ModerateTradeoff
+            } else {
+                QualityTradeoffSeverity::SevereDegradationWarning
+            }
+        };
+
+        let ctx_sev = classify(ctx_ratio);
+        let in_sev = classify(in_ratio);
+        let out_sev = if eff_out.is_none() {
+            QualityTradeoffSeverity::Uncompromised
+        } else {
+            classify(out_ratio)
+        };
+        let exp_sev = if model.is_moe {
+            classify(exp_ratio)
+        } else {
+            QualityTradeoffSeverity::Uncompromised
+        };
+
+        let total_kv_gb = (model.num_layers as f64) * model.kv_cache_per_layer_gb;
+        let saved_kv_gb = total_kv_gb * (1.0 - (ctx_ratio / 100.0)).max(0.0);
+        let kv_reduction_pct = ((100.0 - ctx_ratio).max(0.0) * 10.0).round() / 10.0;
+
+        let ctx_native_label = match self.native_max_context_window_tokens {
+            Some(nat) => format!("{nat} tokens"),
+            None => "backend-reported".to_string(),
+        };
+        let ctx_active_label = match eff_ctx {
+            Some(ctx) => format!("{ctx} tokens"),
+            None => "backend-reported".to_string(),
+        };
+        let in_native_label = match self.native_max_input_tokens {
+            Some(nat) => format!("{nat} tokens"),
+            None => "backend-reported".to_string(),
+        };
+        let in_active_label = match eff_in {
+            Some(inp) => format!("{inp} tokens"),
+            None => "backend-reported".to_string(),
+        };
+
+        let mut tradeoffs = vec![
+            QualityTradeoffDimension {
+                parameter: "context_window_tokens".to_string(),
+                label: "Context window".to_string(),
+                native_maximum: ctx_native_label,
+                active_setting: ctx_active_label.clone(),
+                manually_lowered: self.user_override_context_window_tokens.is_some(),
+                retained_ratio_pct: (ctx_ratio * 10.0).round() / 10.0,
+                severity: ctx_sev,
+                resource_tradeoff: if saved_kv_gb > 0.01 {
+                    format!(
+                        "Saves {:.2} GiB KV-cache memory across {} layers ({:.1}% reduction)",
+                        saved_kv_gb, model.num_layers, kv_reduction_pct
+                    )
+                } else {
+                    format!(
+                        "Full {:.2} GiB KV-cache allocated across {} layers",
+                        total_kv_gb, model.num_layers
+                    )
+                },
+                quality_impact: match ctx_sev {
+                    QualityTradeoffSeverity::Uncompromised => "Full native context window active; zero truncation on long repositories or documents.".to_string(),
+                    QualityTradeoffSeverity::ModerateTradeoff => "Reduced context window; very large multi-file repositories or long conversation histories may require compaction sooner.".to_string(),
+                    QualityTradeoffSeverity::SevereDegradationWarning => "Severely reduced context window; long-range cross-file reasoning and large document recall will be truncated.".to_string(),
+                },
+            },
+            QualityTradeoffDimension {
+                parameter: "max_input_tokens".to_string(),
+                label: "Max input tokens".to_string(),
+                native_maximum: in_native_label,
+                active_setting: in_active_label.clone(),
+                manually_lowered: self.user_override_max_input_tokens.is_some()
+                    || (self.user_override_context_window_tokens.is_some()
+                        && eff_in != self.native_max_input_tokens),
+                retained_ratio_pct: (in_ratio * 10.0).round() / 10.0,
+                severity: in_sev,
+                resource_tradeoff: if in_ratio < 99.9 {
+                    format!(
+                        "Caps prefill batch buffer at {} ({:.1}% of native)",
+                        in_active_label, in_ratio
+                    )
+                } else {
+                    "Full native prompt prefill capacity enabled".to_string()
+                },
+                quality_impact: match in_sev {
+                    QualityTradeoffSeverity::Uncompromised => "Accepts full-length prompts, tool outputs, and repository snapshots without clipping.".to_string(),
+                    QualityTradeoffSeverity::ModerateTradeoff => "Prompts exceeding the manual cap will be rejected with HTTP 400.".to_string(),
+                    QualityTradeoffSeverity::SevereDegradationWarning => "Large prompts and multi-file attachments exceeding the manual cap will be rejected.".to_string(),
+                },
+            },
+            QualityTradeoffDimension {
+                parameter: "max_output_tokens".to_string(),
+                label: "Max output tokens".to_string(),
+                native_maximum: match self.native_max_output_tokens {
+                    Some(nat) => format!("{nat} tokens"),
+                    None => "Uncapped (bounded by context window)".to_string(),
+                },
+                active_setting: match eff_out {
+                    Some(cap) => format!("{cap} tokens"),
+                    None => "Uncapped (bounded by context window)".to_string(),
+                },
+                manually_lowered: self.user_override_max_output_tokens.is_some(),
+                retained_ratio_pct: (out_ratio * 10.0).round() / 10.0,
+                severity: out_sev,
+                resource_tradeoff: match eff_out {
+                    Some(cap) => format!("Bounds decode generation horizon to {cap} tokens"),
+                    None => "No artificial output token cap; full context window available".to_string(),
+                },
+                quality_impact: match out_sev {
+                    QualityTradeoffSeverity::Uncompromised => "Full chain-of-thought and whole-file code generation supported without early stop.".to_string(),
+                    QualityTradeoffSeverity::ModerateTradeoff => "Long multi-file code generations or extended reasoning traces may hit max_tokens early.".to_string(),
+                    QualityTradeoffSeverity::SevereDegradationWarning => "Extended reasoning chains and complete file outputs risk mid-response truncation.".to_string(),
+                },
+            },
+        ];
+
+        if model.is_moe {
+            tradeoffs.push(QualityTradeoffDimension {
+                parameter: "active_experts_per_token".to_string(),
+                label: "Active MoE experts / token".to_string(),
+                native_maximum: format!("Top-{}", self.native_active_experts_per_token),
+                active_setting: format!("Top-{}", eff_exp),
+                manually_lowered: eff_exp < self.native_active_experts_per_token,
+                retained_ratio_pct: (exp_ratio * 10.0).round() / 10.0,
+                severity: exp_sev,
+                resource_tradeoff: if exp_ratio < 99.9 {
+                    format!(
+                        "Activates {}/{} experts per token ({:.0}% MoE bandwidth reduction)",
+                        eff_exp,
+                        self.native_active_experts_per_token,
+                        100.0 - exp_ratio
+                    )
+                } else {
+                    format!(
+                        "Full Top-{} expert routing active per token",
+                        self.native_active_experts_per_token
+                    )
+                },
+                quality_impact: match exp_sev {
+                    QualityTradeoffSeverity::Uncompromised => "Full native MoE Top-k routing fidelity preserved.".to_string(),
+                    QualityTradeoffSeverity::ModerateTradeoff => "Fewer routed experts per token; specialized domain accuracy and math/coding precision may drop.".to_string(),
+                    QualityTradeoffSeverity::SevereDegradationWarning => "Aggressive expert pruning; significant perplexity increase and degradation in complex reasoning.".to_string(),
+                },
+            });
+        }
+
+        let overall_severity = tradeoffs
+            .iter()
+            .map(|d| d.severity)
+            .max()
+            .unwrap_or(QualityTradeoffSeverity::Uncompromised);
+        let is_uncompromised = overall_severity == QualityTradeoffSeverity::Uncompromised;
+        let out_desc = match eff_out {
+            Some(cap) => format!("{cap} out tokens"),
+            None => "uncapped out tokens".to_string(),
+        };
+
+        let summary_banner = if is_uncompromised {
+            format!(
+                "UNCOMPROMISED MAXIMUM QUALITY: {} is running at 100% native context ({}), max input ({}), {}, and full expert routing.",
+                model.display_name, ctx_active_label, in_active_label, out_desc
+            )
+        } else {
+            format!(
+                "MANUAL USER TRADEOFF ACTIVE ({:?}): {} limits manually lowered to {} ctx / {} in / {} ({:.1}% KV memory saved).",
+                overall_severity,
+                model.display_name,
+                ctx_active_label,
+                in_active_label,
+                out_desc,
+                kv_reduction_pct
+            )
+        };
+
+        QualityTradeoffReport {
+            model_id: model.id.clone(),
+            model_display_name: model.display_name.clone(),
+            is_uncompromised_maximum_quality: is_uncompromised,
+            overall_severity,
+            effective_context_window_tokens: eff_ctx,
+            effective_max_input_tokens: eff_in,
+            effective_max_output_tokens: eff_out,
+            effective_active_experts_per_token: eff_exp,
+            context_retention_pct: (ctx_ratio * 10.0).round() / 10.0,
+            estimated_kv_cache_savings_pct: kv_reduction_pct,
+            kv_cache_memory_reduction_pct: kv_reduction_pct,
+            tradeoffs,
+            summary_banner,
+        }
+    }
 }
 
 /// Modelled KV state the prompt cache keeps across sessions before it evicts, least recently
@@ -243,11 +780,18 @@ pub struct PersistentClusterStateJournal {
     pub bucket_objects: Vec<PoolBucketObjectEntry>,
     #[serde(default)]
     pub bucket_anchors: Vec<GroundingAnchorTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_limits: Option<ModelQualityLimits>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub grid_offers: BTreeMap<String, kadmium_core::ResourceOffer>,
 }
 
 fn journal_version() -> u32 {
     1
 }
+
+static TEST_BUCKET_INSTANCE_COUNTER: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
 
 impl Default for GatewayState {
     fn default() -> Self {
@@ -260,6 +804,7 @@ impl GatewayState {
         let nodes = sample_personal_cluster();
         let coordinator_quorum = CoordinatorFailoverQuorum::from_cluster(&nodes);
         let inference_model = ModelSpec::deepseek_v3_671b_moe();
+        let quality_limits = ModelQualityLimits::for_model(&inference_model);
         let training_model = ModelSpec::llama_3_70b_lora();
 
         let inference_plan =
@@ -272,6 +817,16 @@ impl GatewayState {
         );
         let fts3_transfers = Fts3TransferScheduler::plan_initial_staging(&inference_plan, &nodes);
         let lan_ip = LiveHardwareProfiler::probe_local_lan_ip();
+        let instance_id =
+            TEST_BUCKET_INSTANCE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let default_test_bucket_dir = std::env::temp_dir().join(format!(
+            "kadmium-gw-bucket-{}-{instance_id}",
+            std::process::id()
+        ));
+        let bucket_write_token = std::env::var("KADMIUM_BUCKET_TOKEN")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(kadmium_data::generate_csprng_access_token);
 
         Self {
             persistent_state_dir: std::path::PathBuf::from("target/kadmium-state"),
@@ -319,6 +874,10 @@ impl GatewayState {
             last_measured_tokens_per_sec: None,
             last_measured_pipeline_latency_ms: None,
             resumed_from_checkpoint: None,
+            quality_limits,
+            user_lowered_quality_limits: false,
+            bucket_write_token,
+            default_test_bucket_dir,
             grid_runs: 0,
             grid_last_run: None,
             grid_credit_entries: Vec::new(),
@@ -502,6 +1061,41 @@ impl GatewayState {
         self.grid_telemetry.save(&Self::grid_telemetry_path())
     }
 
+    pub fn bucket_store(&self) -> kadmium_data::BucketObjectStore {
+        if self.persistent_state_dir == std::path::Path::new("target/kadmium-state")
+            && std::env::var_os("KADMIUM_BUCKET_DIR").is_none()
+        {
+            return kadmium_data::BucketObjectStore::new(&self.default_test_bucket_dir);
+        }
+        kadmium_data::BucketObjectStore::for_state_dir(&self.persistent_state_dir)
+    }
+
+    pub fn effective_inference_model(&self) -> ModelSpec {
+        let mut spec = self.inference_model.clone();
+        if let (Some(native_ctx), Some(eff_ctx)) = (
+            self.quality_limits.native_max_context_window_tokens,
+            self.quality_limits.effective_context_window_tokens(),
+        ) {
+            let ctx_ratio = (eff_ctx as f64 / native_ctx.max(1) as f64).clamp(0.01, 1.0);
+            spec.kv_cache_per_layer_gb =
+                (spec.kv_cache_per_layer_gb * ctx_ratio * 1000.0).round() / 1000.0;
+        }
+        if spec.is_moe {
+            spec.active_experts_per_token = self
+                .quality_limits
+                .effective_active_experts_per_token()
+                .clamp(1, spec.experts_per_layer.max(1));
+        }
+        spec
+    }
+
+    pub fn coordinator_http_url(&self) -> String {
+        format!(
+            "http://{}:{}",
+            self.coordinator_lan_ip, self.coordinator_http_port
+        )
+    }
+
     pub fn persistent_state_path(&self) -> std::path::PathBuf {
         self.persistent_state_dir.join(if self.live_only_mode {
             "cluster_state.json"
@@ -532,6 +1126,10 @@ impl GatewayState {
             imported_models: self.imported_models.clone(),
             bucket_objects: self.bucket_objects.clone(),
             bucket_anchors: self.bucket_anchors.clone(),
+            quality_limits: (self.user_lowered_quality_limits
+                || self.quality_limits.has_any_overrides())
+            .then(|| self.quality_limits.clone()),
+            grid_offers: self.grid_offers.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&journal)
             .map_err(|e| format!("Failed to serialize state journal: {e}"))?;
@@ -595,6 +1193,7 @@ impl GatewayState {
 
     /// Missing journals mean a fresh workspace. Corrupt or incompatible ones abort startup.
     pub fn load_persistent_state(&mut self) -> Result<bool, String> {
+        self.bucket_write_token = self.bucket_store().try_load_or_create_access_token()?;
         if self.load_persistent_state_from(&self.persistent_state_path())? {
             return Ok(true);
         }
@@ -638,6 +1237,15 @@ impl GatewayState {
     }
 
     pub fn load_persistent_state_from(&mut self, path: &std::path::Path) -> Result<bool, String> {
+        let token_store = if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && parent != std::path::Path::new("target/kadmium-state")
+        {
+            kadmium_data::BucketObjectStore::for_state_dir(parent)
+        } else {
+            self.bucket_store()
+        };
+        self.bucket_write_token = token_store.try_load_or_create_access_token()?;
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -697,8 +1305,8 @@ impl GatewayState {
         } else {
             resolve(&journal.training_model_id)?
         };
-        for object in &journal.bucket_objects {
-            kadmium_data::DecentralizedStoragePoolEngine::create_bucket_object(
+        journal.bucket_objects.retain(|object| {
+            match kadmium_data::DecentralizedStoragePoolEngine::create_bucket_object(
                 &object.object_uri,
                 &object.display_name,
                 &object.object_kind,
@@ -707,8 +1315,18 @@ impl GatewayState {
                 object.parity_shards_m,
                 None,
                 &[],
-            )?;
-        }
+            ) {
+                Ok(_) => true,
+                Err(reason) => {
+                    tracing::warn!(
+                        object_uri = %object.object_uri,
+                        %reason,
+                        "Skipping invalid bucket object entry from journal; journal file is unchanged"
+                    );
+                    false
+                }
+            }
+        });
         self.epoch = journal.epoch;
         self.inference_model = inference;
         self.training_model = training;
@@ -729,6 +1347,22 @@ impl GatewayState {
         self.imported_models = journal.imported_models;
         self.bucket_objects = journal.bucket_objects;
         self.bucket_anchors = journal.bucket_anchors;
+        for (node_id, offer) in journal.grid_offers {
+            let clamped = match self.nodes.iter().find(|n| n.id.0 == node_id) {
+                Some(node) => offer.clamped_to(node),
+                None => offer,
+            };
+            self.grid_offers.insert(node_id, clamped);
+        }
+        if let Some(mut limits) = journal.quality_limits {
+            limits.sync_native_with_model(&self.inference_model);
+            self.quality_limits = limits;
+            self.user_lowered_quality_limits = !self.quality_limits.is_uncompromised();
+        } else {
+            self.quality_limits = ModelQualityLimits::for_model(&self.inference_model);
+            self.user_lowered_quality_limits = false;
+        }
+        self.bucket_write_token = token_store.try_load_or_create_access_token()?;
         self.recompute_plans();
         Ok(true)
     }
@@ -744,10 +1378,14 @@ impl GatewayState {
             self.inference_model = recommended.clone();
             self.training_model = recommended;
         }
+        self.quality_limits
+            .sync_native_with_model(&self.inference_model);
+        self.user_lowered_quality_limits = !self.quality_limits.is_uncompromised();
+        let effective_inf_model = self.effective_inference_model();
         self.coordinator_quorum = CoordinatorFailoverQuorum::from_cluster(&self.nodes);
         self.inference_plan = ShardPlanner::compute_plan(
             self.epoch,
-            &self.inference_model,
+            &effective_inf_model,
             WorkloadKind::Inference,
             &self.nodes,
         );
@@ -1551,8 +2189,8 @@ mod tests {
 
         // Verify Kadmium MCP Server (JSON-RPC 2.0 initialize, tools/list, tools/call, resources/read)
         let manifest = KadmiumMcpServer::manifest();
-        assert_eq!(manifest.tools.len(), 7);
-        assert_eq!(manifest.resources.len(), 5);
+        assert_eq!(manifest.tools.len(), 8);
+        assert_eq!(manifest.resources.len(), 6);
         assert_eq!(manifest.prompts.len(), 2);
 
         let supply = state.supply_marketplace();
@@ -1591,6 +2229,22 @@ mod tests {
                 .and_then(|v| v.as_bool()),
             Some(false)
         );
+
+        let bucket_mcp_resp = KadmiumMcpServer::handle_request(
+            &mut state,
+            McpJsonRpcRequest {
+                jsonrpc: "2.0".into(),
+                id: Some(serde_json::json!(3)),
+                method: "tools/call".into(),
+                params: Some(serde_json::json!({
+                    "name": "kadmium_bucket_access",
+                    "arguments": {
+                        "action": "mediums"
+                    }
+                })),
+            },
+        );
+        assert!(bucket_mcp_resp.error.is_none());
 
         let sse = format_openai_sse_stream(1, "deepseek-v3-671b-moe", &["Hello ", "Kadmium"]);
         assert!(sse.contains("\"object\":\"chat.completion.chunk\""));
@@ -1650,7 +2304,11 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
         });
 
         let http_get = |path: &str| -> String {
