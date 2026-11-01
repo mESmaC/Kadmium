@@ -25,16 +25,27 @@
 //! by construction, since each output feature is computed whole by one thread, and the test
 //! `linear_is_identical_at_every_thread_count` pins 1 to 1,000 threads.
 //!
-//! Status: reference execution on the CPU. No wire protocol, placement or Condenser route uses
-//! it yet, and its speed has not been measured.
+//! Status: reference execution on the CPU, with byte-exact multi-machine layer placement
+//! ([`plan_checkpoint_placement`]). No wire protocol or Condenser route uses it yet, and its speed
+//! has not been measured.
 
 mod config;
 pub mod math;
 mod model;
+mod placement;
 pub mod staging;
 
 pub use config::{Architecture, DecoderConfig, RopeScaling};
+pub use kadmium_sharding::{
+    CheckpointMemoryProfile, LayerPlacementError, LayerPlacementPlan, LayerPlacementPlanner,
+    MachineMemoryBudget, PlannedLayerStage,
+};
 pub use model::{Activations, DecoderSlice, KvCache, SlicePlan, inverse_frequencies};
+pub use placement::{
+    DecoderPlacementPlan, PlannedDecoderSlice, checkpoint_memory_profile,
+    plan_checkpoint_placement, plan_checkpoint_placement_with_budgets,
+    plan_placement_from_manifest, plan_placement_with_budgets,
+};
 
 use kadmium_data::SafetensorsManifestError;
 use thiserror::Error;
@@ -77,6 +88,8 @@ pub enum NativeDecoderError {
     Memory { bytes: usize },
     #[error("{0}")]
     Shape(String),
+    #[error(transparent)]
+    Placement(#[from] LayerPlacementError),
     #[error(transparent)]
     Checkpoint(#[from] SafetensorsManifestError),
 }

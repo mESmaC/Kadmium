@@ -5,10 +5,18 @@
 //! head norms, head_dim not hidden/heads, one KV head) and Mistral (F16) checkpoints, saved by
 //! transformers, with the float32 logits transformers computes from the stored weights.
 
+use kadmium_core::{
+    ComputeBackend, DeviceKind, HardwareNode, MemoryTierProfile, NodeId, NodeRole, NodeTrustTier,
+    PoliteState, ResourceOffer,
+};
+use kadmium_data::SafetensorsManifest;
 use kadmium_runtime::native_decoder::{
-    Activations, DecoderConfig, DecoderSlice, KvCache, NativeDecoderError, SlicePlan,
+    Activations, DecoderConfig, DecoderSlice, KvCache, LayerPlacementError, MachineMemoryBudget,
+    NativeDecoderError, SlicePlan, checkpoint_memory_profile, plan_checkpoint_placement,
+    plan_checkpoint_placement_with_budgets,
 };
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const FIXTURES: [&str; 4] = ["llama3_bf16", "qwen2_f32", "qwen3_bf16", "mistral_f16"];
@@ -539,4 +547,237 @@ fn config_values_never_size_an_allocation_the_checkpoint_does_not_back() {
     );
     assert_eq!(config.head_dim, 1_099_511_627_776);
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn checkpoint_memory_profile_matches_loaded_weights_and_full_context_kv_bytes() {
+    for name in FIXTURES {
+        let dir = fixture(name);
+        let config = DecoderConfig::from_model_dir(&dir).unwrap();
+        let manifest = SafetensorsManifest::open(&dir).unwrap();
+        let profile = checkpoint_memory_profile(&manifest, &config).unwrap();
+        assert_eq!(profile.num_layers, config.num_layers);
+        assert_eq!(
+            profile.max_position_embeddings,
+            config.max_position_embeddings
+        );
+
+        // Single-machine whole-model slice.
+        let full = whole(name);
+        assert_eq!(
+            profile
+                .slice_weight_bytes(0..config.num_layers, true, true)
+                .unwrap(),
+            full.stored_weight_bytes() as u64,
+            "{name}: whole-model weight bytes"
+        );
+        let mut full_cache = full.new_cache();
+        let all_tokens = vec![1u32; config.max_position_embeddings];
+        let hidden = full.embed(&all_tokens, 0).unwrap();
+        full.forward(&hidden, &mut full_cache).unwrap();
+        assert_eq!(full_cache.positions(), config.max_position_embeddings);
+        assert_eq!(
+            profile.full_context_kv_bytes().unwrap(),
+            full_cache.bytes() as u64,
+            "{name}: full-context KV cache bytes"
+        );
+
+        // Every 3-stage split across 0..=num_layers.
+        let n = config.num_layers;
+        for a in 1..n {
+            for b in a..n {
+                let plans = [
+                    SlicePlan {
+                        layers: 0..a,
+                        embedding: true,
+                        head: false,
+                    },
+                    SlicePlan {
+                        layers: a..b,
+                        embedding: false,
+                        head: false,
+                    },
+                    SlicePlan {
+                        layers: b..n,
+                        embedding: false,
+                        head: true,
+                    },
+                ];
+                for plan in plans {
+                    let loaded = DecoderSlice::load(&dir, plan.clone()).unwrap();
+                    let expected_weights = profile
+                        .slice_weight_bytes(plan.layers.clone(), plan.embedding, plan.head)
+                        .unwrap();
+                    assert_eq!(
+                        expected_weights,
+                        loaded.stored_weight_bytes() as u64,
+                        "{name}: slice {plan:?} weight bytes"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn planned_multi_machine_slices_respect_memory_budgets_and_decode_bit_identically() {
+    for name in FIXTURES {
+        let dir = fixture(name);
+        let reference = reference(name);
+        let config = DecoderConfig::from_model_dir(&dir).unwrap();
+        let manifest = SafetensorsManifest::open(&dir).unwrap();
+        let profile = checkpoint_memory_profile(&manifest, &config).unwrap();
+
+        // Give two TrustedCore machines and one middle-only machine just enough memory for a
+        // 3-way split (0..1 on node-a, 1..2 on node-mid, 2..3 on node-b) so no single machine
+        // can hold the whole checkpoint.
+        let s0 = profile.slice_total_bytes(0..1, true, false).unwrap();
+        let s1 = profile.slice_total_bytes(1..2, false, false).unwrap();
+        let s2 = profile
+            .slice_total_bytes(2..config.num_layers, false, true)
+            .unwrap();
+        let whole_bytes = profile.whole_model_bytes().unwrap();
+        assert!(s0 < whole_bytes && s1 < whole_bytes && s2 < whole_bytes);
+
+        let budgets = [
+            MachineMemoryBudget::new(NodeId("node-a".into()), s0, NodeTrustTier::TrustedCore),
+            MachineMemoryBudget::new(
+                NodeId("node-mid".into()),
+                s1,
+                NodeTrustTier::VerifiedPeerMiddleLayersOnly,
+            ),
+            MachineMemoryBudget::new(NodeId("node-b".into()), s2, NodeTrustTier::TrustedCore),
+        ];
+        let placement = plan_checkpoint_placement_with_budgets(&dir, &budgets).unwrap();
+        assert!(placement.is_split());
+        assert_eq!(placement.context_length(), config.max_position_embeddings);
+        assert_eq!(placement.num_layers(), config.num_layers);
+        assert_eq!(placement.stages.len(), 3);
+        assert_eq!(placement.stages[0].node_id, NodeId("node-a".into()));
+        assert_eq!(placement.stages[0].plan.layers, 0..1);
+        assert!(placement.stages[0].plan.embedding && !placement.stages[0].plan.head);
+        assert_eq!(placement.stages[1].node_id, NodeId("node-mid".into()));
+        assert_eq!(placement.stages[1].plan.layers, 1..2);
+        assert!(!placement.stages[1].plan.embedding && !placement.stages[1].plan.head);
+        assert_eq!(placement.stages[2].node_id, NodeId("node-b".into()));
+        assert_eq!(placement.stages[2].plan.layers, 2..config.num_layers);
+        assert!(!placement.stages[2].plan.embedding && placement.stages[2].plan.head);
+
+        let mut slices = Vec::with_capacity(placement.stages.len());
+        for stage in &placement.stages {
+            assert!(stage.total_bytes <= stage.capacity_bytes);
+            let loaded = DecoderSlice::load(&dir, stage.plan.clone()).unwrap();
+            assert_eq!(loaded.stored_weight_bytes() as u64, stage.weight_bytes);
+            slices.push(loaded);
+        }
+
+        let expected = run_chain(&[whole(name)], &reference.tokens, 4);
+        let actual = run_chain(&slices, &reference.tokens, 4);
+        assert_eq!(
+            bits(&actual),
+            bits(&expected),
+            "{name}: planned 3-stage chain"
+        );
+    }
+}
+
+#[test]
+fn placement_fails_when_machines_cannot_hold_model_and_full_context() {
+    let dir = fixture("qwen2_f32");
+    let config = DecoderConfig::from_model_dir(&dir).unwrap();
+    let manifest = SafetensorsManifest::open(&dir).unwrap();
+    let profile = checkpoint_memory_profile(&manifest, &config).unwrap();
+    let whole_bytes = profile.whole_model_bytes().unwrap();
+    let weights_only = profile
+        .slice_weight_bytes(0..config.num_layers, true, true)
+        .unwrap();
+    assert!(weights_only < whole_bytes);
+
+    // 1 byte short of whole_bytes on a single machine fails with InsufficientClusterMemory
+    // rather than shrinking the context window.
+    let one_short = [MachineMemoryBudget::new(
+        NodeId("box-1".into()),
+        whole_bytes - 1,
+        NodeTrustTier::TrustedCore,
+    )];
+    let err = plan_checkpoint_placement_with_budgets(&dir, &one_short).unwrap_err();
+    assert!(matches!(
+        err,
+        NativeDecoderError::Placement(LayerPlacementError::InsufficientClusterMemory {
+            context_length,
+            single_machine_bytes,
+            total_available_bytes,
+            ..
+        }) if context_length == config.max_position_embeddings
+            && single_machine_bytes == whole_bytes
+            && total_available_bytes == whole_bytes - 1
+    ));
+
+    // Enough memory for weights alone (at a shorter context), but not for the full context.
+    let weights_budget = [MachineMemoryBudget::new(
+        NodeId("box-weights-only".into()),
+        weights_only,
+        NodeTrustTier::TrustedCore,
+    )];
+    let err = plan_checkpoint_placement_with_budgets(&dir, &weights_budget).unwrap_err();
+    assert!(matches!(
+        err,
+        NativeDecoderError::Placement(LayerPlacementError::InsufficientClusterMemory {
+            context_length,
+            ..
+        }) if context_length == config.max_position_embeddings
+    ));
+
+    // Untrusted/middle-only machines with plenty of memory still fail when no TrustedCore
+    // boundary machine is present.
+    let untrusted_only = [MachineMemoryBudget::new(
+        NodeId("peer-1".into()),
+        whole_bytes * 4,
+        NodeTrustTier::VerifiedPeerMiddleLayersOnly,
+    )];
+    let err = plan_checkpoint_placement_with_budgets(&dir, &untrusted_only).unwrap_err();
+    assert!(matches!(
+        err,
+        NativeDecoderError::Placement(LayerPlacementError::NoTrustedBoundaryMachine {
+            untrusted_candidates: 1,
+            last_layer: 2,
+        })
+    ));
+
+    // Cluster placement from HardwareNode + ResourceOffer succeeds when resident memory suffices.
+    let node = HardwareNode {
+        id: NodeId("main-pc".into()),
+        hostname: "main-pc".into(),
+        device_kind: DeviceKind::DesktopWorkstation,
+        backend: ComputeBackend::Cuda,
+        roles: vec![NodeRole::ComputeWorker],
+        trust_tier: NodeTrustTier::TrustedCore,
+        gpu_name: "Test GPU".into(),
+        cpu_name: "Test CPU".into(),
+        npu_name: None,
+        npu_tops: 0.0,
+        fp16_tflops: 50.0,
+        int4_tops: 100.0,
+        cpu_threads: 8,
+        cpu_tflops: 1.0,
+        memory: MemoryTierProfile {
+            vram_gb: 8.0,
+            vram_bw_gbps: 500.0,
+            unified_mem_gb: 0.0,
+            unified_mem_bw_gbps: 0.0,
+            system_ram_gb: 16.0,
+            system_ram_bw_gbps: 60.0,
+            interconnect_bw_gbps: 32.0,
+            nvme_cache_gb: 100.0,
+            nvme_read_bw_gbps: 7.0,
+        },
+        polite_state: PoliteState::IdleDedicated,
+        network_uplink_gbps: 10.0,
+        network_latency_ms: 0.2,
+    };
+    let offers: BTreeMap<NodeId, ResourceOffer> = BTreeMap::new();
+    let cluster_plan = plan_checkpoint_placement(&dir, &[node], &offers).unwrap();
+    assert_eq!(cluster_plan.stages.len(), 1);
+    assert_eq!(cluster_plan.stages[0].plan, SlicePlan::whole(&config));
+    assert_eq!(cluster_plan.total_bytes, whole_bytes);
 }

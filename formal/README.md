@@ -147,6 +147,18 @@ The differential fixture is `crates/kadmium-data/tests/fixtures/transport_chunk_
 | `Sharding.count_mine` | Copy `i` of `c` serves exactly `(rows - i).div_ceil(c)` of the rows, the closed form the planner reports. | `ExpertPlacementPlan::row_share` |
 | `Sharding.sum_mine`, `Sharding.exactly_one_serves` | The shares of the `c` copies add up to the batch, and every row is served by exactly one copy. | `ExpertPlacementPlan::row_share`, `ExpertRowShare::serves` |
 
+### Native checkpoint layer placement (`Sharding/LayerPlacement.lean`)
+
+| Theorem | Statement | Rust item |
+| :--- | :--- | :--- |
+| `Sharding.LayerPlacement.planFrom_valid`, `stages_contiguous_cover` | Every accepted placement partitions `0 .. numLayers` into contiguous non-empty stage ranges in order without gaps or overlaps, with `embedding = true` on stage 0 and `head = true` on the final stage. | `LayerPlacementPlanner::plan_with_budgets`, `plan_checkpoint_placement` |
+| `Sharding.LayerPlacement.stages_within_budget`, `stages_boundary_trusted` | Every stage's `weightBytes` and full-context `kvBytes` add up to `totalBytes`, satisfy `totalBytes ≤ capacityBytes` with `0 < capacityBytes`, and place stage 0 and the final stage only on `TrustedCore` machines (`trusted = true`). | `LayerPlacementPlanner::plan_with_budgets`, `CheckpointMemoryProfile::slice_total_bytes` |
+| `Sharding.LayerPlacement.single_stage_shares_tied_embedding` | A single-machine placement (`0 .. numLayers`) of a model with `tieWordEmbeddings = true` counts the shared embedding matrix once, whereas splitting across two stages counts `embeddingBytes` on stage 0 and `lmHeadBytes` on the final stage. | `CheckpointMemoryProfile::slice_weight_bytes`, `DecoderSlice::load_from` |
+| `Sharding.LayerPlacement.planFrom_complete`, `planFrom_none_iff_infeasible`, `infeasible_when_total_exceeds_cluster_capacity` | `planFrom` returns `none` if and only if no valid full-context placement exists on the candidate machines, and any valid placement requires total stage bytes at most the sum of candidate machine capacities. | `LayerPlacementPlanner::plan_with_budgets` |
+| `Sharding.LayerPlacement.planFrom_optimal` | **Minimax relative memory load.** Among all valid placements on the candidate machines, `planFrom` minimizes the bottleneck per-machine relative memory load `totalBytes / capacityBytes` (compared exactly by cross-multiplication `loadLe`). Cost model: peak stage `totalBytes / capacityBytes`. | `LayerPlacementPlanner::plan_with_budgets` |
+
+Fixture: `crates/kadmium-sharding/tests/layer_placement_lean_vectors.rs` runs every fixture line from `crates/kadmium-sharding/tests/fixtures/layer_placement_lean_vectors.txt` through `CheckpointMemoryProfile` and `LayerPlacementPlanner::plan_with_budgets`. `crates/kadmium-runtime/tests/native_decoder.rs` checks that `checkpoint_memory_profile` matches `DecoderSlice::stored_weight_bytes()` and full-context `KvCache::bytes()` across all four model fixtures and every cut point.
+
 ### Verde bisection (`Runtime/Bisect.lean`)
 
 | Theorem | Statement | Rust item |
