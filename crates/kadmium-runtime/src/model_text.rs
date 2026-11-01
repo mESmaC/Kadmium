@@ -5,6 +5,7 @@
 //! Sampling metadata is retained for the future generator, including unrecognised fields.
 
 mod generation;
+mod specials;
 mod template;
 
 pub use generation::{GenerationDefaults, SamplingDefaults};
@@ -74,6 +75,7 @@ fn read_json(dir: &Path, name: &str, required: bool) -> Result<Map<String, Value
 pub struct ModelText {
     tokenizer: Tokenizer,
     tokenizer_config: Map<String, Value>,
+    special_tokens: Map<String, Value>,
     templates: Map<String, Value>,
     config: DecoderConfig,
     generation: GenerationDefaults,
@@ -100,7 +102,8 @@ impl ModelText {
                 .into());
             }
         }
-        let tokenizer_config = read_json(dir, "tokenizer_config.json", true)?;
+        let mut tokenizer_config = read_json(dir, "tokenizer_config.json", true)?;
+        let special_tokens = specials::resolve(dir, &mut tokenizer_config, &tokenizer)?;
         // These options alter the HF wrapper before it calls the tokenizer backend.
         for key in ["add_prefix_space", "split_special_tokens"] {
             if tokenizer_config
@@ -124,6 +127,7 @@ impl ModelText {
         Ok(Self {
             tokenizer,
             tokenizer_config,
+            special_tokens,
             templates,
             config,
             generation,
@@ -197,7 +201,7 @@ impl ModelText {
     ) -> Result<String> {
         template::render(
             &self.templates,
-            &self.tokenizer_config,
+            &self.special_tokens,
             messages,
             add_generation_prompt,
             template_name,

@@ -295,6 +295,86 @@ fn malformed_settings_and_vocabulary_mismatches_fail() {
 }
 
 #[test]
+fn legacy_and_modern_special_token_contexts_match_transformers() {
+    let reference = read(&fixture("special_tokens_reference.json"));
+    for case in reference["cases"].as_array().unwrap() {
+        let temp = Temp::new();
+        temp.edit("tokenizer_config.json", |config| {
+            if !case["modern"].as_bool().unwrap() {
+                config
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("added_tokens_decoder");
+            }
+            for (key, value) in case["config"].as_object().unwrap() {
+                config[key] = value.clone();
+            }
+        });
+        if case["special_map"].is_null() {
+            std::fs::remove_file(temp.0.join("special_tokens_map.json")).unwrap();
+        } else {
+            write(
+                &temp.0.join("special_tokens_map.json"),
+                &case["special_map"],
+            );
+        }
+        std::fs::write(
+            temp.0.join("chat_template.jinja"),
+            case["template"].as_str().unwrap(),
+        )
+        .unwrap();
+        let messages: Vec<TemplateValue> =
+            serde_json::from_value(case["messages"].clone()).unwrap();
+        let model = temp.load();
+        assert_eq!(
+            model
+                .render_chat(&messages, false, None, &BTreeMap::new(), 1000)
+                .unwrap(),
+            case["prompt"].as_str().unwrap(),
+            "{}",
+            case["name"]
+        );
+        assert_eq!(
+            json!(
+                model
+                    .encode_chat(&messages, false, None, &BTreeMap::new(), 1000)
+                    .unwrap()
+            ),
+            case["ids"],
+            "{}",
+            case["name"]
+        );
+    }
+}
+
+#[test]
+fn legacy_bos_validation_uses_the_resolved_map_and_unknown_tokens_are_refused() {
+    let temp = Temp::new();
+    temp.edit("tokenizer_config.json", |v| {
+        v.as_object_mut().unwrap().remove("added_tokens_decoder");
+        v["add_bos_token"] = json!(true);
+    });
+    write(
+        &temp.0.join("special_tokens_map.json"),
+        &json!({"bos_token":"</s>"}),
+    );
+    assert!(temp.error().contains("BOS/EOS flags differ"));
+    write(
+        &temp.0.join("special_tokens_map.json"),
+        &json!({"bos_token":"not exported"}),
+    );
+    assert!(temp.error().contains("not registered as special"));
+    write(
+        &temp.0.join("special_tokens_map.json"),
+        &json!({"additional_special_tokens":[{"content":"</s>"}]}),
+    );
+    assert!(
+        temp.error()
+            .contains("merging legacy additional special-token descriptors")
+    );
+}
+
+#[test]
 fn context_gate_and_eos_match_lean_vectors() {
     let temp = Temp::new();
     let unrestricted = temp.load();
@@ -323,6 +403,43 @@ fn context_gate_and_eos_match_lean_vectors() {
                 fields[2] == "true",
                 "{line}"
             ),
+            "special" => {
+                let temp = Temp::new();
+                let token = |label: &str| match label {
+                    "1" => json!("<s>"),
+                    "2" => json!("</s>"),
+                    "null" => Value::Null,
+                    _ => panic!("unknown token label {label}"),
+                };
+                temp.edit("tokenizer_config.json", |v| {
+                    if fields[1] == "false" {
+                        v.as_object_mut().unwrap().remove("added_tokens_decoder");
+                    }
+                    v["eos_token"] = token(fields[2]);
+                });
+                let mapped = if fields[3] == "missing" {
+                    json!({})
+                } else {
+                    json!({"eos_token":token(fields[3])})
+                };
+                write(&temp.0.join("special_tokens_map.json"), &mapped);
+                std::fs::write(
+                    temp.0.join("chat_template.jinja"),
+                    "{{ eos_token | default('unset') }}",
+                )
+                .unwrap();
+                let messages = [TemplateValue::from_serialize(
+                    json!({"role":"user","content":"hi"}),
+                )];
+                let expected = token(fields[4]);
+                assert_eq!(
+                    temp.load()
+                        .render_chat(&messages, false, None, &BTreeMap::new(), 1000)
+                        .unwrap(),
+                    expected.as_str().unwrap_or("unset"),
+                    "{line}"
+                );
+            }
             _ => panic!("unknown fixture line: {line}"),
         }
     }

@@ -80,6 +80,10 @@ are opaque inputs to this model. These theorems do not prove Hugging Face or Jin
 | `Native.Text.over_context_rejected` | A token list longer than context fails the gate. | `ModelText::encode` context gate |
 | `Native.Text.eos_iff_member` | EOS recognition is exactly membership in the configured stop-token list. | `model_text::GenerationDefaults::is_eos` |
 | `Native.Text.explicit_null_disables`, `Native.Text.declared_special_wins` | An explicit special-token setting, including null, wins over the legacy fallback. Model only; the Rust test `empty_generation_config_is_not_legacy_config_and_explicit_null_disables_eos` checks examples. | `GenerationDefaults::load` special-token lookup |
+| `Native.Text.modern_template_special`, `Native.Text.legacy_template_override`, `Native.Text.legacy_template_missing` | Modern tokenizer metadata ignores the legacy map. A legacy map entry, including null, overrides the config; a missing entry preserves it. Differential cases in `TextVectors.lean` exercise the resolved EOS template value. | `model_text::specials::resolve` |
+| `Native.Text.legacy_template_diverged` | Counterexample to the previous config-only lookup: EOS id 2 in the config disagrees with legacy map id 4. The Transformers fixture `legacy_override` in `special_tokens_reference.json` ties this to Rust. | `specials::resolve`; previous `template::render` |
+| `Native.Text.template_visible_iff`, `Native.Text.unset_template_hidden`, `Native.Text.tokenizer_flags_hidden` | Only populated special-token attributes enter the template context; unset values and BOS/EOS configuration flags do not. Parsing and descriptor registration are outside the model. The Transformers differential fixture checks these branches. | `specials::resolve`, `template::render` |
+| `Native.Text.mem_mergeAdditional` | The string-only additional-token merge contains exactly tokens from either input. Model only, with the `legacy_null_and_union` Transformers differential example. Descriptor merges are refused rather than modelled. | `specials::resolve` additional-token merge |
 
 ## Findings
 

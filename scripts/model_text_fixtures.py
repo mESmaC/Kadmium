@@ -7,6 +7,8 @@ Use --model DIR --output DIR to compare an actual downloaded checkpoint without 
 
 import argparse
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 import jinja2
@@ -106,14 +108,65 @@ def synthetic(root):
             key: getattr(resolved, key) for key in ["do_sample", "temperature", "top_p", "top_k", "min_p",
                                                   "typical_p", "repetition_penalty", "eos_token_id"]})
         references(tokenizer, directory)
+    special_token_references(root)
+
+
+def special_token_references(root):
+    """Reuse the committed BPE asset so legacy cases do not retrain or renumber its vocabulary."""
+    template = ("{% for m in messages %}{{ m.content }}{{ eos_token | default('unset') }}{% endfor %}"
+                "|bos={{ bos_token | default('unset') }}|pad={{ pad_token is defined }}"
+                "|flags={{ add_bos_token is defined }},{{ add_eos_token is defined }}"
+                "|extra={{ additional_special_tokens | default([]) | tojson }}")
+    cases = [
+        dict(name="legacy_override", modern=False, config={}, special_map={"eos_token": "<|im_end|>"}),
+        dict(name="legacy_descriptor_and_bos", modern=False,
+             config={"bos_token": "</s>", "add_bos_token": True, "add_eos_token": False},
+             special_map={"bos_token": {"content": "<s>"}, "eos_token": {"content": "<|im_end|>"}}),
+        dict(name="legacy_missing_map", modern=False, config={}, special_map=None),
+        dict(name="legacy_null_and_union", modern=False,
+             config={"pad_token": None, "additional_special_tokens": ["<|im_start|>"]},
+             special_map={"eos_token": None, "additional_special_tokens": ["<|im_start|>", "<|im_end|>"]}),
+        dict(name="legacy_empty", modern=False, config={}, special_map={"eos_token": "", "additional_special_tokens": []}),
+        dict(name="modern_ignores_map", modern=True, config={}, special_map={"eos_token": "<|im_end|>"}),
+        dict(name="modern_context_keys", modern=True,
+             config={"pad_token": None, "add_bos_token": True, "add_eos_token": False,
+                     "additional_special_tokens": [{"__type": "AddedToken", "content": "<|im_end|>", "special": True}]},
+             special_map={"eos_token": "<|im_end|>", "pad_token": "</s>"}),
+    ]
+    for case in cases:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "model"
+            shutil.copytree(root / "byte_bpe", directory)
+            config = json.loads((directory / "tokenizer_config.json").read_text(encoding="utf-8"))
+            if not case["modern"]:
+                config.pop("added_tokens_decoder")
+            config.update(case["config"])
+            write_json(directory / "tokenizer_config.json", config)
+            if case["special_map"] is None:
+                (directory / "special_tokens_map.json").unlink()
+            else:
+                write_json(directory / "special_tokens_map.json", case["special_map"])
+            (directory / "chat_template.jinja").write_text(template, encoding="utf-8")
+            tokenizer = AutoTokenizer.from_pretrained(directory, local_files_only=True, trust_remote_code=False)
+            messages = [{"role": "user", "content": "hi"}]
+            case["messages"] = messages
+            case["template"] = template
+            case["prompt"] = tokenizer.apply_chat_template(messages, tokenize=False)
+            case["ids"] = tokenizer.apply_chat_template(messages, tokenize=True)
+    write_json(root / "special_tokens_reference.json", dict(
+        provenance=dict(generator="scripts/model_text_fixtures.py --special-tokens-only", transformers=transformers.__version__,
+                        tokenizers=tokenizers.__version__, jinja2=jinja2.__version__), cases=cases))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=Path)
+    parser.add_argument("--special-tokens-only", action="store_true")
     parser.add_argument("--output", type=Path, default=Path("crates/kadmium-runtime/tests/fixtures/model_text"))
     args = parser.parse_args()
-    if args.model:
+    if args.special_tokens_only:
+        special_token_references(args.output)
+    elif args.model:
         args.output.mkdir(parents=True, exist_ok=True)
         references(AutoTokenizer.from_pretrained(args.model, local_files_only=True, trust_remote_code=False), args.output)
     else:

@@ -52,7 +52,7 @@ pub(super) fn load(dir: &Path, config: &Map<String, Value>) -> Result<Map<String
 
 pub(super) fn render(
     templates: &Map<String, Value>,
-    config: &Map<String, Value>,
+    special_tokens: &Map<String, Value>,
     messages: &[TemplateValue],
     add_generation_prompt: bool,
     name: Option<&str>,
@@ -100,18 +100,8 @@ pub(super) fn render(
     let source = source.replace("\r\n", "\n").replace('\r', "\n");
     let mut context = BTreeMap::new();
     context.insert("tools".to_owned(), TemplateValue::from(()));
-    for (key, value) in config {
-        if key.ends_with("_token") {
-            let value = if value.is_object() {
-                value
-                    .get("content")
-                    .cloned()
-                    .ok_or_else(|| invalid(format!("special token `{key}` requires content")))?
-            } else {
-                value.clone()
-            };
-            context.insert(key.clone(), TemplateValue::from_serialize(value));
-        }
+    for (key, value) in special_tokens {
+        context.insert(key.clone(), TemplateValue::from_serialize(value));
     }
     for (key, value) in variables {
         if key == "messages"
@@ -130,6 +120,20 @@ pub(super) fn render(
         TemplateValue::from(add_generation_prompt),
     );
     let mut env = Environment::new();
+    env.set_formatter(|out, state, value| {
+        let python_scalar = if value.kind() == minijinja::value::ValueKind::Bool {
+            Some(TemplateValue::from(if value.is_true() {
+                "True"
+            } else {
+                "False"
+            }))
+        } else if value.is_none() {
+            Some(TemplateValue::from("None"))
+        } else {
+            None
+        };
+        minijinja::escape_formatter(out, state, python_scalar.as_ref().unwrap_or(value))
+    });
     env.set_trim_blocks(true);
     env.set_lstrip_blocks(true);
     // HF templates test absent optional fields for truthiness (for example message.tool_calls).

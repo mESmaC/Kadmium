@@ -9,6 +9,14 @@ Optional inputs are `generation_config.json` and `chat_template.jinja`. Named te
 also live in `tokenizer_config.json`. A standalone Jinja file takes precedence for the default
 template. There is no model-name-based template guess.
 
+For legacy exports without `added_tokens_decoder`, `special_tokens_map.json` supplies overrides
+used by both chat rendering and the BOS/EOS postprocessor check. Modern exports use the config.
+The template receives populated Hugging Face special-token attributes, including
+`additional_special_tokens`, without tokenizer configuration flags or unset tokens. These
+selection rules are **Proved (model)** by `Kadmium.Native.Text.legacy_template_override`,
+`Kadmium.Native.Text.modern_template_special` and `Kadmium.Native.Text.template_visible_iff`;
+see the formal inventory for scope and the differential fixtures.
+
 ```rust,ignore
 use kadmium_runtime::model_text::{ModelText, TemplateValue};
 use std::collections::BTreeMap;
@@ -80,6 +88,9 @@ Text-only comparisons were run on Windows on 2026-10-31 using the pinned Python 
   support for another architecture, sliding-window attention or quantized weights.
 - Wrapper options `add_prefix_space=true` and `split_special_tokens=true` are rejected. Conflicting
   added-token metadata or BOS/EOS postprocessor settings require matching exported assets.
+  Resolved special tokens must already be registered as special in `tokenizer.json`. Merging
+  nonempty legacy additional-token lists containing object descriptors is refused; export modern
+  matching assets for that case. String-list merge cases have Transformers differential coverage.
 - MiniJinja supports the exercised templates, not every Python/Jinja extension. Missing required
   values, unsupported functions and exhausted template fuel return errors. `strftime_now` is not
   provided. Multimodal message content is rejected.

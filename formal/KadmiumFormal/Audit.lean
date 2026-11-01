@@ -54,3 +54,11 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Native.Text.eos_iff_member
 #assert_standard_axioms Kadmium.Native.Text.explicit_null_disables
 #assert_standard_axioms Kadmium.Native.Text.declared_special_wins
+#assert_standard_axioms Kadmium.Native.Text.modern_template_special
+#assert_standard_axioms Kadmium.Native.Text.legacy_template_override
+#assert_standard_axioms Kadmium.Native.Text.legacy_template_missing
+#assert_standard_axioms Kadmium.Native.Text.legacy_template_diverged
+#assert_standard_axioms Kadmium.Native.Text.template_visible_iff
+#assert_standard_axioms Kadmium.Native.Text.unset_template_hidden
+#assert_standard_axioms Kadmium.Native.Text.tokenizer_flags_hidden
+#assert_standard_axioms Kadmium.Native.Text.mem_mergeAdditional

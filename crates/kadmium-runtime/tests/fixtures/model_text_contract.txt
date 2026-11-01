@@ -171,3 +171,27 @@ eos 4 true
 eos 5 false
 eos 6 false
 eos 7 false
+special false null missing null
+special false null null null
+special false null 1 1
+special false null 2 2
+special false 1 missing 1
+special false 1 null null
+special false 1 1 1
+special false 1 2 2
+special false 2 missing 2
+special false 2 null null
+special false 2 1 1
+special false 2 2 2
+special true null missing null
+special true null null null
+special true null 1 null
+special true null 2 null
+special true 1 missing 1
+special true 1 null 1
+special true 1 1 1
+special true 1 2 1
+special true 2 missing 2
+special true 2 null 2
+special true 2 1 2
+special true 2 2 2
