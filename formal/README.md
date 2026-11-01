@@ -162,6 +162,15 @@ The differential fixture is `crates/kadmium-data/tests/fixtures/transport_chunk_
 | `Runtime.decodeF32_exact`, `Runtime.decodePart_exact` | An accepted `F32B` body has exactly `rows * dim * 4` bytes. An accepted `PART` input has exactly `20 + count * (8 + dim * 4)` bytes, where `count` is both the header's count field and the number of decoded partials, and every decoded partial carries `dim * 4` data bytes. Nothing is read past the input. | `TokenBatchF32::from_le_bytes`, `ExpertPartialsBatch::from_le_bytes` |
 | `Runtime.wrapped_accepts_empty_f32`, `Runtime.wrapped_accepts_header_only_part`, and their `checked_rejects_*` counterparts | In wrapping `usize` arithmetic a `2^31 × 2^31` `F32B` header and a `PART` header for `2^31` partials of width `2^31 - 2` both imply an empty body; the checked arithmetic rejects both. See Findings. | `TokenBatchF32::from_le_bytes`, `ExpertPartialsBatch::from_le_bytes` |
 
+### Native decoder layer splits (`Native/LayerSplit.lean`)
+
+**Proved (model)**, about a model only: there is no differential fixture. A layer is any function of the activations and its own KV cache, so the statements hold bit for bit for `f32` without a floating-point model. The Rust test `splitting_the_layers_at_every_cut_is_bit_identical` in `crates/kadmium-runtime/tests/native_decoder.rs` checks the property on four checkpoint layouts, every pair of cuts, through prefill and token-by-token decode. Modelling choices are listed in the module docstring.
+
+| Theorem | Statement | Rust item |
+| :--- | :--- | :--- |
+| `Native.runLayers_append` | Running layers `fs ++ gs` with caches `cs ++ ds`, where `cs` has one cache per layer of `fs`, equals running `fs`, then `gs` on its activations, with the caches concatenated. | `native_decoder::DecoderSlice::forward` |
+| `Native.runChain_eq_runLayers` | A chain of slices, each with one cache per layer, gives the same activations and caches as one slice holding all their layers. Where the layers are cut and how many machines hold them cannot change an output. | `DecoderSlice::forward` over a chain of slices |
+
 Modelling assumptions shared by these results:
 
 - Indices, byte counts and offsets are unbounded natural numbers. Where the Rust uses `checked_*` arithmetic the model covers every call that does not fail; where it casts with `as`, the model writes the truncation explicitly (`Bytes.decodeLE_encodeLE_mod`).

@@ -22,6 +22,7 @@ pub mod kv_replay;
 pub mod live_worker;
 pub mod matrix_job;
 pub mod moe_layer;
+pub mod native_decoder;
 /// Explicit approximate NPU execution, separate from RepOps verification paths.
 pub use kadmium_npu as npu;
 pub mod repops;

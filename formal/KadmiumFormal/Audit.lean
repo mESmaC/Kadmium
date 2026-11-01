@@ -18,6 +18,7 @@ import KadmiumFormal.Runtime.BatchCodec
 import KadmiumFormal.StoragePool
 import KadmiumFormal.Transport.ChunkMap
 import KadmiumFormal.Transport.Publish
+import KadmiumFormal.Native.LayerSplit
 
 /-!
 # Axiom audit
@@ -162,3 +163,5 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Transport.layout_divides
 #assert_standard_axioms Kadmium.Transport.Publish.publish_safe
 #assert_standard_axioms Kadmium.Transport.Publish.legacy_unsafe
+#assert_standard_axioms Kadmium.Native.runLayers_append
+#assert_standard_axioms Kadmium.Native.runChain_eq_runLayers
