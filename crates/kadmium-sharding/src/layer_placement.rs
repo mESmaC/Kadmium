@@ -545,9 +545,9 @@ impl LayerPlacementPlanner {
             next_dp[n] = Some(Vec::new());
             for start in 0..n {
                 let mut with_machine: Option<Vec<PlannedLayerStage>> = None;
-                for stop in (start + 1)..=n {
+                for (stop, tail_opt) in dp.iter().enumerate().take(n + 1).skip(start + 1) {
                     if let Some(stage) = build_stage_if_valid(profile, machine, start, stop)
-                        && let Some(tail) = &dp[stop]
+                        && let Some(tail) = tail_opt
                     {
                         let mut cand = Vec::with_capacity(1 + tail.len());
                         cand.push(stage);
