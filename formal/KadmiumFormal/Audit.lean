@@ -13,6 +13,7 @@ import KadmiumFormal.Data.RangeCoalesce
 import KadmiumFormal.Grid.Redundancy
 import KadmiumFormal.Grid.Eviction
 import KadmiumFormal.Sharding.RowShare
+import KadmiumFormal.Sharding.LayerPlacement
 import KadmiumFormal.Runtime.Bisect
 import KadmiumFormal.Runtime.BatchCodec
 import KadmiumFormal.StoragePool
@@ -126,6 +127,17 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Sharding.count_mine
 #assert_standard_axioms Kadmium.Sharding.sum_mine
 #assert_standard_axioms Kadmium.Sharding.exactly_one_serves
+
+-- Native checkpoint layer placement
+#assert_standard_axioms Kadmium.Sharding.LayerPlacement.planFrom_valid
+#assert_standard_axioms Kadmium.Sharding.LayerPlacement.stages_contiguous_cover
+#assert_standard_axioms Kadmium.Sharding.LayerPlacement.stages_within_budget
+#assert_standard_axioms Kadmium.Sharding.LayerPlacement.stages_boundary_trusted
+#assert_standard_axioms Kadmium.Sharding.LayerPlacement.single_stage_shares_tied_embedding
+#assert_standard_axioms Kadmium.Sharding.LayerPlacement.infeasible_when_total_exceeds_cluster_capacity
+#assert_standard_axioms Kadmium.Sharding.LayerPlacement.planFrom_complete
+#assert_standard_axioms Kadmium.Sharding.LayerPlacement.planFrom_none_iff_infeasible
+#assert_standard_axioms Kadmium.Sharding.LayerPlacement.planFrom_optimal
 
 -- Verde bisection
 #assert_standard_axioms Kadmium.Runtime.bisect_spec
