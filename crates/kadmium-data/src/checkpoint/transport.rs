@@ -198,6 +198,67 @@ impl TransportManifest {
 }
 
 impl CheckpointLibrary {
+    /// Synchronous library adapter for the existing resumable chunk protocol. The caller must
+    /// serialize receives for this destination package and authorize its storage before copying.
+    /// A failed copy removes incomplete staging; an already published package is never removed.
+    pub fn copy_to(
+        &self,
+        transport: &TransportManifest,
+        destination: &CheckpointLibrary,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<CheckpointManifest> {
+        transport.validate()?;
+        let id = &transport.checkpoint_id;
+        if self.transport(id)? != *transport {
+            return Err("The source checkpoint changed after its staging plan was prepared".into());
+        }
+        let mut incomplete = false;
+        let outcome = (|| {
+            super::selection::check_cancelled(cancelled)?;
+            let status = destination.receive_begin(transport)?;
+            incomplete = !status.complete;
+            for missing in status.missing {
+                super::selection::check_cancelled(cancelled)?;
+                let file = transport
+                    .files
+                    .get(missing.file as usize)
+                    .ok_or("Unknown transport file")?;
+                let chunk = file
+                    .chunks
+                    .get(missing.chunk as usize)
+                    .ok_or("Unknown transport chunk")?;
+                let length = usize::try_from(chunk.bytes).map_err(|_| "Chunk size overflow")?;
+                if chunk.bytes > TRANSPORT_CHUNK_BYTES {
+                    return Err("Transport chunk exceeds the copy buffer".into());
+                }
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(length).map_err(io_error)?;
+                bytes.resize(length, 0);
+                let mut input =
+                    File::open(self.package_dir(id)?.join(&file.path)).map_err(io_error)?;
+                input
+                    .seek(SeekFrom::Start(chunk.offset))
+                    .map_err(io_error)?;
+                input.read_exact(&mut bytes).map_err(io_error)?;
+                destination.receive_chunk(id, missing.file, missing.chunk, &bytes)?;
+            }
+            super::selection::check_cancelled(cancelled)?;
+            destination.receive_finish(id)?;
+            let manifest = destination.verify(id)?;
+            if destination.transport(id)? != *transport {
+                return Err("Received checkpoint does not match the requested transport".into());
+            }
+            Ok(manifest)
+        })();
+        if outcome.is_err() && incomplete {
+            let staging = destination.receiving_dir(id)?;
+            if staging.exists() {
+                fs::remove_dir_all(staging).map_err(io_error)?;
+            }
+        }
+        outcome
+    }
+
     /// Returns the package's transport manifest, building and caching it from the package
     /// bytes on first use. Building re-reads every file and fails on any hash mismatch.
     pub fn transport(&self, id: &str) -> Result<TransportManifest> {

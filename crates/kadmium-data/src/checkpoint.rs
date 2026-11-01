@@ -3,6 +3,7 @@
 //! Large payloads are copied with bounded buffers, never loaded as a whole checkpoint.
 
 pub(crate) mod formats;
+mod selection;
 pub mod transport;
 
 pub use formats::ggml_type_name;

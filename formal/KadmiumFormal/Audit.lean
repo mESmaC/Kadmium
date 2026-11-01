@@ -20,6 +20,7 @@ import KadmiumFormal.Transport.ChunkMap
 import KadmiumFormal.Transport.Publish
 import KadmiumFormal.Native.LayerSplit
 import KadmiumFormal.Native.ModelText
+import KadmiumFormal.Native.ShardSelection
 
 /-!
 # Axiom audit
@@ -45,6 +46,10 @@ elab "#assert_standard_axioms " id:ident : command => do
 
 -- Powers of two
 #assert_standard_axioms Kadmium.nextPow2_spec
+#assert_standard_axioms Kadmium.Native.Shard.layer_needed_iff
+#assert_standard_axioms Kadmium.Native.Shard.tied_head_needs_embedding
+#assert_standard_axioms Kadmium.Native.Shard.selected_iff
+#assert_standard_axioms Kadmium.Native.Shard.payload_preserved
 
 -- RepOps reduction tree and streaming reducer
 #assert_standard_axioms Kadmium.RepOps.treeSum_eq_eval

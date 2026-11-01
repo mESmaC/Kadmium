@@ -31,6 +31,7 @@
 mod config;
 pub mod math;
 mod model;
+pub mod staging;
 
 pub use config::{Architecture, DecoderConfig, RopeScaling};
 pub use model::{Activations, DecoderSlice, KvCache, SlicePlan, inverse_frequencies};
