@@ -52,7 +52,7 @@ The context gate is **Proved (model)** by `Kadmium.Native.Text.accepted_unchange
 `Kadmium.Native.Text.full_context_accepted` and `Kadmium.Native.Text.over_context_rejected`.
 It accepts the original token list through the native context boundary and rejects a longer
 list. EOS membership is **Proved (model)** by `Kadmium.Native.Text.eos_iff_member`.
-See [the formal inventory](../../formal/README.md#native-text-adapter) for the Rust link,
+See [the formal inventory](../../formal/README.md#native-text-adapter-nativemodeltextlean) for the Rust link,
 differential fixture and special-token precedence proofs. Tokenization and rendering are
 opaque inputs to these proofs; neither library is proved equivalent to Hugging Face.
 
