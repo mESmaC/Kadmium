@@ -19,6 +19,7 @@ import KadmiumFormal.StoragePool
 import KadmiumFormal.Transport.ChunkMap
 import KadmiumFormal.Transport.Publish
 import KadmiumFormal.Native.LayerSplit
+import KadmiumFormal.Native.ModelText
 
 /-!
 # Axiom audit
@@ -165,3 +166,17 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Transport.Publish.legacy_unsafe
 #assert_standard_axioms Kadmium.Native.runLayers_append
 #assert_standard_axioms Kadmium.Native.runChain_eq_runLayers
+#assert_standard_axioms Kadmium.Native.Text.accepted_unchanged
+#assert_standard_axioms Kadmium.Native.Text.full_context_accepted
+#assert_standard_axioms Kadmium.Native.Text.over_context_rejected
+#assert_standard_axioms Kadmium.Native.Text.eos_iff_member
+#assert_standard_axioms Kadmium.Native.Text.explicit_null_disables
+#assert_standard_axioms Kadmium.Native.Text.declared_special_wins
+#assert_standard_axioms Kadmium.Native.Text.modern_template_special
+#assert_standard_axioms Kadmium.Native.Text.legacy_template_override
+#assert_standard_axioms Kadmium.Native.Text.legacy_template_missing
+#assert_standard_axioms Kadmium.Native.Text.legacy_template_diverged
+#assert_standard_axioms Kadmium.Native.Text.template_visible_iff
+#assert_standard_axioms Kadmium.Native.Text.unset_template_hidden
+#assert_standard_axioms Kadmium.Native.Text.tokenizer_flags_hidden
+#assert_standard_axioms Kadmium.Native.Text.mem_mergeAdditional

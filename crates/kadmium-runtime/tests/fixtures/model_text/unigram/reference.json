@@ -1,0 +1,681 @@
+{
+  "provenance": {
+    "generator": "scripts/model_text_fixtures.py",
+    "transformers": "4.57.6",
+    "tokenizers": "0.22.2",
+    "jinja2": "3.1.6"
+  },
+  "plain": [
+    {
+      "text": "Hello, world.",
+      "special": false,
+      "ids": [
+        5,
+        42,
+        7,
+        10,
+        10,
+        13,
+        0,
+        5,
+        11,
+        13,
+        8,
+        10,
+        14,
+        45
+      ],
+      "decoded": "Hello<unk> world.",
+      "skipped": "Hello world."
+    },
+    {
+      "text": "Hello, world.",
+      "special": true,
+      "ids": [
+        1,
+        5,
+        42,
+        7,
+        10,
+        10,
+        13,
+        0,
+        5,
+        11,
+        13,
+        8,
+        10,
+        14,
+        45
+      ],
+      "decoded": "<s> Hello<unk> world.",
+      "skipped": "Hello world."
+    },
+    {
+      "text": "  tabs\tand\nnewlines  ",
+      "special": false,
+      "ids": [
+        5,
+        5,
+        51,
+        49,
+        6,
+        0,
+        39,
+        14,
+        0,
+        55,
+        11,
+        32,
+        6,
+        5,
+        5
+      ],
+      "decoded": " tabs<unk>and<unk>newlines  ",
+      "skipped": " tabsandnewlines  "
+    },
+    {
+      "text": "  tabs\tand\nnewlines  ",
+      "special": true,
+      "ids": [
+        1,
+        5,
+        5,
+        51,
+        49,
+        6,
+        0,
+        39,
+        14,
+        0,
+        55,
+        11,
+        32,
+        6,
+        5,
+        5
+      ],
+      "decoded": "<s>  tabs<unk>and<unk>newlines  ",
+      "skipped": " tabsandnewlines  "
+    },
+    {
+      "text": "naïve café 中文 🦀",
+      "special": false,
+      "ids": [
+        38,
+        16,
+        41,
+        44,
+        7,
+        5,
+        22,
+        16,
+        20,
+        40,
+        5,
+        48,
+        50,
+        5,
+        46
+      ],
+      "decoded": "naïve café 中文 🦀",
+      "skipped": "naïve café 中文 🦀"
+    },
+    {
+      "text": "naïve café 中文 🦀",
+      "special": true,
+      "ids": [
+        1,
+        38,
+        16,
+        41,
+        44,
+        7,
+        5,
+        22,
+        16,
+        20,
+        40,
+        5,
+        48,
+        50,
+        5,
+        46
+      ],
+      "decoded": "<s> naïve café 中文 🦀",
+      "skipped": "naïve café 中文 🦀"
+    },
+    {
+      "text": "<s> literal </s>",
+      "special": false,
+      "ids": [
+        1,
+        5,
+        10,
+        17,
+        9,
+        7,
+        8,
+        16,
+        10,
+        5,
+        2
+      ],
+      "decoded": "<s> literal </s>",
+      "skipped": "literal "
+    },
+    {
+      "text": "<s> literal </s>",
+      "special": true,
+      "ids": [
+        1,
+        1,
+        5,
+        10,
+        17,
+        9,
+        7,
+        8,
+        16,
+        10,
+        5,
+        2
+      ],
+      "decoded": "<s><s> literal </s>",
+      "skipped": "literal "
+    },
+    {
+      "text": "I 'm sure .",
+      "special": false,
+      "ids": [
+        5,
+        12,
+        5,
+        47,
+        23,
+        35,
+        27,
+        8,
+        7,
+        5,
+        45
+      ],
+      "decoded": "I 'm sure .",
+      "skipped": "I 'm sure ."
+    },
+    {
+      "text": "I 'm sure .",
+      "special": true,
+      "ids": [
+        1,
+        5,
+        12,
+        5,
+        47,
+        23,
+        35,
+        27,
+        8,
+        7,
+        5,
+        45
+      ],
+      "decoded": "<s> I 'm sure .",
+      "skipped": "I 'm sure ."
+    }
+  ],
+  "chats": [
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hello, café 中文 🦀"
+        }
+      ],
+      "generation": false,
+      "variables": {},
+      "prompt": "<s>[INST] Hello, café 中文 🦀 [/INST]",
+      "ids": [
+        1,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        42,
+        7,
+        10,
+        10,
+        13,
+        0,
+        5,
+        22,
+        16,
+        20,
+        40,
+        5,
+        48,
+        50,
+        5,
+        46,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24
+      ]
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hello, café 中文 🦀"
+        }
+      ],
+      "generation": false,
+      "variables": {
+        "enable_thinking": false
+      },
+      "prompt": "<s>[INST] Hello, café 中文 🦀 [/INST]",
+      "ids": [
+        1,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        42,
+        7,
+        10,
+        10,
+        13,
+        0,
+        5,
+        22,
+        16,
+        20,
+        40,
+        5,
+        48,
+        50,
+        5,
+        46,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24
+      ]
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hello, café 中文 🦀"
+        }
+      ],
+      "generation": true,
+      "variables": {},
+      "prompt": "<s>[INST] Hello, café 中文 🦀 [/INST]",
+      "ids": [
+        1,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        42,
+        7,
+        10,
+        10,
+        13,
+        0,
+        5,
+        22,
+        16,
+        20,
+        40,
+        5,
+        48,
+        50,
+        5,
+        46,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24
+      ]
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Hello, café 中文 🦀"
+        }
+      ],
+      "generation": true,
+      "variables": {
+        "enable_thinking": false
+      },
+      "prompt": "<s>[INST] Hello, café 中文 🦀 [/INST]",
+      "ids": [
+        1,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        42,
+        7,
+        10,
+        10,
+        13,
+        0,
+        5,
+        22,
+        16,
+        20,
+        40,
+        5,
+        48,
+        50,
+        5,
+        46,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24
+      ]
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "first"
+        },
+        {
+          "role": "assistant",
+          "content": "answer"
+        },
+        {
+          "role": "user",
+          "content": "second\nline"
+        }
+      ],
+      "generation": false,
+      "variables": {},
+      "prompt": "<s>[INST] first [/INST] answer</s>[INST] second\nline [/INST]",
+      "ids": [
+        1,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        20,
+        17,
+        8,
+        15,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24,
+        34,
+        6,
+        11,
+        7,
+        8,
+        2,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        37,
+        22,
+        13,
+        36,
+        14,
+        0,
+        32,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24
+      ]
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "first"
+        },
+        {
+          "role": "assistant",
+          "content": "answer"
+        },
+        {
+          "role": "user",
+          "content": "second\nline"
+        }
+      ],
+      "generation": false,
+      "variables": {
+        "enable_thinking": false
+      },
+      "prompt": "<s>[INST] first [/INST] answer</s>[INST] second\nline [/INST]",
+      "ids": [
+        1,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        20,
+        17,
+        8,
+        15,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24,
+        34,
+        6,
+        11,
+        7,
+        8,
+        2,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        37,
+        22,
+        13,
+        36,
+        14,
+        0,
+        32,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24
+      ]
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "first"
+        },
+        {
+          "role": "assistant",
+          "content": "answer"
+        },
+        {
+          "role": "user",
+          "content": "second\nline"
+        }
+      ],
+      "generation": true,
+      "variables": {},
+      "prompt": "<s>[INST] first [/INST] answer</s>[INST] second\nline [/INST]",
+      "ids": [
+        1,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        20,
+        17,
+        8,
+        15,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24,
+        34,
+        6,
+        11,
+        7,
+        8,
+        2,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        37,
+        22,
+        13,
+        36,
+        14,
+        0,
+        32,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24
+      ]
+    },
+    {
+      "messages": [
+        {
+          "role": "user",
+          "content": "first"
+        },
+        {
+          "role": "assistant",
+          "content": "answer"
+        },
+        {
+          "role": "user",
+          "content": "second\nline"
+        }
+      ],
+      "generation": true,
+      "variables": {
+        "enable_thinking": false
+      },
+      "prompt": "<s>[INST] first [/INST] answer</s>[INST] second\nline [/INST]",
+      "ids": [
+        1,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        20,
+        17,
+        8,
+        15,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24,
+        34,
+        6,
+        11,
+        7,
+        8,
+        2,
+        30,
+        12,
+        21,
+        25,
+        26,
+        24,
+        5,
+        37,
+        22,
+        13,
+        36,
+        14,
+        0,
+        32,
+        30,
+        19,
+        12,
+        21,
+        25,
+        26,
+        24
+      ]
+    }
+  ]
+}
