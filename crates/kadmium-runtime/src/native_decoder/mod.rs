@@ -1,0 +1,79 @@
+//! # `kadmium_runtime::native_decoder`
+//!
+//! Kadmium's own execution of a real checkpoint: dense decoder-only transformers (Llama, Mistral,
+//! Qwen2, Qwen3) read from their Hugging Face SafeTensors files and run in pure Rust, one
+//! contiguous range of layers at a time. This is the unit distributed inference is built from:
+//! a machine holds a [`DecoderSlice`] for its layers and a [`KvCache`] for them, takes the
+//! previous machine's [`Activations`], and hands its own to the next.
+//!
+//! Quality contract:
+//!
+//! - Weights stay in their stored F32, F16 or BF16 bits. Arithmetic is `f32`, every narrower
+//!   weight widened exactly. Nothing is quantized, pruned or skipped; another dtype, or a
+//!   checkpoint quantized before import, is refused.
+//! - Keys and values are cached in `f32`.
+//! - The context is the model's `max_position_embeddings`. A request beyond it is an error
+//!   naming both numbers. Nothing is truncated or shifted.
+//! - A configuration feature that cannot be executed exactly, such as sliding-window attention or
+//!   an unimplemented RoPE scaling type, is an error, never an approximation.
+//!
+//! Determinism: the arithmetic follows the RepOps conventions plus
+//! [`math::NATIVE_DECODER_CONVENTIONS`], so the result depends only on the weights and inputs,
+//! not on thread count or on where the layer ranges are cut.
+//!
+//! Status: reference execution on the CPU. No wire protocol, placement or Condenser route uses
+//! it yet, and its speed has not been measured.
+
+mod config;
+pub mod math;
+mod model;
+
+pub use config::{Architecture, DecoderConfig, RopeScaling};
+pub use model::{Activations, DecoderSlice, KvCache, SlicePlan, inverse_frequencies};
+
+use kadmium_data::SafetensorsManifestError;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum NativeDecoderError {
+    #[error("model config: {0}")]
+    Config(String),
+    #[error("the native decoder does not support {0}")]
+    Unsupported(String),
+    #[error("tensor `{0}` is missing from the checkpoint")]
+    MissingTensor(String),
+    #[error("tensor `{tensor}` has shape {actual:?}; the config requires {expected:?}")]
+    TensorShape {
+        tensor: String,
+        expected: Vec<usize>,
+        actual: Vec<u64>,
+    },
+    #[error(
+        "tensor `{tensor}` is stored as {dtype}; the native decoder runs F32, F16 and BF16 weights as stored and does not dequantize or cast"
+    )]
+    UnsupportedDtype { tensor: String, dtype: &'static str },
+    #[error("layers {start}..{end} are not within the model's {layers} layers")]
+    LayerRange {
+        start: usize,
+        end: usize,
+        layers: usize,
+    },
+    #[error("this slice does not hold the {0}")]
+    MissingPart(&'static str),
+    #[error("token {token} is outside the vocabulary of {vocab_size}")]
+    TokenOutOfRange { token: u32, vocab_size: usize },
+    #[error(
+        "the request reaches position {requested}; the model's native context is {maximum} positions"
+    )]
+    ContextExceeded { requested: usize, maximum: usize },
+    #[error("the cache holds {expected} positions; the activations start at position {actual}")]
+    CachePosition { expected: usize, actual: usize },
+    #[error("could not allocate {bytes} bytes for the KV cache")]
+    Memory { bytes: usize },
+    #[error("{0}")]
+    Shape(String),
+    #[error(transparent)]
+    Checkpoint(#[from] SafetensorsManifestError),
+}
+
+pub type Result<T> = std::result::Result<T, NativeDecoderError>;

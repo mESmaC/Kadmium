@@ -48,6 +48,15 @@ All results are **Proved (model)**. The RepOps differential fixture is `crates/k
 | `Transport.Publish.publish_safe` | Claiming staging into a private directory before verifying it means every published package verified as complete, under every interleaving of begins, chunk arrivals and concurrent finishes. | `CheckpointLibrary::{receive_begin, receive_finish}`, `finish_claimed` |
 | `Transport.Publish.legacy_unsafe` | The previous verify-in-place-then-rename order publishes an incomplete package when a begin lands between the two. | `receive_finish` before PR #62's fix |
 
+### Native decoder layer splits
+
+**Proved (model)**, about a model only: there is no differential fixture. A layer is any function of the activations and its own KV cache, so the statements hold bit for bit for `f32` without a floating-point model. The Rust test `splitting_the_layers_at_every_cut_is_bit_identical` in `crates/kadmium-runtime/tests/native_decoder.rs` checks the property on four checkpoint layouts, every pair of cuts, through prefill and token-by-token decode. Modelling choices are listed in `KadmiumFormal/Native/LayerSplit.lean`.
+
+| Theorem | Statement | Rust item |
+| :--- | :--- | :--- |
+| `Native.runLayers_append` | Running layers `fs ++ gs` with caches `cs ++ ds`, where `cs` has one cache per layer of `fs`, equals running `fs`, then `gs` on its activations, with the caches concatenated. | `native_decoder::DecoderSlice::forward` |
+| `Native.runChain_eq_runLayers` | A chain of slices, each with one cache per layer, gives the same activations and caches as one slice holding all their layers. Where the layers are cut and how many machines hold them cannot change an output. | `DecoderSlice::forward` over a chain of slices |
+
 Every RepOps theorem holds for an arbitrary addition `add : α → α → α` with no associativity, commutativity or identity assumed. IEEE `f32` and `f64` addition has none of those laws, so the statements hold bit for bit for floats without a floating-point model: two reductions that evaluate the same tree perform the same additions on the same operands.
 
 Modelling assumptions shared by these results:
