@@ -51,6 +51,8 @@ test('native pickers preserve cancel, use workspace checks, and expose an explic
     await page.locator('#checkpoint-choose-folder').waitFor({ state: 'visible' });
     await page.locator('#checkpoint-browser-close').click();
 
+    // Workspace files live beside the task, not on the Models page.
+    await page.locator('.rail-nav[data-view="harness"]').click();
     await page.locator('[data-context-tab="files"]').click();
     await page.waitForFunction(() => document.querySelector('#workspace-name').title !== '');
     assert.equal(await page.locator('.files-browser').isVisible(), false);

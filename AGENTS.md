@@ -206,6 +206,7 @@ This is required for every task that changes the repository, not only large ones
    - For each requested change: address it, push a new commit on the same branch (do not force-push over reviewed history), run the affected checks again, and reply on the thread stating what you changed and the validation you ran.
    - If you disagree with a request, say why on the thread with evidence from the code or docs. Do not silently ignore it and do not comply by lowering quality.
    - If CI fails, fix the cause. Do not retry blindly, weaken a test, or mark it ignored.
+   - If CI cannot run because of a billing or spending limit on the repository's Actions account, the PR is still open and still yours. Do not stop watching it, treat the missing run as a failure of your change, or try to work around the limit. Run the checks from section 4 that your diff touches locally, post the exact commands and results on the PR as a comment so the reviewer has the evidence CI would have provided, and keep watching for review activity. When CI runs again, read its result.
    - If `main` moves and the PR conflicts, merge or rebase onto `main`, resolve conflicts preserving both sides' intent, and re-run checks.
    - Do not merge your own PR. Merging is the reviewer's decision. Stop monitoring only when the PR is merged or the reviewer closes it.
 7. **After merge,** if the change introduced a follow-up that you could not finish, open an issue describing it with the same honesty rules as section 2.

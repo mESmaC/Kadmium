@@ -9,7 +9,7 @@ const os = require('node:os');
 const { spawn } = require('node:child_process');
 const { chromium } = require(path.resolve('crates/kadmium-gateway/tests/ui/node_modules/playwright'));
 
-test('local checkpoint setup, explicit task routing, recovery and distributed jobs fit desktop and mobile', { timeout: 120000 }, async () => {
+test('model preparation, local and remote coordinator routing, quality tradeoffs, recovery and distributed jobs fit desktop and mobile', { timeout: 120000 }, async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'condenser-compute-ui-'));
   const source = path.join(cwd, 'source'); fs.mkdirSync(source);
   fs.writeFileSync(path.join(source, 'config.json'), JSON.stringify({ model_type: 'llama', max_position_embeddings: 8192 }));
@@ -31,6 +31,10 @@ test('local checkpoint setup, explicit task routing, recovery and distributed jo
     await page.goto(base);
     await page.locator('#open-model-library').click();
     await page.locator('#checkpoint-path').fill(source);
+    // The working folder and pre-quantized opt-in sit under Advanced, closed by default.
+    assert.equal(await page.locator('#checkpoint-accept-quantized').isVisible(), false);
+    await page.locator('.model-advanced summary').click();
+    assert.equal(await page.locator('#checkpoint-accept-quantized').isChecked(), false);
     assert.equal(await page.locator('#checkpoint-working-directory').inputValue(), '');
     const work = path.join(cwd, 'normalization-work'); fs.mkdirSync(work);
     await page.locator('#checkpoint-working-directory').fill(path.join(cwd, 'missing-work'));
@@ -41,7 +45,14 @@ test('local checkpoint setup, explicit task routing, recovery and distributed jo
     await page.waitForFunction(()=>document.querySelector('#checkpoint-status').textContent.includes('Normalized 1 tensors'));
     const id=await page.locator('#checkpoint-select').inputValue(); assert.match(id,/^[a-f0-9]{64}$/);
     assert.deepEqual(fs.readdirSync(work), []);
-    assert.match(await page.locator('#checkpoint-facts').innerText(),/F32/);
+    assert.match(await page.locator('#checkpoint-facts').innerText(),/F32 · unchanged/);
+    assert.match(await page.locator('#checkpoint-status').textContent(),/verified transport chunks/);
+    assert.equal(await page.locator('#step-prepare').getAttribute('data-state'),'done');
+    assert.equal(await page.locator('#step-run').getAttribute('data-state'),'current');
+    assert.match(await page.locator('#checkpoint-context-hint').textContent(),/Maximum — 8,192 tokens/);
+    await page.locator('#checkpoint-context').fill('2048');
+    assert.match(await page.locator('#checkpoint-context-hint').textContent(),/Reduced to 2,048 tokens \(25% of 8,192\).*forgets/);
+    await page.locator('#checkpoint-context').fill('');
     const before=await page.locator('#header-model').textContent();
     await page.route('**/api/v1/checkpoints/load',route=>route.fulfill({status:502,contentType:'application/json',body:JSON.stringify({error:'Backend changed F32 to F16; task route was not changed'})}));
     await page.locator('#checkpoint-load').click();
@@ -55,8 +66,48 @@ test('local checkpoint setup, explicit task routing, recovery and distributed jo
     assert.equal(await page.locator('#header-model').textContent(),before);
     await page.locator('#checkpoint-use').click();
     assert.match(await page.locator('#header-model').textContent(),new RegExp(id));
+    assert.equal(await page.locator('#view-harness').isVisible(),true);
+    await page.locator('#open-model-library').click();
     await page.locator('#checkpoint-backend').fill('http://127.0.0.1:11435');
     assert.equal(await page.locator('#checkpoint-use').isDisabled(),true);
+
+    // Remote coordinator: send, follow progress, then route the task to the remote model.
+    await page.locator('label:has(#destination-cloud)').click();
+    assert.equal(await page.locator('#destination-cloud-panel').isVisible(),true);
+    assert.equal(await page.locator('#cloud-endpoint').inputValue(),'');
+    await page.locator('#cloud-endpoint').fill('https://coordinator.example:7848');
+    let polls=0;
+    await page.route('**/api/v1/checkpoints/publish*',route=>{
+      if(route.request().method()==='POST'){
+        const body=route.request().postDataJSON();
+        assert.deepEqual(body,{checkpoint_id:id,endpoint:'https://coordinator.example:7848',api_key:'cloud-key',context_length:null});
+        return route.fulfill({json:{state:'uploading',checkpoint_id:id,total_bytes:2000,sent_bytes:500,skipped_bytes:0,message:'Sending verified 16 MiB chunks'}});
+      }
+      assert.equal(new URL(route.request().url()).searchParams.get('checkpoint_id'),id);
+      polls+=1;
+      return route.fulfill({json:polls<2?{state:'uploading',checkpoint_id:id,total_bytes:2000,sent_bytes:1000,skipped_bytes:0,message:'Sending verified 16 MiB chunks'}
+        :{state:'ready',checkpoint_id:id,total_bytes:2000,sent_bytes:2000,skipped_bytes:0,message:'Verified and loaded in the Kadmium coordinator\'s Ollama',result:{checkpoint:{id,name:'source',context_length:8192},context_length:8192,provider:{kind:'ollama',model:'kadmium-'+id+':latest',base_url:'https://coordinator.example:7848/api/v1/model-transport/ollama'}}}});
+    });
+    await page.locator('#cloud-key').fill('cloud-key');
+    await page.locator('#cloud-send').click();
+    await page.waitForFunction(()=>!document.querySelector('#cloud-use').disabled);
+    assert.match(await page.locator('#cloud-status').textContent(),/Ready in the Kadmium coordinator’s Ollama with 8,192 tokens/);
+    assert.equal(await page.locator('#cloud-progress').getAttribute('aria-valuenow'),'100');
+    await page.locator('#cloud-use').click();
+    assert.match(await page.locator('#header-provider').textContent(),/Ollama/);
+    await page.unroute('**/api/v1/checkpoints/publish*');
+
+    // Quality controls start at maximum and explain each reduction.
+    await page.locator('#provider-button').click();
+    assert.match(await page.locator('#quality-summary').textContent(),/Maximum quality/);
+    await page.locator('#max-tokens').fill('4096');
+    assert.match(await page.locator('#quality-summary').textContent(),/Reduced quality — responses capped at 4,096 tokens/);
+    assert.match(await page.locator('#max-tokens-hint').textContent(),/stop mid-way/);
+    await page.locator('#quality-maximum').click();
+    assert.match(await page.locator('#quality-summary').textContent(),/Maximum quality/);
+    await page.locator('#cancel-settings').click();
+    await page.locator('.rail-nav[data-view="harness"]').click();
+    await page.locator('#open-compute').click();
     await page.route('**/api/v1/compute/jobs',route=>{
       const body=route.request().postDataJSON();assert.equal(body.job.kind,'matrix_multiply');
       return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({success:true,distributed:true,units_total:2,units_validated:2,nodes_used:['a','b'],wall_ms:3.25,traces:[],result:{values:[58,64,139,154]}})});
@@ -71,8 +122,8 @@ test('local checkpoint setup, explicit task routing, recovery and distributed jo
     for(const width of [1440,768,390]) {
       await page.setViewportSize({width,height:900});
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
-      await page.waitForFunction(()=>document.querySelector('#context-compute').getBoundingClientRect().width<=innerWidth);
-      const bounds=await page.locator('#context-compute').boundingBox();await page.screenshot({path:path.resolve('target/checkpoint-smoke/compute-'+width+'.png')});assert.ok(bounds.width<=width, JSON.stringify({width,bounds}));
+      await page.waitForFunction(()=>document.querySelector('#run-card').getBoundingClientRect().right<=innerWidth);
+      const bounds=await page.locator('#run-card').boundingBox();await page.screenshot({path:path.resolve('target/checkpoint-smoke/models-'+width+'.png')});assert.ok(bounds.x>=0&&bounds.x+bounds.width<=width, JSON.stringify({width,bounds}));
     }
     await page.setViewportSize({width:390,height:844});
     await page.evaluate(()=>document.body.classList.add('context-closed'));

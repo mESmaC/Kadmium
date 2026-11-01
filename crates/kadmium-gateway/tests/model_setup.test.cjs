@@ -39,7 +39,9 @@ test('Control Room and desktop Companion launch the shared preparation flow and 
       assert.equal(locked.status(), 401);
       await page.goto(access);
       await page.goto(base + shell);
-      await page.getByRole('link', { name: 'Prepare a local model', exact: true }).click();
+      await page.getByRole('heading', { name: 'Run your own model' }).waitFor();
+      assert.equal(await page.getByRole('link', { name: /Send to a coordinator/ }).getAttribute('href'), '/condenser/#models-cloud');
+      await page.getByRole('link', { name: /Prepare a local model/ }).click();
       await page.waitForURL('**/condenser/#models');
       await page.locator('#return-kadmium').waitFor();
       assert.equal(await page.locator('#compute-url').inputValue(), base);
@@ -70,7 +72,7 @@ test('Control Room and desktop Companion launch the shared preparation flow and 
       await page.locator('#provider-timeout').fill('900');
       await page.locator('#save-settings').click();
       await page.reload();
-      await page.locator('#close-context').click();
+      await page.locator('#view-models').waitFor();
       await page.locator('#provider-button').click();
       assert.equal(await page.locator('#max-tokens').inputValue(), '4096');
       assert.equal(await page.locator('#context-window').inputValue(), '32768');

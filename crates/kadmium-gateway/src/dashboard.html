@@ -320,6 +320,7 @@
       .cr-side, .cr-task .go, .cr-progress i { transition: none; }
     }
   </style>
+  <link rel="stylesheet" href="/glass.css">
   <link rel="stylesheet" href="/workspace.css">
 </head>
 <body>
@@ -745,7 +746,7 @@
     overview: { nav: 'Overview', title: 'Overview', hint: 'everything at a glance', lede: 'Your cluster at a glance: the machines in it, the model they run, and what changed. Pick a task to get started, or read the live numbers below.' },
     nodes: { nav: 'Machines', title: 'Machines', hint: 'add, inspect and pause computers', lede: 'Every computer in your cluster. Add one with a single command, open a machine to see its hardware and the part of the model it holds, or pause it when you need it back.' },
     platforms: { nav: 'Boards & devices', title: 'Boards & devices', hint: 'attach Apple M4, Raspberry Pi CM4, K230 and more', lede: 'Small boards and special hardware Kadmium can drive: Apple M4 Macs, Raspberry Pi CM4, Kendryte K230, Tegra X1 and phone farms. Attach one that is plugged in, or add a profile to plan around hardware you don’t have yet.' },
-    models: { nav: 'Models', title: 'Models', hint: 'plan a model and test reference execution', lede: 'Choose a preset to plan placement, compile a synthetic fixture, or run reference diagnostics. These actions do not load a language model or generate answers.' },
+    models: { nav: 'Models', title: 'Models', hint: 'plan a model and test reference execution', lede: 'Run your own model on this computer or Kadmium Cloud. The catalog below plans how a model would spread across your machines; placement plans and reference diagnostics do not generate answers.' },
     data: { nav: 'Storage', title: 'Storage', hint: 'the shared bucket and copies between machines', lede: 'Inspect metadata and estimated placement in kdm://pool-bucket/. Entries and configured anchors do not prove uploaded bytes, verified copies, or node-loss protection.' },
     training: { nav: 'Training', title: 'Training', hint: 'fine-tune, save and resume checkpoints', lede: 'Fine-tune a model across your machines. Run training steps, save a checkpoint whenever you want a restore point, and resume from any saved checkpoint.' },
     rl: { nav: 'Reinforcement learning', title: 'Reinforcement learning', hint: 'improve a model by trial and checking', lede: 'Improve a model by trial and checking: machines run attempts, a verifier scores each one, and the model learns from the better ones. Dream-RSI replays recorded runs offline at no GPU cost.' },

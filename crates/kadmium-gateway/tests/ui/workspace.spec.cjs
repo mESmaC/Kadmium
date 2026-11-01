@@ -38,14 +38,14 @@ for (const [name, path] of [['Control Room', '/'], ['Companion', '/companion']])
     await expect(page.getByText('No matching features')).toBeVisible();
     await page.getByRole('button', { name: 'Clear search' }).click();
     await expect(search).toBeFocused();
-    await expect(page.locator('.kw-result')).toHaveCount(16);
+    await expect(page.locator('.kw-result')).toHaveCount(17);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(trigger).toBeFocused();
     await page.keyboard.press('Control+k');
     await expect(search).toBeFocused();
     // Native dialog keeps keyboard focus inside the feature finder.
-    for (let i = 0; i < 18; i++) await page.keyboard.press('Tab');
+    for (let i = 0; i < 17; i++) await page.keyboard.press('Tab');
     expect(await page.evaluate(() => !!document.activeElement.closest('dialog'))).toBe(true);
     await search.fill('models');
     await search.press('Enter');

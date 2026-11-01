@@ -336,6 +336,7 @@
       .cp-switch, .cp-switch::after, .cp-step .go { transition: none; }
     }
   </style>
+  <link rel="stylesheet" href="/glass.css">
   <link rel="stylesheet" href="/workspace.css">
 </head>
 <body>
@@ -686,7 +687,7 @@
   const PAGES = [
     { id: 'home', label: 'Home', icon: 'home', title: 'This machine', lede: 'What this computer is doing for your cluster right now. Yield it whenever you need it back; it rejoins when you’re done.' },
     { id: 'cluster', label: 'Cluster', icon: 'cluster', title: 'Cluster', lede: 'All the machines working together. Add another computer with one command, or check the code of one Kadmium found on your network.' },
-    { id: 'models', label: 'Models', icon: 'models', title: 'Models', lede: 'Choose a model to run across your machines, or turn weights you already have (.gguf or .safetensors) into a Kadmium .ktb file.' },
+    { id: 'models', label: 'Models', icon: 'models', title: 'Models', lede: 'Run your own model on this computer or Kadmium Cloud, or plan how a catalog model would spread across your machines.' },
     { id: 'earn', label: 'Earn', icon: 'earn', title: 'Earn from idle time', lede: 'Rent this machine’s idle time to verified jobs and get paid in dollars or Kadmium Cloud credits. You choose the hours, the memory share and the kinds of work.' },
     { id: 'tools', label: 'Tools', icon: 'tools', title: 'Tools and tests', lede: 'Check the cluster end to end from this machine: send a test prompt, hand off a chat session, send a test shard, size a smaller model, or attach a board.' },
     { id: 'settings', label: 'Settings', icon: 'settings', title: 'Settings', lede: 'Choose self-hosted or Kadmium Cloud, pick a theme, and see versions.' }

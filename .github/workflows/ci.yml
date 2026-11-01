@@ -54,8 +54,9 @@ jobs:
       - name: Check the Rust differential fixtures match the Lean models
         run: |
           (cd formal && lake exe repops_vectors ../crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt)
+          (cd formal && lake exe transport_vectors ../crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt)
           (cd formal && lake exe kadmium_vectors ..)
-          git diff --exit-code -- 'crates/*/tests/fixtures/*_lean_vectors.txt' crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt
+          git diff --exit-code -- 'crates/*/tests/fixtures/*_lean_vectors.txt' crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt crates/kadmium-data/tests/fixtures/transport_chunk_vectors.txt
 
   workspace-ui:
     name: Workspace browser workflows
@@ -77,6 +78,8 @@ jobs:
           cache-dependency-path: crates/kadmium-gateway/tests/ui/package-lock.json
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - name: Test public website as standalone static files
+        run: npm run test:website
       - run: npm test
       - name: Build Condenser for checkpoint workflow tests
         run: cargo build -p kadmium-condenser-app --locked

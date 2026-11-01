@@ -15,6 +15,8 @@ import KadmiumFormal.Grid.Eviction
 import KadmiumFormal.Sharding.RowShare
 import KadmiumFormal.Runtime.Bisect
 import KadmiumFormal.Runtime.BatchCodec
+import KadmiumFormal.Transport.ChunkMap
+import KadmiumFormal.Transport.Publish
 
 /-!
 # Axiom audit
@@ -132,3 +134,12 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Runtime.decodePart_exact
 #assert_standard_axioms Kadmium.Runtime.wrapped_accepts_header_only_part
 #assert_standard_axioms Kadmium.Runtime.checked_rejects_header_only_part
+
+-- Checkpoint transport
+#assert_standard_axioms Kadmium.Transport.readLoop_eq_chunkPlan
+#assert_standard_axioms Kadmium.Transport.validChunks_iff
+#assert_standard_axioms Kadmium.Transport.chunkPlan_tiles
+#assert_standard_axioms Kadmium.Transport.chunkPlan_aligned
+#assert_standard_axioms Kadmium.Transport.layout_divides
+#assert_standard_axioms Kadmium.Transport.Publish.publish_safe
+#assert_standard_axioms Kadmium.Transport.Publish.legacy_unsafe

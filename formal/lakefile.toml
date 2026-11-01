@@ -1,5 +1,5 @@
 name = "kadmium_formal"
-defaultTargets = ["KadmiumFormal", "repops_vectors", "kadmium_vectors"]
+defaultTargets = ["KadmiumFormal", "repops_vectors", "transport_vectors", "kadmium_vectors"]
 
 [leanOptions]
 autoImplicit = false
@@ -10,6 +10,10 @@ name = "KadmiumFormal"
 [[lean_exe]]
 name = "repops_vectors"
 root = "Vectors"
+
+[[lean_exe]]
+name = "transport_vectors"
+root = "TransportVectors"
 
 [[lean_exe]]
 name = "kadmium_vectors"
