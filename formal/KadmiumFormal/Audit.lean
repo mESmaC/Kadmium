@@ -20,6 +20,7 @@ import KadmiumFormal.Transport.ChunkMap
 import KadmiumFormal.Transport.Publish
 import KadmiumFormal.Native.LayerSplit
 import KadmiumFormal.Native.ModelText
+import KadmiumFormal.Native.Generation
 
 /-!
 # Axiom audit
@@ -180,3 +181,9 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Native.Text.unset_template_hidden
 #assert_standard_axioms Kadmium.Native.Text.tokenizer_flags_hidden
 #assert_standard_axioms Kadmium.Native.Text.mem_mergeAdditional
+#assert_standard_axioms Kadmium.Native.Generation.runLayers_length
+#assert_standard_axioms Kadmium.Native.Generation.runChain_aligned
+#assert_standard_axioms Kadmium.Native.Generation.generate_chain_eq_whole
+#assert_standard_axioms Kadmium.Native.Generation.emitLen_mono
+#assert_standard_axioms Kadmium.Native.Generation.emitted_prefix
+#assert_standard_axioms Kadmium.Native.Generation.emitLen_le_stop

@@ -13,6 +13,7 @@ kadmium-network.workspace = true
 kadmium-grid.workspace = true
 kadmium-cuda.workspace = true
 kadmium-npu.workspace = true
+getrandom.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

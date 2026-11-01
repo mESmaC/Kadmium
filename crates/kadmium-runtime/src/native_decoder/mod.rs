@@ -25,8 +25,9 @@
 //! by construction, since each output feature is computed whole by one thread, and the test
 //! `linear_is_identical_at_every_thread_count` pins 1 to 1,000 threads.
 //!
-//! Status: reference execution on the CPU. No wire protocol, placement or Condenser route uses
-//! it yet, and its speed has not been measured.
+//! Status: reference execution on the CPU. `native_generation` generates across a chain of
+//! slices in one process. No wire protocol, placement or Condenser route uses it yet, and its
+//! speed has not been measured.
 
 mod config;
 pub mod math;
