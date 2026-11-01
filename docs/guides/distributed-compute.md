@@ -66,6 +66,59 @@ The row-major result is `[58, 64, 139, 154]`. Other request shapes are:
 
 Learning rate must be in `(0, 1]`; replay accepts 2–64 rollouts and 8–256 simulations. Unknown job kinds and fields fail validation. Jobs have a 60-second coordinator deadline and 15-second per-call deadlines. Timeout does not undo already-dispatched work. Inspect workers before retrying. The job route produces no monetary credits or paid-compute claims. Condenser proxies it at `POST /api/v1/compute/jobs` with `{base_url, api_key?, job}`; coordinator credentials remain request-scoped and redirects are not followed.
 
+## Native model shard staging: library integration
+
+This is the first library-level increment for staging a native decoder's weights. It has no
+worker-socket adapter, CLI command, HTTP route or interface control yet. It does not turn the
+matrix-job API into distributed model inference.
+
+The entry points are `native_decoder::staging::PreparedSlice` and `SliceDestination` in
+`kadmium-runtime`. Use a dedicated coordinator slice-package library and a separate destination
+library for each worker. Keep the original full checkpoint. Supply a `SlicePlan` explicitly;
+automatic layer assignment and execution-memory reservations are not part of this increment.
+
+The library workflow is:
+
+1. Call `PreparedSlice::prepare` with the original checkpoint ID and requested layer range.
+2. Register the prepared source with `register_source` in the existing `ReplicaCatalog`.
+3. Inspect `staging_plan` with the destination's hardware record and `ResourceOffer`. When it
+   awaits approval, obtain a `PlanApproval` for the original model ID, destination node and
+   `placement_digest`. A slice is not an inference allocation.
+4. Call `stage_to` with exclusive access to that catalog and destination package. This is a
+   synchronous library-to-library adapter, not an authenticated remote worker call. Serialize
+   all receives into that destination package. Use the worker's disk offer, not its VRAM offer.
+   If the catalog selects another source replica, this local adapter returns an error rather
+   than substituting its own library for that source.
+
+Cancellation is checked between raw-tensor and transport-chunk copies and around package
+import. Existing integrity scans and normalization finish their current call before the
+adapter observes cancellation.
+
+The selection rule is **Proved (model)** as `Kadmium.Native.Shard.selected_iff` and
+`Kadmium.Native.Shard.payload_preserved` at `8c99026edeb99a53ed90427327985b61246d54e5`,
+checked with `cd formal && lake build --wfail`; see the
+[proof scope and Rust linkage](../../formal/README.md#native-decoder-shard-selection-nativeshardselectionlean).
+Those theorems are about lists of tensor parts and unchanged payloads, not Rust extraction,
+I/O, approval gates or hash security.
+
+Reference checks for this increment run with:
+
+```sh
+cargo test --locked -p kadmium-runtime --test native_staging --test native_staging_lean_vectors
+```
+
+The checks exercise F32, F16 and BF16 copies, tied output heads, metadata preservation,
+bitwise logits after loading a staged chain, exact-plan approvals, disk-offer boundaries,
+draining and restricted-trust workers, corrupt chunks, resume, cancellation and stale catalog
+entries. They use temporary libraries on one machine, not a multi-machine benchmark. Chunk
+verification and publication use the existing checkpoint transport. Context, sampling,
+generation settings and original source weights are not changed by shard selection.
+
+Remaining integration work: connect these packages to authenticated worker sessions; reserve
+execution memory for actual weights and the full-context KV cache; assign layers; and run the
+cancellable token-generation chain. Full distributed inference is not available through these
+entry points alone.
+
 ## Synchronize real training replicas with DiLoCo
 
 For persistent training, use the existing stateful DiLoCo session API with your local learner. The coordinator synchronizes complete replicas; each island owns its optimizer, dataset and RNG state. This is a bounded FP32 parameter service for small models/adapters, not an integrated large-language-model trainer.

@@ -190,6 +190,23 @@ are opaque inputs to this model. These theorems do not prove Hugging Face or Jin
 | `Native.Text.template_visible_iff`, `Native.Text.unset_template_hidden`, `Native.Text.tokenizer_flags_hidden` | Only populated special-token attributes enter the template context; unset values and BOS/EOS configuration flags do not. Parsing and descriptor registration are outside the model. The Transformers differential fixture checks these branches. | `specials::resolve`, `template::render` |
 | `Native.Text.mem_mergeAdditional` | The string-only additional-token merge contains exactly tokens from either input. Model only, with the `legacy_null_and_union` Transformers differential example. Descriptor merges are refused rather than modelled. | `specials::resolve` additional-token merge |
 
+### Native decoder shard selection (`Native/ShardSelection.lean`)
+
+**Proved (model)** at `8c99026edeb99a53ed90427327985b61246d54e5`, checked with
+`cd formal && lake build --wfail`: tensor parts abstract the validated names required by the loader, with
+arbitrary payloads retained whole. The model does not cover filesystem operations, checksums,
+resource approval or cancellation. The differential fixture is
+`crates/kadmium-runtime/tests/fixtures/native_staging_lean_vectors.txt`, checked by
+`native_staging_lean_vectors.rs` against `SlicePlan::tensor_names`. The integration test
+`selected_packages_contain_exact_tensors_and_original_bits` checks selected package payloads,
+dtypes and shapes against their source checkpoints.
+
+| Theorem | Statement | Rust item |
+| :--- | :--- | :--- |
+| `Kadmium.Native.Shard.layer_needed_iff` | A layer's tensors are selected exactly within the requested half-open range. | `SlicePlan::tensor_names`, shared `block_specs` |
+| `Kadmium.Native.Shard.tied_head_needs_embedding` | A tied output head requires the embedding even when the slice has no input embedding. | `SlicePlan::tensor_names` |
+| `Kadmium.Native.Shard.selected_iff` | The selected list contains exactly the original payloads whose parts are required. | `SlicePlan::tensor_names`, `CheckpointLibrary::select_tensors` |
+| `Kadmium.Native.Shard.payload_preserved` | Every selected payload is an unchanged member of the source list. | `CheckpointLibrary::select_tensors` (copy checked by the integration test, not extraction) |
 
 Modelling assumptions shared by these results:
 
