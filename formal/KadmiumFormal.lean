@@ -20,6 +20,7 @@ import KadmiumFormal.StoragePool
 import KadmiumFormal.Transport.ChunkMap
 import KadmiumFormal.Transport.Publish
 import KadmiumFormal.Native.LayerSplit
+import KadmiumFormal.Native.AttentionWindow
 import KadmiumFormal.Native.ModelText
 import KadmiumFormal.Native.ShardSelection
 import KadmiumFormal.Native.Generation

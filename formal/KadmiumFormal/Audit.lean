@@ -20,6 +20,7 @@ import KadmiumFormal.StoragePool
 import KadmiumFormal.Transport.ChunkMap
 import KadmiumFormal.Transport.Publish
 import KadmiumFormal.Native.LayerSplit
+import KadmiumFormal.Native.AttentionWindow
 import KadmiumFormal.Native.ModelText
 import KadmiumFormal.Native.ShardSelection
 import KadmiumFormal.Grid.StagingStorage
@@ -190,6 +191,12 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Transport.Publish.legacy_unsafe
 #assert_standard_axioms Kadmium.Native.runLayers_append
 #assert_standard_axioms Kadmium.Native.runChain_eq_runLayers
+#assert_standard_axioms Kadmium.Native.Attention.visible_iff
+#assert_standard_axioms Kadmium.Native.Attention.full_iff
+#assert_standard_axioms Kadmium.Native.Attention.current_visible
+#assert_standard_axioms Kadmium.Native.Attention.width_exact
+#assert_standard_axioms Kadmium.Native.Attention.wide_window_is_full
+#assert_standard_axioms Kadmium.Native.Attention.batch_independent
 #assert_standard_axioms Kadmium.Native.Text.accepted_unchanged
 #assert_standard_axioms Kadmium.Native.Text.full_context_accepted
 #assert_standard_axioms Kadmium.Native.Text.over_context_rejected
