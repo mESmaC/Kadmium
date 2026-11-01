@@ -414,7 +414,8 @@ async fn dropping_the_event_receiver_cancels_the_run() {
     .await
     .unwrap();
     assert_eq!(report.finish, FinishReason::Cancelled);
-    assert_eq!(report.tokens.len(), 1);
+    // The receiver is gone before the prefill, so the prefill is abandoned.
+    assert!(report.tokens.is_empty());
     assert_eq!(log.count(" cancel"), 3);
 }
 
@@ -660,6 +661,15 @@ impl TextCheckpoint {
     }
 }
 
+impl TextCheckpoint {
+    fn set_tokenizer_config(&self, key: &str, value: Value) {
+        let path = self.0.join("tokenizer_config.json");
+        let mut config: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        config[key] = value;
+        std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+    }
+}
+
 impl Drop for TextCheckpoint {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -754,6 +764,71 @@ async fn streamed_text_never_shows_a_stop_string_or_a_partial_character() {
             sent.push_str(&event.text);
             assert!(!sent.contains('\u{FFFD}'), "{sent:?}");
             assert!(!sent.contains(stop), "{sent:?}");
+        }
+    }
+}
+
+/// A prompt ending in a space followed by a generated `.`: the clean-up would rewrite across the
+/// boundary if it ran on the whole sequence. The generated text is cleaned up alone, as
+/// Transformers' `TextStreamer` does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clean_up_never_reaches_across_the_prompt_boundary() {
+    let checkpoint = TextCheckpoint::new();
+    checkpoint.set_tokenizer_config("clean_up_tokenization_spaces", Value::Bool(true));
+    let text = Arc::new(ModelText::from_model_dir(&checkpoint.0).unwrap());
+    let prompt = text.encode("The answer is ", false).unwrap();
+    assert!(text.decode(&prompt, true).unwrap().ends_with(' '));
+    for (output, expected) in [(".", "."), (" fine , and done .", " fine, and done.")] {
+        let mut script = text.encode(output, false).unwrap();
+        // Transformers' TextStreamer decodes the generated ids alone, with clean-up.
+        assert_eq!(text.decode(&script, true).unwrap(), expected);
+        script.push(2);
+        let (report, events) = run(
+            scripted(&text, script),
+            &greedy_text(&text),
+            GenerationRequest::new(prompt.clone()),
+        )
+        .await;
+        let report = report.unwrap();
+        assert_eq!(report.finish, FinishReason::EndOfSequence { token: 2 });
+        let streamed: String = events.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(streamed, expected);
+        assert_eq!(report.text.as_deref(), Some(expected));
+    }
+}
+
+/// The last stage returns the logits of the last row only. They equal, bit for bit, that row of
+/// the logits a whole pass computes over every row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn last_row_logits_equal_the_full_pass_bit_for_bit() {
+    for name in FIXTURES {
+        let model = Model::open(fixture(name));
+        let whole = model.slice(0..model.config.num_layers);
+        let mut cache = whole.new_cache();
+        let hidden = whole
+            .forward(&whole.embed(&PROMPT, 0).unwrap(), &mut cache)
+            .unwrap();
+        let full = whole.logits(&hidden).unwrap();
+        let vocab = model.config.vocab_size;
+        let expected: Vec<u32> = full[full.len() - vocab..]
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        let mut stage = LocalStage::new("m", "fixture", Arc::clone(&whole));
+        let output = stage
+            .forward(StageInput::Tokens {
+                start_position: 0,
+                tokens: PROMPT.to_vec(),
+            })
+            .await
+            .unwrap();
+        match output {
+            StageOutput::Logits { position, values } => {
+                assert_eq!(position, PROMPT.len() - 1);
+                let bits: Vec<u32> = values.iter().map(|v| v.to_bits()).collect();
+                assert_eq!(bits, expected, "{name}");
+            }
+            other => panic!("{other:?}"),
         }
     }
 }

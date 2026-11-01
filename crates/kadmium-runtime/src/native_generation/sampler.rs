@@ -103,32 +103,66 @@ impl SplitMix64 {
 pub(crate) struct Sampler {
     sampling: SamplingDefaults,
     rng: Option<SplitMix64>,
+    /// Tokens of the context read so far, for the repetition penalty.
+    seen: BTreeSet<u32>,
+    seen_len: usize,
+}
+
+/// Every score is a number or `-inf`, and at least one is finite.
+fn usable(scores: &[f32]) -> bool {
+    scores.iter().all(|v| !v.is_nan() && *v != f32::INFINITY)
+        && scores.iter().any(|v| v.is_finite())
+}
+
+/// Refuses a sampling value Transformers itself rejects.
+pub(crate) fn check_sampling(sampling: &SamplingDefaults) -> Result<(), GenerationError> {
+    if sampling.do_sample && sampling.typical_p <= 0.0 {
+        return Err(GenerationError::InvalidSetting {
+            key: "typical_p".into(),
+            value: sampling.typical_p.to_string(),
+            requirement: "0 < typical_p <= 1".into(),
+        });
+    }
+    Ok(())
 }
 
 impl Sampler {
     /// `seed` is used only when the model samples.
     pub(crate) fn new(sampling: SamplingDefaults, seed: u64) -> Self {
         let rng = sampling.do_sample.then_some(SplitMix64(seed));
-        Self { sampling, rng }
+        Self {
+            sampling,
+            rng,
+            seen: BTreeSet::new(),
+            seen_len: 0,
+        }
     }
 
     /// Selects the token at `position` from the logits of the position before it. `context` is
-    /// every token so far, prompt included, as the repetition penalty reads it.
+    /// every token so far, prompt included, as the repetition penalty reads it; each call's
+    /// context extends the previous call's.
+    ///
+    /// The logits are an error if they hold NaN or `+inf`, or no finite value, before or after
+    /// the penalty and the temperature, so an overflow never falls through to a token.
     pub(crate) fn select(
         &mut self,
         logits: &[f32],
         context: &[u32],
         position: usize,
     ) -> Result<u32, GenerationError> {
-        if logits.is_empty() || logits.iter().any(|v| v.is_nan() || *v == f32::INFINITY) {
-            return Err(GenerationError::InvalidLogits { position });
+        let invalid = || GenerationError::InvalidLogits { position };
+        if !usable(logits) {
+            return Err(invalid());
         }
         let mut scores = logits.to_vec();
         let s = &self.sampling;
         if s.repetition_penalty != 1.0 {
+            if let Some(new) = context.get(self.seen_len..) {
+                self.seen.extend(new.iter().copied());
+            }
+            self.seen_len = context.len();
             let penalty = s.repetition_penalty as f32;
-            let seen: BTreeSet<u32> = context.iter().copied().collect();
-            for token in seen {
+            for &token in &self.seen {
                 if let Some(score) = scores.get_mut(token as usize) {
                     *score = if *score < 0.0 {
                         *score * penalty
@@ -136,6 +170,9 @@ impl Sampler {
                         *score / penalty
                     };
                 }
+            }
+            if !usable(&scores) {
+                return Err(invalid());
             }
         }
         let Some(rng) = self.rng.as_mut() else {
@@ -145,6 +182,9 @@ impl Sampler {
             let temperature = s.temperature as f32;
             for score in &mut scores {
                 *score /= temperature;
+            }
+            if !usable(&scores) {
+                return Err(invalid());
             }
         }
         if s.top_k != 0 {
@@ -160,7 +200,11 @@ impl Sampler {
             typical(&mut scores, s.typical_p);
         }
         let probabilities = softmax(&scores);
-        let target = rng.next_f64() * probabilities.iter().sum::<f64>();
+        let total: f64 = probabilities.iter().sum();
+        if !(total.is_finite() && total > 0.0) {
+            return Err(invalid());
+        }
+        let target = rng.next_f64() * total;
         let mut cumulative = 0.0;
         let mut last_possible = None;
         for (index, &p) in probabilities.iter().enumerate() {
@@ -174,9 +218,7 @@ impl Sampler {
             }
         }
         // Rounding left the target at the very top of the cumulative sum.
-        last_possible
-            .map(|index| index as u32)
-            .ok_or(GenerationError::InvalidLogits { position })
+        last_possible.map(|index| index as u32).ok_or_else(invalid)
     }
 }
 
@@ -356,6 +398,64 @@ mod tests {
                 Err(GenerationError::InvalidLogits { position: 7 })
             ));
         }
+    }
+
+    #[test]
+    fn overflow_after_the_processors_is_an_error_not_a_token() {
+        // A tiny positive temperature turns finite logits into +inf.
+        let mut logits = vec![0.0f32; 4];
+        logits[1] = 50.0;
+        logits[2] = 49.0;
+        let tiny = SamplingDefaults {
+            temperature: 1e-38,
+            ..sampling()
+        };
+        assert!(matches!(
+            Sampler::new(tiny, 1).select(&logits, &[], 3),
+            Err(GenerationError::InvalidLogits { position: 3 })
+        ));
+        // No finite logit is an error greedily and when sampling alike.
+        let none = [f32::NEG_INFINITY; 3];
+        for settings in [greedy(1.0), sampling()] {
+            assert!(matches!(
+                Sampler::new(settings, 1).select(&none, &[], 0),
+                Err(GenerationError::InvalidLogits { position: 0 })
+            ));
+        }
+        // A penalty below 1 can overflow a large positive logit.
+        assert!(matches!(
+            Sampler::new(greedy(1e-38), 0).select(&[f32::MAX, 0.0], &[0], 0),
+            Err(GenerationError::InvalidLogits { .. })
+        ));
+    }
+
+    #[test]
+    fn the_penalty_reads_the_context_incrementally() {
+        let mut sampler = Sampler::new(greedy(2.0), 0);
+        let scores = [2.0f32, 1.5, 1.9];
+        assert_eq!(sampler.select(&scores, &[1], 0).unwrap(), 0);
+        // Token 0 joins the context: 2.0 / 2 = 1.0, so token 2 wins.
+        assert_eq!(sampler.select(&scores, &[1, 0], 1).unwrap(), 2);
+        // All three penalised: 1.0, 0.75 and 0.95, so token 0 wins again.
+        assert_eq!(sampler.select(&scores, &[1, 0, 2], 2).unwrap(), 0);
+    }
+
+    #[test]
+    fn typical_p_zero_is_refused_as_transformers_refuses_it() {
+        let zero = SamplingDefaults {
+            typical_p: 0.0,
+            ..sampling()
+        };
+        assert!(matches!(
+            check_sampling(&zero),
+            Err(GenerationError::InvalidSetting { key, .. }) if key == "typical_p"
+        ));
+        check_sampling(&sampling()).unwrap();
+        check_sampling(&SamplingDefaults {
+            typical_p: 0.0,
+            ..greedy(1.0)
+        })
+        .unwrap();
     }
 
     #[test]

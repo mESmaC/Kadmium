@@ -73,7 +73,15 @@ pub enum GenerationError {
         "generation setting `{key}` = {value} is not implemented by the native generator; it is refused rather than ignored"
     )]
     UnsupportedSetting { key: String, value: String },
-    #[error("the logits for position {position} hold NaN or positive infinity")]
+    #[error("generation setting `{key}` = {value} is invalid; it must satisfy {requirement}")]
+    InvalidSetting {
+        key: String,
+        value: String,
+        requirement: String,
+    },
+    #[error(
+        "the logits for position {position} hold NaN or positive infinity, or no finite value, before or after the sampling processors"
+    )]
     InvalidLogits { position: usize },
     #[error(transparent)]
     Stage(Box<StageFailure>),
@@ -429,6 +437,7 @@ fn validate(
     request: &GenerationRequest,
 ) -> Result<(), GenerationError> {
     sampler::check_declared(&settings.defaults.declared)?;
+    sampler::check_sampling(&settings.defaults.sampling)?;
     if settings.text.is_none() && !settings.defaults.stop_strings.is_empty() {
         return Err(GenerationError::UnsupportedSetting {
             key: "stop_strings".into(),
@@ -536,6 +545,7 @@ pub async fn generate(
         let step = tokio::select! {
             biased;
             () = cancel.cancelled() => None,
+            () = events.closed() => None,
             result = chain.step(input) => Some(result),
         };
         let logits = match step {

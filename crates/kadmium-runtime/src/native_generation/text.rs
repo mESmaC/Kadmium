@@ -1,9 +1,12 @@
 //! Streaming the generated text without ever sending text that a later token changes.
 //!
 //! The tokenizer is not an incremental decoder: a token can complete a multi-byte character, and
-//! a stop string can span tokens. So each step decodes the whole sequence, takes the text after
-//! the decoded prompt, and sends only the part that cannot change or turn out to be the start of
-//! a stop string:
+//! a stop string can span tokens. So each step decodes the whole sequence without the tokenizer's
+//! clean-up step, takes the text after the decoded prompt, applies the clean-up to that text alone,
+//! and sends only the part that cannot change or turn out to be the start of a stop string. The
+//! clean-up therefore never rewrites across the prompt boundary, as with a prompt ending in a space
+//! and an output starting with `.`; Transformers' `TextStreamer` likewise cleans up only the
+//! generated text. What is held back:
 //!
 //! - a trailing U+FFFD, which the next byte-level or byte-fallback token may still complete, is
 //!   held back;
@@ -77,7 +80,7 @@ impl<'a> TextStream<'a> {
         skip_special_tokens: bool,
         stops: &'a [String],
     ) -> Result<Self, GenerationError> {
-        let prompt_text = model.decode(prompt, skip_special_tokens)?;
+        let prompt_text = model.decode_without_clean_up(prompt, skip_special_tokens)?;
         let patterns = stops
             .iter()
             .cloned()
@@ -100,12 +103,15 @@ impl<'a> TextStream<'a> {
     }
 
     fn generated(&self) -> Result<String, GenerationError> {
-        let full = self.model.decode(&self.ids, self.skip_special_tokens)?;
-        full.strip_prefix(&self.prompt_text)
-            .map(str::to_owned)
-            .ok_or_else(|| GenerationError::TextUnstable {
-                detail: "the decoded sequence no longer begins with the decoded prompt".into(),
-            })
+        let full = self
+            .model
+            .decode_without_clean_up(&self.ids, self.skip_special_tokens)?;
+        let generated =
+            full.strip_prefix(&self.prompt_text)
+                .ok_or_else(|| GenerationError::TextUnstable {
+                    detail: "the decoded sequence no longer begins with the decoded prompt".into(),
+                })?;
+        Ok(self.model.clean_up(generated)?)
     }
 
     fn advance_to(&mut self, generated: &str, end: usize) -> Result<String, GenerationError> {

@@ -15,9 +15,10 @@ as `runChain_aligned`, that a pass keeps the caches aligned with the slices, so 
 chain is again aligned.
 
 Modelling choices: the token embedding and the LM head are folded into `embed` and `pick`, and the
-sampler's state, such as its random generator, is threaded through `pick`. The loop is bounded by
-`n` steps; the Rust loop's other stopping rules, EOS, an operator limit and the full context, are
-functions of the tokens produced so far and are covered by `stop`, or by `n`. The link to the
+sampler's state, such as its random generator and the tokens so far, is threaded through `pick`.
+The loop is bounded by `n` steps. The Rust loop's stopping rules, EOS, a stop string, an operator
+limit and the full context, are functions of the tokens produced so far and are covered by `stop`
+reading that state, or by `n`. The link to the
 code is **model only**: the Rust test `chain_generation_is_identical_at_every_cut`
 (`crates/kadmium-runtime/tests/native_generation.rs`) checks the property on four real checkpoint
 layouts, every pair of cuts, greedily and with sampling from one seed.
@@ -47,14 +48,16 @@ section Chain
 variable {α κ σ : Type}
 
 /-- The coordinator loop: run the network on the input, select a token from the output, then stop
-or feed the token back. -/
-def generate {κs : Type} (run : α → κs → α × κs) (pick : σ → α → σ × Nat) (stop : Nat → Bool)
-    (embed : Nat → α) : Nat → σ → α → κs → List Nat
+or feed the token back. `stop` reads the selection state after the token as well as the token,
+so a state that carries the tokens so far expresses stop strings, which depend on the decoded
+history, as well as EOS tokens and an operator limit. -/
+def generate {κs : Type} (run : α → κs → α × κs) (pick : σ → α → σ × Nat)
+    (stop : σ → Nat → Bool) (embed : Nat → α) : Nat → σ → α → κs → List Nat
   | 0, _, _, _ => []
   | n + 1, st, x, cs =>
     let (y, cs') := run x cs
     let (st', tok) := pick st y
-    if stop tok then [tok] else tok :: generate run pick stop embed n st' (embed tok) cs'
+    if stop st' tok then [tok] else tok :: generate run pick stop embed n st' (embed tok) cs'
 
 /-- A pass keeps one cache per cache it was given. -/
 theorem runLayers_length (fs : List (α → κ → α × κ)) (x : α) (cs : List κ) :
@@ -86,7 +89,7 @@ theorem runChain_aligned (slices : List (List (α → κ → α × κ))) (x : α
 /-- Generating over a chain of slices gives exactly the tokens of generating over one slice that
 holds all their layers. -/
 theorem generate_chain_eq_whole (slices : List (List (α → κ → α × κ)))
-    (pick : σ → α → σ × Nat) (stop : Nat → Bool) (embed : Nat → α) (n : Nat) (st : σ) (x : α)
+    (pick : σ → α → σ × Nat) (stop : σ → Nat → Bool) (embed : Nat → α) (n : Nat) (st : σ) (x : α)
     (caches : List (List κ)) (h : Aligned slices caches) :
     generate (runChain slices) pick stop embed n st x caches =
       generate (runLayers slices.flatten) pick stop embed n st x caches.flatten := by

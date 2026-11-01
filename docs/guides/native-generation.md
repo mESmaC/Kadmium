@@ -88,8 +88,12 @@ failed. Nothing is retried, rerouted to another machine or replaced with a small
   token is the first index of the largest logit. Any other declared setting that changes which
   tokens are produced must hold its inactive value; the list is `sampler::UNIMPLEMENTED`, and
   includes beam search, n-gram blocking, suppressed tokens, forced tokens and `max_time`. An active
-  one is refused with `UnsupportedSetting`, not ignored. A model that declares stop strings needs
-  its tokenizer, and is refused without one. NaN or positive-infinity logits are an error.
+  one is refused with `UnsupportedSetting`, not ignored. A value Transformers itself rejects, such
+  as `typical_p = 0` when sampling, is refused with `InvalidSetting`. A model that declares stop
+  strings needs its tokenizer, and is refused without one. Logits are an error if they hold NaN or
+  positive infinity, or no finite value, both as the model returns them and after the repetition
+  penalty and temperature. A temperature small enough to overflow a logit is an error, not a
+  token.
 - **Seeds.** Sampling draws from SplitMix64. A run without a seed takes one from the operating
   system, and the report records it. The same seed on the same coordinator selects the same tokens.
   Probabilities are computed in `f64` with the platform's `exp`, so a draw near a boundary could
@@ -103,8 +107,11 @@ failed. Nothing is retried, rerouted to another machine or replaced with a small
 ## Streamed text
 
 With a tokenizer, each event carries the text its token adds. The tokenizer is not an incremental
-decoder, so each step decodes the whole sequence and takes the text after the decoded prompt. Text
-that a later token could still change is held back:
+decoder, so each step decodes the whole sequence without the tokenizer's clean-up step, takes the
+text after the decoded prompt, and applies the clean-up to that text alone. A clean-up replacement
+therefore never reaches across the prompt boundary: a prompt ending in a space followed by a
+generated `.` streams `.`, as Transformers' `TextStreamer` does. Text that a later token could
+still change is held back:
 
 - a trailing U+FFFD, which the next byte token may complete into a character;
 - of what remains, the longest suffix that is the start of a stop string, or of one of the
@@ -117,8 +124,8 @@ the differential fixture `generation_lean_vectors.txt`. If the decoded text ever
 what was already sent, the run fails with `TextUnstable` rather than contradict it. The tokenizer
 is outside the proof, so that check runs on every step.
 
-Decoding the whole sequence on every step costs time in proportion to the sequence length. Its
-speed has not been measured.
+Decoding the whole sequence on every step costs time in proportion to the sequence length, so a
+run's total decoding cost grows with the square of its length. Its speed has not been measured.
 
 ## Current limitations
 

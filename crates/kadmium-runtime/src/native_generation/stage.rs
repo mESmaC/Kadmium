@@ -208,7 +208,8 @@ fn run_slice(
         return Ok(StageOutput::Hidden(output));
     }
     // Rows are independent through the final norm and the LM head, so the last row alone gives
-    // the same logits it would among all of them.
+    // the same logits it would among all of them. Not proved: checked bit for bit by the test
+    // `last_row_logits_equal_the_full_pass_bit_for_bit`.
     let (rows, width) = (output.rows(), output.hidden_size());
     let position = output.start_position() + rows - 1;
     let last = output.into_data().split_off((rows - 1) * width);
