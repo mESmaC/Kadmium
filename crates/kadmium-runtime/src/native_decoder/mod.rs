@@ -18,8 +18,12 @@
 //!   an unimplemented RoPE scaling type, is an error, never an approximation.
 //!
 //! Determinism: the arithmetic follows the RepOps conventions plus
-//! [`math::NATIVE_DECODER_CONVENTIONS`], so the result depends only on the weights and inputs,
-//! not on thread count or on where the layer ranges are cut.
+//! [`math::NATIVE_DECODER_CONVENTIONS`]. Where the layers are cut cannot change an output:
+//! **Proved (model)** as `Kadmium.Native.runChain_eq_runLayers` for any layer that reads only its
+//! input and its own cache, with that property of this code checked by the test
+//! `splitting_the_layers_at_every_cut_is_bit_identical`. The thread count cannot change an output
+//! by construction, since each output feature is computed whole by one thread, and the test
+//! `linear_is_identical_at_every_thread_count` pins 1 to 1,000 threads.
 //!
 //! Status: reference execution on the CPU. No wire protocol, placement or Condenser route uses
 //! it yet, and its speed has not been measured.

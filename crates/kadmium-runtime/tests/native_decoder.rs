@@ -457,3 +457,86 @@ fn real_checkpoint_matches_transformers() {
     let split = run_chain(&chain, &tokens, tokens.len());
     assert_eq!(bits(&split), bits(&logits), "split at layer {cut}");
 }
+
+/// Copies a fixture with some `config.json` fields replaced.
+fn fixture_with_config(name: &str, dir: &Path, patch: Value) -> PathBuf {
+    std::fs::create_dir_all(dir).unwrap();
+    let source = fixture(name);
+    std::fs::copy(
+        source.join("model.safetensors"),
+        dir.join("model.safetensors"),
+    )
+    .unwrap();
+    let mut config: Value =
+        serde_json::from_str(&std::fs::read_to_string(source.join("config.json")).unwrap())
+            .unwrap();
+    for (key, value) in patch.as_object().unwrap() {
+        config[key] = value.clone();
+    }
+    std::fs::write(dir.join("config.json"), config.to_string()).unwrap();
+    dir.to_path_buf()
+}
+
+#[test]
+fn config_values_never_size_an_allocation_the_checkpoint_does_not_back() {
+    let root = std::env::temp_dir().join(format!(
+        "kadmium-native-decoder-config-{}",
+        std::process::id()
+    ));
+    // A layer count far beyond the checkpoint: an error at the first missing layer, not a
+    // capacity overflow or an abort.
+    let dir = fixture_with_config(
+        "mistral_f16",
+        &root.join("layers"),
+        serde_json::json!({"num_hidden_layers": 1_152_921_504_606_846_976u64}),
+    );
+    let config = DecoderConfig::from_model_dir(&dir).unwrap();
+    let error = DecoderSlice::load(&dir, SlicePlan::whole(&config))
+        .err()
+        .unwrap();
+    assert!(
+        matches!(&error, NativeDecoderError::MissingTensor(name) if name.starts_with("model.layers.3.")),
+        "{error}"
+    );
+
+    // Fewer layers than the checkpoint stores would silently skip one.
+    let dir = fixture_with_config(
+        "mistral_f16",
+        &root.join("fewer"),
+        serde_json::json!({"num_hidden_layers": 2}),
+    );
+    let config = DecoderConfig::from_model_dir(&dir).unwrap();
+    let error = DecoderSlice::load(&dir, SlicePlan::whole(&config))
+        .err()
+        .unwrap();
+    assert!(
+        matches!(&error, NativeDecoderError::Config(m) if m.contains("layer 2")),
+        "{error}"
+    );
+
+    // A head dimension the projections do not have is refused before anything is sized by it,
+    // even for a slice that holds no layers.
+    let dir = fixture_with_config(
+        "mistral_f16",
+        &root.join("head_dim"),
+        serde_json::json!({"num_attention_heads": 1, "num_key_value_heads": 1,
+                           "head_dim": 1_099_511_627_776u64}),
+    );
+    let config = DecoderConfig::from_model_dir(&dir).unwrap();
+    let error = DecoderSlice::load(
+        &dir,
+        SlicePlan {
+            layers: 0..0,
+            embedding: true,
+            head: true,
+        },
+    )
+    .err()
+    .unwrap();
+    assert!(
+        matches!(&error, NativeDecoderError::TensorShape { tensor, .. } if tensor.ends_with("q_proj.weight")),
+        "{error}"
+    );
+    assert_eq!(config.head_dim, 1_099_511_627_776);
+    let _ = std::fs::remove_dir_all(root);
+}

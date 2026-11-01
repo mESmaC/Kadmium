@@ -9,8 +9,11 @@
 //! - RoPE angles and the inverse frequencies use `f64` exp, ln, sin and cos written here on IEEE
 //!   basic operations only, like the `f32` functions in `repops`, so a platform `libm` cannot
 //!   change a bit. The `f32` sine in `repops` is accurate only for `|x|` below about 6,400; a
-//!   position times a frequency reaches the model's full context, so these reduce in `f64` and
-//!   stay accurate for every angle below `2^20`, the decoder's position bound.
+//!   position times a frequency reaches the model's full context, so these reduce in `f64`
+//!   using fdlibm's split of `pi/2`, which is built so that `n * PIO2_k` is exact while
+//!   `|n| < 2^20`. Their accuracy is **Measured**, not proved: the tests compare them with the
+//!   platform's functions on sampled inputs (`sin_cos_stay_accurate_up_to_the_position_bound`,
+//!   `exp_and_ln_match_the_platform_to_a_few_ulps`) and every sample is within the stated bound.
 
 use crate::repops;
 
@@ -180,9 +183,25 @@ const PARALLEL_WORK: usize = 1 << 15;
 
 /// `input` holds `rows` vectors of length `weight.cols`; returns `rows` vectors of length
 /// `weight.rows`, each output feature the RepOps dot plus its bias. Output features are split
-/// across threads; each feature is computed by one thread in one fixed order, so the thread
-/// count never changes a bit.
+/// across the host's threads by [`linear_with_threads`].
 pub fn linear(weight: &Matrix, bias: Option<&[f32]>, input: &[f32], rows: usize) -> Vec<f32> {
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    linear_with_threads(weight, bias, input, rows, threads)
+}
+
+/// [`linear`] on at most `threads` threads. Each output feature is computed whole by one thread,
+/// in the same fixed order whatever the thread count, so the thread count is not an input to any
+/// value: by construction, and tested at 1 to 1,000 threads by
+/// `linear_is_identical_at_every_thread_count`.
+pub fn linear_with_threads(
+    weight: &Matrix,
+    bias: Option<&[f32]>,
+    input: &[f32],
+    rows: usize,
+    threads: usize,
+) -> Vec<f32> {
     let features = weight.rows;
     let cols = weight.cols;
     let feature = |f: usize, out: &mut [f32]| {
@@ -197,9 +216,6 @@ pub fn linear(weight: &Matrix, bias: Option<&[f32]>, input: &[f32], rows: usize)
     };
     // Feature-major scratch: feature f's outputs for every row are contiguous.
     let mut by_feature = vec![0.0f32; features * rows];
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
     let work = features.saturating_mul(cols).saturating_mul(rows);
     if threads <= 1 || work < PARALLEL_WORK || features < 2 || rows == 0 {
         for (f, out) in by_feature.chunks_mut(rows.max(1)).enumerate() {
@@ -336,7 +352,9 @@ const PIO2_2: f64 = f64::from_bits(0x3dd0_b461_1a60_0000);
 const PIO2_3: f64 = f64::from_bits(0x3ba3_198a_2e00_0000);
 const PIO2_3T: f64 = f64::from_bits(0x397b_839a_2520_49c1);
 
-/// The largest angle magnitude [`sin_cos_f64`] reduces accurately.
+/// The largest angle magnitude [`sin_cos_f64`] accepts: below it the multiples of `pi/2` stay
+/// under `2^20`, where fdlibm's split keeps each partial product exact. Accuracy below it is
+/// **Measured** by sampling, not proved.
 pub const MAX_ANGLE: f64 = 1_048_576.0;
 
 fn sin_kernel(r: f64) -> f64 {
@@ -444,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_is_identical_on_one_thread_and_many() {
+    fn linear_is_identical_at_every_thread_count() {
         let rows = 3;
         let weight = Matrix {
             rows: 300,
@@ -457,14 +475,23 @@ mod tests {
         };
         let input: Vec<f32> = (0..rows * 129).map(|i| (i as f32 * 0.37).sin()).collect();
         let bias: Vec<f32> = (0..300).map(|i| i as f32 * 0.01).collect();
-        let fast = linear(&weight, Some(&bias), &input, rows);
+        let mut serial = Vec::new();
         for r in 0..rows {
-            for f in 0..300 {
-                let x = &input[r * 129..(r + 1) * 129];
-                let expected = repops::tree_dot_f32(&weight.row_f32(f), x) + bias[f];
-                assert_eq!(fast[r * 300 + f].to_bits(), expected.to_bits());
+            let x = &input[r * 129..(r + 1) * 129];
+            for (f, b) in bias.iter().enumerate() {
+                serial.push((repops::tree_dot_f32(&weight.row_f32(f), x) + b).to_bits());
             }
         }
+        for threads in [1, 2, 3, 4, 7, 16, 299, 300, 1000] {
+            let out = linear_with_threads(&weight, Some(&bias), &input, rows, threads);
+            let out: Vec<u32> = out.iter().map(|v| v.to_bits()).collect();
+            assert_eq!(out, serial, "{threads} threads");
+        }
+        let host: Vec<u32> = linear(&weight, Some(&bias), &input, rows)
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        assert_eq!(host, serial);
     }
 
     #[test]
@@ -489,14 +516,29 @@ mod tests {
 
     #[test]
     fn sin_cos_stay_accurate_up_to_the_position_bound() {
-        let mut x = 0.0f64;
-        while x <= MAX_ANGLE {
-            for angle in [x, -x] {
-                let (s, c) = sin_cos_f64(angle);
-                assert!((s - angle.sin()).abs() < 2e-15, "sin({angle})");
-                assert!((c - angle.cos()).abs() < 2e-15, "cos({angle})");
+        let check = |angle: f64| {
+            let (s, c) = sin_cos_f64(angle);
+            assert!((s - angle.sin()).abs() < 2e-15, "sin({angle})");
+            assert!((c - angle.cos()).abs() < 2e-15, "cos({angle})");
+        };
+        // 200,003 evenly spaced angles over the whole range, both signs.
+        for i in 0..=200_002u32 {
+            let x = MAX_ANGLE * f64::from(i) / 200_002.0;
+            check(x);
+            check(-x);
+        }
+        // The angles RoPE actually forms: position times an f32 frequency, near the bound and
+        // near multiples of pi/2, where reduction loses the most.
+        for position in (0..1_048_576u32).step_by(997) {
+            for frequency in [1.0f32, 0.749_894_2, 0.1, 1.0e-3, 1.0e-6] {
+                check(f64::from(position) * f64::from(frequency));
             }
-            x = x * 1.37 + 0.731;
+        }
+        for k in (1..667_544u64).step_by(331) {
+            let near = k as f64 * std::f64::consts::FRAC_PI_2;
+            check(near);
+            check(near.next_up());
+            check(near.next_down());
         }
         let (s, c) = sin_cos_f64(MAX_ANGLE);
         assert!((s - MAX_ANGLE.sin()).abs() < 2e-15 && (c - MAX_ANGLE.cos()).abs() < 2e-15);
