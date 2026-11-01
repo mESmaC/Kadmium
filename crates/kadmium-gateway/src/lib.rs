@@ -264,11 +264,36 @@ pub struct QualityTradeoffReport {
     pub summary_banner: String,
 }
 
+/// Per-model user override settings stored inside `ModelQualityLimits::per_model_overrides`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerModelQualityOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_context_window_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_max_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_max_output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_override_active_experts_per_token: Option<u32>,
+}
+
+impl PerModelQualityOverrides {
+    pub fn is_all_none(&self) -> bool {
+        self.user_override_context_window_tokens.is_none()
+            && self.user_override_max_input_tokens.is_none()
+            && self.user_override_max_output_tokens.is_none()
+            && self.user_override_active_experts_per_token.is_none()
+    }
+}
+
 /// User-configurable model quality and context limits.
 /// Defaults to `None` on every override field, which means **100% uncompromised native model maxima**
 /// and no artificial cap on output tokens unless explicitly requested by the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelQualityLimits {
+    /// Model ID to which the top-level `native_*` and `user_override_*` fields currently apply.
+    #[serde(default)]
+    pub model_id: String,
     pub native_max_context_window_tokens: u32,
     pub native_max_input_tokens: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -282,21 +307,26 @@ pub struct ModelQualityLimits {
     pub user_override_max_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_override_active_experts_per_token: Option<u32>,
+    /// Per-model override map so lowering a limit on one model never leaks to another model
+    /// and switching models preserves each model's own overrides without clamping.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub per_model_overrides: BTreeMap<String, PerModelQualityOverrides>,
 }
 
 impl ModelQualityLimits {
     /// Returns the uncompromised native maxima for a given `ModelSpec`.
-    /// Native context window is derived directly from `ModelSpec::try_native_max_context_tokens()`.
+    /// Native context window is derived directly from `ModelSpec::native_max_context_tokens()`.
     /// Where no maximum output token limit is advertised on `ModelSpec`, `native_max_output_tokens`
     /// is `None` so output generation is never artificially capped by default.
     pub fn for_model(model: &ModelSpec) -> Self {
-        let native_ctx = model.try_native_max_context_tokens().unwrap_or(131_072);
+        let native_ctx = model.native_max_context_tokens();
         let native_experts = if model.is_moe {
             model.active_experts_per_token.max(1)
         } else {
             1
         };
         Self {
+            model_id: model.id.clone(),
             native_max_context_window_tokens: native_ctx,
             native_max_input_tokens: native_ctx,
             native_max_output_tokens: None,
@@ -305,12 +335,55 @@ impl ModelQualityLimits {
             user_override_max_input_tokens: None,
             user_override_max_output_tokens: None,
             user_override_active_experts_per_token: None,
+            per_model_overrides: BTreeMap::new(),
         }
     }
 
-    /// Re-anchors the `native_*` fields to `model`'s authoritative `ModelSpec` while clamping
-    /// any existing user overrides to the model's native bounds.
+    fn save_current_overrides_to_map(&mut self) {
+        if self.model_id.is_empty() {
+            return;
+        }
+        let ov = PerModelQualityOverrides {
+            user_override_context_window_tokens: self.user_override_context_window_tokens,
+            user_override_max_input_tokens: self.user_override_max_input_tokens,
+            user_override_max_output_tokens: self.user_override_max_output_tokens,
+            user_override_active_experts_per_token: self.user_override_active_experts_per_token,
+        };
+        if ov.is_all_none() {
+            self.per_model_overrides.remove(&self.model_id);
+        } else {
+            self.per_model_overrides.insert(self.model_id.clone(), ov);
+        }
+    }
+
+    pub fn has_any_overrides(&self) -> bool {
+        !self.is_uncompromised()
+            || self
+                .per_model_overrides
+                .values()
+                .any(|ov| !ov.is_all_none())
+    }
+
+    /// Re-anchors the `native_*` fields to `model`'s authoritative `ModelSpec`, loading only
+    /// overrides scoped to `model.id` and clamping them to `model`'s native bounds.
     pub fn sync_native_with_model(&mut self, model: &ModelSpec) {
+        if self.model_id.is_empty() {
+            self.model_id = model.id.clone();
+        } else if self.model_id != model.id {
+            self.save_current_overrides_to_map();
+            self.model_id = model.id.clone();
+            let stored = self
+                .per_model_overrides
+                .get(&model.id)
+                .cloned()
+                .unwrap_or_default();
+            self.user_override_context_window_tokens = stored.user_override_context_window_tokens;
+            self.user_override_max_input_tokens = stored.user_override_max_input_tokens;
+            self.user_override_max_output_tokens = stored.user_override_max_output_tokens;
+            self.user_override_active_experts_per_token =
+                stored.user_override_active_experts_per_token;
+        }
+
         let fresh = Self::for_model(model);
         self.native_max_context_window_tokens = fresh.native_max_context_window_tokens;
         self.native_max_input_tokens = fresh.native_max_input_tokens;
@@ -335,6 +408,7 @@ impl ModelQualityLimits {
         } else {
             self.user_override_active_experts_per_token = None;
         }
+        self.save_current_overrides_to_map();
     }
 
     pub fn effective_context_window_tokens(&self) -> u32 {
@@ -380,6 +454,7 @@ impl ModelQualityLimits {
         self.user_override_max_input_tokens = None;
         self.user_override_max_output_tokens = None;
         self.user_override_active_experts_per_token = None;
+        self.save_current_overrides_to_map();
     }
 
     pub fn is_uncompromised(&self) -> bool {
@@ -958,9 +1033,9 @@ impl GatewayState {
             imported_models: self.imported_models.clone(),
             bucket_objects: self.bucket_objects.clone(),
             bucket_anchors: self.bucket_anchors.clone(),
-            quality_limits: self
-                .user_lowered_quality_limits
-                .then(|| self.quality_limits.clone()),
+            quality_limits: (self.user_lowered_quality_limits
+                || self.quality_limits.has_any_overrides())
+            .then(|| self.quality_limits.clone()),
         };
         let bytes = serde_json::to_vec_pretty(&journal)
             .map_err(|e| format!("Failed to serialize state journal: {e}"))?;
@@ -1024,6 +1099,7 @@ impl GatewayState {
 
     /// Missing journals mean a fresh workspace. Corrupt or incompatible ones abort startup.
     pub fn load_persistent_state(&mut self) -> Result<bool, String> {
+        self.bucket_write_token = self.bucket_store().try_load_or_create_access_token()?;
         if self.load_persistent_state_from(&self.persistent_state_path())? {
             return Ok(true);
         }
@@ -1067,6 +1143,15 @@ impl GatewayState {
     }
 
     pub fn load_persistent_state_from(&mut self, path: &std::path::Path) -> Result<bool, String> {
+        let token_store = if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+            && parent != std::path::Path::new("target/kadmium-state")
+        {
+            kadmium_data::BucketObjectStore::for_state_dir(parent)
+        } else {
+            self.bucket_store()
+        };
+        self.bucket_write_token = token_store.try_load_or_create_access_token()?;
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -1176,7 +1261,7 @@ impl GatewayState {
             self.quality_limits = ModelQualityLimits::for_model(&self.inference_model);
             self.user_lowered_quality_limits = false;
         }
-        self.bucket_write_token = self.bucket_store().load_or_create_access_token();
+        self.bucket_write_token = token_store.try_load_or_create_access_token()?;
         self.recompute_plans();
         Ok(true)
     }
@@ -1189,20 +1274,12 @@ impl GatewayState {
         }
         if self.live_only_mode && !self.user_selected_model {
             let recommended = ModelSpec::recommended_for_cluster(&self.nodes);
-            let model_changed = self.inference_model.id != recommended.id;
             self.inference_model = recommended.clone();
             self.training_model = recommended;
-            if model_changed {
-                self.user_lowered_quality_limits = false;
-            }
         }
-        if !self.user_lowered_quality_limits {
-            self.quality_limits = ModelQualityLimits::for_model(&self.inference_model);
-        } else {
-            self.quality_limits
-                .sync_native_with_model(&self.inference_model);
-            self.user_lowered_quality_limits = !self.quality_limits.is_uncompromised();
-        }
+        self.quality_limits
+            .sync_native_with_model(&self.inference_model);
+        self.user_lowered_quality_limits = !self.quality_limits.is_uncompromised();
         let effective_inf_model = self.effective_inference_model();
         self.coordinator_quorum = CoordinatorFailoverQuorum::from_cluster(&self.nodes);
         self.inference_plan = ShardPlanner::compute_plan(
@@ -2125,7 +2202,11 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
         });
 
         let http_get = |path: &str| -> String {

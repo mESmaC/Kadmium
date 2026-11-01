@@ -205,7 +205,8 @@ pub struct PoolBucketObjectEntry {
     pub merkle_root_fnv64: u64,
     /// Sample node IDs hosting the first superblock's `k + m` stripe.
     pub sample_stripe_holder_nodes: Vec<String>,
-    /// Aggregate parallel read throughput (`Gbps`) when streaming from `k` shard holders simultaneously.
+    /// **Modelled** aggregate parallel read throughput (`Gbps`) when streaming from `k` shard holders
+    /// (`0.0` for local coordinator store objects where network stripe throughput is not measured).
     pub parallel_read_bandwidth_gbps: f64,
     /// Exact byte size when backed by real uploaded bytes in `BucketObjectStore`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -300,7 +301,7 @@ pub struct BucketGroundingReport {
     pub simulated_mass_dropout_indices: Vec<usize>,
     /// Whether an ungrounded `RS(8, 2)` P2P bucket survives losing 5 of 10 shards (`false`).
     pub ungrounded_survives_mass_dropout: bool,
-    /// Whether the Grounded Bucket survives losing 5 of 10 shards (or even 10 of 10 during pool hibernation!) (`true`).
+    /// Whether the Grounded Bucket survives losing 5 of 10 shards (or 10 of 10 during pool hibernation) (`true`).
     pub grounded_survives_mass_dropout: bool,
     /// Maximum byte error after hybrid P2P + Grounded Anchor spillover reconstruction (`0`).
     pub grounded_recovery_max_byte_diff: u8,
@@ -353,6 +354,7 @@ pub struct DecentralizedStoragePoolEngine;
 
 impl DecentralizedStoragePoolEngine {
     /// Bound placement work and reject invalid counts before arithmetic or state mutation.
+    /// **Proved (model)**: `Kadmium.StoragePool.validateShardCounts_spec`.
     pub fn validate_shard_counts(k: usize, m: usize) -> Result<usize, String> {
         let total = k.checked_add(m).ok_or("Shard count overflow")?;
         if k == 0 || m == 0 || total > 256 {
@@ -365,7 +367,10 @@ impl DecentralizedStoragePoolEngine {
     }
 
     /// Strict bound for real byte-backed erasure-coded objects stored in `BucketObjectStore`:
-    /// requires `k in 1..=16`, `m in 1..=8`, `k + m <= 20`, and `m <= k.max(2)` (max 3x overhead).
+    /// requires `k in 1..=16`, `m in 1..=8`, `k + m <= 20`, and `m <= k.max(2)` (at most `3x`
+    /// storage overhead: `k + m <= 3 * k`).
+    /// **Proved (model)**: `Kadmium.StoragePool.validateStoredShardCounts_spec` and
+    /// `Kadmium.StoragePool.storedShardOverhead_le_three`.
     pub fn validate_stored_shard_counts(k: usize, m: usize) -> Result<usize, String> {
         let total = Self::validate_shard_counts(k, m)?;
         if k > 16 || m > 8 || total > 20 {
@@ -618,10 +623,10 @@ impl DecentralizedStoragePoolEngine {
     /// composite multi-medium storage capacity, wire RAM buffer, local read bandwidth, and uplink.
     ///
     /// Why Rendezvous Hashing (`HRW`) beats plain modulo hashing:
-    /// 1. **Zero central directory**: Any node can compute the exact `k + m` shard holders for `object_uri`
+    /// 1. **Zero central directory**: Any node can compute the `k + m` shard holders for `object_uri`
     ///    in microseconds using only the node list and capacities.
     /// 2. **Minimal shard movement ($1/N$)**: If node #42 joins or leaves a 100-node pool, only `1%` of shards
-    ///    move (the ones mapped to node #42); `99%` of shards remain untouched!
+    ///    move (the ones mapped to node #42); `99%` of shards remain untouched.
     pub fn select_hrw_shard_holders(
         object_uri: &str,
         superblock_idx: usize,
@@ -674,8 +679,8 @@ impl DecentralizedStoragePoolEngine {
             .collect()
     }
 
-    /// Selects up to `min(k + m, nodes.len())` distinct shard placements across nodes AND assigns each
-    /// shard to the optimal storage medium available on its holder node based on workload and shard role.
+    /// Selects up to `min(k + m, nodes.len())` distinct shard placements across nodes and assigns each
+    /// shard to a matching storage medium available on its holder node based on workload and shard role.
     /// Does not wrap around or assign multiple shards of the same stripe to the same node.
     pub fn select_multi_medium_shard_placements(
         object_uri: &str,
@@ -742,8 +747,8 @@ impl DecentralizedStoragePoolEngine {
     }
 
     /// Encodes a payload into `$k$ data shards + $m = 2$ parity shards` (`Parity 0 = XOR sum`,
-    /// `Parity 1 = Galois GF(2^8) weighted parity`), drops up to 2 shards, and verifies exact
-    /// bit-identical reconstruction!
+    /// `Parity 1 = Galois GF(2^8) weighted parity`), drops up to 2 shards, and checks exact
+    /// bit-identical reconstruction.
     pub fn verify_k_plus_m_erasure_coding(
         data_shards_k: usize,
         shard_size_bytes: usize,
@@ -1664,9 +1669,11 @@ fn gf256_inv(a: u8) -> u8 {
 
 /// Returns the `(k + m) x k` systematic Cauchy generator matrix row for `shard_idx`.
 /// Rows `0..k` are the identity matrix $I_k$; rows `k..(k + m)` are Cauchy parity rows
-/// $C_{p, j} = (x_p \oplus y_j)^{-1}$ over $\text{GF}(2^8)$, guaranteeing that **every**
-/// $k \times k$ submatrix is invertible (Maximum Distance Separable / MDS).
-fn systematic_cauchy_row(shard_idx: usize, k: usize) -> Vec<u8> {
+/// $C_{p, j} = (x_p \oplus y_j)^{-1}$ over $\text{GF}(2^8)$.
+/// Disjointness of evaluation points $x_p \neq y_j$ is **Proved (model)**
+/// (`Kadmium.StoragePool.cauchyNodes_disjoint`). Invertibility of every $k \times k$ submatrix
+/// (Maximum Distance Separable / MDS) is **Conjecture** (`Kadmium.StoragePool.CauchyMdsConjecture`).
+pub fn systematic_cauchy_row(shard_idx: usize, k: usize) -> Vec<u8> {
     if shard_idx < k {
         let mut row = vec![0u8; k];
         row[shard_idx] = 1;
@@ -1708,6 +1715,8 @@ pub fn max_bucket_total_bytes() -> u64 {
 
 /// Splits `payload` into `k` equal-sized data shards (zero-padded to a multiple of `k`)
 /// and computes `m` systematic Cauchy Reed-Solomon parity shards over $\text{GF}(2^8)$.
+/// **Proved (model)**: `Kadmium.StoragePool.shardSize_pos` and
+/// `Kadmium.StoragePool.payloadLen_le_k_mul_shardSize`.
 pub fn encode_erasure_coded_shards(
     payload: &[u8],
     k: usize,
@@ -1758,8 +1767,8 @@ pub fn encode_erasure_coded_shards(
     Ok((shards, shard_size))
 }
 
-/// Reconstructs the original `logical_size_bytes` payload from any `k` surviving shards out of `k + m`
-/// using Gaussian elimination in $\text{GF}(2^8)$.
+/// Reconstructs the original `logical_size_bytes` payload from `k` surviving shards out of `k + m`
+/// using Gaussian elimination in $\text{GF}(2^8)$ (**Conjecture**: `Kadmium.StoragePool.CauchyMdsConjecture`).
 pub fn reconstruct_erasure_coded_payload(
     available_shards: &[Option<Vec<u8>>],
     k: usize,
@@ -1784,8 +1793,8 @@ pub fn reconstruct_erasure_coded_payload(
         .all(|s| s.as_ref().is_some_and(|v| v.len() == shard_size))
     {
         let mut out = Vec::with_capacity(k * shard_size);
-        for shard in available_shards.iter().take(k) {
-            out.extend_from_slice(shard.as_ref().unwrap());
+        for shard in available_shards.iter().take(k).flatten() {
+            out.extend_from_slice(shard);
         }
         out.truncate(logical_size_bytes as usize);
         return Ok(out);
@@ -2020,6 +2029,22 @@ pub struct BucketExternalAccessGuide {
 static STAGING_NONCE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static BUCKET_STORE_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+struct BucketStoreWriteGuard {
+    _process_guard: std::sync::MutexGuard<'static, ()>,
+    _lock_file: std::fs::File,
+}
+
+fn utf8_preview_from_bytes(bytes: &[u8]) -> Option<String> {
+    std::str::from_utf8(bytes).ok().map(|s| {
+        if s.len() > 4096 {
+            let end = s.floor_char_boundary(4096);
+            format!("{}...", &s[..end])
+        } else {
+            s.to_string()
+        }
+    })
+}
+
 /// Generates a 256-bit (64-hex-character) token from the OS CSPRNG (`getrandom`).
 pub fn generate_csprng_access_token() -> String {
     let mut bytes = [0u8; 32];
@@ -2095,10 +2120,19 @@ pub struct BucketObjectStore {
 }
 
 impl BucketObjectStore {
+    /// Opens a `BucketObjectStore` rooted at `root_dir` and recovers any interrupted overwrites
+    /// (`objects/.old-<dir>-*`) if the store already exists on disk.
+    /// **Proved (model)**: `Kadmium.StoragePool.recover_restores_final`.
     pub fn new(root_dir: impl Into<PathBuf>) -> Self {
-        Self {
+        let store = Self {
             root_dir: root_dir.into(),
+        };
+        if store.objects_root().exists()
+            && let Ok(_guard) = store.acquire_write_lock()
+        {
+            store.recover_and_cleanup_under_lock();
         }
+        store
     }
 
     /// Opens the default bucket store inside the OS state directory (`KADMIUM_BUCKET_DIR` override first),
@@ -2127,38 +2161,93 @@ impl BucketObjectStore {
         &self.root_dir
     }
 
+    /// Path to the cross-process store lock file (`<root_dir>/.store.lock`).
+    pub fn store_lock_path(&self) -> PathBuf {
+        self.root_dir.join(".store.lock")
+    }
+
+    /// Acquires both the process-local mutex and an OS-level cross-process exclusive file lock
+    /// on `<root_dir>/.store.lock`, recording the current process ID in the lock file.
+    fn acquire_write_lock(&self) -> Result<BucketStoreWriteGuard, String> {
+        let process_guard = BUCKET_STORE_WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        std::fs::create_dir_all(&self.root_dir)
+            .map_err(|e| format!("Failed creating bucket store root directory: {e}"))?;
+        let lock_path = self.store_lock_path();
+        let mut lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| format!("Failed opening bucket store lock file: {e}"))?;
+        lock_file
+            .lock()
+            .map_err(|e| format!("Failed acquiring cross-process bucket store lock: {e}"))?;
+        let _ = lock_file.set_len(0);
+        use std::io::{Seek as _, Write as _};
+        let _ = lock_file.seek(std::io::SeekFrom::Start(0));
+        let _ = writeln!(lock_file, "{}", std::process::id());
+        let _ = lock_file.flush();
+        Ok(BucketStoreWriteGuard {
+            _process_guard: process_guard,
+            _lock_file: lock_file,
+        })
+    }
+
     /// Path to the local bucket write token file (`<root_dir>/bucket-access-token`).
     pub fn access_token_path(&self) -> PathBuf {
         self.root_dir.join("bucket-access-token")
     }
 
-    /// Loads or initializes the local bucket access token using the OS CSPRNG (`getrandom`).
-    pub fn load_or_create_access_token(&self) -> String {
+    /// Loads or initializes the local bucket access token using the OS CSPRNG (`getrandom`),
+    /// creating `<root_dir>/bucket-access-token` with mode `0600` on Unix from the start and
+    /// returning an error if the token file cannot be persisted.
+    pub fn try_load_or_create_access_token(&self) -> Result<String, String> {
         if let Ok(env_tok) = std::env::var("KADMIUM_BUCKET_TOKEN") {
             let trimmed = env_tok.trim();
             if !trimmed.is_empty() {
-                return trimmed.to_string();
+                return Ok(trimmed.to_string());
             }
         }
-        let _guard = BUCKET_STORE_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let _guard = self.acquire_write_lock()?;
         let path = self.access_token_path();
         if let Ok(existing) = std::fs::read_to_string(&path) {
             let trimmed = existing.trim();
             if trimmed.len() >= 32 {
-                return trimmed.to_string();
+                return Ok(trimmed.to_string());
             }
         }
-        let _ = std::fs::create_dir_all(&self.root_dir);
         let token = generate_csprng_access_token();
-        let _ = std::fs::write(&path, &token);
+        let mut opts = std::fs::OpenOptions::new();
+        opts.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts
+            .open(&path)
+            .map_err(|e| format!("Failed creating bucket access token file: {e}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("Failed setting 0600 permissions on token file: {e}"))?;
         }
-        token
+        use std::io::Write as _;
+        file.write_all(token.as_bytes())
+            .map_err(|e| format!("Failed writing bucket access token file: {e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed syncing bucket access token file: {e}"))?;
+        Ok(token)
+    }
+
+    /// Loads or initializes the local bucket access token using the OS CSPRNG (`getrandom`).
+    pub fn load_or_create_access_token(&self) -> String {
+        self.try_load_or_create_access_token()
+            .unwrap_or_else(|_| generate_csprng_access_token())
     }
 
     fn objects_root(&self) -> PathBuf {
@@ -2189,22 +2278,134 @@ impl BucketObjectStore {
             .join(Self::object_dir_name(normalized_uri))
     }
 
-    fn cleanup_stale_dot_dirs(&self) {
-        let objects_dir = self.objects_root();
-        if let Ok(entries) = std::fs::read_dir(&objects_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                if name_str.starts_with(".staging-") || name_str.starts_with(".old-") {
-                    let _ = std::fs::remove_dir_all(entry.path());
+    /// Extracts `<dir>` from a backup directory name `.old-<dir>--<pid>-<nonce>` or
+    /// `.old-<dir>-<suffix>`.
+    fn extract_target_dir_from_old_name(old_name: &str) -> Option<&str> {
+        let rest = old_name.strip_prefix(".old-")?;
+        if let Some((dir, _)) = rest.split_once("--")
+            && !dir.is_empty()
+        {
+            return Some(dir);
+        }
+        // Match the `-{16 hex chars}-` boundary at the end of `object_dir_name` (`<slug>-<16hex>`).
+        let bytes = rest.as_bytes();
+        if bytes.len() > 18 {
+            for i in (1..=bytes.len().saturating_sub(18)).rev() {
+                if bytes[i - 1] == b'-'
+                    && bytes[i + 16] == b'-'
+                    && bytes[i..i + 16].iter().all(|b| b.is_ascii_hexdigit())
+                {
+                    return Some(&rest[..i + 16]);
                 }
+            }
+        }
+        rest.rsplit_once('-')
+            .map(|(dir, _)| dir)
+            .filter(|dir| !dir.is_empty())
+    }
+
+    /// Returns `true` if `dir/.writer.lock` exists and is currently held by a live process.
+    fn is_dir_locked_by_live_writer(dir: &Path) -> bool {
+        let writer_lock_path = dir.join(".writer.lock");
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&writer_lock_path)
+        else {
+            return false;
+        };
+        match file.try_lock() {
+            Ok(()) => {
+                let _ = file.unlock();
+                false
+            }
+            Err(_) => true,
+        }
+    }
+
+    /// Recovers any interrupted overwrite where `.old-<dir>-*` exists and `objects/<dir>` is missing,
+    /// and removes superseded `.old-<dir>-*` or abandoned `.staging-*` directories whose writer lock
+    /// is no longer held. Must be called while holding `acquire_write_lock()`.
+    /// **Proved (model)**: `Kadmium.StoragePool.overwrite_durable`,
+    /// `Kadmium.StoragePool.recover_restores_final`, and
+    /// `Kadmium.StoragePool.rotate_then_recover_restores_original`.
+    fn recover_and_cleanup_under_lock(&self) {
+        let objects_dir = self.objects_root();
+        let Ok(entries) = std::fs::read_dir(&objects_dir) else {
+            return;
+        };
+        let collected: Vec<std::fs::DirEntry> = entries.flatten().collect();
+
+        // Pass 1: Recover `.old-<dir>-*` when `objects/<dir>` is missing; only remove `.old-<dir>-*`
+        // when `objects/<dir>/manifest.json` is already committed and no live writer owns `.old-*`.
+        for entry in &collected {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.starts_with(".old-") {
+                continue;
+            }
+            let old_path = entry.path();
+            if Self::is_dir_locked_by_live_writer(&old_path) {
+                continue;
+            }
+            if let Some(target_dir_name) = Self::extract_target_dir_from_old_name(&name_str) {
+                let final_dir = objects_dir.join(target_dir_name);
+                if !final_dir.join("manifest.json").is_file() {
+                    if final_dir.exists() {
+                        let _ = std::fs::remove_dir_all(&final_dir);
+                    }
+                    let _ = std::fs::rename(&old_path, &final_dir);
+                } else {
+                    let _ = std::fs::remove_dir_all(&old_path);
+                }
+            }
+        }
+
+        // Pass 2: Remove `.staging-*` directories whose owning writer is gone.
+        for entry in &collected {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.starts_with(".staging-") {
+                continue;
+            }
+            let staging_path = entry.path();
+            if !Self::is_dir_locked_by_live_writer(&staging_path) {
+                let _ = std::fs::remove_dir_all(&staging_path);
             }
         }
     }
 
+    fn list_objects_unlocked(&self) -> Result<Vec<StoredBucketObjectManifest>, String> {
+        let objects_dir = self.objects_root();
+        if !objects_dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut manifests = Vec::new();
+        let entries = std::fs::read_dir(&objects_dir)
+            .map_err(|_| "Failed reading bucket objects directory".to_string())?;
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            if file_name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let manifest_path = entry.path().join("manifest.json");
+            if manifest_path.is_file()
+                && let Ok(raw) = std::fs::read_to_string(&manifest_path)
+                && let Ok(m) = serde_json::from_str::<StoredBucketObjectManifest>(&raw)
+            {
+                manifests.push(m);
+            }
+        }
+        manifests.sort_by(|a, b| a.object_uri.cmp(&b.object_uri));
+        Ok(manifests)
+    }
+
     /// Encodes `payload` into `$k + m$` erasure-coded shards, enforces per-object and total store
-    /// quotas under a serialized write lock, writes all shard files and `manifest.json` atomically
-    /// via a temporary staging directory, and returns a `StoredBucketObjectReceipt`.
+    /// quotas under a cross-process write lock (`<root_dir>/.store.lock`), writes all shard files
+    /// and `manifest.json` atomically via a temporary staging directory, and returns a
+    /// `StoredBucketObjectReceipt`. Existing objects are never lost across overwrites or crashes.
+    /// **Proved (model)**: `Kadmium.StoragePool.checkStoreQuota_spec`,
+    /// `Kadmium.StoragePool.overwrite_durable`, and `Kadmium.StoragePool.recover_restores_final`.
     #[allow(clippy::too_many_arguments)]
     pub fn put_bytes(
         &self,
@@ -2232,11 +2433,9 @@ impl BucketObjectStore {
             ));
         }
 
-        // Serialize quota checks and directory commits across concurrent writers
-        let _write_guard = BUCKET_STORE_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        self.cleanup_stale_dot_dirs();
+        // Serialize quota checks, recovery, and directory commits across threads and processes
+        let _write_guard = self.acquire_write_lock()?;
+        self.recover_and_cleanup_under_lock();
 
         let shard_size_est = if payload.is_empty() {
             1
@@ -2246,7 +2445,7 @@ impl BucketObjectStore {
         let new_physical_bytes = (total_shards * shard_size_est) as u64;
 
         // Enforce store-wide object count and physical byte quota before encoding/writing
-        let existing_manifests = self.list_objects().unwrap_or_default();
+        let existing_manifests = self.list_objects_unlocked()?;
         let mut other_objects_count = 0usize;
         let mut other_physical_bytes = 0u64;
         for m in &existing_manifests {
@@ -2294,11 +2493,9 @@ impl BucketObjectStore {
 
         // Only model node placements over the actual `nodes` passed by the caller (never fall back to synthetic sample nodes).
         let mut contributions = Vec::with_capacity(nodes.len());
-        let mut total_seed_uplink_gbps = 0.0f64;
         for nd in nodes {
             let pledged_disk = (nd.memory.nvme_cache_gb * 0.85).max(4.0);
             let uplink = nd.network_uplink_gbps.max(0.1);
-            total_seed_uplink_gbps += uplink;
             contributions.push(NodeStorageContribution {
                 node_id: nd.id.0.clone(),
                 hostname: nd.hostname.clone(),
@@ -2326,11 +2523,8 @@ impl BucketObjectStore {
             parity_shards_m,
         );
         // Every shard written by `BucketObjectStore` is persisted on the coordinator's local disk;
-        // never claim on-disk `.kds` shard files reside in GPU VRAM or Unified Memory.
-        let local_disk_medium = nodes
-            .first()
-            .map(DecentralizedStoragePoolEngine::classify_persistent_medium)
-            .unwrap_or(StorageMediumKind::PcieNvmeSsd);
+        // never label local coordinator `.kds` shards with a remote node's medium (such as NAS or VRAM).
+        let local_disk_medium = StorageMediumKind::PcieNvmeSsd;
 
         let objects_root = self.objects_root();
         std::fs::create_dir_all(&objects_root)
@@ -2338,14 +2532,27 @@ impl BucketObjectStore {
 
         let dir_name = Self::object_dir_name(&normalized_uri);
         let final_obj_dir = objects_root.join(&dir_name);
+        let pid = std::process::id();
         let nonce = STAGING_NONCE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let staging_dir = objects_root.join(format!(
-            ".staging-{dir_name}-{}-{nonce}",
-            std::process::id()
-        ));
+        let staging_dir = objects_root.join(format!(".staging-{dir_name}--{pid}-{nonce}"));
         let staging_shards_dir = staging_dir.join("shards");
         std::fs::create_dir_all(&staging_shards_dir)
             .map_err(|_| "Failed to create staging shard directory".to_string())?;
+
+        let writer_lock_path = staging_dir.join(".writer.lock");
+        let mut writer_lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(true)
+            .open(&writer_lock_path)
+            .ok();
+        if let Some(ref mut wf) = writer_lock_file {
+            let _ = wf.lock();
+            use std::io::Write as _;
+            let _ = writeln!(wf, "{pid}");
+            let _ = wf.flush();
+        }
 
         let write_result = (|| -> Result<StoredBucketObjectManifest, String> {
             let mut shard_descriptors = Vec::with_capacity(encoded_shards.len());
@@ -2425,6 +2632,9 @@ impl BucketObjectStore {
             Ok(manifest)
         })();
 
+        drop(writer_lock_file);
+        let _ = std::fs::remove_file(&writer_lock_path);
+
         let manifest = match write_result {
             Ok(m) => m,
             Err(e) => {
@@ -2434,8 +2644,8 @@ impl BucketObjectStore {
         };
 
         // Atomically replace any existing object directory without ever deleting the existing object
-        // before the backup rotation succeeds.
-        let backup_dir = objects_root.join(format!(".old-{dir_name}-{nonce}"));
+        // before the backup rotation and staged commit succeed (**Proved (model)**: `Kadmium.StoragePool.overwrite_durable`).
+        let backup_dir = objects_root.join(format!(".old-{dir_name}--{pid}-{nonce}"));
         if final_obj_dir.exists() {
             if backup_dir.exists() {
                 let _ = std::fs::remove_dir_all(&backup_dir);
@@ -2477,11 +2687,6 @@ impl BucketObjectStore {
             manifest.shards.iter().map(|s| s.storage_medium).collect();
         assigned_mediums.sort();
         assigned_mediums.dedup();
-        let parallel_bw = if total_seed_uplink_gbps > 0.0 && !sample_holders.is_empty() {
-            (total_seed_uplink_gbps * 0.72).min((data_shards_k as f64) * 12.5)
-        } else {
-            0.0
-        };
 
         let bucket_entry = PoolBucketObjectEntry {
             object_uri: normalized_uri.clone(),
@@ -2494,7 +2699,7 @@ impl BucketObjectStore {
             total_64mb_superblocks: superblocks,
             merkle_root_fnv64: manifest.merkle_root_fnv64,
             sample_stripe_holder_nodes: sample_holders,
-            parallel_read_bandwidth_gbps: round_1(parallel_bw),
+            parallel_read_bandwidth_gbps: 0.0,
             stored_size_bytes: Some(logical_size_bytes),
             sha256: Some(payload_sha256),
             stored_on_disk: true,
@@ -2560,6 +2765,11 @@ impl BucketObjectStore {
     /// Reads and validates the on-disk manifest for `object_uri` without leaking host paths in errors.
     pub fn inspect_object(&self, object_uri: &str) -> Result<StoredBucketObjectManifest, String> {
         let normalized_uri = DecentralizedStoragePoolEngine::normalize_bucket_uri(object_uri)?;
+        if self.objects_root().exists()
+            && let Ok(_guard) = self.acquire_write_lock()
+        {
+            self.recover_and_cleanup_under_lock();
+        }
         let manifest_path = self.object_dir(&normalized_uri).join("manifest.json");
         if !manifest_path.exists() {
             return Err(format!(
@@ -2635,13 +2845,7 @@ impl BucketObjectStore {
                 }
                 pos += take;
             }
-            let utf8_preview = std::str::from_utf8(&slice_bytes).ok().map(|s| {
-                if s.len() > 4096 {
-                    format!("{}...", &s[..4096])
-                } else {
-                    s.to_string()
-                }
-            });
+            let utf8_preview = utf8_preview_from_bytes(&slice_bytes);
             return Ok(BucketDownloadResult {
                 object_uri: manifest.object_uri,
                 display_name: manifest.display_name,
@@ -2685,13 +2889,7 @@ impl BucketObjectStore {
             (0, full_payload)
         };
 
-        let utf8_preview = std::str::from_utf8(&slice_bytes).ok().map(|s| {
-            if s.len() > 4096 {
-                format!("{}...", &s[..4096])
-            } else {
-                s.to_string()
-            }
-        });
+        let utf8_preview = utf8_preview_from_bytes(&slice_bytes);
 
         Ok(BucketDownloadResult {
             object_uri: manifest.object_uri,
@@ -2727,8 +2925,8 @@ impl BucketObjectStore {
         Ok(result)
     }
 
-    /// Verifies on-disk shard checksums and optionally simulates dropping up to `m` shards
-    /// to prove bit-identical Reed-Solomon reconstruction on the actual stored object.
+    /// Checks on-disk shard checksums and optionally simulates dropping up to `m` shards
+    /// to test bit-identical Reed-Solomon reconstruction on the stored object.
     pub fn verify_object(
         &self,
         object_uri: &str,
@@ -2791,9 +2989,10 @@ impl BucketObjectStore {
         let sha_ok = compute_sha256_hex(&recovered) == manifest.sha256;
         let bit_identical = sha_ok && recovered.len() as u64 == manifest.logical_size_bytes;
 
+        let sha_prefix_end = manifest.sha256.floor_char_boundary(16);
         let status_summary = if bit_identical {
             format!(
-                "Verified '{}': {}/{} local shards intact, RS({}, {}) parity recovery tested (missing/corrupt {:?}, simulated drop {:?}), SHA-256={} verified.",
+                "Checked '{}': {}/{} local shards intact, RS({}, {}) parity recovery tested (missing/corrupt {:?}, simulated drop {:?}), SHA-256={} matched.",
                 manifest.object_uri,
                 intact_count,
                 manifest.shards.len(),
@@ -2801,11 +3000,11 @@ impl BucketObjectStore {
                 manifest.parity_shards_m,
                 missing_or_corrupt,
                 simulated_dropped,
-                &manifest.sha256[..16.min(manifest.sha256.len())]
+                &manifest.sha256[..sha_prefix_end]
             )
         } else {
             format!(
-                "Verification failed for '{}': SHA-256 mismatch after reconstruction.",
+                "Integrity check failed for '{}': SHA-256 mismatch after reconstruction.",
                 manifest.object_uri
             )
         };
@@ -2830,28 +3029,12 @@ impl BucketObjectStore {
 
     /// Lists all stored objects inside `BucketObjectStore`, sorted by `object_uri`.
     pub fn list_objects(&self) -> Result<Vec<StoredBucketObjectManifest>, String> {
-        let objects_dir = self.objects_root();
-        if !objects_dir.exists() {
+        if !self.objects_root().exists() {
             return Ok(Vec::new());
         }
-        let mut manifests = Vec::new();
-        let entries = std::fs::read_dir(&objects_dir)
-            .map_err(|_| "Failed reading bucket objects directory".to_string())?;
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            if file_name.to_string_lossy().starts_with('.') {
-                continue;
-            }
-            let manifest_path = entry.path().join("manifest.json");
-            if manifest_path.is_file()
-                && let Ok(raw) = std::fs::read_to_string(&manifest_path)
-                && let Ok(m) = serde_json::from_str::<StoredBucketObjectManifest>(&raw)
-            {
-                manifests.push(m);
-            }
-        }
-        manifests.sort_by(|a, b| a.object_uri.cmp(&b.object_uri));
-        Ok(manifests)
+        let _guard = self.acquire_write_lock()?;
+        self.recover_and_cleanup_under_lock();
+        self.list_objects_unlocked()
     }
 
     /// Computes total physical bytes currently stored across all objects in this store.
@@ -2866,10 +3049,8 @@ impl BucketObjectStore {
     /// Deletes a stored object and its shard directory from `BucketObjectStore`.
     pub fn delete_object(&self, object_uri: &str) -> Result<bool, String> {
         let normalized_uri = DecentralizedStoragePoolEngine::normalize_bucket_uri(object_uri)?;
-        let _write_guard = BUCKET_STORE_WRITE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        self.cleanup_stale_dot_dirs();
+        let _write_guard = self.acquire_write_lock()?;
+        self.recover_and_cleanup_under_lock();
         let obj_dir = self.object_dir(&normalized_uri);
         if !obj_dir.exists() {
             return Ok(false);

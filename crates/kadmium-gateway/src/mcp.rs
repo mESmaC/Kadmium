@@ -303,7 +303,7 @@ impl KadmiumMcpServer {
             McpResourceDescriptor {
                 uri: "kadmium://cluster/storage-bucket".into(),
                 name: "Multi-Medium Distributed Storage Pool Bucket (kdm://pool-bucket)".into(),
-                description: "Live multi-medium storage inventory (VRAM, Unified Memory, System RAM, NVMe, UFS/eMMC Flash, NAS ZFS/RAID), erasure-coded objects, and external/internal access guide.".into(),
+                description: "Local coordinator erasure-coded object store, modelled cluster storage medium inventory, and external/internal access guide.".into(),
                 mime_type: "application/json".into(),
             },
             McpResourceDescriptor {
@@ -340,7 +340,7 @@ impl KadmiumMcpServer {
     }
 
     /// Handles a single JSON-RPC 2.0 MCP request against a shared `Arc<Mutex<GatewayState>>`,
-    /// releasing the mutex during local disk I/O for `kadmium_bucket_access`.
+    /// releasing the mutex during local disk I/O for `kadmium_bucket_access` and `resources/read`.
     pub fn handle_request_shared(
         state: &std::sync::Arc<std::sync::Mutex<GatewayState>>,
         req: McpJsonRpcRequest,
@@ -369,6 +369,47 @@ impl KadmiumMcpServer {
                     error: Some(err),
                 },
             };
+        }
+        if req.method == "resources/read" {
+            let id = req.id.clone();
+            let uri = req
+                .params
+                .as_ref()
+                .and_then(|p| p.get("uri"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("kadmium://cluster/topology")
+                .to_string();
+            if uri == "kadmium://cluster/storage-bucket" {
+                let (nodes, imported_models, bucket_objects, bucket_anchors) = {
+                    let guard = state.lock().expect("gateway state lock");
+                    (
+                        guard.nodes.clone(),
+                        guard.imported_models.clone(),
+                        guard.bucket_objects.clone(),
+                        guard.bucket_anchors.clone(),
+                    )
+                };
+                let report =
+                    kadmium_data::DecentralizedStoragePoolEngine::evaluate_live_cluster_bucket(
+                        &nodes,
+                        &imported_models,
+                        &bucket_objects,
+                        &bucket_anchors,
+                    );
+                let text = serde_json::to_string_pretty(&report).unwrap_or_default();
+                return McpJsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id,
+                    result: Some(json!({
+                        "contents": [{
+                            "uri": uri,
+                            "mimeType": "application/json",
+                            "text": text
+                        }]
+                    })),
+                    error: None,
+                };
+            }
         }
         let mut guard = state.lock().expect("gateway state lock");
         Self::handle_request(&mut guard, req)

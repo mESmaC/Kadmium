@@ -15,7 +15,7 @@ An optimality theorem names its cost model, such as the number of additions or t
 
 ## Results
 
-All results are **Proved (model)**. The differential fixture is `crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt`, checked by `crates/kadmium-runtime/tests/repops_lean_vectors.rs`.
+All results below are **Proved (model)**. The RepOps differential fixture is `crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt`, checked by `crates/kadmium-runtime/tests/repops_lean_vectors.rs`. The storage pool differential fixture is `crates/kadmium-data/tests/fixtures/storage_pool_vectors.txt`, checked by `crates/kadmium-data/tests/storage_pool_lean_vectors.rs`.
 
 | Theorem | Statement | Rust item |
 | :--- | :--- | :--- |
@@ -26,6 +26,14 @@ All results are **Proved (model)**. The differential fixture is `crates/kadmium-
 | `RepOps.push_pastEnd`, `RepOps.push_twice`, `RepOps.finish_incomplete` | A leaf past the end, a leaf pushed twice and an early `finish` are rejected. | `repops::TreeReducer` |
 | `RepOps.legacySum_eq_treeSum` | The legacy Verde reduction builds the same tree as `tree_sum`, so the two agree bit for bit. | `VerdeVerificationEngine::repops_pairwise_tree_sum` |
 | `RepOps.legacy_fallback_unreachable` | The legacy reduction's `if mid >= n { n / 2 }` branch is never taken for any `n ≥ 2`. | `VerdeVerificationEngine::repops_pairwise_tree_sum` |
+| `StoragePool.validateShardCounts_spec`, `StoragePool.validateStoredShardCounts_spec` | `validate_shard_counts` accepts `(k, m)` iff `1 ≤ k`, `1 ≤ m`, and `k + m ≤ 256`; `validate_stored_shard_counts` accepts `(k, m)` iff `1 ≤ k ≤ 16`, `1 ≤ m ≤ 8`, `k + m ≤ 20`, and `m ≤ max(k, 2)`. | `DecentralizedStoragePoolEngine::{validate_shard_counts, validate_stored_shard_counts}` |
+| `StoragePool.storedShardOverhead_le_three`, `StoragePool.cauchyNodes_disjoint` | For every `(k, m)` accepted by `validate_stored_shard_counts`, total shards satisfy `k + m ≤ 3 * k` (`(k + m) / k ≤ 3` storage overhead bound), and Cauchy evaluation points `x_p = k + p` (`p < m`) and `y_j = j` (`j < k`) are pairwise distinct in `0 .. 256`. | `DecentralizedStoragePoolEngine::validate_stored_shard_counts`, `systematic_cauchy_row` |
+| `StoragePool.shardSize_pos`, `StoragePool.payloadLen_le_k_mul_shardSize` | For `k ≥ 1`, `shardSize payloadLen k ≥ 1` and `payloadLen ≤ k * shardSize payloadLen k`, so `k` equal-sized data shards cover every payload byte without truncation. | `encode_erasure_coded_shards` |
+| `StoragePool.checkStoreQuota_spec` | The store quota check accepts a write iff the post-write object count is at most `maxObjects` and total physical bytes are at most `maxTotalBytes`. | `BucketObjectStore::put_bytes` |
+| `StoragePool.swapStep_preserves_durable`, `StoragePool.runSwap_preserves_durable`, `StoragePool.overwrite_durable`, `StoragePool.recover_restores_final`, `StoragePool.rotate_then_recover_restores_original` | Across any sequence of staging, rotation, commit, rollback, crash, and recovery events under the store lock, a committed object is never lost (`Durable`), and `recover_interrupted_writes` always restores `objects/<dir>` (`final ≠ none`). | `BucketObjectStore::{put_bytes, recover_interrupted_writes}` |
+
+Conjectures stated in `formal/KadmiumFormal/StoragePool.lean` (**Conjecture**):
+- `Kadmium.StoragePool.CauchyMdsConjecture` (**Conjecture**): Every `k × k` submatrix of the `(k + m) × k` systematic Cauchy matrix over `GF(2^8)` (for `(k, m)` accepted by `validate_stored_shard_counts`) is invertible under Gaussian elimination, so any `k` surviving shards out of `k + m` reconstruct the original `k` data shards bit for bit.
 
 Every RepOps theorem holds for an arbitrary addition `add : α → α → α` with no associativity, commutativity or identity assumed. IEEE `f32` and `f64` addition has none of those laws, so the statements hold bit for bit for floats without a floating-point model: two reductions that evaluate the same tree perform the same additions on the same operands.
 
@@ -33,8 +41,9 @@ Modelling assumptions shared by these results:
 
 - Indices are unbounded natural numbers. Rust `usize` arithmetic in `next_power_of_two` and `2 * capacity` overflows only past `2^63` leaves.
 - The reducer's `Vec<Option<T>>` is a function from index to `Option`. The proofs track that every index the algorithm touches is below `2 * capacity`.
-- Error strings are modelled as the constructors of `ReduceError`.
+- Error strings are modelled as the constructors of `ReduceError` and `ShardCountError`.
 - `Summand::add` is a function of its two operands, which holds for `f32`, `f64` and `i64`.
+- Directory states in `BucketObjectStore` are modelled per object slot as `(final, old, staging)` version tags serialized by `<root>/.store.lock`.
 
 ## Findings
 
@@ -48,9 +57,12 @@ The toolchain is pinned in `lean-toolchain`; `elan` installs it on first use. Th
 cd formal
 lake build --wfail
 lake exe repops_vectors ../crates/kadmium-runtime/tests/fixtures/repops_tree_vectors.txt
+lake exe storage_pool_vectors ../crates/kadmium-data/tests/fixtures/storage_pool_vectors.txt
 cd ..
 cargo test --locked -p kadmium-runtime --test repops_lean_vectors
+cargo test --locked -p kadmium-data --test storage_pool_lean_vectors
 ```
+
 
 `lake build --wfail` checks every proof and turns warnings, including `declaration uses 'sorry'`, into errors. `KadmiumFormal/Audit.lean` fails the build if a listed theorem depends on any axiom other than `propext`, `Classical.choice` and `Quot.sound`, which rules out `sorry`, `native_decide` and project-local axioms. CI runs both steps and fails if the regenerated fixture differs from the committed one.
 

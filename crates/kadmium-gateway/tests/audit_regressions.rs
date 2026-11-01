@@ -19,23 +19,45 @@ fn gateway() -> (Router, Arc<Mutex<GatewayState>>) {
 }
 
 async fn request(app: &Router, method: &str, uri: &str, body: Value) -> (u16, String) {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("host", "127.0.0.1:7848")
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
         .unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            7848,
+        ))));
+    let response = app.clone().oneshot(req).await.unwrap();
     let status = response.status().as_u16();
     let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
         .await
         .unwrap();
     (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+async fn loopback_raw_get(
+    app: &Router,
+    uri: &str,
+    range_header: Option<&str>,
+) -> axum::response::Response {
+    let mut builder = Request::builder()
+        .method("GET")
+        .uri(uri)
+        .header("host", "127.0.0.1:7848");
+    if let Some(r) = range_header {
+        builder = builder.header("range", r);
+    }
+    let mut req = builder.body(Body::empty()).unwrap();
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            7848,
+        ))));
+    app.clone().oneshot(req).await.unwrap()
 }
 
 fn temp_dir(label: &str) -> PathBuf {
@@ -639,20 +661,12 @@ async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() 
     assert_eq!(cross_origin_resp.status().as_u16(), 403);
 
     // Valid byte range returns 206 Partial Content + Content-Range + nosniff
-    let range_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(
-                    "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin",
-                )
-                .header("range", "bytes=0-6")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let range_resp = loopback_raw_get(
+        &app,
+        "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin",
+        Some("bytes=0-6"),
+    )
+    .await;
     assert_eq!(range_resp.status().as_u16(), 206);
     assert_eq!(
         range_resp
@@ -675,21 +689,25 @@ async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() 
     let partial_bytes = to_bytes(range_resp.into_body(), 1024).await.unwrap();
     assert_eq!(&partial_bytes[..], b"Kadmium");
 
+    // Query offset/length without an HTTP Range header returns 200 OK (not 206 Partial Content)
+    let offset_resp = loopback_raw_get(
+        &app,
+        "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin&offset=0&length=7",
+        None,
+    )
+    .await;
+    assert_eq!(offset_resp.status().as_u16(), 200);
+    assert!(offset_resp.headers().get("content-range").is_none());
+    let offset_bytes = to_bytes(offset_resp.into_body(), 1024).await.unwrap();
+    assert_eq!(&offset_bytes[..], b"Kadmium");
+
     // Unsatisfiable range returns 416 Range Not Satisfiable with Content-Range: bytes */68
-    let bad_range_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(
-                    "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin",
-                )
-                .header("range", "bytes=999-1000")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let bad_range_resp = loopback_raw_get(
+        &app,
+        "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin",
+        Some("bytes=999-1000"),
+    )
+    .await;
     assert_eq!(bad_range_resp.status().as_u16(), 416);
     assert_eq!(
         bad_range_resp
@@ -703,18 +721,12 @@ async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() 
 
     // Malformed Range header must be ignored per RFC 9110 §14.2 and serve 200 OK full payload
     for ignored_range in ["bytes=invalid", "items=0-5", "bytes=10-5"] {
-        let ignored_resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin")
-                    .header("range", ignored_range)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let ignored_resp = loopback_raw_get(
+            &app,
+            "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin",
+            Some(ignored_range),
+        )
+        .await;
         assert_eq!(ignored_resp.status().as_u16(), 200, "range={ignored_range}");
     }
 
@@ -730,17 +742,12 @@ async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() 
     )
     .await;
     assert_eq!(status, 200, "{empty_body}");
-    let empty_get = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/empty.bin")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let empty_get = loopback_raw_get(
+        &app,
+        "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/empty.bin",
+        None,
+    )
+    .await;
     assert_eq!(empty_get.status().as_u16(), 200);
     assert!(
         to_bytes(empty_get.into_body(), 1024)
@@ -749,18 +756,12 @@ async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() 
             .is_empty()
     );
 
-    let empty_range_416 = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/empty.bin")
-                .header("range", "bytes=0-0")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let empty_range_416 = loopback_raw_get(
+        &app,
+        "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/empty.bin",
+        Some("bytes=0-0"),
+    )
+    .await;
     assert_eq!(empty_range_416.status().as_u16(), 416);
     assert_eq!(
         empty_range_416
@@ -772,7 +773,39 @@ async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() 
         "bytes */0"
     );
 
-    // Payload > 2 MiB (Axum's default limit) succeeds on /api/v1/storage/pool-bucket/upload
+    // Multi-byte UTF-8 payload ("€".repeat(2000), 6,000 bytes) must not panic at byte index 4096
+    let euro_payload = "€".repeat(2000);
+    let (euro_up_status, euro_up_body) = request(
+        &app,
+        "POST",
+        "/api/v1/storage/pool-bucket/upload",
+        json!({
+            "object_uri": "kdm://pool-bucket/tests/utf8-euro.txt",
+            "content_utf8": euro_payload
+        }),
+    )
+    .await;
+    assert_eq!(euro_up_status, 200, "{euro_up_body}");
+    let (euro_dl_status, euro_dl_body) = request(
+        &app,
+        "GET",
+        "/api/v1/storage/pool-bucket/download?uri=kdm://pool-bucket/tests/utf8-euro.txt",
+        json!(null),
+    )
+    .await;
+    assert_eq!(euro_dl_status, 200, "{euro_dl_body}");
+    let euro_dl: Value = serde_json::from_str(&euro_dl_body).unwrap();
+    assert_eq!(
+        euro_dl["content_utf8"].as_str(),
+        Some(euro_payload.as_str())
+    );
+    assert_eq!(
+        euro_dl["utf8_preview"].as_str().map(|s| s.len()),
+        Some(4098)
+    );
+    assert!(euro_dl["utf8_preview"].as_str().unwrap().ends_with("..."));
+
+    // Payload > 2 MiB (Axum's default limit) and 8 MiB data_hex upload succeed on /api/v1/storage/pool-bucket/upload
     let large_payload = "A".repeat(2 * 1024 * 1024 + 128 * 1024);
     let (large_status, large_body) = request(
         &app,
@@ -785,6 +818,56 @@ async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() 
     )
     .await;
     assert_eq!(large_status, 200, "{large_body}");
+
+    let hex_8m = "ab".repeat(8 * 1024 * 1024);
+    let (hex_8m_status, hex_8m_body) = request(
+        &app,
+        "POST",
+        "/api/v1/storage/pool-bucket/upload",
+        json!({
+            "object_uri": "kdm://pool-bucket/tests/hex-8m.bin",
+            "data_hex": hex_8m
+        }),
+    )
+    .await;
+    assert_eq!(hex_8m_status, 200, "{hex_8m_body}");
+
+    // Missing ConnectInfo (maybe_peer == None) without token must fail closed with 403 Forbidden
+    for (method, uri, host_hdr) in [
+        (
+            "GET",
+            "/api/v1/storage/pool-bucket/raw?uri=kdm://pool-bucket/tests/route-payload.bin",
+            Some("127.0.0.1:7848"),
+        ),
+        ("GET", "/api/v1/storage/pool-bucket/objects", None),
+        (
+            "POST",
+            "/api/v1/models/quality-tradeoffs",
+            Some("localhost"),
+        ),
+        ("POST", "/mcp", Some("127.0.0.1:7848")),
+    ] {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(h) = host_hdr {
+            builder = builder.header("host", h);
+        }
+        let req = builder
+            .body(Body::from(if uri == "/mcp" {
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#
+            } else {
+                "{}"
+            }))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status().as_u16(),
+            403,
+            "missing ConnectInfo {method} {uri}"
+        );
+    }
 
     // Non-loopback peer socket (even with spoofed Host: localhost:7848 or empty Host) must be rejected without token
     let remote_peer: std::net::SocketAddr = "198.51.100.42:54321".parse().unwrap();
@@ -829,6 +912,21 @@ async fn bucket_upload_download_verify_and_multi_medium_inventory_routes_work() 
         .insert(axum::extract::ConnectInfo(remote_peer));
     let authed_resp = app.clone().oneshot(authed_req).await.unwrap();
     assert_eq!(authed_resp.status().as_u16(), 200);
+
+    // Fresh install token persistence: load_persistent_state persists bucket-access-token even when cluster_state.json is absent
+    let fresh_dir = temp_dir("fresh-token-install");
+    let mut fresh_state_1 = GatewayState::new();
+    fresh_state_1.persistent_state_dir = fresh_dir.clone();
+    assert!(!fresh_state_1.load_persistent_state().unwrap());
+    assert!(fresh_dir.join("bucket-store/bucket-access-token").exists());
+    let mut fresh_state_2 = GatewayState::new();
+    fresh_state_2.persistent_state_dir = fresh_dir.clone();
+    assert!(!fresh_state_2.load_persistent_state().unwrap());
+    assert_eq!(
+        fresh_state_1.bucket_write_token,
+        fresh_state_2.bucket_write_token
+    );
+    std::fs::remove_dir_all(fresh_dir).unwrap();
 
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -921,7 +1019,7 @@ async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeo
         4
     );
 
-    // Lowered max_input_tokens (4 tokens) must actively reject longer prompts on /v1/chat/completions
+    // Lowered max_input_tokens (4 tokens) must actively reject longer prompts on /v1/chat/completions for DeepSeek
     let (chat_status, chat_body) = request(
         &app,
         "POST",
@@ -933,6 +1031,19 @@ async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeo
     )
     .await;
     assert_eq!(chat_status, 400, "{chat_body}");
+
+    // Per-request model override isolation: calling /v1/chat/completions with qwen2.5-coder-14b must NOT inherit DeepSeek's max_input_tokens=4 override
+    let (qwen_chat_status, qwen_chat_body) = request(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        json!({
+            "model": "qwen2.5-coder-14b",
+            "messages": [{"role": "user", "content": "This prompt has well over four estimated tokens and must succeed on qwen2.5-coder-14b because overrides are scoped per model"}]
+        }),
+    )
+    .await;
+    assert_eq!(qwen_chat_status, 200, "{qwen_chat_body}");
 
     let (status, body) = request(
         &app,
@@ -946,7 +1057,45 @@ async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeo
     assert_eq!(restored["is_uncompromised_maximum_quality"], true);
     assert!(restored["effective_max_output_tokens"].is_null());
 
-    // Switching the active inference model syncs native context window limits
+    // Lower DeepSeek to 65,536, switch to qwen2.5-coder-7b (native 32,768), verify Qwen starts at 32,768 uncompromised,
+    // and switch back to DeepSeek to verify 65,536 was preserved and never clamped to 32,768
+    let (ds_set_status, _) = request(
+        &app,
+        "POST",
+        "/api/v1/models/quality-tradeoffs",
+        json!({"context_window_tokens": 65_536}),
+    )
+    .await;
+    assert_eq!(ds_set_status, 200);
+
+    let (qwen_sw_status, qwen_sw_body) = request(
+        &app,
+        "POST",
+        "/api/v1/models/quality-tradeoffs",
+        json!({"model_id": "qwen2.5-coder-7b"}),
+    )
+    .await;
+    assert_eq!(qwen_sw_status, 200, "{qwen_sw_body}");
+    let qwen_report: Value = serde_json::from_str(&qwen_sw_body).unwrap();
+    assert_eq!(qwen_report["model_id"], "qwen2.5-coder-7b-instruct");
+    assert_eq!(qwen_report["is_uncompromised_maximum_quality"], true);
+    assert_eq!(qwen_report["effective_context_window_tokens"], 32_768);
+
+    let (ds_back_status, _) = request(
+        &app,
+        "POST",
+        "/api/v1/cluster/model",
+        json!({"inference_model_id": "deepseek-v3-671b-moe"}),
+    )
+    .await;
+    assert_eq!(ds_back_status, 200);
+    let (_, ds_back_q_body) =
+        request(&app, "GET", "/api/v1/models/quality-tradeoffs", json!(null)).await;
+    let ds_back_q: Value = serde_json::from_str(&ds_back_q_body).unwrap();
+    assert_eq!(ds_back_q["model_id"], "deepseek-v3-671b-moe");
+    assert_eq!(ds_back_q["effective_context_window_tokens"], 65_536);
+
+    // Switching the active inference model to llama-3.2-3b-instruct starts at its native 131,072 context window
     let (switch_status, _) = request(
         &app,
         "POST",
@@ -959,5 +1108,6 @@ async fn model_quality_limits_default_to_uncompromised_and_enforce_manual_tradeo
         request(&app, "GET", "/api/v1/models/quality-tradeoffs", json!(null)).await;
     let switched_q: Value = serde_json::from_str(&switched_q_body).unwrap();
     assert_eq!(switched_q["model_id"], "llama-3.2-3b-instruct");
+    assert_eq!(switched_q["is_uncompromised_maximum_quality"], true);
     assert_eq!(switched_q["effective_context_window_tokens"], 131_072);
 }

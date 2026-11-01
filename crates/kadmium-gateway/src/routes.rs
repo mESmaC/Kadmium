@@ -454,7 +454,7 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
         .route(
             "/api/v1/storage/pool-bucket/upload",
             post(post_storage_pool_bucket_upload)
-                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+                .layer(axum::extract::DefaultBodyLimit::max(20 * 1024 * 1024)),
         )
         .route(
             "/api/v1/storage/pool-bucket/download",
@@ -785,9 +785,9 @@ async fn post_cluster_model(
         guard.last_measured_pipeline_latency_ms = None;
     } else {
         if let Some(model) = inference {
-            guard.quality_limits = ModelQualityLimits::for_model(&model);
-            guard.user_lowered_quality_limits = false;
+            guard.quality_limits.sync_native_with_model(&model);
             guard.inference_model = model;
+            guard.user_lowered_quality_limits = !guard.quality_limits.is_uncompromised();
             guard.active_model_loaded = true;
             guard.user_selected_model = true;
         }
@@ -1774,7 +1774,7 @@ async fn post_mcp_rpc(
     let resp =
         tokio::task::spawn_blocking(move || KadmiumMcpServer::handle_request_shared(&state, req))
             .await
-            .expect("mcp rpc blocking task");
+            .map_err(|e| invalid_request(format!("MCP task failed: {e}")))?;
     Ok(Json(resp))
 }
 
@@ -2234,32 +2234,8 @@ fn resolve_request_quality_limits(
     if let Some(model_id) = requested_model_id
         && let Some(spec) = guard.resolve_model(model_id)
     {
-        if spec.id == guard.inference_model.id {
-            let mut limits = guard.quality_limits.clone();
-            limits.sync_native_with_model(&spec);
-            return limits;
-        }
-        let mut limits = ModelQualityLimits::for_model(&spec);
-        let eff_ctx = limits.native_max_context_window_tokens;
-        limits.user_override_context_window_tokens = guard
-            .quality_limits
-            .user_override_context_window_tokens
-            .map(|v| v.clamp(1, eff_ctx.max(1)));
-        let active_ctx = limits.effective_context_window_tokens();
-        limits.user_override_max_input_tokens = guard
-            .quality_limits
-            .user_override_max_input_tokens
-            .map(|v| v.clamp(1, active_ctx.max(1)));
-        limits.user_override_max_output_tokens = guard
-            .quality_limits
-            .user_override_max_output_tokens
-            .map(|v| v.clamp(1, active_ctx.max(1)));
-        if spec.is_moe {
-            limits.user_override_active_experts_per_token = guard
-                .quality_limits
-                .user_override_active_experts_per_token
-                .map(|v| v.clamp(1, limits.native_active_experts_per_token.max(1)));
-        }
+        let mut limits = guard.quality_limits.clone();
+        limits.sync_native_with_model(&spec);
         return limits;
     }
     let mut limits = guard.quality_limits.clone();
@@ -2802,9 +2778,12 @@ fn authorize_local_or_token(
         ));
     }
 
-    if let Some(peer_addr) = maybe_peer
-        && !peer_addr.ip().is_loopback()
-    {
+    let Some(peer_addr) = maybe_peer else {
+        return Err(forbidden_request(
+            "Peer socket address (ConnectInfo) is required for unauthenticated loopback access; pass X-Kadmium-Token or Authorization Bearer token",
+        ));
+    };
+    if !peer_addr.ip().is_loopback() {
         return Err(forbidden_request(
             "Non-loopback peer requires a valid X-Kadmium-Token or Authorization Bearer token",
         ));
@@ -2819,7 +2798,7 @@ fn authorize_local_or_token(
                 "Non-loopback Host header requires a valid X-Kadmium-Token or Authorization Bearer token",
             ));
         }
-    } else if maybe_peer.is_some() {
+    } else {
         return Err(forbidden_request(
             "Missing Host header on network request without access token",
         ));
@@ -3668,11 +3647,21 @@ async fn get_or_post_storage_pool_bucket_download(
             resp_headers.insert(header::HeaderName::from_static("x-kadmium-merkle-root"), mr);
         }
 
+        let has_valid_http_range_header = matches!(
+            parsed_range,
+            ParsedHttpRange::FromTo(_, _) | ParsedHttpRange::From(_) | ParsedHttpRange::Suffix(_)
+        );
         let status = if let Some((start, _len, end)) = resolved_range {
-            if let Ok(cr) = header::HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")) {
-                resp_headers.insert(header::CONTENT_RANGE, cr);
+            if has_valid_http_range_header {
+                if let Ok(cr) =
+                    header::HeaderValue::from_str(&format!("bytes {start}-{end}/{total}"))
+                {
+                    resp_headers.insert(header::CONTENT_RANGE, cr);
+                }
+                StatusCode::PARTIAL_CONTENT
+            } else {
+                StatusCode::OK
             }
-            StatusCode::PARTIAL_CONTENT
         } else {
             StatusCode::OK
         };
@@ -3747,27 +3736,17 @@ async fn post_model_quality_tradeoffs(
         guard.inference_model.clone()
     };
 
-    let previous = (
-        guard.inference_model.clone(),
-        guard.quality_limits.clone(),
-        guard.user_lowered_quality_limits,
-    );
-
     let native = ModelQualityLimits::for_model(&model);
-    if req.model_id.is_some() && guard.inference_model.id != model.id {
-        guard.inference_model = model.clone();
-    }
+    let mut updated = guard.quality_limits.clone();
+    updated.sync_native_with_model(&model);
 
     if req.reset_to_maximum == Some(true) {
-        guard.quality_limits = native;
-        guard.user_lowered_quality_limits = false;
+        updated.reset_to_maximum_quality();
     } else {
-        let mut updated = guard.quality_limits.clone();
-        updated.sync_native_with_model(&model);
         if let Some(ctx) = req.context_window_tokens {
             if ctx == 0 || ctx > native.native_max_context_window_tokens {
                 return Err(invalid_request(format!(
-                    "context_window_tokens must be between 1 and {}",
+                    "context_window_tokens ({ctx}) must be between 1 and {}",
                     native.native_max_context_window_tokens
                 )));
             }
@@ -3780,7 +3759,7 @@ async fn post_model_quality_tradeoffs(
         if let Some(max_in) = req.max_input_tokens {
             if max_in == 0 || max_in > eff_ctx {
                 return Err(invalid_request(format!(
-                    "max_input_tokens must be between 1 and context_window_tokens ({eff_ctx})"
+                    "max_input_tokens ({max_in}) must be between 1 and context_window_tokens ({eff_ctx})"
                 )));
             }
             updated.user_override_max_input_tokens =
@@ -3797,7 +3776,7 @@ async fn post_model_quality_tradeoffs(
                 .min(eff_ctx);
             if max_out == 0 || max_out > max_allowed_out {
                 return Err(invalid_request(format!(
-                    "max_output_tokens must be between 1 and {max_allowed_out}"
+                    "max_output_tokens ({max_out}) must be between 1 and {max_allowed_out}"
                 )));
             }
             updated.user_override_max_output_tokens = match native.native_max_output_tokens {
@@ -3813,21 +3792,35 @@ async fn post_model_quality_tradeoffs(
             let max_exp = native.native_active_experts_per_token.max(1);
             if experts == 0 || experts > max_exp {
                 return Err(invalid_request(format!(
-                    "active_experts_per_token must be between 1 and {max_exp}"
+                    "active_experts_per_token ({experts}) must be between 1 and {max_exp}"
                 )));
             }
             updated.user_override_active_experts_per_token =
                 (model.is_moe && experts < max_exp).then_some(experts);
         }
-        let report = updated.evaluate_tradeoffs(&model);
-        guard.user_lowered_quality_limits = !report.is_uncompromised_maximum_quality;
-        guard.quality_limits = updated;
+        updated.sync_native_with_model(&model);
     }
+
+    let previous = (
+        guard.inference_model.clone(),
+        guard.user_selected_model,
+        guard.quality_limits.clone(),
+        guard.user_lowered_quality_limits,
+    );
+
+    if req.model_id.is_some() {
+        guard.inference_model = model.clone();
+        guard.user_selected_model = true;
+    }
+    let report = updated.evaluate_tradeoffs(&model);
+    guard.user_lowered_quality_limits = !report.is_uncompromised_maximum_quality;
+    guard.quality_limits = updated;
 
     guard.recompute_plans();
     if let Err(error) = guard.save_persistent_state() {
         (
             guard.inference_model,
+            guard.user_selected_model,
             guard.quality_limits,
             guard.user_lowered_quality_limits,
         ) = previous;
