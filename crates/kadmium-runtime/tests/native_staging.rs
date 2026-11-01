@@ -119,6 +119,61 @@ fn middle() -> SlicePlan {
     }
 }
 
+fn logical_file_bytes(directory: &Path) -> u64 {
+    fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                logical_file_bytes(&entry.path())
+            } else {
+                entry.metadata().unwrap().len()
+            }
+        })
+        .sum()
+}
+
+#[test]
+fn receiver_metadata_is_reserved_at_the_exact_offer_boundary() {
+    let mut fixture = Fixture::new("qwen2_f32");
+    let prepared = fixture.prepare(middle());
+    let mut catalog = ReplicaCatalog::new();
+    prepared.register_source(&mut catalog, 0).unwrap();
+    let approval = fixture.approval(&prepared);
+    let needed = prepared.storage_bytes();
+    assert!(needed > prepared.transport().total_bytes);
+    for offered in [prepared.transport().total_bytes, needed - 1] {
+        fixture.offer.nvme_gb = offered as f64 / 1_073_741_824.0;
+        assert!(
+            fixture
+                .stage(
+                    &prepared,
+                    &mut catalog,
+                    Some(&approval),
+                    &AtomicBool::new(false)
+                )
+                .unwrap_err()
+                .contains("resource offer")
+        );
+        assert!(!fixture.receiver.root().exists());
+    }
+    fixture.offer.nvme_gb = needed as f64 / 1_073_741_824.0;
+    fixture
+        .stage(
+            &prepared,
+            &mut catalog,
+            Some(&approval),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(logical_file_bytes(fixture.receiver.root()), needed);
+    assert_eq!(catalog.bytes_resident_on(&fixture.node.id), needed);
+    assert_eq!(
+        catalog.staging_bytes_on(&fixture.node.id, None).unwrap(),
+        needed
+    );
+}
+
 #[test]
 fn selected_packages_contain_exact_tensors_and_original_bits() {
     for name in ["llama3_bf16", "qwen2_f32", "qwen3_bf16", "mistral_f16"] {
@@ -182,7 +237,7 @@ fn selected_packages_contain_exact_tensors_and_original_bits() {
             DecoderSlice::load(&selected_dir, plan).unwrap();
             assert_eq!(
                 catalog.bytes_resident_on(&fixture.node.id),
-                prepared.transport().total_bytes
+                prepared.storage_bytes()
             );
         }
     }
@@ -321,7 +376,7 @@ fn storage_offer_accounts_for_existing_replicas_and_polite_state() {
     let prepared = fixture.prepare(middle());
     let mut catalog = ReplicaCatalog::new();
     prepared.register_source(&mut catalog, 0).unwrap();
-    let needed = prepared.transport().total_bytes;
+    let needed = prepared.storage_bytes();
     fixture.offer.nvme_gb = (needed - 1) as f64 / 1_073_741_824.0;
     assert!(
         prepared
@@ -397,7 +452,11 @@ fn corrupted_source_chunks_never_create_a_destination_replica() {
         fs::read_dir(fixture.receiver.root().join(".receiving"))
             .unwrap()
             .count(),
-        0
+        1
+    );
+    assert_eq!(
+        catalog.staging_bytes_on(&fixture.node.id, None).unwrap(),
+        prepared.storage_bytes()
     );
 }
 
@@ -519,10 +578,7 @@ fn changing_a_package_invalidates_the_snapshot_and_its_approval() {
     );
     assert!(!fixture.receiver.root().exists());
     let updated = fixture.prepare(middle());
-    assert_eq!(
-        updated.transport().total_bytes,
-        prepared.transport().total_bytes
-    );
+    assert_eq!(updated.storage_bytes(), prepared.storage_bytes());
     assert_ne!(
         updated.placement_digest(&fixture.node.id),
         prepared.placement_digest(&fixture.node.id)
@@ -543,6 +599,108 @@ fn changing_a_package_invalidates_the_snapshot_and_its_approval() {
 }
 
 #[test]
+fn source_failures_keep_verified_chunks_and_their_storage_reservation() {
+    for failure in ["hash", "read"] {
+        let mut fixture = Fixture::new("qwen2_f32");
+        let prepared = fixture.prepare(middle());
+        let mut catalog = ReplicaCatalog::new();
+        prepared.register_source(&mut catalog, 0).unwrap();
+        let approval = fixture.approval(&prepared);
+        let transport = prepared.transport();
+        let id = &transport.checkpoint_id;
+        fixture.receiver.receive_begin(transport).unwrap();
+        let (bank_index, bank) = transport
+            .files
+            .iter()
+            .enumerate()
+            .find(|(_, file)| file.path.starts_with("banks/"))
+            .unwrap();
+        let bank_path = fixture.packages.package_dir(id).unwrap().join(&bank.path);
+        let bank_bytes = fs::read(&bank_path).unwrap();
+        fixture
+            .receiver
+            .receive_chunk(id, bank_index as u32, 0, &bank_bytes)
+            .unwrap();
+        let before = fixture.receiver.receive_begin(transport).unwrap();
+        let bad = transport
+            .files
+            .iter()
+            .find(|file| file.path == "source/model.safetensors")
+            .unwrap();
+        let bad_path = fixture.packages.package_dir(id).unwrap().join(&bad.path);
+        let original = fs::read(&bad_path).unwrap();
+        if failure == "hash" {
+            let mut corrupt = original.clone();
+            corrupt[0] ^= 1;
+            fs::write(&bad_path, corrupt).unwrap();
+        } else {
+            fs::remove_file(&bad_path).unwrap();
+        }
+        let error = fixture
+            .stage(
+                &prepared,
+                &mut catalog,
+                Some(&approval),
+                &AtomicBool::new(false),
+            )
+            .unwrap_err();
+        if failure == "hash" {
+            assert!(error.contains("failed verification"));
+        }
+        let after = fixture.receiver.receive_begin(transport).unwrap();
+        assert!(after.received_bytes >= before.received_bytes);
+        assert!(
+            !after
+                .missing
+                .iter()
+                .any(|chunk| chunk.file == bank_index as u32)
+        );
+        assert!(!catalog.is_resident(&fixture.node.id, id));
+        assert_eq!(
+            catalog.staging_bytes_on(&fixture.node.id, None).unwrap(),
+            prepared.storage_bytes()
+        );
+        assert!(logical_file_bytes(fixture.receiver.root()) <= prepared.storage_bytes());
+        let another = fixture.prepare(SlicePlan {
+            layers: 0..1,
+            embedding: true,
+            head: false,
+        });
+        another.register_source(&mut catalog, 0).unwrap();
+        fixture.offer.nvme_gb = another.storage_bytes() as f64 / 1_073_741_824.0;
+        assert!(
+            another
+                .staging_plan(&catalog, &fixture.node, &fixture.offer, None)
+                .unwrap_err()
+                .contains("resource offer")
+        );
+        fixture.offer.nvme_gb = prepared.storage_bytes() as f64 / 1_073_741_824.0;
+        fs::write(&bad_path, original).unwrap();
+        fs::write(bank_path, b"previously verified chunk must not be reread").unwrap();
+        fixture
+            .stage(
+                &prepared,
+                &mut catalog,
+                Some(&approval),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(
+            catalog.bytes_resident_on(&fixture.node.id),
+            prepared.storage_bytes()
+        );
+        assert_eq!(
+            catalog.staging_bytes_on(&fixture.node.id, None).unwrap(),
+            prepared.storage_bytes()
+        );
+        assert_eq!(
+            logical_file_bytes(fixture.receiver.root()),
+            prepared.storage_bytes()
+        );
+    }
+}
+
+#[test]
 fn catalog_selected_sources_are_not_silently_replaced() {
     let fixture = Fixture::new("qwen2_f32");
     let prepared = fixture.prepare(middle());
@@ -552,7 +710,7 @@ fn catalog_selected_sources_are_not_silently_replaced() {
         ContentRef::new(
             &prepared.transport().checkpoint_id,
             ContentKind::KtbWeightBank,
-            prepared.transport().total_bytes,
+            prepared.storage_bytes(),
         ),
         NodeId("faster-source".into()),
         ResidencyTier::SystemRam,
@@ -620,7 +778,7 @@ fn stale_residency_does_not_bypass_approval_or_storage_to_recreate_a_package() {
         ContentRef::new(
             &prepared.transport().checkpoint_id,
             ContentKind::KtbWeightBank,
-            prepared.transport().total_bytes,
+            prepared.storage_bytes(),
         ),
         fixture.node.id.clone(),
         ResidencyTier::LocalNvme,

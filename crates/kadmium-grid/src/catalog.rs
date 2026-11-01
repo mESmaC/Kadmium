@@ -168,6 +168,8 @@ impl StagingPlan {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReplicaCatalog {
     by_content: BTreeMap<String, Vec<Replica>>,
+    #[serde(default)]
+    staging: Vec<StagingJob>,
 }
 
 impl ReplicaCatalog {
@@ -177,6 +179,10 @@ impl ReplicaCatalog {
 
     /// Records a replica, replacing any earlier record of the same content on the same node.
     pub fn record(&mut self, replica: Replica) {
+        self.staging.retain(|job| {
+            job.destination_node != replica.node_id
+                || job.content.content_id != replica.content.content_id
+        });
         let entries = self
             .by_content
             .entry(replica.content.content_id.clone())
@@ -204,6 +210,7 @@ impl ReplicaCatalog {
     /// Forgets everything a node held, for example when it leaves the mesh. Returns how many
     /// replicas were dropped.
     pub fn remove_node(&mut self, node_id: &NodeId) -> usize {
+        self.staging.retain(|job| &job.destination_node != node_id);
         let mut dropped = 0;
         self.by_content.retain(|_, entries| {
             let before = entries.len();
@@ -252,6 +259,52 @@ impl ReplicaCatalog {
             .iter()
             .map(|r| r.content.bytes)
             .sum()
+    }
+
+    /// Holds an already gated staging job's storage until it is published or explicitly released.
+    /// An unfinished job is not a verified replica and cannot serve as a source.
+    pub fn reserve_staging(&mut self, job: &StagingJob) -> Result<(), String> {
+        if let Some(existing) = self.staging.iter().find(|existing| {
+            existing.destination_node == job.destination_node
+                && existing.content.content_id == job.content.content_id
+        }) {
+            if existing != job {
+                return Err(
+                    "A different staging job already reserves this content on the node".into(),
+                );
+            }
+        } else {
+            self.staging.push(job.clone());
+        }
+        Ok(())
+    }
+
+    /// Release only after removing the partial transfer or reconciling its on-disk usage.
+    pub fn release_staging(&mut self, node: &NodeId, content_id: &str) {
+        self.staging
+            .retain(|job| &job.destination_node != node || job.content.content_id != content_id);
+    }
+
+    /// Resident and reserved logical bytes. A resumed content item is counted by its new plan.
+    pub fn staging_bytes_on(&self, node: &NodeId, resuming: Option<&str>) -> Result<u64, String> {
+        let resident = self
+            .resident_on(node)
+            .into_iter()
+            .try_fold(0u64, |total, replica| {
+                total
+                    .checked_add(replica.content.bytes)
+                    .ok_or("Worker storage size overflow")
+            })?;
+        self.staging
+            .iter()
+            .filter(|job| {
+                &job.destination_node == node && resuming != Some(job.content.content_id.as_str())
+            })
+            .try_fold(resident, |total, job| {
+                total
+                    .checked_add(job.bytes)
+                    .ok_or_else(|| "Worker storage size overflow".into())
+            })
     }
 
     /// The holder in the fastest tier.
@@ -370,13 +423,24 @@ impl ReplicaCatalog {
                     continue;
                 }
                 if let Some(cap) = capacity_bytes.get(dest) {
-                    let used =
-                        self.bytes_resident_on(dest) + planned.get(dest).copied().unwrap_or(0);
-                    if used + rule.content.bytes > *cap {
+                    let required = self
+                        .staging_bytes_on(dest, Some(content_id))
+                        .ok()
+                        .and_then(|used| used.checked_add(planned.get(dest).copied().unwrap_or(0)))
+                        .and_then(|used| used.checked_add(rule.content.bytes));
+                    if required.is_none_or(|required| required > *cap) {
                         continue;
                     }
                 }
-                *planned.entry(dest.clone()).or_default() += rule.content.bytes;
+                let Some(total) = planned
+                    .get(dest)
+                    .copied()
+                    .unwrap_or(0)
+                    .checked_add(rule.content.bytes)
+                else {
+                    continue;
+                };
+                planned.insert(dest.clone(), total);
                 jobs.push(StagingJob {
                     content: rule.content.clone(),
                     source_node: source.node_id.clone(),
@@ -453,6 +517,82 @@ mod tests {
 
     fn expert(name: &str, bytes: u64) -> ContentRef {
         ContentRef::named(ContentKind::ExpertBank, name, bytes)
+    }
+
+    #[test]
+    fn staging_reservations_survive_errors_and_count_once_on_resume_or_publish() {
+        let mut catalog = ReplicaCatalog::new();
+        let content = expert("partial", 100);
+        catalog.record(Replica::new(
+            content.clone(),
+            node("source"),
+            ResidencyTier::LocalNvme,
+            0,
+        ));
+        let rule = PlacementRule {
+            content,
+            min_replicas: 2,
+            preferred_tier: ResidencyTier::LocalNvme,
+            candidate_nodes: vec![node("worker")],
+            pin: true,
+        };
+        let capacity = BTreeMap::from([(node("worker"), 100)]);
+        let job = catalog
+            .plan_staging_with_capacity(std::slice::from_ref(&rule), &capacity)
+            .remove(0);
+        catalog.reserve_staging(&job).unwrap();
+        catalog.reserve_staging(&job).unwrap();
+        assert_eq!(
+            catalog.staging_bytes_on(&node("worker"), None).unwrap(),
+            100
+        );
+        assert_eq!(catalog.bytes_resident_on(&node("worker")), 0);
+        assert!(!catalog.is_resident(&node("worker"), &rule.content.content_id));
+        assert_eq!(
+            catalog.plan_staging_with_capacity(&[rule], &capacity),
+            vec![job.clone()]
+        );
+        let restored: ReplicaCatalog =
+            serde_json::from_str(&serde_json::to_string(&catalog).unwrap()).unwrap();
+        assert_eq!(
+            restored.staging_bytes_on(&node("worker"), None).unwrap(),
+            100
+        );
+        let mut other = job.clone();
+        other.content = expert("another", 1);
+        catalog.record(Replica::new(
+            other.content.clone(),
+            node("source"),
+            ResidencyTier::LocalNvme,
+            0,
+        ));
+        let other_rule = PlacementRule {
+            content: other.content.clone(),
+            min_replicas: 2,
+            preferred_tier: other.target_tier,
+            candidate_nodes: vec![node("worker")],
+            pin: true,
+        };
+        assert!(
+            catalog
+                .plan_staging_with_capacity(&[other_rule], &capacity)
+                .is_empty()
+        );
+        catalog.remove_node(&node("source"));
+        assert_eq!(
+            catalog.staging_bytes_on(&node("worker"), None).unwrap(),
+            100
+        );
+        catalog.apply_staging(&job, 1);
+        assert_eq!(
+            catalog.staging_bytes_on(&node("worker"), None).unwrap(),
+            100
+        );
+        assert_eq!(catalog.bytes_resident_on(&node("worker")), 100);
+        catalog.remove(&node("worker"), &job.content.content_id);
+        catalog.reserve_staging(&other).unwrap();
+        catalog.release_staging(&node("worker"), &other.content.content_id);
+        assert_eq!(catalog.staging_bytes_on(&node("worker"), None).unwrap(), 0);
     }
 
     #[test]

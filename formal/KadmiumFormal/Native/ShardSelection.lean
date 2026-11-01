@@ -1,15 +1,16 @@
 /-!
 # Selecting the weights of one decoder slice
 
-Models SlicePlan::tensor_names in native_decoder/model.rs and the raw tensor copies in
-CheckpointLibrary::select_tensors. Parts abstract validated tensor names: every tensor required
+Models SlicePlan::tensor_names in native_decoder/model.rs and an abstract list filter, not the
+raw tensor copies in CheckpointLibrary::select_tensors. Parts abstract validated tensor names: every tensor required
 by block_specs belongs to its numbered layer. The embedding is also needed by a tied head.
 Configuration/header validation, I/O, checksums and byte offsets are not modelled here. Payloads
 are arbitrary values, not floating-point numbers. Selection retains an entire payload unchanged.
 
 native_staging_lean_vectors.rs compares needed with the actual tensor names for four checkpoint
 layouts. selected_packages_contain_exact_tensors_and_original_bits checks the copy against the
-original bytes, dtype and shape. These are Proved (model) results, not Aeneas extraction.
+original bytes, dtype and shape as a Measured integration check. The list theorems are
+Proved (model), not Aeneas extraction or proofs of copy offsets, padding or contiguity.
 -/
 
 namespace Kadmium.Native.Shard

@@ -53,10 +53,8 @@ impl CheckpointLibrary {
             offset = end;
         }
         let mut header = serde_json::to_vec(&header).map_err(io_error)?;
-        if header.len() as u64 > super::MAX_MANIFEST {
-            return Err("Selected SafeTensors header is too large".into());
-        }
-        header.resize(header.len().div_ceil(8) * 8, b' ');
+        let padded = padded_header_bytes(header.len())?;
+        header.resize(padded, b' ');
         let mut output = File::create(staging.0.join("model.safetensors")).map_err(io_error)?;
         output
             .write_all(&(header.len() as u64).to_le_bytes())
@@ -103,10 +101,45 @@ impl CheckpointLibrary {
     }
 }
 
+fn padded_header_bytes(length: usize) -> Result<usize> {
+    let padded = length
+        .checked_add(7)
+        .map(|length| length / 8 * 8)
+        .ok_or("Selected SafeTensors header size overflow")?;
+    if padded as u64 > super::MAX_MANIFEST {
+        return Err("Selected SafeTensors header is too large".into());
+    }
+    Ok(padded)
+}
+
 pub(crate) fn check_cancelled(cancelled: &AtomicBool) -> Result<()> {
     if cancelled.load(Ordering::Acquire) {
         Err("Checkpoint staging cancelled".into())
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn padded_header_obeys_metadata_limit_and_checked_arithmetic() {
+        assert_eq!(padded_header_bytes(1).unwrap(), 8);
+        assert_eq!(padded_header_bytes(8).unwrap(), 8);
+        let maximum = super::super::MAX_MANIFEST as usize;
+        assert_eq!(padded_header_bytes(maximum - 1).unwrap(), maximum);
+        assert_eq!(padded_header_bytes(maximum).unwrap(), maximum);
+        assert!(
+            padded_header_bytes(maximum + 1)
+                .unwrap_err()
+                .contains("too large")
+        );
+        assert!(
+            padded_header_bytes(usize::MAX)
+                .unwrap_err()
+                .contains("overflow")
+        );
     }
 }

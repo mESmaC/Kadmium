@@ -21,6 +21,7 @@ pub struct PreparedSlice {
     num_layers: usize,
     library: CheckpointLibrary,
     transport: TransportManifest,
+    storage_bytes: u64,
     source_node: NodeId,
 }
 
@@ -49,12 +50,14 @@ impl PreparedSlice {
             .map_err(|error| error.to_string())?;
         let selected = source.select_tensors(model_id, &names, &library, cancelled)?;
         let transport = library.transport(&selected.id)?;
+        let storage_bytes = transport.storage_bytes()?;
         Ok(Self {
             model_id: model_id.into(),
             plan,
             num_layers: config.num_layers,
             library,
             transport,
+            storage_bytes,
             source_node,
         })
     }
@@ -65,6 +68,10 @@ impl PreparedSlice {
 
     pub fn transport(&self) -> &TransportManifest {
         &self.transport
+    }
+
+    pub fn storage_bytes(&self) -> u64 {
+        self.storage_bytes
     }
 
     pub fn register_source(
@@ -100,6 +107,7 @@ impl PreparedSlice {
             self.plan.layers.start as u64,
             self.plan.layers.end as u64,
             self.transport.total_bytes,
+            self.storage_bytes,
         ] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
@@ -181,16 +189,9 @@ impl PreparedSlice {
             return Ok(StagingPlan::default());
         }
         let resident =
-            catalog
-                .resident_on(&destination.id)
-                .iter()
-                .try_fold(0u64, |total, replica| {
-                    total
-                        .checked_add(replica.content.bytes)
-                        .ok_or("Worker storage size overflow")
-                })?;
+            catalog.staging_bytes_on(&destination.id, Some(&self.transport.checkpoint_id))?;
         let required = resident
-            .checked_add(self.transport.total_bytes)
+            .checked_add(self.storage_bytes)
             .ok_or("Worker storage size overflow")?;
         if required > capacity {
             return Err(format!(
@@ -270,6 +271,9 @@ impl PreparedSlice {
             }
             return Ok(received);
         }
+        for job in &plan.ready {
+            catalog.reserve_staging(job)?;
+        }
         let received = self
             .library
             .copy_to(&self.transport, destination.library, cancelled)?;
@@ -283,7 +287,7 @@ impl PreparedSlice {
         ContentRef::new(
             &self.transport.checkpoint_id,
             ContentKind::KtbWeightBank,
-            self.transport.total_bytes,
+            self.storage_bytes,
         )
     }
 }

@@ -22,6 +22,7 @@ import KadmiumFormal.Transport.Publish
 import KadmiumFormal.Native.LayerSplit
 import KadmiumFormal.Native.ModelText
 import KadmiumFormal.Native.ShardSelection
+import KadmiumFormal.Grid.StagingStorage
 
 /-!
 # Axiom audit
@@ -51,6 +52,11 @@ elab "#assert_standard_axioms " id:ident : command => do
 #assert_standard_axioms Kadmium.Native.Shard.tied_head_needs_embedding
 #assert_standard_axioms Kadmium.Native.Shard.selected_iff
 #assert_standard_axioms Kadmium.Native.Shard.payload_preserved
+#assert_standard_axioms Kadmium.Grid.StagingStorage.legacy_gate_admits_offer_breach
+#assert_standard_axioms Kadmium.Grid.StagingStorage.gate_respects_logical_offer
+#assert_standard_axioms Kadmium.Grid.StagingStorage.retained_within_offer
+#assert_standard_axioms Kadmium.Grid.StagingStorage.resume_counts_once
+#assert_standard_axioms Kadmium.Grid.StagingStorage.publish_counts_once
 
 -- RepOps reduction tree and streaming reducer
 #assert_standard_axioms Kadmium.RepOps.treeSum_eq_eval

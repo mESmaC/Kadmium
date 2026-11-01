@@ -27,6 +27,7 @@ pub const TRANSPORT_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
 const _: () = assert!(PAGE.is_multiple_of(TRANSPORT_ALIGNMENT_BYTES));
 const _: () = assert!(TRANSPORT_CHUNK_BYTES.is_multiple_of(PAGE));
 const TRANSPORT_FILE: &str = "transport.json";
+const CHUNK_RECEIPT: &[u8] = b"";
 const RECEIVING: &str = ".receiving";
 /// Packages `receive_finish` has taken out of staging to verify and publish.
 const VERIFYING: &str = ".verifying";
@@ -106,6 +107,29 @@ pub struct ReceiveStatus {
 }
 
 impl TransportManifest {
+    /// Logical file bytes held during receipt or after publication, including transport metadata.
+    /// Chunk receipts currently have empty payloads. Filesystem allocation overhead is not modelled.
+    pub fn storage_bytes(&self) -> Result<u64> {
+        self.validate()?;
+        let metadata = serde_json::to_vec_pretty(self).map_err(io_error)?;
+        if metadata.len() as u64 > super::MAX_MANIFEST {
+            return Err("Transport metadata exceeds the checkpoint metadata limit".into());
+        }
+        let mut bytes = self
+            .total_bytes
+            .checked_add(metadata.len() as u64)
+            .ok_or("Checkpoint storage size overflow")?;
+        for file in &self.files {
+            let receipts = (file.chunks.len() as u64)
+                .checked_mul(CHUNK_RECEIPT.len() as u64)
+                .ok_or("Checkpoint storage size overflow")?;
+            bytes = bytes
+                .checked_add(receipts)
+                .ok_or("Checkpoint storage size overflow")?;
+        }
+        Ok(bytes)
+    }
+
     pub fn summary(&self) -> TransportSummary {
         TransportSummary {
             checkpoint_id: self.checkpoint_id.clone(),
@@ -200,63 +224,62 @@ impl TransportManifest {
 impl CheckpointLibrary {
     /// Synchronous library adapter for the existing resumable chunk protocol. The caller must
     /// serialize receives for this destination package and authorize its storage before copying.
-    /// A failed copy removes incomplete staging; an already published package is never removed.
+    /// Verified chunks remain staged on cancellation, source read errors or rejected chunks.
     pub fn copy_to(
         &self,
         transport: &TransportManifest,
         destination: &CheckpointLibrary,
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<CheckpointManifest> {
+        self.copy_with_progress(transport, destination, cancelled, &mut || {})
+    }
+
+    fn copy_with_progress(
+        &self,
+        transport: &TransportManifest,
+        destination: &CheckpointLibrary,
+        cancelled: &std::sync::atomic::AtomicBool,
+        after_chunk: &mut dyn FnMut(),
+    ) -> Result<CheckpointManifest> {
         transport.validate()?;
         let id = &transport.checkpoint_id;
         if self.transport(id)? != *transport {
             return Err("The source checkpoint changed after its staging plan was prepared".into());
         }
-        let mut incomplete = false;
-        let outcome = (|| {
+        super::selection::check_cancelled(cancelled)?;
+        let status = destination.receive_begin(transport)?;
+        for missing in status.missing {
             super::selection::check_cancelled(cancelled)?;
-            let status = destination.receive_begin(transport)?;
-            incomplete = !status.complete;
-            for missing in status.missing {
-                super::selection::check_cancelled(cancelled)?;
-                let file = transport
-                    .files
-                    .get(missing.file as usize)
-                    .ok_or("Unknown transport file")?;
-                let chunk = file
-                    .chunks
-                    .get(missing.chunk as usize)
-                    .ok_or("Unknown transport chunk")?;
-                let length = usize::try_from(chunk.bytes).map_err(|_| "Chunk size overflow")?;
-                if chunk.bytes > TRANSPORT_CHUNK_BYTES {
-                    return Err("Transport chunk exceeds the copy buffer".into());
-                }
-                let mut bytes = Vec::new();
-                bytes.try_reserve_exact(length).map_err(io_error)?;
-                bytes.resize(length, 0);
-                let mut input =
-                    File::open(self.package_dir(id)?.join(&file.path)).map_err(io_error)?;
-                input
-                    .seek(SeekFrom::Start(chunk.offset))
-                    .map_err(io_error)?;
-                input.read_exact(&mut bytes).map_err(io_error)?;
-                destination.receive_chunk(id, missing.file, missing.chunk, &bytes)?;
+            let file = transport
+                .files
+                .get(missing.file as usize)
+                .ok_or("Unknown transport file")?;
+            let chunk = file
+                .chunks
+                .get(missing.chunk as usize)
+                .ok_or("Unknown transport chunk")?;
+            let length = usize::try_from(chunk.bytes).map_err(|_| "Chunk size overflow")?;
+            if chunk.bytes > TRANSPORT_CHUNK_BYTES {
+                return Err("Transport chunk exceeds the copy buffer".into());
             }
-            super::selection::check_cancelled(cancelled)?;
-            destination.receive_finish(id)?;
-            let manifest = destination.verify(id)?;
-            if destination.transport(id)? != *transport {
-                return Err("Received checkpoint does not match the requested transport".into());
-            }
-            Ok(manifest)
-        })();
-        if outcome.is_err() && incomplete {
-            let staging = destination.receiving_dir(id)?;
-            if staging.exists() {
-                fs::remove_dir_all(staging).map_err(io_error)?;
-            }
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(length).map_err(io_error)?;
+            bytes.resize(length, 0);
+            let mut input = File::open(self.package_dir(id)?.join(&file.path)).map_err(io_error)?;
+            input
+                .seek(SeekFrom::Start(chunk.offset))
+                .map_err(io_error)?;
+            input.read_exact(&mut bytes).map_err(io_error)?;
+            destination.receive_chunk(id, missing.file, missing.chunk, &bytes)?;
+            after_chunk();
         }
-        outcome
+        super::selection::check_cancelled(cancelled)?;
+        destination.receive_finish(id)?;
+        let manifest = destination.verify(id)?;
+        if destination.transport(id)? != *transport {
+            return Err("Received checkpoint does not match the requested transport".into());
+        }
+        Ok(manifest)
     }
 
     /// Returns the package's transport manifest, building and caching it from the package
@@ -347,7 +370,11 @@ impl CheckpointLibrary {
             .map_err(io_error)?;
         output.write_all(data).map_err(io_error)?;
         output.sync_data().map_err(io_error)?;
-        File::create(staging.join(".chunks").join(marker(file, chunk))).map_err(io_error)?;
+        fs::write(
+            staging.join(".chunks").join(marker(file, chunk)),
+            CHUNK_RECEIPT,
+        )
+        .map_err(io_error)?;
         Ok(())
     }
 
@@ -735,6 +762,47 @@ fn hex_digest(value: &str) -> Result<()> {
 mod tests {
     use super::*;
     use crate::SafetensorsToKtbTranscoder;
+
+    #[test]
+    fn cancelled_copy_keeps_verified_chunks_for_resume() {
+        let staging = super::super::Staging::create(&std::env::temp_dir()).unwrap();
+        let source = staging.0.join("input");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("config.json"), br#"{"model_type":"llama"}"#).unwrap();
+        fs::write(source.join("tokenizer.json"), b"{}").unwrap();
+        fs::write(
+            source.join("model.safetensors"),
+            SafetensorsToKtbTranscoder::build_safetensors_bytes(&[(
+                "weight",
+                "F32",
+                vec![1],
+                &[0u8; 4],
+            )]),
+        )
+        .unwrap();
+        let sender = CheckpointLibrary::new(staging.0.join("sender"));
+        let id = sender.import(&source).unwrap().id;
+        let transport = sender.transport(&id).unwrap();
+        let receiver = CheckpointLibrary::new(staging.0.join("receiver"));
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let before = receiver.receive_begin(&transport).unwrap();
+        let error = sender
+            .copy_with_progress(&transport, &receiver, &cancelled, &mut || {
+                cancelled.store(true, std::sync::atomic::Ordering::Release)
+            })
+            .unwrap_err();
+        assert_eq!(error, "Checkpoint staging cancelled");
+        let partial = receiver.receive_begin(&transport).unwrap();
+        assert!(partial.received_bytes > 0);
+        assert!(partial.missing.len() < before.missing.len());
+        assert!(!receiver.package_dir(&id).unwrap().exists());
+        let receipts = receiver.receiving_dir(&id).unwrap().join(".chunks");
+        assert!(fs::read_dir(receipts).unwrap().all(|entry| entry.unwrap().metadata().unwrap().len() == CHUNK_RECEIPT.len() as u64));
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        sender.copy_to(&transport, &receiver, &cancelled).unwrap();
+        assert_eq!(receiver.verify(&id).unwrap().id, id);
+        assert!(!receiver.receiving_dir(&id).unwrap().exists());
+    }
 
     /// The interleaving from the review of PR #62, as `Kadmium.Transport.Publish` models it:
     /// a `receive_begin` with a different manifest for the same checkpoint lands after
