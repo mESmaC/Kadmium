@@ -41,6 +41,8 @@ test('Control Room and desktop Companion launch the shared preparation flow and 
       await page.goto(base + shell);
       await page.getByRole('heading', { name: 'Run your own model' }).waitFor();
       assert.equal(await page.getByRole('link', { name: /Send to a coordinator/ }).getAttribute('href'), '/condenser/#models-cloud');
+      assert.equal(await page.getByRole('link', { name: /Split across my machines/ }).getAttribute('href'), '/condenser/#models-split');
+      await page.locator('.kw-split-view').waitFor();
       await page.getByRole('link', { name: /Prepare a local model/ }).click();
       await page.waitForURL('**/condenser/#models');
       await page.locator('#return-kadmium').waitFor();
@@ -55,6 +57,84 @@ test('Control Room and desktop Companion launch the shared preparation flow and 
       assert.match(id, /^[a-f0-9]{64}$/);
       assert.match(await page.locator('#checkpoint-directory').textContent(), /library/);
       assert.ok(fs.existsSync(path.join(cwd, 'library', id, 'banks', 'bank-00000.ktb')));
+      await page.route('**/condenser/api/v1/checkpoints/split', route => {
+        const body = route.request().postDataJSON();
+        assert.equal(body.checkpoint_id, id);
+        return route.fulfill({
+          json: {
+            checkpoint_id: id,
+            checkpoint_name: 'model',
+            architecture: 'LlamaForCausalLM',
+            source_format: 'safetensors',
+            num_layers: 28,
+            context_length: 131072,
+            tie_word_embeddings: false,
+            is_split: true,
+            machine_count: 2,
+            eligible_machine_count: 2,
+            total_weight_bytes: 6442450944,
+            total_kv_bytes: 2147483648,
+            total_bytes: 8589934592,
+            embedding_bytes: 536870912,
+            final_norm_bytes: 16384,
+            lm_head_bytes: 536870912,
+            kv_bytes_per_layer: 76695844,
+            stages: [
+              {
+                stage_index: 0,
+                node_id: 'node-alpha',
+                hostname: 'workstation-alpha',
+                trust_tier: 'TrustedCore',
+                online: true,
+                start_layer: 0,
+                end_layer: 14,
+                layer_count: 14,
+                embedding: true,
+                head: false,
+                shares_tied_embedding: false,
+                holdings: ['Token embedding (model.embed_tokens.weight)', 'Decoder layers 0..14 (L0-L13, 14 layers)', 'Full-context f32 KV cache (131072 positions)'],
+                weight_bytes: 3221225472,
+                kv_bytes: 1073741824,
+                total_bytes: 4294967296,
+                capacity_bytes: 8589934592,
+                free_bytes: 4294967296,
+                residency_tier: 'Vram',
+                requires_approval: false
+              },
+              {
+                stage_index: 1,
+                node_id: 'node-beta',
+                hostname: 'workstation-beta',
+                trust_tier: 'TrustedCore',
+                online: true,
+                start_layer: 14,
+                end_layer: 28,
+                layer_count: 14,
+                embedding: false,
+                head: true,
+                shares_tied_embedding: false,
+                holdings: ['Decoder layers 14..28 (L14-L27, 14 layers)', 'Final norm + LM head (model.norm.weight, lm_head.weight)', 'Full-context f32 KV cache (131072 positions)'],
+                weight_bytes: 3221225472,
+                kv_bytes: 1073741824,
+                total_bytes: 4294967296,
+                capacity_bytes: 8589934592,
+                free_bytes: 4294967296,
+                residency_tier: 'SystemRam',
+                requires_approval: false
+              }
+            ]
+          }
+        });
+      });
+      await page.locator('label:has(#destination-split)').click();
+      assert.equal(await page.locator('#destination-split-panel').isVisible(), true);
+      assert.equal(await page.locator('#split-endpoint').inputValue(), base);
+      await page.locator('#split-plan').click();
+      await page.locator('#split-stages .split-stage-card').first().waitFor();
+      assert.equal(await page.locator('#split-stages .split-stage-card').count(), 2);
+      assert.match(await page.locator('#split-stages').textContent(), /workstation-alpha/);
+      assert.match(await page.locator('#split-stages').textContent(), /workstation-beta/);
+      await page.locator('label:has(#destination-local)').click();
       await page.route('**/condenser/api/v1/checkpoints/load', route => {
         assert.equal(route.request().postDataJSON().context_length, null);
         return route.fulfill({ json: { checkpoint: { id, name: 'model', context_length: 131072 }, context_length: 131072, provider: { kind: 'ollama', model: 'kadmium-' + id + ':latest', base_url: 'http://127.0.0.1:11434' }, execution: 'Fixture backend' } });

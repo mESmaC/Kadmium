@@ -82,13 +82,25 @@ body[data-view="models"] .context-rail, body[data-view="models"] #resize-context
 .model-facts dt { color: var(--ink-faint); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
 .model-facts dd { margin: 2px 0 0; color: var(--ink); font-size: 14px; overflow-wrap: anywhere; }
 .library-path code, #checkpoint-directory { overflow-wrap: anywhere; }
-.destination-switch { display: grid; width: 100%; max-width: 440px; }
+.destination-switch { display: grid; width: 100%; max-width: 640px; }
 .destination-panel { display: grid; gap: 14px; }
 .destination-panel[hidden] { display: none; }
 .field-grid.two { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 0; }
 .cloud-progress { display: grid; gap: 6px; }
 .cloud-progress[hidden] { display: none; }
-#cloud-status, #checkpoint-load-status, #checkpoint-status { overflow-wrap: anywhere; }
+#cloud-status, #checkpoint-load-status, #checkpoint-status, #split-status { overflow-wrap: anywhere; }
+#split-status.error { color: var(--danger); }
+.split-results { display: grid; gap: 14px; }
+.split-results[hidden] { display: none; }
+.split-stages { display: grid; gap: 10px; }
+.split-stages-title { margin: 4px 0 0; font: 600 14px/20px var(--font-display); color: var(--ink); }
+.split-stage-card { display: grid; gap: 10px; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--glass-edge); background: var(--glass-2); box-shadow: var(--glass-highlight); }
+.split-stage-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.split-stage-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.split-stage-host { color: var(--ink); font-size: 14px; overflow-wrap: anywhere; }
+.split-stage-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.split-holdings { margin: 0; padding-left: 18px; display: grid; gap: 4px; color: var(--ink-muted); font-size: 13px; line-height: 1.45; }
+.split-holdings li { overflow-wrap: anywhere; }
 .models-footnote { text-align: center; max-width: 64ch; margin: 4px auto 0; }
 
 /* Compute dock keeps Kadmium's graphite and cadmium identity. */
@@ -115,7 +127,7 @@ body[data-view="models"] .context-rail, body[data-view="models"] #resize-context
   .models-hero h1 { font-size: 28px; }
   .model-card { padding: 18px; }
   .path-row { grid-template-columns: 1fr; }
-  .destination-switch { max-width: none; }
+  .destination-switch { max-width: none; grid-auto-flow: row; grid-template-columns: 1fr; }
   .destination-switch label { padding: 6px 8px; }
 }
 @media (prefers-reduced-motion: reduce) { #context-compute *, .model-card * { transition: none; } }

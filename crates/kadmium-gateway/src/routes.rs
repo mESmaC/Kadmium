@@ -341,6 +341,11 @@ pub fn build_router(state: Arc<Mutex<GatewayState>>) -> Router {
             "/api/v1/inference/workspace",
             get(crate::inference_workspace::inspect),
         )
+        .route(
+            "/api/v1/checkpoints/placement",
+            get(crate::inference_workspace::get_checkpoint_placement)
+                .post(crate::inference_workspace::post_checkpoint_placement),
+        )
         .route("/api/v1/cluster/shift", post(post_cluster_shift))
         .route("/api/v1/cluster/model", post(post_cluster_model))
         .route(

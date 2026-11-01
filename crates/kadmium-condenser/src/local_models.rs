@@ -4,9 +4,10 @@
 use crate::provider::decode_json;
 use crate::server::{ApiError, ServerState};
 use crate::{CondenserError, ProviderConfig, ProviderKind, Result};
-use axum::{Json, extract::State};
+use axum::{Json, extract::State, http::StatusCode};
 use kadmium_data::checkpoint::{
     CheckpointLibrary, CheckpointManifest, CheckpointSummary, ImportOptions, ggml_type_name,
+    placement::{CheckpointPlacementView, PlanCheckpointRequest},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -28,6 +29,15 @@ pub(crate) struct LoadRequest {
     checkpoint_id: String,
     base_url: String,
     context_length: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SplitRequest {
+    checkpoint_id: String,
+    #[serde(default)]
+    endpoint: Option<String>,
+    #[serde(default)]
+    api_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -153,6 +163,74 @@ pub(crate) async fn load(
         )
         .await?,
     ))
+}
+
+pub(crate) async fn split(
+    State(state): State<ServerState>,
+    Json(request): Json<SplitRequest>,
+) -> std::result::Result<Json<CheckpointPlacementView>, (StatusCode, Json<Value>)> {
+    let bad = |status: StatusCode, msg: String| (status, Json(json!({ "error": msg })));
+    let base = request
+        .endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("http://127.0.0.1:7848");
+    let url = crate::compute::coordinator_url(base, "checkpoints/placement")
+        .map_err(|e| bad(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let library = state.model_library.clone();
+    let checkpoint_id = request.checkpoint_id.clone();
+    let inspected =
+        tokio::task::spawn_blocking(move || library.inspect_placement_profile(&checkpoint_id))
+            .await
+            .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(|e| bad(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|_| {
+            bad(
+                StatusCode::BAD_GATEWAY,
+                "Could not create the coordinator client".into(),
+            )
+        })?;
+    let payload = PlanCheckpointRequest {
+        checkpoint_id: inspected.checkpoint_id,
+        checkpoint_name: Some(inspected.checkpoint_name),
+        architecture: Some(inspected.architecture),
+        source_format: Some(inspected.source_format),
+        profile: Some(inspected.profile),
+    };
+    let mut upstream = client.post(url).json(&payload);
+    if let Some(key) = request.api_key.filter(|key| !key.is_empty()) {
+        upstream = upstream.bearer_auth(key);
+    }
+    let response = upstream.send().await.map_err(|_| {
+        bad(
+            StatusCode::BAD_GATEWAY,
+            "Coordinator unavailable. Check its URL and that Kadmium is running.".into(),
+        )
+    })?;
+    if !response.status().is_success() {
+        let status = StatusCode::from_u16(response.status().as_u16())
+            .unwrap_or(StatusCode::UNPROCESSABLE_ENTITY);
+        let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+        let detail = body
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("Coordinator returned HTTP {}", status.as_u16()));
+        return Err(bad(status, detail));
+    }
+    let view: CheckpointPlacementView = response.json().await.map_err(|_| {
+        bad(
+            StatusCode::BAD_GATEWAY,
+            "Coordinator did not return a valid checkpoint placement plan".into(),
+        )
+    })?;
+    Ok(Json(view))
 }
 
 fn local_url(base: &str) -> Result<reqwest::Url> {
