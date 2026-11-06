@@ -8,10 +8,6 @@
 [![License: MIT/Apache-2.0](https://img.shields.io/badge/License-MIT%20%2F%20Apache--2.0-blue.svg)](#-license)
 [![Workloads: Inference | Training | RL | Dream-RSI](https://img.shields.io/badge/Workloads-Inference%20%7C%20Training%20%7C%20RL%20%7C%20Dream--RSI-success.svg)](#-core-capabilities)
 
-> **Commercial status — 30 October 2026:** The [marketing and business review](docs/MARKETING_BUSINESS_REVIEW_2026-10-30.md) proposes a focused design-partner pilot with product and financial gates. Managed burst, host payouts, regulated-office packages and hardware are not established as live offerings by this repository. Consult the current API and guides for execution boundaries.
-
----
-
 ## 🌍 What is Kadmium?
 
 The modern AI industry operates on a convenient assumption: *frontier model training, fine-tuning, reinforcement learning, and high-throughput inference require hundreds of thousands of dollars in identical datacenter GPUs wired over InfiniBand.*
