@@ -13,7 +13,6 @@ Documents distinguish **implemented reference behavior**, **modelled/simulated o
 | Guide | Description |
 | :--- | :--- |
 | [Quickstart and installation](getting-started.md) | Build with the pinned toolchain, launch the Control Room, connect reachable workers, and manage versioned installs. |
-| [Public website](website.md) | Build and check the static kadmium.ai page separately from local workspaces. |
 | [Launch guide](guides/cli.md) | `launch --plan`, configuration preservation, listeners, and demo/live behavior. |
 | [CLI command reference](cli-reference.md) | Every current CLI subcommand, flag, default, and execution qualification. |
 | [HTTP and gateway API](api-reference.md) | Reference `/v1` diagnostics, cluster control plane, DiLoCo sessions, MCP, and grid endpoints. |
@@ -40,22 +39,6 @@ Documents distinguish **implemented reference behavior**, **modelled/simulated o
 | [Release runbook](guides/release.md) | Version/tag checks, release artifacts, CI requirements, and installer verification. |
 | [Contributing](../CONTRIBUTING.md) | Formatting, linting, Rust/Node/UI/Python/installer checks, and documentation conventions. |
 
-### Business and marketing review
-
-The commercial plan is a proposal for review. It does not establish managed compute, revenue, payouts, charter status, or compliance readiness.
-
-| Document | Purpose |
-| :--- | :--- |
-| [Marketing and business review — 2026-10-30](MARKETING_BUSINESS_REVIEW_2026-10-30.md) | Evidence, competitors, objections, and publication blockers. |
-| [Business plan and stance](BUSINESS_PLAN_AND_STANCE.md) | Proposed pilot, stewardship, economics, and evidence gates. |
-| [Marketing and launch plan](MARKET_RESEARCH_AND_LAUNCH_PLAN.md) | Experiments, draft copy, budgets, and measurement. |
-| [Operating plan](OPERATING_PLAN.md) | Ownership, delivery, release claims, treasury, and stop rules. |
-| [Reproducible economics](business/ECONOMICS.md) | Cohorts, redemption stress, and cash/liability calculations. |
-| [Historical engineering numbers](NUMBERS_2026-10.md) | Dated model inputs, not live prices or measured supply. |
-| [Strategy audit — 2026-10-30](STRATEGY_AUDIT_2026-10-30.md) | Steelman, structural findings and eighteen candidate angles, written against the pre-#28 plan (`2e2040b5`) with a status table against version 3. |
-| [Plan stress test — 2026-10-31](PLAN_STRESS_TEST_2026-10-31.md) | Stress test of the version 3 plans against the project's direction: service economics and capacity ceiling, gate order, competitor status, demand evidence and channel arithmetic, with reproducible sensitivities. |
-
----
 
 ## Current execution at a glance
 
